@@ -1,0 +1,27 @@
+{
+  "name": "rac-position-tracker",
+  "version": "1.0.0",
+  "description": "Monitoramento automatizado de posicionamento em buscas — RAC E-Commerce Midea Brasil",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "morning": "node index.js --output both",
+    "evening": "node index.js --output both",
+    "meli-only": "node index.js --platform meli",
+    "dry-run": "node index.js --dry-run",
+    "excel-only": "node index.js --output excel",
+    "sheets-only": "node index.js --output sheets",
+    "test": "node index.js --dry-run --platform meli"
+  },
+  "dependencies": {
+    "playwright": "^1.42.0",
+    "googleapis": "^134.0.0",
+    "exceljs": "^4.4.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "Midea Carrier Brasil — E-Commerce",
+  "license": "UNLICENSED",
+  "private": true
+}
