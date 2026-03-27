@@ -193,20 +193,22 @@ def _run_one(
 ) -> List[Dict[str, Any]]:
     keywords_map = {"Teste": [keyword]}
     t0 = time.time()
+    records = []
     try:
         with scraper_cls(headless=headless) as scraper:
-            records = scraper.search(
+            result = scraper.search(
                 keyword=keyword,
                 keyword_category_map=keywords_map,
                 page_limit=1,
             )
+            # reraise=False no @retry retorna None quando esgota tentativas
+            records = result or []
         elapsed = time.time() - t0
         logger.info(f"[{key}] {len(records)} itens em {elapsed:.1f}s")
-        return records
     except Exception as exc:
         elapsed = time.time() - t0
         logger.error(f"[{key}] ERRO em {elapsed:.1f}s: {exc}")
-        return []
+    return records
 
 
 # ---------------------------------------------------------------------------

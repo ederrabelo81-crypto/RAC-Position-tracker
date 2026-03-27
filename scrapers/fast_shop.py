@@ -52,6 +52,9 @@ _VTEX_HEADERS = {
     ),
 }
 
+# Timeout reduzido para a API direta — evita travar 15s × 3 tentativas
+_API_TIMEOUT = 8
+
 _SELECTORS = {
     "item_candidates": [
         # VTEX IO padrão (plataforma da Fast Shop)
@@ -175,7 +178,7 @@ class FastShopScraper(BaseScraper):
                 _VTEX_SEARCH_URL,
                 headers=_VTEX_HEADERS,
                 params=params,
-                timeout=15,
+                timeout=_API_TIMEOUT,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -203,7 +206,7 @@ class FastShopScraper(BaseScraper):
                 f"{_VTEX_CATALOG_URL}/{encoded}",
                 headers=_VTEX_HEADERS,
                 params={"_from": from_idx, "_to": to_idx},
-                timeout=15,
+                timeout=_API_TIMEOUT,
             )
             if resp.status_code == 200:
                 products = resp.json()
@@ -422,9 +425,9 @@ class FastShopScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=18),
-        reraise=True,
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1, min=8, max=20),
+        reraise=False,  # retorna [] em vez de quebrar o teste inteiro
     )
     def search(
         self,
@@ -447,12 +450,20 @@ class FastShopScraper(BaseScraper):
             if not records:
                 # Carrega browser para XHR interception + DOM fallback
                 try:
-                    self._page.goto(url, wait_until="domcontentloaded")
-                    self._wait_for_products(timeout_ms=18_000)
+                    self._page.goto(url, wait_until="domcontentloaded", timeout=35_000)
+                except Exception as exc:
+                    logger.warning(
+                        f"[{self.platform_name}] Timeout ao carregar página {page}: {exc}\n"
+                        "  → Site pode estar fora do ar ou bloqueando. Parando keyword."
+                    )
+                    break  # não tenta mais páginas, mas não quebra o teste
+
+                try:
+                    self._wait_for_products(timeout_ms=15_000)
                     self._wait_for_network_idle()
                     self._random_delay(min_s=2.5, max_s=6.5)
                     self._human_scroll(steps=8, step_px=300)
-                    time.sleep(2.0)  # aguarda XHR tardio
+                    time.sleep(2.0)
 
                     # --- Estratégia 2: XHR capturado ---
                     if self._captured_products:
@@ -471,7 +482,8 @@ class FastShopScraper(BaseScraper):
 
                 except Exception as exc:
                     logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
-                    raise
+                    self._dump_debug(self._page.content() if self._page else "", page, keyword)
+                    break
 
             all_records.extend(records)
 

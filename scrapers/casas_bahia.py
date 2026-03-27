@@ -2,19 +2,17 @@
 scrapers/casas_bahia.py — Scraper da Casas Bahia (casasbahia.com.br).
 
 Estratégia:
-  - URL de busca: https://www.casasbahia.com.br/busca?q={keyword}
-  - Proteção: WAF Akamai / PerimeterX — aplica delays generosos e stealth.
-    Se bloqueado, o scraper detecta a página de challenge e registra aviso.
-  - Paginação: parâmetro `&page={n}`
-  - Seletores baseados no diagnóstico do v5 (Mar/2026).
+  1. Intercepção XHR da API VTEX IO (intelligent-search, catalog_system).
+  2. Parse DOM com cadeia de seletores fallback + img[alt].
+  3. Debug HTML dump automático em logs/ quando 0 itens (falha silenciosa corrigida).
 
-Notas de manutenção:
-  Se o WAF bloquear consistentemente, considere:
-  1. Proxy residencial rotativo (brightdata.com, oxylabs.io)
-  2. Ferramenta de monitoramento passivo (Distill Web Monitor)
-  3. API oficial do Grupo Casas Bahia (solicitar acesso)
+Proteção: WAF Akamai / PerimeterX — delays generosos e stealth.
+Paginação: parâmetro &page={n}.
 """
 
+import json
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
@@ -22,48 +20,85 @@ from bs4 import BeautifulSoup, Tag
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import MAX_PAGES
+from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
 from utils.text import parse_price, parse_rating, parse_review_count
 
-# ---------------------------------------------------------------------------
-# Seletores CSS — Casas Bahia usa Vtex IO (React SSR)
-# ---------------------------------------------------------------------------
+_ITEMS_PER_PAGE = 24
+
 _SELECTORS = {
-    "item_container": (
-        "[data-testid='product-card'], "
-        "[class*='ProductCard'], "
-        "[class*='product-card'], "
-        "article[class*='product']"
-    ),
-    "title": (
-        "[data-testid='product-name'], "
-        "[class*='productName'], "
-        "[class*='ProductName'], "
-        "h3[class*='product']"
-    ),
-    "price": (
-        "[data-testid='price-best-price'], "
-        ".vtex-product-price-1-x-sellingPrice, "
-        "[class*='sellingPrice'], "
-        "[class*='bestPrice']"
-    ),
-    "seller":         "[data-testid='seller-name'], [class*='sellerName']",
-    "rating":         "[class*='ratingValue'], [class*='rating-value']",
-    "review_count":   "[class*='reviewCount'], [class*='review-count']",
-    "tag_destaque":   "[data-testid='discount-badge'], [class*='discountBadge'], [class*='badge']",
-    "sponsored":      "[data-testid='sponsored'], [class*='sponsored']",
-    # Página de challenge / bloqueio Akamai
-    "waf_block":      "#ak-challenge-error, #challenge-container, .ak-challenge",
+    # Cadeia de fallback — Casas Bahia usa VTEX IO
+    "item_candidates": [
+        "[data-testid='product-card']",
+        "[class*='ProductCard']",
+        "[class*='product-card']",
+        "article[class*='product']",
+        "[class*='vtex-product-summary']",
+        "li[class*='vtex-product-summary']",
+        "[class*='productSummary']",
+        "[class*='shelf-item']",
+        "[class*='ShelfItem']",
+        "li[class*='product']",
+        "[class*='product-item']",
+    ],
+    "title_candidates": [
+        "[data-testid='product-name']",
+        "[class*='productName']",
+        "[class*='ProductName']",
+        "[class*='vtex-product-summary-2-x-productBrand']",
+        "[class*='vtex-product-summary-2-x-nameContainer']",
+        "h3[class*='product']",
+        "h2[class*='product']",
+        "h3", "h2",
+    ],
+    "price_candidates": [
+        "[data-testid='price-best-price']",
+        ".vtex-product-price-1-x-sellingPrice",
+        "[class*='sellingPrice']",
+        "[class*='bestPrice']",
+        "[class*='productPrice']",
+        "[class*='price']",
+    ],
+    "seller":        "[data-testid='seller-name'], [class*='sellerName']",
+    "rating":        "[class*='ratingValue'], [class*='rating-value'], [class*='Rating']",
+    "review_count":  "[class*='reviewCount'], [class*='review-count']",
+    "tag_destaque":  "[data-testid='discount-badge'], [class*='discountBadge'], [class*='badge']",
+    "sponsored":     "[data-testid='sponsored'], [class*='sponsored']",
+    "waf_block":     "#ak-challenge-error, #challenge-container, .ak-challenge",
 }
 
-_ITEMS_PER_PAGE = 24
+# Padrões de URL para XHR interception VTEX
+_API_URL_PATTERNS = [
+    "intelligent-search/product_search",
+    "catalog_system/pub/products",
+    "_v/api/intelligent",
+    "product-search",
+    "api/catalog",
+    "search/products",
+]
+
+# Padrões de redirect/bloqueio
+_BLOCKED_URL_PATTERNS = [
+    "/login",
+    "/captcha",
+    "/blocked",
+    "/challenge",
+    "akamai",
+]
 
 
 class CasasBahiaScraper(BaseScraper):
     """Scraper modular para Casas Bahia."""
 
     platform_name = "Casas Bahia"
+
+    def __init__(self, headless: bool = True) -> None:
+        super().__init__(headless=headless)
+        self._captured_products: List[Dict] = []
+
+    # ------------------------------------------------------------------
+    # URL
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
@@ -73,37 +108,152 @@ class CasasBahiaScraper(BaseScraper):
             url += f"&page={page}"
         return url
 
-    @staticmethod
-    def _is_sponsored(item: Tag) -> bool:
-        return bool(item.select_one(_SELECTORS["sponsored"]))
+    # ------------------------------------------------------------------
+    # Detecção de bloqueio
+    # ------------------------------------------------------------------
 
-    def _parse_results(
+    def _check_blocked(self, html: str) -> bool:
+        current_url = self._page.url
+        for p in _BLOCKED_URL_PATTERNS:
+            if p in current_url:
+                logger.warning(f"[{self.platform_name}] Redirecionado para bloqueio: {current_url}")
+                return True
+        soup = BeautifulSoup(html[:5000], "html.parser")
+        if soup.select_one(_SELECTORS["waf_block"]):
+            logger.warning(f"[{self.platform_name}] WAF/Akamai detectado.")
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # XHR interception
+    # ------------------------------------------------------------------
+
+    def _setup_xhr_intercept(self) -> None:
+        self._captured_products = []
+
+        def handle_response(response):
+            try:
+                url = response.url
+                if not any(pat in url for pat in _API_URL_PATTERNS):
+                    return
+                if response.status != 200:
+                    return
+                ct = response.headers.get("content-type", "").lower()
+                if "text/html" in ct:
+                    return
+                try:
+                    data = json.loads(response.text())
+                except Exception:
+                    return
+                products = (
+                    data.get("products")
+                    or data.get("items")
+                    or data.get("data", {}).get("products")
+                    or (data.get("productSearch") or {}).get("products")
+                    or (data if isinstance(data, list) else [])
+                )
+                if products and isinstance(products, list):
+                    self._captured_products.extend(products)
+                    logger.debug(
+                        f"[{self.platform_name}] XHR: {len(products)} produtos em {url[:70]}"
+                    )
+            except Exception:
+                pass
+
+        self._page.on("response", handle_response)
+
+    def _parse_api_products(
+        self,
+        keyword: str,
+        keyword_category_map: dict,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        records = []
+        for idx, prod in enumerate(self._captured_products):
+            title = prod.get("productName") or prod.get("name") or prod.get("title")
+            price_val = prod.get("price")
+            try:
+                offer = (
+                    prod.get("items", [{}])[0]
+                    .get("sellers", [{}])[0]
+                    .get("commertialOffer", {})
+                )
+                price_val = price_val or offer.get("Price") or offer.get("ListPrice")
+            except (IndexError, KeyError, TypeError):
+                pass
+            try:
+                price_float = float(str(price_val)) if price_val else None
+            except (ValueError, TypeError):
+                price_float = None
+
+            pos = page_offset + idx + 1
+            records.append(self._build_record(
+                keyword=keyword,
+                keyword_category_map=keyword_category_map,
+                title=title,
+                position_general=pos,
+                position_organic=pos,
+                position_sponsored=None,
+                price_float=price_float,
+                seller="Casas Bahia",
+                is_fulfillment=False,
+                rating=None,
+                review_count=None,
+                tag_destaque=None,
+            ))
+        return records
+
+    # ------------------------------------------------------------------
+    # DOM parse
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _first_match(tag: Tag, candidates) -> Optional[Tag]:
+        if isinstance(candidates, str):
+            return tag.select_one(candidates)
+        for sel in candidates:
+            el = tag.select_one(sel)
+            if el:
+                return el
+        return None
+
+    @staticmethod
+    def _detect_items(soup: BeautifulSoup) -> tuple[List[Tag], str]:
+        for sel in _SELECTORS["item_candidates"]:
+            items = soup.select(sel)
+            if len(items) >= 2:
+                return items, sel
+        return [], "nenhum"
+
+    def _parse_dom(
         self,
         html: str,
         keyword: str,
         keyword_category_map: dict,
-        page_offset: int = 0,
+        page: int,
+        page_offset: int,
     ) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
 
-        # Detecta bloqueio WAF antes de tentar parsear produtos
-        if soup.select_one(_SELECTORS["waf_block"]):
-            logger.warning(
-                f"[{self.platform_name}] WAF/Akamai detectado. "
-                "Considere proxy residencial para produção."
-            )
+        if self._check_blocked(html):
             return []
 
-        items = soup.select(_SELECTORS["item_container"])
-        logger.info(f"[{self.platform_name}] {len(items)} itens encontrados na página")
+        items, sel_used = self._detect_items(soup)
+        logger.info(
+            f"[{self.platform_name}] {len(items)} itens (seletor: {sel_used})"
+        )
+
+        if not items:
+            self._dump_debug(html, page, keyword)
+            return []
 
         records = []
-        organic_counter   = 0
         sponsored_counter = 0
+        organic_counter   = 0
 
         for idx, item in enumerate(items):
+            sponsored = bool(item.select_one(_SELECTORS["sponsored"]))
             pos_general = page_offset + idx + 1
-            sponsored   = self._is_sponsored(item)
 
             if sponsored:
                 sponsored_counter += 1
@@ -112,23 +262,22 @@ class CasasBahiaScraper(BaseScraper):
                 organic_counter += 1
                 pos_organic, pos_sponsored = organic_counter, None
 
-            title_el  = item.select_one(_SELECTORS["title"])
-            title     = title_el.get_text(strip=True) if title_el else None
+            title_el = self._first_match(item, _SELECTORS["title_candidates"])
+            price_el = self._first_match(item, _SELECTORS["price_candidates"])
 
-            price_el  = item.select_one(_SELECTORS["price"])
-            price_raw = price_el.get_text(strip=True) if price_el else None
+            # Fallback de título por img[alt]
+            title = title_el.get_text(strip=True) if title_el else None
+            if not title:
+                img = item.select_one("img[alt]")
+                if img:
+                    title = img.get("alt", "").strip() or None
 
             seller_el = item.select_one(_SELECTORS["seller"])
             seller    = seller_el.get_text(strip=True) if seller_el else "Casas Bahia"
 
             rating_el    = item.select_one(_SELECTORS["rating"])
-            rating       = parse_rating(rating_el.get_text() if rating_el else None)
-
             reviews_el   = item.select_one(_SELECTORS["review_count"])
-            review_count = parse_review_count(reviews_el.get_text() if reviews_el else None)
-
-            tag_el = item.select_one(_SELECTORS["tag_destaque"])
-            tag    = tag_el.get_text(strip=True) if tag_el else None
+            tag_el       = item.select_one(_SELECTORS["tag_destaque"])
 
             records.append(self._build_record(
                 keyword=keyword,
@@ -137,20 +286,54 @@ class CasasBahiaScraper(BaseScraper):
                 position_general=pos_general,
                 position_organic=pos_organic,
                 position_sponsored=pos_sponsored,
-                price_raw=price_raw,
+                price_raw=price_el.get_text(strip=True) if price_el else None,
                 seller=seller,
                 is_fulfillment=False,
-                rating=rating,
-                review_count=review_count,
-                tag_destaque=tag,
+                rating=parse_rating(rating_el.get_text() if rating_el else None),
+                review_count=parse_review_count(reviews_el.get_text() if reviews_el else None),
+                tag_destaque=tag_el.get_text(strip=True) if tag_el else None,
             ))
 
         return records
 
+    # ------------------------------------------------------------------
+    # Debug dump — obrigatório quando 0 itens
+    # ------------------------------------------------------------------
+
+    def _dump_debug(self, html: str, page: int, keyword: str) -> None:
+        try:
+            log_dir = Path(LOGS_DIR)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            safe_kw = keyword[:30].replace(" ", "_").replace("/", "-")
+            path = log_dir / f"casasbahia_debug_p{page}_{safe_kw}.html"
+            path.write_text(html, encoding="utf-8")
+            logger.warning(
+                f"[{self.platform_name}] 0 itens — HTML salvo para diagnóstico: {path}"
+            )
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] Erro ao salvar debug: {e}")
+
+    # ------------------------------------------------------------------
+    # Espera
+    # ------------------------------------------------------------------
+
+    def _wait_for_products(self, timeout_ms: int = 12_000) -> bool:
+        for sel in _SELECTORS["item_candidates"][:6]:
+            try:
+                self._page.wait_for_selector(sel, timeout=timeout_ms)
+                return True
+            except Exception:
+                continue
+        return False
+
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=2, min=6, max=20),
-        reraise=True,
+        reraise=False,
     )
     def search(
         self,
@@ -158,38 +341,49 @@ class CasasBahiaScraper(BaseScraper):
         keyword_category_map: dict,
         page_limit: int = MAX_PAGES,
     ) -> List[Dict[str, Any]]:
-        """Busca keyword na Casas Bahia por até `page_limit` páginas."""
         all_records: List[Dict[str, Any]] = []
+        self._setup_xhr_intercept()
 
         for page in range(1, page_limit + 1):
             url = self._build_url(keyword, page)
             logger.info(f"[{self.platform_name}] Página {page}/{page_limit} → {url}")
+            self._captured_products = []
+            offset = (page - 1) * _ITEMS_PER_PAGE
 
             try:
-                self._page.goto(url, wait_until="domcontentloaded")
-                self._wait_for_network_idle()
-                # Delays maiores para WAF não detectar padrão de bot
-                self._random_delay(min_s=4.0, max_s=9.0)
-                self._human_scroll(steps=10, step_px=300)
-
-                offset  = (page - 1) * _ITEMS_PER_PAGE
-                records = self._parse_results(
-                    html=self._page.content(),
-                    keyword=keyword,
-                    keyword_category_map=keyword_category_map,
-                    page_offset=offset,
-                )
-                all_records.extend(records)
-
-                if not records:
-                    break
-
-                if page < page_limit:
-                    self._random_delay()
-
+                self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
             except Exception as exc:
-                logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
-                raise
+                logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
+                break
+
+            self._wait_for_products(timeout_ms=12_000)
+            self._wait_for_network_idle()
+            self._random_delay(min_s=4.0, max_s=9.0)
+            self._human_scroll(steps=10, step_px=300)
+            time.sleep(1.5)
+
+            html = self._page.content()
+
+            # Estratégia 1: XHR
+            if self._captured_products:
+                logger.info(
+                    f"[{self.platform_name}] {len(self._captured_products)} produtos via XHR"
+                )
+                records = self._parse_api_products(keyword, keyword_category_map, offset)
+            else:
+                # Estratégia 2: DOM
+                records = self._parse_dom(html, keyword, keyword_category_map, page, offset)
+
+            all_records.extend(records)
+
+            if not records:
+                logger.warning(
+                    f"[{self.platform_name}] Página {page} retornou 0 itens. Parando."
+                )
+                break
+
+            if page < page_limit:
+                self._random_delay()
 
         logger.success(
             f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
