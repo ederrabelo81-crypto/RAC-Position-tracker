@@ -227,8 +227,6 @@ class MLScraper(BaseScraper):
         # Diagnóstico: se nenhum item for encontrado, salva HTML para inspeção
         if not items:
             debug_path = f"logs/ml_debug_{page_offset}.html"
-            except Exception:
-                pass
             try:
                 with open(debug_path, "w", encoding="utf-8") as f:
                     f.write(html)
