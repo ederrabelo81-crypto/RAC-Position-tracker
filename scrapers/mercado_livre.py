@@ -34,8 +34,16 @@ _SELECTORS = {
     # container de cada resultado (orgânico e patrocinado)
     "item_container":  "li.ui-search-layout__item",
 
-    # título do produto
-    "title":           "h2.ui-search-item__title",
+    # título do produto — o ML migrou para o sistema "Poly" em 2024/2025.
+    # Seletores em ordem de prioridade (o primeiro que existir é usado).
+    "title_candidates": [
+        ".poly-component__title",          # sistema Poly (atual)
+        "a.poly-component__title",         # variante Poly com âncora
+        "h2.poly-box",                     # variante Poly h2
+        ".poly-component__title-wrapper",  # wrapper Poly
+        "h2.ui-search-item__title",        # sistema legado (fallback)
+        ".ui-search-item__title",          # legado sem tag h2
+    ],
 
     # fração inteira do preço (ex: "2.799")
     "price_fraction":  ".andes-money-amount__fraction",
@@ -43,20 +51,34 @@ _SELECTORS = {
     # centavos do preço (ex: "90")
     "price_cents":     ".andes-money-amount__cents",
 
-    # nome do seller / loja oficial
-    "seller":          ".ui-search-official-store-label",
+    # nome do seller / loja oficial — também com fallbacks Poly
+    "seller_candidates": [
+        ".poly-component__seller",         # Poly
+        ".ui-search-official-store-label", # legado
+        ".ui-search-item__seller-description",
+    ],
 
     # badge de fulfillment (FULL)
-    "fulfillment":     ".ui-search-item__group__element.ui-search-item__fulfillment",
+    "fulfillment":     ".poly-component__fulfillment, "
+                       ".ui-search-item__group__element.ui-search-item__fulfillment",
 
     # nota de avaliação
-    "rating":          ".ui-search-reviews__rating-number",
+    "rating_candidates": [
+        ".poly-component__reviews-rating",  # Poly
+        ".ui-search-reviews__rating-number", # legado
+    ],
 
     # quantidade de avaliações
-    "review_count":    ".ui-search-reviews__amount",
+    "review_count_candidates": [
+        ".poly-component__reviews-count",  # Poly
+        ".ui-search-reviews__amount",      # legado
+    ],
 
     # tag de destaque (ex: "MAIS VENDIDO", "OFERTA DO DIA")
-    "tag_destaque":    ".ui-search-item__highlight-label",
+    "tag_candidates": [
+        ".poly-component__highlight",      # Poly
+        ".ui-search-item__highlight-label",# legado
+    ],
 
     # indicador de patrocinado — testa múltiplas abordagens
     "sponsored_label": ".ui-search-item__promoted-label",
@@ -202,6 +224,21 @@ class MLScraper(BaseScraper):
         items = soup.select(_SELECTORS["item_container"])
         logger.info(f"[{self.platform_name}] {len(items)} itens encontrados na página")
 
+        # Diagnóstico: se nenhum item for encontrado, salva HTML para inspeção
+        if not items:
+            debug_path = f"logs/ml_debug_{page_offset}.html"
+            except Exception:
+                pass
+            try:
+                with open(debug_path, "w", encoding="utf-8") as f:
+                    f.write(html)
+                logger.warning(
+                    f"[{self.platform_name}] Nenhum item encontrado. "
+                    f"HTML salvo em {debug_path} para diagnóstico."
+                )
+            except Exception:
+                pass
+
         records = []
         organic_counter  = 0
         sponsored_counter = 0
@@ -219,31 +256,51 @@ class MLScraper(BaseScraper):
                 pos_organic    = organic_counter
                 pos_sponsored  = None
 
-            # --- título ---
-            title_el = item.select_one(_SELECTORS["title"])
-            title = title_el.get_text(strip=True) if title_el else None
+            # --- título: tenta cada seletor até encontrar um que retorne texto ---
+            title = None
+            for sel in _SELECTORS["title_candidates"]:
+                el = item.select_one(sel)
+                if el and el.get_text(strip=True):
+                    title = el.get_text(strip=True)
+                    break
 
             # --- preço ---
             price = self._extract_price(item)
 
-            # --- seller ---
-            seller_el = item.select_one(_SELECTORS["seller"])
-            seller = seller_el.get_text(strip=True) if seller_el else "Mercado Livre"
+            # --- seller: mesma lógica de fallback ---
+            seller = "Mercado Livre"
+            for sel in _SELECTORS["seller_candidates"]:
+                el = item.select_one(sel)
+                if el and el.get_text(strip=True):
+                    seller = el.get_text(strip=True)
+                    break
 
             # --- fulfillment ---
             fulfillment = self._is_fulfillment(item)
 
             # --- avaliação ---
-            rating_el = item.select_one(_SELECTORS["rating"])
-            rating = parse_rating(rating_el.get_text() if rating_el else None)
+            rating = None
+            for sel in _SELECTORS["rating_candidates"]:
+                el = item.select_one(sel)
+                if el:
+                    rating = parse_rating(el.get_text())
+                    break
 
             # --- qtd avaliações ---
-            reviews_el = item.select_one(_SELECTORS["review_count"])
-            review_count = parse_review_count(reviews_el.get_text() if reviews_el else None)
+            review_count = None
+            for sel in _SELECTORS["review_count_candidates"]:
+                el = item.select_one(sel)
+                if el:
+                    review_count = parse_review_count(el.get_text())
+                    break
 
             # --- tag de destaque ---
-            tag_el = item.select_one(_SELECTORS["tag_destaque"])
-            tag = tag_el.get_text(strip=True) if tag_el else None
+            tag = None
+            for sel in _SELECTORS["tag_candidates"]:
+                el = item.select_one(sel)
+                if el and el.get_text(strip=True):
+                    tag = el.get_text(strip=True)
+                    break
 
             record = self._build_record(
                 keyword=keyword,
