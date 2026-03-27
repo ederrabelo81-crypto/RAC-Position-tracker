@@ -2,15 +2,17 @@
 scrapers/leroy_merlin.py — Scraper da Leroy Merlin Brasil (leroymerlin.com.br).
 
 Estratégia (em ordem de prioridade):
-  1. Intercepção XHR da API interna (catalog / product-search) via response listener
-  2. Parse DOM com cadeia de 10+ seletores fallback (Next.js + styled-components)
-  3. Debug HTML dump em logs/ quando 0 itens — para diagnóstico de seletores
+  1. __NEXT_DATA__ JSON embutido no HTML (Next.js SSR) — mais confiável
+  2. Intercepção XHR da API interna /api/v3/search ou catalog
+  3. Parse DOM com cadeia de 14 seletores fallback
+  4. Debug HTML dump em logs/ quando 0 itens
 
-Plataforma: Next.js SSR com styled-components (classes sc-* geradas dinamicamente).
+Plataforma: Next.js SSR com API própria /api/v3/*.
 Paginação: ?term={kw}&page={n}
 """
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,22 +30,21 @@ _ITEMS_PER_PAGE = 24
 
 _SELECTORS = {
     "item_candidates": [
-        # data-testid (Next.js padrão)
+        # data-testid (Next.js padrão Leroy)
         '[data-testid="product-card"]',
         '[data-testid="product-item"]',
         '[data-testid="product"]',
         '[data-cy="product-card"]',
-        # Leroy Merlin styled-components e design system específico
+        # Leroy Merlin styled-components e design system
         'li[class*="ProductCard"]',
         'li[class*="product-card"]',
         'div[class*="ProductCard"]',
         'article[class*="product"]',
         '[class*="Card__Wrapper"]',
         '[class*="ProductList__Item"]',
-        # Fallback estrutural: li com link para produto
+        # Fallback estrutural
         'li > a[href*="/p/"]',
         'li > a[href*="/produto/"]',
-        # Grid containers com itens diretos
         'ul[class*="product"] > li',
         'ul[class*="Product"] > li',
     ],
@@ -84,18 +85,17 @@ _SELECTORS = {
         '[class*="Badge"]',
         '[class*="Label"]',
     ],
-    # Detecção de bloqueio
     "bot_check": "#px-captcha, #challenge-form, [class*='bot-check']",
-    "no_results": '[data-testid="no-results"], [class*="NoResults"], [class*="empty-search"]',
 }
 
-# Padrões na URL que indicam resposta da API de catálogo
+# Padrões de URL para APIs Leroy Merlin
 _API_URL_PATTERNS = [
+    "/api/v3/search",
+    "/api/v3/products",
+    "/api/catalog",
     "product-search",
-    "catalog_system/pub/products",
-    "/api/products",
-    "search?",
-    "catalog/search",
+    "/busca/",
+    "term=",
 ]
 
 
@@ -119,57 +119,92 @@ class LeroyMerlinScraper(BaseScraper):
         return f"{base}&page={page}" if page > 1 else base
 
     # ------------------------------------------------------------------
-    # XHR interception
+    # Estratégia 1: __NEXT_DATA__ (JSON embutido pelo Next.js SSR)
     # ------------------------------------------------------------------
 
-    def _setup_xhr_intercept(self) -> None:
-        self._captured_products = []
+    def _extract_next_data(self, html: str) -> List[Dict[str, Any]]:
+        """
+        Extrai produtos do JSON embutido pelo Next.js em <script id="__NEXT_DATA__">.
+        Este JSON contém todos os dados da página antes de qualquer hidratação React.
+        """
+        try:
+            match = re.search(
+                r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+                html,
+                re.DOTALL,
+            )
+            if not match:
+                logger.debug(f"[{self.platform_name}] __NEXT_DATA__ não encontrado no HTML.")
+                return []
 
-        def handle_response(response):
-            try:
-                url = response.url
-                if not any(pat in url for pat in _API_URL_PATTERNS):
-                    return
-                if response.status != 200:
-                    return
-                if "json" not in response.headers.get("content-type", ""):
-                    return
-                data = response.json()
-                # Normaliza diferentes formatos de resposta
-                products = (
-                    data.get("products")
-                    or data.get("items")
-                    or data.get("data", {}).get("products")
-                    or (data if isinstance(data, list) else [])
+            data = json.loads(match.group(1))
+            # Navega pela estrutura do Next.js: props.pageProps.*
+            page_props = data.get("props", {}).get("pageProps", {})
+
+            # Tenta diferentes caminhos conhecidos para products na Leroy
+            products = (
+                page_props.get("products")
+                or page_props.get("searchResult", {}).get("products")
+                or page_props.get("initialState", {}).get("products")
+                or page_props.get("dehydratedState", {}).get("queries", [{}])[0]
+                    .get("state", {}).get("data", {}).get("products")
+                or self._deep_find_products(page_props)
+                or []
+            )
+
+            if products:
+                logger.info(
+                    f"[{self.platform_name}] {len(products)} produtos extraídos via __NEXT_DATA__"
                 )
-                if products:
-                    self._captured_products.extend(products)
-                    logger.debug(
-                        f"[{self.platform_name}] XHR capturado: "
-                        f"{len(products)} produtos em {url[:70]}"
-                    )
-            except Exception:
-                pass
+            return products
 
-        self._page.on("response", handle_response)
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] Erro ao parsear __NEXT_DATA__: {e}")
+            return []
 
-    def _parse_api_products(
+    @staticmethod
+    def _deep_find_products(obj, depth: int = 0) -> List[Dict]:
+        """
+        Busca recursiva por array de produtos em objetos JSON aninhados.
+        Considera array de produto quando tem ≥3 itens com chave 'id' ou 'sku'.
+        """
+        if depth > 6:
+            return []
+        if isinstance(obj, list) and len(obj) >= 3:
+            if any(isinstance(i, dict) and ("id" in i or "sku" in i or "name" in i) for i in obj):
+                return obj
+        if isinstance(obj, dict):
+            for v in obj.values():
+                result = LeroyMerlinScraper._deep_find_products(v, depth + 1)
+                if result:
+                    return result
+        return []
+
+    def _parse_next_products(
         self,
+        products: List[Dict],
         keyword: str,
         keyword_category_map: dict,
         page_offset: int,
     ) -> List[Dict[str, Any]]:
         records = []
-        for idx, prod in enumerate(self._captured_products):
-            title = prod.get("productName") or prod.get("name") or prod.get("title")
-            price_raw = prod.get("priceRange", {})
+        for idx, prod in enumerate(products):
+            title = (
+                prod.get("description")
+                or prod.get("name")
+                or prod.get("productName")
+                or prod.get("title")
+            )
+            # Preço: tenta campos conhecidos da Leroy
             price_val = (
-                price_raw.get("sellingPrice", {}).get("lowPrice")
-                or prod.get("price")
-                or prod.get("sellPrice")
+                prod.get("price")
+                or prod.get("preco")
+                or prod.get("sellingPrice")
+                or prod.get("bestPrice")
+                or (prod.get("priceRange") or {}).get("sellingPrice", {}).get("lowPrice")
             )
             try:
-                price_float = float(str(price_val)) if price_val else None
+                price_float = float(str(price_val).replace(",", ".")) if price_val else None
             except (ValueError, TypeError):
                 price_float = None
 
@@ -194,7 +229,42 @@ class LeroyMerlinScraper(BaseScraper):
         return records
 
     # ------------------------------------------------------------------
-    # DOM parse
+    # Estratégia 2: XHR interception
+    # ------------------------------------------------------------------
+
+    def _setup_xhr_intercept(self) -> None:
+        self._captured_products = []
+
+        def handle_response(response):
+            try:
+                url = response.url
+                if not any(pat in url for pat in _API_URL_PATTERNS):
+                    return
+                if response.status != 200:
+                    return
+                if "json" not in response.headers.get("content-type", ""):
+                    return
+                data = response.json()
+                products = (
+                    data.get("products")
+                    or data.get("items")
+                    or data.get("data", {}).get("products")
+                    or self._deep_find_products(data)
+                    or []
+                )
+                if products:
+                    self._captured_products.extend(products)
+                    logger.debug(
+                        f"[{self.platform_name}] XHR capturado: "
+                        f"{len(products)} produtos em {url[:70]}"
+                    )
+            except Exception:
+                pass
+
+        self._page.on("response", handle_response)
+
+    # ------------------------------------------------------------------
+    # Estratégia 3: DOM parse
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -239,11 +309,11 @@ class LeroyMerlinScraper(BaseScraper):
 
         records = []
         for idx, item in enumerate(items):
-            title_el = self._first_match(item, _SELECTORS["title_candidates"])
-            price_el = self._first_match(item, _SELECTORS["price_candidates"])
+            title_el  = self._first_match(item, _SELECTORS["title_candidates"])
+            price_el  = self._first_match(item, _SELECTORS["price_candidates"])
             rating_el = self._first_match(item, _SELECTORS["rating_candidates"])
             review_el = self._first_match(item, _SELECTORS["review_count_candidates"])
-            tag_el = self._first_match(item, _SELECTORS["tag_candidates"])
+            tag_el    = self._first_match(item, _SELECTORS["tag_candidates"])
             pos = page_offset + idx + 1
 
             records.append(self._build_record(
@@ -276,13 +346,13 @@ class LeroyMerlinScraper(BaseScraper):
             path.write_text(html, encoding="utf-8")
             logger.warning(
                 f"[{self.platform_name}] 0 itens — HTML salvo: {path}\n"
-                "  → Abra no browser e inspecione o container de produto."
+                "  → PowerShell: Select-String -Path {path} -Pattern '__NEXT_DATA__'"
             )
         except Exception as e:
             logger.debug(f"[{self.platform_name}] Erro ao salvar debug: {e}")
 
     # ------------------------------------------------------------------
-    # Espera por produtos
+    # Espera
     # ------------------------------------------------------------------
 
     def _wait_for_products(self, timeout_ms: int = 12_000) -> bool:
@@ -323,19 +393,31 @@ class LeroyMerlinScraper(BaseScraper):
                 self._wait_for_network_idle()
                 self._random_delay(min_s=2.5, max_s=6.0)
                 self._human_scroll(steps=8, step_px=350)
-                time.sleep(1.2)  # aguarda XHR tardio
+                time.sleep(1.2)
 
                 offset = (page - 1) * _ITEMS_PER_PAGE
+                html = self._page.content()
+                records: List[Dict[str, Any]] = []
 
-                if self._captured_products:
+                # --- Estratégia 1: __NEXT_DATA__ ---
+                next_products = self._extract_next_data(html)
+                if next_products:
+                    records = self._parse_next_products(
+                        next_products, keyword, keyword_category_map, offset
+                    )
+
+                # --- Estratégia 2: XHR capturado ---
+                if not records and self._captured_products:
                     logger.info(
                         f"[{self.platform_name}] {len(self._captured_products)} itens via XHR"
                     )
-                    records = self._parse_api_products(keyword, keyword_category_map, offset)
-                else:
-                    records = self._parse_dom(
-                        self._page.content(), keyword, keyword_category_map, page, offset
+                    records = self._parse_next_products(
+                        self._captured_products, keyword, keyword_category_map, offset
                     )
+
+                # --- Estratégia 3: DOM ---
+                if not records:
+                    records = self._parse_dom(html, keyword, keyword_category_map, page, offset)
 
                 all_records.extend(records)
 
