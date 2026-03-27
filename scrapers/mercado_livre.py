@@ -197,6 +197,31 @@ class MLScraper(BaseScraper):
         return False
 
     # ------------------------------------------------------------------
+    # Tratamento de popup de CEP (validado em produção — Mar/2026)
+    # ------------------------------------------------------------------
+
+    def _dismiss_cep_popup(self) -> None:
+        """
+        Fecha o modal de seleção de CEP/localização que o ML exibe
+        para usuários sem cookie de localização.
+
+        Tenta clicar no botão de fechar (×) ou no overlay; se não
+        encontrar em 2s, segue em frente (popup pode não aparecer).
+        """
+        try:
+            # Botão "×" do modal de localização
+            close_btn = self._page.locator(
+                "button[aria-label='Fechar'], "
+                ".modal-dialog__close, "
+                ".ui-pdp-buybox__cep .ui-pdp-action-modal__close, "
+                "[data-testid='modal-close-btn']"
+            )
+            close_btn.first.click(timeout=2000)
+            logger.debug(f"[{self.platform_name}] Popup de CEP fechado.")
+        except Exception:
+            pass  # popup não apareceu — normal em sessões com cookie
+
+    # ------------------------------------------------------------------
     # Parse de todos os itens de uma página HTML
     # ------------------------------------------------------------------
 
@@ -352,6 +377,9 @@ class MLScraper(BaseScraper):
                 # navega para a URL de busca
                 self._page.goto(url, wait_until="domcontentloaded")
                 self._wait_for_network_idle()
+
+                # --- Trata popup de seleção de CEP (confirmado em produção) ---
+                self._dismiss_cep_popup()
 
                 # scroll humano para carregar lazy-load
                 self._human_scroll(steps=10, step_px=300)

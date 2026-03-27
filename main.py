@@ -31,7 +31,10 @@ from loguru import logger
 # Adiciona raiz ao path para imports relativos funcionarem
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import KEYWORDS, MAX_PAGES, OUTPUT_DIR, LOGS_DIR
+from config import (
+    KEYWORDS, KEYWORDS_LIST, MAX_PAGES, OUTPUT_DIR, LOGS_DIR,
+    ACTIVE_PLATFORMS, PRIORITY_FILTER,
+)
 from scrapers.base import BaseScraper
 from scrapers.mercado_livre import MLScraper
 from scrapers.magalu import MagaluScraper
@@ -171,9 +174,23 @@ def _run_scraper(
     """
     records: List[Dict[str, Any]] = []
 
+    # Filtra keywords por prioridade se configurado
+    active_keywords = KEYWORDS_LIST
+    if PRIORITY_FILTER:
+        active_keywords = [k for k in KEYWORDS_LIST if k.priority in PRIORITY_FILTER]
+
     with scraper_cls(headless=headless) as scraper:
         for category, kws in keywords_map.items():
-            for keyword in kws:
+            # Mantém só keywords que passaram no filtro de prioridade
+            filtered_kws = [
+                kw for kw in kws
+                if not PRIORITY_FILTER or any(
+                    ak.term == kw and ak.priority in PRIORITY_FILTER
+                    for ak in active_keywords
+                )
+            ] if PRIORITY_FILTER else kws
+
+            for keyword in filtered_kws:
                 logger.info(
                     f"[{scraper.platform_name}] Iniciando keyword: '{keyword}' "
                     f"(categoria: {category})"
@@ -208,13 +225,13 @@ def _parse_args() -> argparse.Namespace:
         "--platforms",
         nargs="+",
         choices=list(SCRAPER_REGISTRY.keys()) + ["all"],
-        default=["ml"],
+        default=None,  # None = usa ACTIVE_PLATFORMS do config.py
         metavar="PLATFORM",
         help=(
             "Plataformas a monitorar. Opções: "
             + ", ".join(SCRAPER_REGISTRY.keys())
             + ', all\n'
-            "Padrão: ml (demo Mercado Livre)"
+            "Padrão: plataformas ativas em config.py (ACTIVE_PLATFORMS)"
         ),
     )
 
@@ -270,12 +287,21 @@ def main() -> None:
     _setup_logging(LOGS_DIR)
 
     # --- Resolve plataformas ---
-    if "all" in args.platforms:
-        selected_scrapers = list(SCRAPER_REGISTRY.values())
+    if args.platforms is None:
+        # Padrão: usa ACTIVE_PLATFORMS do config.py
+        platform_names = [p for p, active in ACTIVE_PLATFORMS.items() if active]
+    elif "all" in args.platforms:
         platform_names = list(SCRAPER_REGISTRY.keys())
     else:
-        selected_scrapers = [SCRAPER_REGISTRY[p] for p in args.platforms]
         platform_names = args.platforms
+
+    selected_scrapers = [
+        SCRAPER_REGISTRY[p] for p in platform_names if p in SCRAPER_REGISTRY
+    ]
+
+    if not selected_scrapers:
+        logger.error("Nenhuma plataforma ativa. Verifique ACTIVE_PLATFORMS em config.py.")
+        return
 
     logger.info(
         f"Plataformas: {', '.join(platform_names)} | "
