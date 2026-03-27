@@ -115,7 +115,17 @@ class FastShopScraper(BaseScraper):
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
         encoded = quote_plus(keyword)
-        url = f"https://www.fastshop.com.br/web/p/busca?q={encoded}"
+        # VTEX IO: URL canônica de busca (sem /web/p/ que retorna 404)
+        url = f"https://www.fastshop.com.br/busca?q={encoded}"
+        if page > 1:
+            url += f"&page={page}"
+        return url
+
+    @staticmethod
+    def _build_url_v2(keyword: str, page: int = 1) -> str:
+        """Formato alternativo VTEX com map=ft (full-text search)."""
+        encoded = quote_plus(keyword)
+        url = f"https://www.fastshop.com.br/{encoded}?q={encoded}&map=ft"
         if page > 1:
             url += f"&page={page}"
         return url
@@ -346,6 +356,26 @@ class FastShopScraper(BaseScraper):
                     records = self._parse_dom(
                         self._page.content(), keyword, keyword_category_map, page, offset
                     )
+
+                # Tenta URL alternativa (map=ft) se página 1 retornar 0
+                if not records and page == 1:
+                    alt_url = self._build_url_v2(keyword, page)
+                    logger.info(
+                        f"[{self.platform_name}] 0 itens — tentando URL alternativa: {alt_url}"
+                    )
+                    self._captured_products = []
+                    self._page.goto(alt_url, wait_until="domcontentloaded")
+                    self._wait_for_products(timeout_ms=12_000)
+                    self._wait_for_network_idle()
+                    self._random_delay(min_s=2.0, max_s=5.0)
+                    time.sleep(1.5)
+
+                    if self._captured_products:
+                        records = self._parse_api_products(keyword, keyword_category_map, offset)
+                    else:
+                        records = self._parse_dom(
+                            self._page.content(), keyword, keyword_category_map, page, offset
+                        )
 
                 all_records.extend(records)
 
