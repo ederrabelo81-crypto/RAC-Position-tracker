@@ -429,38 +429,40 @@ class LeroyMerlinScraper(BaseScraper):
             offset = (page - 1) * _ITEMS_PER_PAGE
             records: List[Dict[str, Any]] = []
 
-            # --- Estratégia 1: Browser + XHR interception (primário) ---
-            # A chamada Algolia é feita pelo JS da página — interceptamos aqui.
-            # Isso funciona independente de DNS local (evita Errno 11001 no Windows).
-            try:
-                self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
-                self._wait_for_products(timeout_ms=4_000)   # 4s por seletor
-                self._wait_for_network_idle()
-                self._random_delay(min_s=2.5, max_s=6.0)
-                self._human_scroll(steps=8, step_px=350)
-                time.sleep(2.0)   # aguarda XHR Algolia tardio
+            # --- Estratégia 1: Algolia API direta (primário — mais rápido) ---
+            # Prova-se mais confiável quando o DNS resolve (maioria dos casos).
+            records = self._algolia_search(keyword, keyword_category_map, page, offset)
+            if records:
+                logger.info(f"[{self.platform_name}] {len(records)} itens via Algolia API")
 
-                html = self._page.content()
-
-                if self._captured_products:
-                    logger.info(
-                        f"[{self.platform_name}] {len(self._captured_products)} itens via XHR (browser)"
-                    )
-                    records = self._parse_captured_products(
-                        keyword, keyword_category_map, offset
-                    )
-
-                # --- Estratégia 2: DOM ---
-                if not records:
-                    records = self._parse_dom(html, keyword, keyword_category_map, page, offset)
-
-            except Exception as exc:
-                logger.warning(f"[{self.platform_name}] Erro no browser (pág {page}): {exc}")
-
-            # --- Estratégia 3: Algolia API direta (fallback — falha em algumas redes) ---
+            # --- Estratégia 2: Browser + XHR (fallback para falha de DNS) ---
+            # O browser tem seu próprio stack DNS — funciona mesmo quando
+            # requests.post() falha com Errno 11001 no Windows.
             if not records:
-                logger.info(f"[{self.platform_name}] Tentando Algolia API direta...")
-                records = self._algolia_search(keyword, keyword_category_map, page, offset)
+                try:
+                    self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+                    self._wait_for_products(timeout_ms=4_000)
+                    self._wait_for_network_idle()
+                    self._random_delay(min_s=2.5, max_s=5.0)
+                    self._human_scroll(steps=8, step_px=350)
+                    time.sleep(2.0)
+
+                    html = self._page.content()
+
+                    if self._captured_products:
+                        logger.info(
+                            f"[{self.platform_name}] {len(self._captured_products)} itens via XHR (browser)"
+                        )
+                        records = self._parse_captured_products(
+                            keyword, keyword_category_map, offset
+                        )
+
+                    # --- Estratégia 3: DOM ---
+                    if not records:
+                        records = self._parse_dom(html, keyword, keyword_category_map, page, offset)
+
+                except Exception as exc:
+                    logger.warning(f"[{self.platform_name}] Erro no browser (pág {page}): {exc}")
 
             all_records.extend(records)
 

@@ -1,12 +1,16 @@
 """
 scrapers/casas_bahia.py — Scraper da Casas Bahia (casasbahia.com.br).
 
-Estratégia:
-  1. Intercepção XHR da API VTEX IO (intelligent-search, catalog_system).
+Estratégia (em ordem de prioridade):
+  0. API VTEX direta via requests — bypass do Akamai WAF (chamadas HTTP simples
+     não sofrem fingerprinting JS; tenta catalog_system e intelligent-search).
+  1. Intercepção XHR da API VTEX IO via browser (se API direta falhar).
   2. Parse DOM com cadeia de seletores fallback + img[alt].
-  3. Debug HTML dump automático em logs/ quando 0 itens (falha silenciosa corrigida).
+  3. Debug HTML dump automático em logs/ quando 0 itens.
 
-Proteção: WAF Akamai / PerimeterX — delays generosos e stealth.
+Proteção: WAF Akamai / PerimeterX bloqueia browsers headless.
+  A API direta contorna esse bloqueio na maioria dos casos.
+  Se ainda bloquear: proxy residencial brasileiro.
 Paginação: parâmetro &page={n}.
 """
 
@@ -16,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
+import requests
 from bs4 import BeautifulSoup, Tag
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -25,6 +30,23 @@ from scrapers.base import BaseScraper
 from utils.text import parse_price, parse_rating, parse_review_count
 
 _ITEMS_PER_PAGE = 24
+
+# Endpoints VTEX da Casas Bahia — chamados diretamente (sem browser, bypass Akamai)
+_VTEX_BASE = "https://www.casasbahia.com.br"
+_VTEX_CATALOG_URL = f"{_VTEX_BASE}/api/catalog_system/pub/products/search"
+_VTEX_IS_URL      = f"{_VTEX_BASE}/_v/api/intelligent-search/product_search/pt/pt-BR/search"
+
+_VTEX_HEADERS = {
+    "Accept": "application/json",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.casasbahia.com.br/",
+}
+_API_TIMEOUT = 8
 
 _SELECTORS = {
     # Cadeia de fallback — Casas Bahia usa VTEX IO
@@ -109,6 +131,80 @@ class CasasBahiaScraper(BaseScraper):
         return url
 
     # ------------------------------------------------------------------
+    # Estratégia 0: VTEX API direta (bypass Akamai WAF)
+    # ------------------------------------------------------------------
+
+    def _vtex_api_search(
+        self,
+        keyword: str,
+        keyword_category_map: dict,
+        page: int,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Consulta a API VTEX da Casas Bahia diretamente via requests.
+        A requisição HTTP simples frequentemente não é bloqueada pelo Akamai,
+        que foca em bloquear browsers automatizados (fingerprinting JS).
+        Tenta dois endpoints: catalog_system e intelligent-search.
+        """
+        from_idx = page_offset
+        to_idx   = page_offset + _ITEMS_PER_PAGE - 1
+
+        # Endpoint 1: Catalog System (mais simples e estável)
+        try:
+            encoded = quote_plus(keyword)
+            resp = requests.get(
+                f"{_VTEX_CATALOG_URL}/{encoded}",
+                headers=_VTEX_HEADERS,
+                params={"_from": from_idx, "_to": to_idx},
+                timeout=_API_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                products = resp.json()
+                if isinstance(products, list) and products:
+                    logger.info(
+                        f"[{self.platform_name}] VTEX Catalog API: "
+                        f"{len(products)} produtos (pág {page})"
+                    )
+                    return self._parse_api_products(keyword, keyword_category_map, page_offset,
+                                                    products=products)
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] VTEX Catalog API erro: {e}")
+
+        # Endpoint 2: Intelligent Search
+        try:
+            resp = requests.get(
+                _VTEX_IS_URL,
+                headers=_VTEX_HEADERS,
+                params={
+                    "query": keyword,
+                    "page": page,
+                    "count": _ITEMS_PER_PAGE,
+                    "sort": "score_desc",
+                    "hideUnavailableItems": "false",
+                },
+                timeout=_API_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                products = (
+                    data.get("products")
+                    or (data.get("productSearch") or {}).get("products")
+                    or []
+                )
+                if products:
+                    logger.info(
+                        f"[{self.platform_name}] VTEX IS API: "
+                        f"{len(products)} produtos (pág {page})"
+                    )
+                    return self._parse_api_products(keyword, keyword_category_map, page_offset,
+                                                    products=products)
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] VTEX IS API erro: {e}")
+
+        return []
+
+    # ------------------------------------------------------------------
     # Detecção de bloqueio
     # ------------------------------------------------------------------
 
@@ -180,9 +276,11 @@ class CasasBahiaScraper(BaseScraper):
         keyword: str,
         keyword_category_map: dict,
         page_offset: int,
+        products: Optional[List[Dict]] = None,
     ) -> List[Dict[str, Any]]:
+        source = products if products is not None else self._captured_products
         records = []
-        for idx, prod in enumerate(self._captured_products):
+        for idx, prod in enumerate(source):
             title = prod.get("productName") or prod.get("name") or prod.get("title")
             price_val = prod.get("price")
             try:
@@ -358,35 +456,44 @@ class CasasBahiaScraper(BaseScraper):
             logger.info(f"[{self.platform_name}] Página {page}/{page_limit} → {url}")
             self._captured_products = []
             offset = (page - 1) * _ITEMS_PER_PAGE
+            records: List[Dict[str, Any]] = []
 
-            try:
-                self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
-            except Exception as exc:
-                logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
-                break
+            # --- Estratégia 0: VTEX API direta (primário — bypass Akamai WAF) ---
+            # Chamadas HTTP simples via requests geralmente não são bloqueadas pelo
+            # Akamai Bot Manager, que foca em fingerprinting de browsers headless.
+            records = self._vtex_api_search(keyword, keyword_category_map, page, offset)
 
-            self._wait_for_products(timeout_ms=4_000)
-            self._wait_for_network_idle()
-            self._random_delay(min_s=4.0, max_s=9.0)
-            self._human_scroll(steps=10, step_px=300)
-            time.sleep(1.5)
+            if not records:
+                # --- Estratégias 1/2: Browser + XHR + DOM ---
+                try:
+                    self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+                except Exception as exc:
+                    logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
+                    break
 
-            html = self._page.content()
+                self._wait_for_products(timeout_ms=4_000)
+                self._wait_for_network_idle()
+                self._random_delay(min_s=4.0, max_s=9.0)
+                self._human_scroll(steps=10, step_px=300)
+                time.sleep(1.5)
 
-            # Detecta bloqueio Akamai logo após carregamento (fail fast)
-            if self._check_blocked(html):
-                self._dump_debug(html, page, keyword)
-                break
+                html = self._page.content()
 
-            # Estratégia 1: XHR
-            if self._captured_products:
-                logger.info(
-                    f"[{self.platform_name}] {len(self._captured_products)} produtos via XHR"
-                )
-                records = self._parse_api_products(keyword, keyword_category_map, offset)
-            else:
+                # Detecta bloqueio Akamai (fail fast)
+                if self._check_blocked(html):
+                    self._dump_debug(html, page, keyword)
+                    break
+
+                # Estratégia 1: XHR capturado
+                if self._captured_products:
+                    logger.info(
+                        f"[{self.platform_name}] {len(self._captured_products)} produtos via XHR"
+                    )
+                    records = self._parse_api_products(keyword, keyword_category_map, offset)
+
                 # Estratégia 2: DOM
-                records = self._parse_dom(html, keyword, keyword_category_map, page, offset)
+                if not records:
+                    records = self._parse_dom(html, keyword, keyword_category_map, page, offset)
 
             all_records.extend(records)
 
