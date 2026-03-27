@@ -40,6 +40,8 @@ from scrapers.mercado_livre import MLScraper
 from scrapers.magalu import MagaluScraper
 from scrapers.amazon import AmazonScraper
 from scrapers.shopee import ShopeeScraper
+from scrapers.casas_bahia import CasasBahiaScraper
+from scrapers.google_shopping import GoogleShoppingScraper
 from scrapers.leroy_merlin import LeroyMerlinScraper
 from scrapers.fast_shop import FastShopScraper
 
@@ -47,12 +49,14 @@ from scrapers.fast_shop import FastShopScraper
 # Mapeamento de apelidos de linha de comando para classes de scraper
 # ---------------------------------------------------------------------------
 SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
-    "ml":    MLScraper,
-    "magalu": MagaluScraper,
-    "amazon": AmazonScraper,
-    "shopee": ShopeeScraper,
-    "leroy":  LeroyMerlinScraper,
-    "fast":   FastShopScraper,
+    "ml":             MLScraper,
+    "magalu":         MagaluScraper,
+    "amazon":         AmazonScraper,
+    "shopee":         ShopeeScraper,
+    "casasbahia":     CasasBahiaScraper,
+    "google_shopping": GoogleShoppingScraper,
+    "leroy":          LeroyMerlinScraper,
+    "fast":           FastShopScraper,
 }
 
 # Colunas na ordem exata do DataFrame de saída

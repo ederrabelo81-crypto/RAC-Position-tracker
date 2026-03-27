@@ -27,7 +27,7 @@ $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+    -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 
 try {
     Unregister-ScheduledTask -TaskName $TaskNameAM -Confirm:$false -ErrorAction SilentlyContinue
@@ -67,18 +67,26 @@ Write-Host ""
 
 # Verificar dependências
 Write-Host "Verificando dependencias..." -ForegroundColor Yellow
-$nodeVersion = & node --version 2>$null
-if ($nodeVersion) {
-    Write-Host "[OK] Node.js: $nodeVersion" -ForegroundColor Green
+
+$pythonVersion = & python --version 2>$null
+if ($pythonVersion) {
+    Write-Host "[OK] Python: $pythonVersion" -ForegroundColor Green
 } else {
-    Write-Host "[!!] Node.js NAO encontrado — instale: https://nodejs.org" -ForegroundColor Red
+    Write-Host "[!!] Python NAO encontrado — instale: https://python.org" -ForegroundColor Red
 }
 
-$npmModules = Join-Path $ProjectPath "node_modules"
-if (Test-Path $npmModules) {
-    Write-Host "[OK] node_modules encontrado" -ForegroundColor Green
+$venvPath = Join-Path $ProjectPath "venv\Scripts\python.exe"
+if (Test-Path $venvPath) {
+    Write-Host "[OK] Ambiente virtual (venv) encontrado" -ForegroundColor Green
 } else {
-    Write-Host "[!!] Dependencias nao instaladas — execute: npm install" -ForegroundColor Red
+    Write-Host "[!!] venv nao encontrado — execute: python -m venv venv && venv\Scripts\activate && pip install -r requirements.txt" -ForegroundColor Red
+}
+
+$playwrightBrowser = Join-Path $env:LOCALAPPDATA "ms-playwright"
+if (Test-Path $playwrightBrowser) {
+    Write-Host "[OK] Playwright browsers instalados" -ForegroundColor Green
+} else {
+    Write-Host "[!!] Playwright browsers nao encontrados — execute: python -m playwright install chromium" -ForegroundColor Red
 }
 
 Write-Host ""

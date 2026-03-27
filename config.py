@@ -2,12 +2,12 @@
 config.py — Configurações globais do bot de monitoramento de preços.
 
 Status das plataformas (validado em produção — Mar/2026):
-  ✅ Mercado Livre  — funcional (popup de CEP tratado automaticamente)
-  ✅ Amazon         — funcional
-  ✅ Magalu         — funcional (seletores confirmados via diagnóstico)
-  ⚡ Shopee         — requer cookies de login (node salvar-cookies.js shopee)
-  ❌ Casas Bahia    — WAF Akamai bloqueia scraping (usar Distill Web Monitor)
-  ❌ Google Shopping — reCAPTCHA (usar Distill Web Monitor)
+  ✅ Mercado Livre   — funcional (popup de CEP tratado automaticamente)
+  ✅ Amazon          — funcional
+  ✅ Magalu          — funcional (seletores confirmados via diagnóstico)
+  ⚡ Shopee          — ativo com stealth; pode exigir cookies se bloquear
+  ⚡ Casas Bahia     — ativo com stealth; WAF Akamai pode bloquear
+  ⚡ Google Shopping — ativo com stealth; reCAPTCHA pode bloquear
 """
 
 from dataclasses import dataclass, field
@@ -27,45 +27,47 @@ class Keyword:
 
 
 KEYWORDS_LIST: List[Keyword] = [
-    # Head terms genéricos
-    Keyword("ar condicionado split",          "Genérica",          "alta"),
-    Keyword("ar condicionado inverter",        "Genérica",          "alta"),
-    Keyword("ar condicionado",                 "Genérica",          "alta"),
-    Keyword("ar condicionado split inverter",  "Genérica",          "alta"),
+    # ── Head terms genéricos ────────────────────────────────────
+    Keyword("ar condicionado split",                    "Genérica",          "alta"),
+    Keyword("ar condicionado inverter",                 "Genérica",          "alta"),
+    Keyword("ar condicionado",                          "Genérica",          "alta"),
+    Keyword("ar condicionado split inverter",           "Genérica",          "alta"),
 
-    # Capacidade / BTU
-    Keyword("ar condicionado 9000 btus",       "Capacidade BTU",    "alta"),
-    Keyword("ar condicionado 12000 btus",      "Capacidade BTU",    "alta"),
-    Keyword("ar condicionado 18000 btus",      "Capacidade BTU",    "alta"),
-    Keyword("ar condicionado 24000 btus",      "Capacidade BTU",    "alta"),
-    Keyword("split 12000 btus inverter",       "Capacidade + Tipo", "alta"),
-    Keyword("split 9000 btus inverter",        "Capacidade + Tipo", "alta"),
+    # ── Capacidade / BTU ────────────────────────────────────────
+    Keyword("ar condicionado 9000 btus",                "Capacidade BTU",    "alta"),
+    Keyword("ar condicionado 12000 btus",               "Capacidade BTU",    "alta"),
+    Keyword("ar condicionado 18000 btus",               "Capacidade BTU",    "alta"),
+    Keyword("ar condicionado 24000 btus",               "Capacidade BTU",    "alta"),
+    Keyword("split 12000 btus inverter",                "Capacidade + Tipo", "alta"),
+    Keyword("split 9000 btus inverter",                 "Capacidade + Tipo", "alta"),
 
-    # Marca Midea
-    Keyword("ar condicionado midea",           "Marca",             "alta"),
-    Keyword("midea inverter",                  "Marca",             "alta"),
-    Keyword("midea 12000 btus",                "Marca",             "alta"),
-    Keyword("midea ecomaster",                 "Modelo Midea",      "alta"),
-    Keyword("midea airvolution",               "Modelo Midea",      "alta"),
+    # ── Marca Midea ─────────────────────────────────────────────
+    Keyword("ar condicionado midea",                    "Marca",             "alta"),
+    Keyword("midea inverter",                           "Marca",             "alta"),
+    Keyword("midea 12000 btus",                         "Marca",             "alta"),
+    Keyword("midea ecomaster",                          "Modelo Midea",      "alta"),
+    Keyword("midea airvolution",                        "Modelo Midea",      "alta"),
 
-    # Concorrentes
-    Keyword("ar condicionado lg",              "Marca",             "alta"),
-    Keyword("lg dual inverter",                "Marca",             "alta"),
-    Keyword("ar condicionado samsung",         "Marca",             "alta"),
-    Keyword("samsung windfree",                "Marca",             "alta"),
-    Keyword("ar condicionado gree",            "Marca",             "media"),
-    Keyword("ar condicionado elgin",           "Marca",             "media"),
-    Keyword("ar condicionado philco",          "Marca",             "media"),
-    Keyword("ar condicionado tcl",             "Marca",             "media"),
+    # ── Concorrentes ────────────────────────────────────────────
+    Keyword("ar condicionado lg",                       "Marca",             "alta"),
+    Keyword("lg dual inverter",                         "Marca",             "alta"),
+    Keyword("ar condicionado samsung",                  "Marca",             "alta"),
+    Keyword("samsung windfree",                         "Marca",             "alta"),
+    Keyword("ar condicionado gree",                     "Marca",             "media"),
+    Keyword("ar condicionado elgin",                    "Marca",             "media"),
+    Keyword("ar condicionado philco",                   "Marca",             "media"),
+    Keyword("ar condicionado tcl",                      "Marca",             "media"),
 
-    # Intenção de compra
-    Keyword("melhor ar condicionado custo beneficio", "Intenção Compra", "alta"),
-    Keyword("melhor ar condicionado 2026",     "Intenção Compra",   "alta"),
-    Keyword("comprar ar condicionado",         "Intenção Compra",   "media"),
-    Keyword("ar condicionado em promocao",     "Preço / Promoção",  "media"),
+    # ── Intenção de compra ──────────────────────────────────────
+    Keyword("melhor ar condicionado custo beneficio",   "Intenção Compra",   "alta"),
+    Keyword("melhor ar condicionado custo benefício",   "Intenção Compra",   "alta"),
+    Keyword("melhor ar condicionado 2026",              "Intenção Compra",   "alta"),
+    Keyword("comprar ar condicionado",                  "Intenção Compra",   "media"),
+    Keyword("ar condicionado em promoção",              "Preço / Promoção",  "media"),
+    Keyword("ar condicionado em promocao",              "Preço / Promoção",  "media"),
 
-    # Comparação
-    Keyword("midea vs lg",                     "Comparação",        "media"),
+    # ── Comparação ──────────────────────────────────────────────
+    Keyword("midea vs lg",                              "Comparação",        "media"),
 ]
 
 # Mantém compatibilidade com o formato dict usado em config legado
@@ -82,12 +84,14 @@ PRIORITY_FILTER: Optional[List[str]] = None  # ex: ["alta"] para coletas rápida
 # Plataformas ativas
 # ---------------------------------------------------------------------------
 ACTIVE_PLATFORMS = {
-    "ml":     True,   # ✅ Mercado Livre — funcional
-    "magalu": True,   # ✅ Magalu — funcional
-    "amazon": True,   # ✅ Amazon — funcional
-    "shopee": False,  # ⚡ Shopee — desativado (exige cookies de login)
-    "leroy":  False,  # ⚡ Leroy Merlin — suporte básico
-    "fast":   False,  # ⚡ Fast Shop — suporte básico
+    "ml":             True,   # ✅ Mercado Livre — funcional
+    "magalu":         True,   # ✅ Magalu — funcional
+    "amazon":         True,   # ✅ Amazon — funcional
+    "shopee":         True,   # ⚡ Shopee — ativo com stealth
+    "casasbahia":     True,   # ⚡ Casas Bahia — ativo com stealth
+    "google_shopping":True,   # ⚡ Google Shopping — ativo com stealth
+    "leroy":          False,  # ⚡ Leroy Merlin — desativado por padrão
+    "fast":           False,  # ⚡ Fast Shop — desativado por padrão
 }
 
 # ---------------------------------------------------------------------------
@@ -110,12 +114,14 @@ TURNO_ABERTURA_MAX_HOUR: int = 12  # até 12h → Abertura; após → Fechamento
 # Mapeamento de plataforma → tipo
 # ---------------------------------------------------------------------------
 PLATFORM_TYPE: Dict[str, str] = {
-    "Mercado Livre": "Nacional Retail",
-    "Magalu":        "Nacional Retail",
-    "Amazon":        "Nacional Retail",
-    "Shopee":        "Nacional Marketplace",
-    "Leroy Merlin":  "Nacional Varejo Especializado",
-    "Fast Shop":     "Nacional Varejo Especializado",
+    "Mercado Livre":    "Nacional Retail",
+    "Magalu":           "Nacional Retail",
+    "Amazon":           "Nacional Retail",
+    "Shopee":           "Nacional Marketplace",
+    "Casas Bahia":      "Nacional Retail",
+    "Google Shopping":  "Comparador de Preços",
+    "Leroy Merlin":     "Nacional Varejo Especializado",
+    "Fast Shop":        "Nacional Varejo Especializado",
     "Leveros":         "Regional Especializado",
     "Frio Peças":      "Regional Especializado",
     "Clima Rio":       "Regional Especializado",

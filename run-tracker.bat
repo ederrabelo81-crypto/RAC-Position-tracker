@@ -16,11 +16,11 @@ REM ═════════════════════════�
 REM Ajuste o caminho abaixo para onde você instalou o projeto
 cd /d "C:\Users\%USERNAME%\rac-position-tracker"
 
-REM Verificar se Node.js está disponível
-where node >nul 2>nul
+REM Verificar se Python está disponível
+where python >nul 2>nul
 if %ERRORLEVEL% neq 0 (
-    echo [ERRO] Node.js nao encontrado no PATH
-    echo Instale em: https://nodejs.org
+    echo [ERRO] Python nao encontrado no PATH
+    echo Instale em: https://python.org
     pause
     exit /b 1
 )
@@ -32,8 +32,13 @@ echo   Data: %DATE% | Hora: %TIME%
 echo ══════════════════════════════════════════════════════
 echo.
 
+REM Ativa o ambiente virtual (se existir)
+if exist "venv\Scripts\activate.bat" (
+    call venv\Scripts\activate.bat
+)
+
 REM Executa o tracker
-node index.js --output both
+python main.py --platforms all --pages 3
 
 REM Verificar resultado
 if %ERRORLEVEL% neq 0 (
