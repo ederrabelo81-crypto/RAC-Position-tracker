@@ -166,7 +166,7 @@ class LeroyMerlinScraper(BaseScraper):
                 _ALGOLIA_SEARCH_URL,
                 headers=_ALGOLIA_HEADERS,
                 json=payload,
-                timeout=15,
+                timeout=5,   # fail fast — DNS falha em <1s no Windows (Errno 11001)
             )
             resp.raise_for_status()
             data = resp.json()
@@ -409,9 +409,9 @@ class LeroyMerlinScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=18),
-        reraise=True,
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1, min=6, max=18),
+        reraise=False,
     )
     def search(
         self,
@@ -426,41 +426,41 @@ class LeroyMerlinScraper(BaseScraper):
             url = self._build_url(keyword, page)
             logger.info(f"[{self.platform_name}] Página {page}/{page_limit} → {url}")
             self._captured_products = []
-
-            # --- Estratégia 1: Algolia API direta ---
             offset = (page - 1) * _ITEMS_PER_PAGE
-            records = self._algolia_search(keyword, keyword_category_map, page, offset)
+            records: List[Dict[str, Any]] = []
 
+            # --- Estratégia 1: Browser + XHR interception (primário) ---
+            # A chamada Algolia é feita pelo JS da página — interceptamos aqui.
+            # Isso funciona independente de DNS local (evita Errno 11001 no Windows).
+            try:
+                self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+                self._wait_for_products(timeout_ms=4_000)   # 4s por seletor
+                self._wait_for_network_idle()
+                self._random_delay(min_s=2.5, max_s=6.0)
+                self._human_scroll(steps=8, step_px=350)
+                time.sleep(2.0)   # aguarda XHR Algolia tardio
+
+                html = self._page.content()
+
+                if self._captured_products:
+                    logger.info(
+                        f"[{self.platform_name}] {len(self._captured_products)} itens via XHR (browser)"
+                    )
+                    records = self._parse_captured_products(
+                        keyword, keyword_category_map, offset
+                    )
+
+                # --- Estratégia 2: DOM ---
+                if not records:
+                    records = self._parse_dom(html, keyword, keyword_category_map, page, offset)
+
+            except Exception as exc:
+                logger.warning(f"[{self.platform_name}] Erro no browser (pág {page}): {exc}")
+
+            # --- Estratégia 3: Algolia API direta (fallback — falha em algumas redes) ---
             if not records:
-                # Carrega a página para acionar XHR interception e DOM fallback
-                try:
-                    self._page.goto(url, wait_until="domcontentloaded")
-                    self._wait_for_products(timeout_ms=15_000)
-                    self._wait_for_network_idle()
-                    self._random_delay(min_s=2.5, max_s=6.0)
-                    self._human_scroll(steps=8, step_px=350)
-                    time.sleep(1.5)
-
-                    html = self._page.content()
-
-                    # --- Estratégia 2: XHR capturado (Algolia via browser) ---
-                    if self._captured_products:
-                        logger.info(
-                            f"[{self.platform_name}] {len(self._captured_products)} itens via XHR"
-                        )
-                        records = self._parse_captured_products(
-                            keyword, keyword_category_map, offset
-                        )
-
-                    # --- Estratégia 3: DOM ---
-                    if not records:
-                        records = self._parse_dom(
-                            html, keyword, keyword_category_map, page, offset
-                        )
-
-                except Exception as exc:
-                    logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
-                    raise
+                logger.info(f"[{self.platform_name}] Tentando Algolia API direta...")
+                records = self._algolia_search(keyword, keyword_category_map, page, offset)
 
             all_records.extend(records)
 

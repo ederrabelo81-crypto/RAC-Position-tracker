@@ -118,10 +118,23 @@ class CasasBahiaScraper(BaseScraper):
             if p in current_url:
                 logger.warning(f"[{self.platform_name}] Redirecionado para bloqueio: {current_url}")
                 return True
-        soup = BeautifulSoup(html[:5000], "html.parser")
-        if soup.select_one(_SELECTORS["waf_block"]):
-            logger.warning(f"[{self.platform_name}] WAF/Akamai detectado.")
+
+        # Detecta página de erro Akamai WAF
+        # ("Ops! Algo deu errado." + CSS de novavp-a.akamaihd.net)
+        html_head = html[:8000]
+        if "akamaihd.net" in html_head or "Ops! Algo deu errado" in html_head:
+            logger.warning(
+                f"[{self.platform_name}] Akamai WAF bloqueou a requisição. "
+                "IP identificado como bot. Solução: proxy residencial brasileiro."
+            )
             return True
+
+        soup = BeautifulSoup(html_head, "html.parser")
+        # Seletor WAF + classe page-not-found (Akamai)
+        if soup.select_one(_SELECTORS["waf_block"]) or soup.select_one("body.page-not-found, .page-not-found"):
+            logger.warning(f"[{self.platform_name}] WAF/Akamai detectado via seletor CSS.")
+            return True
+
         return False
 
     # ------------------------------------------------------------------
@@ -234,10 +247,6 @@ class CasasBahiaScraper(BaseScraper):
         page_offset: int,
     ) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
-
-        if self._check_blocked(html):
-            return []
-
         items, sel_used = self._detect_items(soup)
         logger.info(
             f"[{self.platform_name}] {len(items)} itens (seletor: {sel_used})"
@@ -356,13 +365,18 @@ class CasasBahiaScraper(BaseScraper):
                 logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
                 break
 
-            self._wait_for_products(timeout_ms=12_000)
+            self._wait_for_products(timeout_ms=4_000)
             self._wait_for_network_idle()
             self._random_delay(min_s=4.0, max_s=9.0)
             self._human_scroll(steps=10, step_px=300)
             time.sleep(1.5)
 
             html = self._page.content()
+
+            # Detecta bloqueio Akamai logo após carregamento (fail fast)
+            if self._check_blocked(html):
+                self._dump_debug(html, page, keyword)
+                break
 
             # Estratégia 1: XHR
             if self._captured_products:

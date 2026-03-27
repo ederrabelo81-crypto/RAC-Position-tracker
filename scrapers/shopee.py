@@ -368,11 +368,26 @@ class ShopeeScraper(BaseScraper):
                 logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
                 break
 
-            # ── FAIL FAST se redirecionado para login/captcha ──
+            # ── FAIL FAST: aguarda redirect JS (Shopee usa redirect assíncrono) ──
+            # wait_for_url retorna imediatamente se já estamos no login,
+            # ou aguarda até 4s por um redirect — nunca bloqueia mais que isso.
+            try:
+                self._page.wait_for_url("**/buyer/login**", timeout=4_000)
+                # Se chegou aqui, a Shopee nos redirecionou para login
+                logger.warning(
+                    f"[{self.platform_name}] Redirect detectado para login "
+                    f"(URL: {self._page.url}). Shopee bloqueou automação."
+                )
+                self._dump_debug_html(self._page.content(), "login_redirect")
+                break
+            except Exception:
+                pass  # URL não mudou para login — estamos na página de busca
+
+            # Verifica também via HTML (redirect sem mudança de URL)
             if self._check_blocked():
                 break
 
-            self._wait_for_products(timeout_ms=12_000)
+            self._wait_for_products(timeout_ms=4_000)   # 5 seletores × 4s = 20s max
             self._wait_for_network_idle()
             self._random_delay(min_s=3.0, max_s=6.0)
             self._human_scroll(steps=8, step_px=300)
