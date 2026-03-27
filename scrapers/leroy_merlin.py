@@ -2,13 +2,15 @@
 scrapers/leroy_merlin.py — Scraper da Leroy Merlin Brasil (leroymerlin.com.br).
 
 Estratégia (em ordem de prioridade):
-  1. __NEXT_DATA__ JSON embutido no HTML (Next.js SSR) — mais confiável
-  2. Intercepção XHR da API interna /api/v3/search ou catalog
-  3. Parse DOM com cadeia de 14 seletores fallback
-  4. Debug HTML dump em logs/ quando 0 itens
+  1. Algolia API direta — Leroy expõe appId/apiKey/indexName no HTML da página.
+     POST https://{appId}-dsn.algolia.net/1/indexes/{indexName}/query
+     Resposta: {"hits": [...], "nbPages": N}
+  2. Intercepção XHR da API Algolia (algolia.net) — captura chamadas do JS client.
+  3. Parse DOM com cadeia de seletores fallback.
+  4. Debug HTML dump em logs/ quando 0 itens.
 
-Plataforma: Next.js SSR com API própria /api/v3/*.
-Paginação: ?term={kw}&page={n}
+Plataforma: Next.js + Algolia InstantSearch (client-side rendering).
+Paginação: page param 0-indexed na Algolia API.
 """
 
 import json
@@ -18,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
+import requests
 from bs4 import BeautifulSoup, Tag
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -27,6 +30,20 @@ from scrapers.base import BaseScraper
 from utils.text import parse_price, parse_rating, parse_review_count
 
 _ITEMS_PER_PAGE = 24
+
+# Algolia credentials exposed in the Leroy Merlin page HTML
+_ALGOLIA_APP_ID    = "1CF3ZT43ZU"
+_ALGOLIA_API_KEY   = "28e054533dcdd3d71379fc3f38e78f1e"
+_ALGOLIA_INDEX     = "production_products"
+_ALGOLIA_SEARCH_URL = (
+    f"https://{_ALGOLIA_APP_ID}-dsn.algolia.net"
+    f"/1/indexes/{_ALGOLIA_INDEX}/query"
+)
+_ALGOLIA_HEADERS = {
+    "X-Algolia-Application-Id": _ALGOLIA_APP_ID,
+    "X-Algolia-API-Key": _ALGOLIA_API_KEY,
+    "Content-Type": "application/json",
+}
 
 _SELECTORS = {
     "item_candidates": [
@@ -88,14 +105,14 @@ _SELECTORS = {
     "bot_check": "#px-captcha, #challenge-form, [class*='bot-check']",
 }
 
-# Padrões de URL para APIs Leroy Merlin
+# Padrões de URL para XHR interception (Algolia + APIs internas)
 _API_URL_PATTERNS = [
+    "algolia.net",
+    "algolia.io",
     "/api/v3/search",
     "/api/v3/products",
     "/api/catalog",
     "product-search",
-    "/busca/",
-    "term=",
 ]
 
 
@@ -119,97 +136,89 @@ class LeroyMerlinScraper(BaseScraper):
         return f"{base}&page={page}" if page > 1 else base
 
     # ------------------------------------------------------------------
-    # Estratégia 1: __NEXT_DATA__ (JSON embutido pelo Next.js SSR)
+    # Estratégia 1: Algolia API direta
     # ------------------------------------------------------------------
 
-    def _extract_next_data(self, html: str) -> List[Dict[str, Any]]:
-        """
-        Extrai produtos do JSON embutido pelo Next.js em <script id="__NEXT_DATA__">.
-        Este JSON contém todos os dados da página antes de qualquer hidratação React.
-        """
-        try:
-            match = re.search(
-                r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
-                html,
-                re.DOTALL,
-            )
-            if not match:
-                logger.debug(f"[{self.platform_name}] __NEXT_DATA__ não encontrado no HTML.")
-                return []
-
-            data = json.loads(match.group(1))
-            # Navega pela estrutura do Next.js: props.pageProps.*
-            page_props = data.get("props", {}).get("pageProps", {})
-
-            # Tenta diferentes caminhos conhecidos para products na Leroy
-            products = (
-                page_props.get("products")
-                or page_props.get("searchResult", {}).get("products")
-                or page_props.get("initialState", {}).get("products")
-                or page_props.get("dehydratedState", {}).get("queries", [{}])[0]
-                    .get("state", {}).get("data", {}).get("products")
-                or self._deep_find_products(page_props)
-                or []
-            )
-
-            if products:
-                logger.info(
-                    f"[{self.platform_name}] {len(products)} produtos extraídos via __NEXT_DATA__"
-                )
-            return products
-
-        except Exception as e:
-            logger.debug(f"[{self.platform_name}] Erro ao parsear __NEXT_DATA__: {e}")
-            return []
-
-    @staticmethod
-    def _deep_find_products(obj, depth: int = 0) -> List[Dict]:
-        """
-        Busca recursiva por array de produtos em objetos JSON aninhados.
-        Considera array de produto quando tem ≥3 itens com chave 'id' ou 'sku'.
-        """
-        if depth > 6:
-            return []
-        if isinstance(obj, list) and len(obj) >= 3:
-            if any(isinstance(i, dict) and ("id" in i or "sku" in i or "name" in i) for i in obj):
-                return obj
-        if isinstance(obj, dict):
-            for v in obj.values():
-                result = LeroyMerlinScraper._deep_find_products(v, depth + 1)
-                if result:
-                    return result
-        return []
-
-    def _parse_next_products(
+    def _algolia_search(
         self,
-        products: List[Dict],
+        keyword: str,
+        keyword_category_map: dict,
+        page: int,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Consulta diretamente a API Algolia da Leroy Merlin.
+        Usa as credenciais públicas expostas no HTML da página.
+        """
+        payload = {
+            "query": keyword,
+            "hitsPerPage": _ITEMS_PER_PAGE,
+            "page": page - 1,  # Algolia é 0-indexed
+            "attributesToRetrieve": [
+                "description", "name", "title", "productName",
+                "price", "preco", "sellingPrice", "bestPrice",
+                "priceRange", "rating", "ratingAverage",
+                "reviewCount", "totalReviews", "objectID",
+            ],
+        }
+        try:
+            resp = requests.post(
+                _ALGOLIA_SEARCH_URL,
+                headers=_ALGOLIA_HEADERS,
+                json=payload,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            hits = data.get("hits", [])
+            nb_pages = data.get("nbPages", 1)
+            if hits:
+                logger.info(
+                    f"[{self.platform_name}] Algolia: {len(hits)} hits "
+                    f"(página {page}/{nb_pages})"
+                )
+                return self._parse_algolia_hits(hits, keyword, keyword_category_map, page_offset)
+            logger.debug(f"[{self.platform_name}] Algolia: 0 hits para '{keyword}' página {page}")
+            return []
+        except Exception as e:
+            logger.warning(f"[{self.platform_name}] Algolia API erro: {e}")
+            return []
+
+    def _parse_algolia_hits(
+        self,
+        hits: List[Dict],
         keyword: str,
         keyword_category_map: dict,
         page_offset: int,
     ) -> List[Dict[str, Any]]:
         records = []
-        for idx, prod in enumerate(products):
+        for idx, hit in enumerate(hits):
             title = (
-                prod.get("description")
-                or prod.get("name")
-                or prod.get("productName")
-                or prod.get("title")
+                hit.get("description")
+                or hit.get("name")
+                or hit.get("productName")
+                or hit.get("title")
             )
-            # Preço: tenta campos conhecidos da Leroy
+            # Algolia Leroy: price pode ser float direto ou em priceRange
             price_val = (
-                prod.get("price")
-                or prod.get("preco")
-                or prod.get("sellingPrice")
-                or prod.get("bestPrice")
-                or (prod.get("priceRange") or {}).get("sellingPrice", {}).get("lowPrice")
+                hit.get("price")
+                or hit.get("preco")
+                or hit.get("sellingPrice")
+                or hit.get("bestPrice")
+                or (hit.get("priceRange") or {}).get("sellingPrice", {}).get("lowPrice")
+                or (hit.get("priceRange") or {}).get("minPrice")
             )
+            # Alguns hits têm prices como dict {"value": 123.45}
+            if isinstance(price_val, dict):
+                price_val = price_val.get("value") or price_val.get("amount")
+
             try:
                 price_float = float(str(price_val).replace(",", ".")) if price_val else None
             except (ValueError, TypeError):
                 price_float = None
 
-            rating = prod.get("rating") or prod.get("ratingAverage")
-            review_count = prod.get("reviewCount") or prod.get("totalReviews")
+            rating = hit.get("rating") or hit.get("ratingAverage")
+            review_count = hit.get("reviewCount") or hit.get("totalReviews")
             pos = page_offset + idx + 1
 
             records.append(self._build_record(
@@ -229,7 +238,7 @@ class LeroyMerlinScraper(BaseScraper):
         return records
 
     # ------------------------------------------------------------------
-    # Estratégia 2: XHR interception
+    # Estratégia 2: XHR interception (Algolia + APIs internas)
     # ------------------------------------------------------------------
 
     def _setup_xhr_intercept(self) -> None:
@@ -245,8 +254,10 @@ class LeroyMerlinScraper(BaseScraper):
                 if "json" not in response.headers.get("content-type", ""):
                     return
                 data = response.json()
+                # Algolia response format
                 products = (
-                    data.get("products")
+                    data.get("hits")
+                    or data.get("products")
                     or data.get("items")
                     or data.get("data", {}).get("products")
                     or self._deep_find_products(data)
@@ -262,6 +273,35 @@ class LeroyMerlinScraper(BaseScraper):
                 pass
 
         self._page.on("response", handle_response)
+
+    @staticmethod
+    def _deep_find_products(obj, depth: int = 0) -> List[Dict]:
+        """
+        Busca recursiva por array de produtos em objetos JSON aninhados.
+        Considera array de produto quando tem ≥3 itens com chave 'id' ou 'sku'.
+        """
+        if depth > 6:
+            return []
+        if isinstance(obj, list) and len(obj) >= 3:
+            if any(isinstance(i, dict) and ("id" in i or "sku" in i or "name" in i or "objectID" in i) for i in obj):
+                return obj
+        if isinstance(obj, dict):
+            for v in obj.values():
+                result = LeroyMerlinScraper._deep_find_products(v, depth + 1)
+                if result:
+                    return result
+        return []
+
+    def _parse_captured_products(
+        self,
+        keyword: str,
+        keyword_category_map: dict,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        """Converte produtos capturados via XHR (Algolia hits ou formato genérico)."""
+        return self._parse_algolia_hits(
+            self._captured_products, keyword, keyword_category_map, page_offset
+        )
 
     # ------------------------------------------------------------------
     # Estratégia 3: DOM parse
@@ -346,7 +386,7 @@ class LeroyMerlinScraper(BaseScraper):
             path.write_text(html, encoding="utf-8")
             logger.warning(
                 f"[{self.platform_name}] 0 itens — HTML salvo: {path}\n"
-                "  → PowerShell: Select-String -Path {path} -Pattern '__NEXT_DATA__'"
+                "  → Nota: Leroy usa Algolia. Verifique logs de XHR acima."
             )
         except Exception as e:
             logger.debug(f"[{self.platform_name}] Erro ao salvar debug: {e}")
@@ -355,7 +395,7 @@ class LeroyMerlinScraper(BaseScraper):
     # Espera
     # ------------------------------------------------------------------
 
-    def _wait_for_products(self, timeout_ms: int = 12_000) -> bool:
+    def _wait_for_products(self, timeout_ms: int = 15_000) -> bool:
         for sel in _SELECTORS["item_candidates"][:6]:
             try:
                 self._page.wait_for_selector(sel, timeout=timeout_ms)
@@ -387,53 +427,52 @@ class LeroyMerlinScraper(BaseScraper):
             logger.info(f"[{self.platform_name}] Página {page}/{page_limit} → {url}")
             self._captured_products = []
 
-            try:
-                self._page.goto(url, wait_until="domcontentloaded")
-                self._wait_for_products(timeout_ms=12_000)
-                self._wait_for_network_idle()
-                self._random_delay(min_s=2.5, max_s=6.0)
-                self._human_scroll(steps=8, step_px=350)
-                time.sleep(1.2)
+            # --- Estratégia 1: Algolia API direta ---
+            offset = (page - 1) * _ITEMS_PER_PAGE
+            records = self._algolia_search(keyword, keyword_category_map, page, offset)
 
-                offset = (page - 1) * _ITEMS_PER_PAGE
-                html = self._page.content()
-                records: List[Dict[str, Any]] = []
+            if not records:
+                # Carrega a página para acionar XHR interception e DOM fallback
+                try:
+                    self._page.goto(url, wait_until="domcontentloaded")
+                    self._wait_for_products(timeout_ms=15_000)
+                    self._wait_for_network_idle()
+                    self._random_delay(min_s=2.5, max_s=6.0)
+                    self._human_scroll(steps=8, step_px=350)
+                    time.sleep(1.5)
 
-                # --- Estratégia 1: __NEXT_DATA__ ---
-                next_products = self._extract_next_data(html)
-                if next_products:
-                    records = self._parse_next_products(
-                        next_products, keyword, keyword_category_map, offset
-                    )
+                    html = self._page.content()
 
-                # --- Estratégia 2: XHR capturado ---
-                if not records and self._captured_products:
-                    logger.info(
-                        f"[{self.platform_name}] {len(self._captured_products)} itens via XHR"
-                    )
-                    records = self._parse_next_products(
-                        self._captured_products, keyword, keyword_category_map, offset
-                    )
+                    # --- Estratégia 2: XHR capturado (Algolia via browser) ---
+                    if self._captured_products:
+                        logger.info(
+                            f"[{self.platform_name}] {len(self._captured_products)} itens via XHR"
+                        )
+                        records = self._parse_captured_products(
+                            keyword, keyword_category_map, offset
+                        )
 
-                # --- Estratégia 3: DOM ---
-                if not records:
-                    records = self._parse_dom(html, keyword, keyword_category_map, page, offset)
+                    # --- Estratégia 3: DOM ---
+                    if not records:
+                        records = self._parse_dom(
+                            html, keyword, keyword_category_map, page, offset
+                        )
 
-                all_records.extend(records)
+                except Exception as exc:
+                    logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
+                    raise
 
-                if not records:
-                    logger.warning(
-                        f"[{self.platform_name}] Página {page} retornou 0 itens. "
-                        "Parando keyword."
-                    )
-                    break
+            all_records.extend(records)
 
-                if page < page_limit:
-                    self._random_delay()
+            if not records:
+                logger.warning(
+                    f"[{self.platform_name}] Página {page} retornou 0 itens. "
+                    "Parando keyword."
+                )
+                break
 
-            except Exception as exc:
-                logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
-                raise
+            if page < page_limit:
+                self._random_delay()
 
         logger.success(
             f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
