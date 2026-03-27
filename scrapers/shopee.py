@@ -4,8 +4,9 @@ scrapers/shopee.py — Scraper da Shopee Brasil (shopee.com.br).
 Estratégia (em ordem de prioridade):
   1. Intercepção de resposta XHR via page.on("response", ...) — mais estável
      que page.evaluate(fetch()) porque não depende do contexto JS da página.
-  2. Parse DOM com seletores fallback quando XHR não capturar dados.
-  3. Debug HTML dump em logs/ quando DOM também retornar 0 itens.
+  2. __NEXT_DATA__ JSON embutido (Shopee usa Next.js SSR na página de busca).
+  3. Parse DOM com seletores fallback quando XHR não capturar dados.
+  4. Debug HTML dump em logs/ quando todas as estratégias retornarem 0 itens.
 
 Notas de manutenção:
   A Shopee faz redirecionamentos internos após o carregamento inicial (SPA),
@@ -15,6 +16,7 @@ Notas de manutenção:
 """
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -39,6 +41,7 @@ _SELECTORS = {
         'div[class*="shopee-item-card"]',
         '[class*="product-briefing"]',
         'li[class*="search-item"]',
+        '[class*="item-card"]',
         'a[data-sqe="link"][href*="/product/"]',      # fallback por link
     ],
     "title_candidates": [
@@ -47,12 +50,13 @@ _SELECTORS = {
         '[class*="item-card-content__text--title"]',
         '[class*="name"]',
         'div[class*="truncate"]',
+        'span[class*="name"]',
     ],
     "price_candidates": [
         '.shopee-price',
         '[class*="shopee-price"]',
+        '[class*="price-current"]',
         '[class*="price"]',
-        'div[class*="price-current"]',
     ],
     # Filtros de detecção
     "bot_check": "#robot-verify, [class*='bot-verify'], #captcha",
@@ -61,7 +65,9 @@ _SELECTORS = {
 # Padrões de URL que indicam resposta da API de busca da Shopee
 _API_URL_PATTERNS = [
     "api/v4/search/search_items",
-    "api/v4/pdp/get_pc",
+    "api/v4/recommend/recommend_search",
+    "api/v2/search_items",
+    "search/search_items",
     "search_items",
 ]
 
@@ -90,14 +96,22 @@ class ShopeeScraper(BaseScraper):
                     return
                 if response.status != 200:
                     return
-                ct = response.headers.get("content-type", "")
-                if "json" not in ct:
+                # Aceita qualquer resposta que seja texto (json)
+                ct = response.headers.get("content-type", "").lower()
+                if ct and "text/html" in ct:
+                    return  # descarta HTML
+
+                try:
+                    body = response.text()
+                    data = json.loads(body)
+                except Exception:
                     return
 
-                data = response.json()
+                # Shopee pode retornar items em vários lugares
                 items = (
                     data.get("items")
                     or data.get("data", {}).get("items")
+                    or (data.get("result") or {}).get("items")
                     or []
                 )
                 if items:
@@ -154,6 +168,59 @@ class ShopeeScraper(BaseScraper):
         return records
 
     # ------------------------------------------------------------------
+    # Estratégia 2: __NEXT_DATA__ (Shopee usa Next.js SSR)
+    # ------------------------------------------------------------------
+
+    def _extract_next_data(
+        self,
+        html: str,
+        keyword: str,
+        keyword_category_map: dict,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        """Tenta extrair produtos do __NEXT_DATA__ injetado pelo Next.js SSR."""
+        try:
+            match = re.search(
+                r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+                html, re.DOTALL,
+            )
+            if not match:
+                return []
+
+            data = json.loads(match.group(1))
+            # Navega por estrutura Next.js
+            page_props = data.get("props", {}).get("pageProps", {})
+
+            # Tenta encontrar array de items
+            def find_items(obj, depth=0):
+                if depth > 6:
+                    return []
+                if isinstance(obj, list) and len(obj) >= 3:
+                    if any(isinstance(i, dict) and ("itemid" in i or "name" in i or "price" in i) for i in obj):
+                        return obj
+                if isinstance(obj, dict):
+                    for v in obj.values():
+                        result = find_items(v, depth + 1)
+                        if result:
+                            return result
+                return []
+
+            items = find_items(page_props)
+            if not items:
+                return []
+
+            logger.info(f"[{self.platform_name}] {len(items)} itens via __NEXT_DATA__")
+            # Usa o mesmo parser de XHR (formato similar)
+            old = self._captured_items
+            self._captured_items = items
+            records = self._parse_captured_items(keyword, keyword_category_map, page_offset)
+            self._captured_items = old
+            return records
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] __NEXT_DATA__ erro: {e}")
+            return []
+
+    # ------------------------------------------------------------------
     # DOM fallback
     # ------------------------------------------------------------------
 
@@ -180,28 +247,39 @@ class ShopeeScraper(BaseScraper):
 
         # Detecta container de produto
         items = []
+        sel_used = "nenhum"
         for sel in _SELECTORS["item_candidates"]:
             items = soup.select(sel)
             if len(items) >= 3:
+                sel_used = sel
                 logger.debug(f"[{self.platform_name}] DOM seletor usado: {sel}")
                 break
 
         logger.info(f"[{self.platform_name}] {len(items)} itens via DOM (fallback)")
 
         if not items:
-            self._dump_debug_html(soup.encode("utf-8").decode("utf-8"), keyword)
+            html = self._page.content()
+            self._dump_debug_html(html, keyword)
             return []
 
         records = []
         for idx, item in enumerate(items):
             title_el = self._first_match(item, _SELECTORS["title_candidates"])
             price_el = self._first_match(item, _SELECTORS["price_candidates"])
+
+            # Fallback de título por img[alt]
+            title = title_el.get_text(strip=True) if title_el else None
+            if not title:
+                img = item.select_one("img[alt]")
+                if img:
+                    title = img.get("alt", "").strip() or None
+
             pos = page_offset + idx + 1
 
             records.append(self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
-                title=title_el.get_text(strip=True) if title_el else None,
+                title=title,
                 position_general=pos,
                 position_organic=pos,
                 position_sponsored=None,
@@ -237,7 +315,7 @@ class ShopeeScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     def _wait_for_products(self, timeout_ms: int = 15_000) -> bool:
-        for sel in _SELECTORS["item_candidates"][:4]:
+        for sel in _SELECTORS["item_candidates"][:5]:
             try:
                 self._page.wait_for_selector(sel, timeout=timeout_ms)
                 return True
@@ -296,9 +374,12 @@ class ShopeeScraper(BaseScraper):
                 self._human_scroll(steps=8, step_px=300)
 
                 # Aguarda mais um pouco para XHR tardio ser capturado
-                time.sleep(1.5)
+                time.sleep(2.0)
 
-                # --- Tenta dados XHR ---
+                html = self._page.content()
+                records: List[Dict[str, Any]] = []
+
+                # --- Estratégia 1: XHR capturado ---
                 if self._captured_items:
                     logger.info(
                         f"[{self.platform_name}] {len(self._captured_items)} itens via XHR"
@@ -306,10 +387,17 @@ class ShopeeScraper(BaseScraper):
                     records = self._parse_captured_items(
                         keyword, keyword_category_map, offset
                     )
-                else:
-                    # --- Fallback DOM ---
+
+                # --- Estratégia 2: __NEXT_DATA__ ---
+                if not records:
+                    records = self._extract_next_data(
+                        html, keyword, keyword_category_map, offset
+                    )
+
+                # --- Estratégia 3: DOM fallback ---
+                if not records:
                     logger.info(
-                        f"[{self.platform_name}] Sem dados XHR — usando DOM fallback."
+                        f"[{self.platform_name}] Sem dados XHR/__NEXT_DATA__ — usando DOM fallback."
                     )
                     records = self._parse_dom(keyword, keyword_category_map, offset)
 

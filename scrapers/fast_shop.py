@@ -2,12 +2,14 @@
 scrapers/fast_shop.py — Scraper da Fast Shop (fastshop.com.br).
 
 Estratégia (em ordem de prioridade):
-  1. Intercepção XHR da API VTEX IO (/api/catalog_system ou /_v/api/intelligent-search)
-  2. Parse DOM com seletores VTEX IO + fallbacks genéricos
-  3. Debug HTML dump em logs/ quando 0 itens
+  1. API VTEX Intelligent-Search direta — GET sem browser, mais confiável.
+     Endpoint: /_v/api/intelligent-search/product_search/...?query={kw}&page={n}
+  2. Intercepção XHR da API VTEX IO (intelligent-search, catalog_system, GraphQL)
+  3. Parse DOM com seletores VTEX IO + fallbacks genéricos
+  4. Debug HTML dump em logs/ quando 0 itens
 
 Plataforma: VTEX IO React — classes geradas como vtex-product-summary-2-x-*
-URL de busca: /web/p/busca?q={keyword} ou /_v/api/intelligent-search/product_search
+URL de busca: /busca?q={keyword}
 Paginação: &page={n} (1-indexed)
 """
 
@@ -17,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
+import requests
 from bs4 import BeautifulSoup, Tag
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -26,6 +29,28 @@ from scrapers.base import BaseScraper
 from utils.text import parse_price, parse_rating, parse_review_count
 
 _ITEMS_PER_PAGE = 20
+
+# VTEX Intelligent-Search endpoint padrão
+_VTEX_SEARCH_URL = (
+    "https://www.fastshop.com.br"
+    "/_v/api/intelligent-search/product_search/pt/pt-BR/search"
+)
+_VTEX_CATALOG_URL = (
+    "https://www.fastshop.com.br"
+    "/api/catalog_system/pub/products/search"
+)
+
+_VTEX_HEADERS = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "x-vtex-uid": "false",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+}
 
 _SELECTORS = {
     "item_candidates": [
@@ -37,7 +62,7 @@ _SELECTORS = {
         # data-testid / data-id VTEX
         '[data-testid="product-summary"]',
         '[class*="product-summary"]',
-        # Fallback genérico angular/vue
+        # Fallback genérico
         '.product-item',
         '[class*="ProductCard"]',
         '[class*="product-card"]',
@@ -88,14 +113,17 @@ _SELECTORS = {
     "bot_check": "#px-captcha, #challenge-form, [id*='px-'], #distil_r_captcha",
 }
 
-# Padrões de URL para APIs VTEX IO e Fast Shop
+# Padrões de URL para XHR interception
 _API_URL_PATTERNS = [
     "intelligent-search/product_search",
+    "intelligent-search/product_search_v2",
     "catalog_system/pub/products",
-    "api/catalog",
-    "_v/api",
+    "api/io/_v/api",
+    "_v/api/intelligent",
     "product-search",
     "search/products",
+    "graphql",
+    "searchQuery",
 ]
 
 
@@ -109,76 +137,101 @@ class FastShopScraper(BaseScraper):
         self._captured_products: List[Dict] = []
 
     # ------------------------------------------------------------------
-    # URL
+    # URL do browser
     # ------------------------------------------------------------------
 
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
         encoded = quote_plus(keyword)
-        # VTEX IO: URL canônica de busca (sem /web/p/ que retorna 404)
         url = f"https://www.fastshop.com.br/busca?q={encoded}"
         if page > 1:
             url += f"&page={page}"
         return url
 
-    @staticmethod
-    def _build_url_v2(keyword: str, page: int = 1) -> str:
-        """Formato alternativo VTEX com map=ft (full-text search)."""
-        encoded = quote_plus(keyword)
-        url = f"https://www.fastshop.com.br/{encoded}?q={encoded}&map=ft"
-        if page > 1:
-            url += f"&page={page}"
-        return url
-
     # ------------------------------------------------------------------
-    # XHR interception
+    # Estratégia 1: VTEX Intelligent-Search API direta
     # ------------------------------------------------------------------
 
-    def _setup_xhr_intercept(self) -> None:
-        self._captured_products = []
-
-        def handle_response(response):
-            try:
-                url = response.url
-                if not any(pat in url for pat in _API_URL_PATTERNS):
-                    return
-                if response.status != 200:
-                    return
-                if "json" not in response.headers.get("content-type", ""):
-                    return
-                data = response.json()
+    def _vtex_search(
+        self,
+        keyword: str,
+        keyword_category_map: dict,
+        page: int,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Chama a API VTEX Intelligent-Search diretamente sem browser.
+        Tenta endpoint v1 (query param) e catalog_system como fallback.
+        """
+        params = {
+            "query": keyword,
+            "page": page,
+            "count": _ITEMS_PER_PAGE,
+            "sort": "score_desc",
+            "hideUnavailableItems": "false",
+        }
+        try:
+            resp = requests.get(
+                _VTEX_SEARCH_URL,
+                headers=_VTEX_HEADERS,
+                params=params,
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
                 products = (
                     data.get("products")
-                    or data.get("items")
                     or data.get("data", {}).get("products")
-                    or (data if isinstance(data, list) else [])
+                    or (data.get("productSearch") or {}).get("products")
+                    or []
                 )
                 if products:
-                    self._captured_products.extend(products)
-                    logger.debug(
-                        f"[{self.platform_name}] XHR capturado: "
-                        f"{len(products)} produtos em {url[:70]}"
+                    logger.info(
+                        f"[{self.platform_name}] VTEX IS API: {len(products)} produtos (pág {page})"
                     )
-            except Exception:
-                pass
+                    return self._parse_vtex_products(products, keyword, keyword_category_map, page_offset)
+                logger.debug(f"[{self.platform_name}] VTEX IS API: 0 produtos para '{keyword}'")
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] VTEX IS API erro: {e}")
 
-        self._page.on("response", handle_response)
+        # Fallback: catalog_system
+        from_idx = page_offset
+        to_idx   = page_offset + _ITEMS_PER_PAGE - 1
+        try:
+            encoded = quote_plus(keyword)
+            resp = requests.get(
+                f"{_VTEX_CATALOG_URL}/{encoded}",
+                headers=_VTEX_HEADERS,
+                params={"_from": from_idx, "_to": to_idx},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                products = resp.json()
+                if isinstance(products, list) and products:
+                    logger.info(
+                        f"[{self.platform_name}] VTEX catalog API: {len(products)} produtos (pág {page})"
+                    )
+                    return self._parse_vtex_products(products, keyword, keyword_category_map, page_offset)
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] VTEX catalog API erro: {e}")
 
-    def _parse_api_products(
+        return []
+
+    def _parse_vtex_products(
         self,
+        products: List[Dict],
         keyword: str,
         keyword_category_map: dict,
         page_offset: int,
     ) -> List[Dict[str, Any]]:
         records = []
-        for idx, prod in enumerate(self._captured_products):
-            # Normaliza campos VTEX IO e genéricos
+        for idx, prod in enumerate(products):
             title = (
                 prod.get("productName")
                 or prod.get("name")
                 or prod.get("title")
             )
-            # VTEX IO: items[0].sellers[0].commertialOffer.Price
+            # VTEX: price em items[0].sellers[0].commertialOffer.Price
             price_val = prod.get("price")
             try:
                 items_data = prod.get("items", [{}])
@@ -214,7 +267,50 @@ class FastShopScraper(BaseScraper):
         return records
 
     # ------------------------------------------------------------------
-    # DOM parse
+    # Estratégia 2: XHR interception
+    # ------------------------------------------------------------------
+
+    def _setup_xhr_intercept(self) -> None:
+        self._captured_products = []
+
+        def handle_response(response):
+            try:
+                url = response.url
+                if not any(pat in url for pat in _API_URL_PATTERNS):
+                    return
+                if response.status != 200:
+                    return
+                ct = response.headers.get("content-type", "").lower()
+                if "text/html" in ct:
+                    return
+
+                try:
+                    body = response.text()
+                    data = json.loads(body)
+                except Exception:
+                    return
+
+                # Tenta encontrar lista de produtos em vários formatos
+                products = (
+                    data.get("products")
+                    or data.get("items")
+                    or data.get("data", {}).get("products")
+                    or (data.get("productSearch") or {}).get("products")
+                    or (data if isinstance(data, list) else [])
+                )
+                if products and isinstance(products, list):
+                    self._captured_products.extend(products)
+                    logger.debug(
+                        f"[{self.platform_name}] XHR capturado: "
+                        f"{len(products)} produtos em {url[:70]}"
+                    )
+            except Exception:
+                pass
+
+        self._page.on("response", handle_response)
+
+    # ------------------------------------------------------------------
+    # Estratégia 3: DOM parse
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -266,10 +362,17 @@ class FastShopScraper(BaseScraper):
             tag_el    = self._first_match(item, _SELECTORS["tag_candidates"])
             pos = page_offset + idx + 1
 
+            # Fallback de título
+            title = title_el.get_text(strip=True) if title_el else None
+            if not title:
+                img = item.select_one("img[alt]")
+                if img:
+                    title = img.get("alt", "").strip() or None
+
             records.append(self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
-                title=title_el.get_text(strip=True) if title_el else None,
+                title=title,
                 position_general=pos,
                 position_organic=pos,
                 position_sponsored=None,
@@ -336,62 +439,51 @@ class FastShopScraper(BaseScraper):
             url = self._build_url(keyword, page)
             logger.info(f"[{self.platform_name}] Página {page}/{page_limit} → {url}")
             self._captured_products = []
+            offset = (page - 1) * _ITEMS_PER_PAGE
 
-            try:
-                self._page.goto(url, wait_until="domcontentloaded")
-                self._wait_for_products(timeout_ms=15_000)
-                self._wait_for_network_idle()
-                self._random_delay(min_s=2.5, max_s=6.5)
-                self._human_scroll(steps=8, step_px=300)
-                time.sleep(1.5)  # aguarda XHR tardio
+            # --- Estratégia 1: VTEX API direta ---
+            records = self._vtex_search(keyword, keyword_category_map, page, offset)
 
-                offset = (page - 1) * _ITEMS_PER_PAGE
-
-                if self._captured_products:
-                    logger.info(
-                        f"[{self.platform_name}] {len(self._captured_products)} itens via XHR"
-                    )
-                    records = self._parse_api_products(keyword, keyword_category_map, offset)
-                else:
-                    records = self._parse_dom(
-                        self._page.content(), keyword, keyword_category_map, page, offset
-                    )
-
-                # Tenta URL alternativa (map=ft) se página 1 retornar 0
-                if not records and page == 1:
-                    alt_url = self._build_url_v2(keyword, page)
-                    logger.info(
-                        f"[{self.platform_name}] 0 itens — tentando URL alternativa: {alt_url}"
-                    )
-                    self._captured_products = []
-                    self._page.goto(alt_url, wait_until="domcontentloaded")
-                    self._wait_for_products(timeout_ms=12_000)
+            if not records:
+                # Carrega browser para XHR interception + DOM fallback
+                try:
+                    self._page.goto(url, wait_until="domcontentloaded")
+                    self._wait_for_products(timeout_ms=18_000)
                     self._wait_for_network_idle()
-                    self._random_delay(min_s=2.0, max_s=5.0)
-                    time.sleep(1.5)
+                    self._random_delay(min_s=2.5, max_s=6.5)
+                    self._human_scroll(steps=8, step_px=300)
+                    time.sleep(2.0)  # aguarda XHR tardio
 
+                    # --- Estratégia 2: XHR capturado ---
                     if self._captured_products:
-                        records = self._parse_api_products(keyword, keyword_category_map, offset)
-                    else:
+                        logger.info(
+                            f"[{self.platform_name}] {len(self._captured_products)} itens via XHR"
+                        )
+                        records = self._parse_vtex_products(
+                            self._captured_products, keyword, keyword_category_map, offset
+                        )
+
+                    # --- Estratégia 3: DOM ---
+                    if not records:
                         records = self._parse_dom(
                             self._page.content(), keyword, keyword_category_map, page, offset
                         )
 
-                all_records.extend(records)
+                except Exception as exc:
+                    logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
+                    raise
 
-                if not records:
-                    logger.warning(
-                        f"[{self.platform_name}] Página {page} retornou 0 itens. "
-                        "Parando keyword."
-                    )
-                    break
+            all_records.extend(records)
 
-                if page < page_limit:
-                    self._random_delay()
+            if not records:
+                logger.warning(
+                    f"[{self.platform_name}] Página {page} retornou 0 itens. "
+                    "Parando keyword."
+                )
+                break
 
-            except Exception as exc:
-                logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
-                raise
+            if page < page_limit:
+                self._random_delay()
 
         logger.success(
             f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
