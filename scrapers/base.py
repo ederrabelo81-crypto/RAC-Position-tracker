@@ -181,7 +181,7 @@ class BaseScraper(ABC):
     def _get_soup(self) -> BeautifulSoup:
         """Retorna o BeautifulSoup do HTML atual da página."""
         html = self._page.content()
-        return BeautifulSoup(html, "lxml")
+        return BeautifulSoup(html, "html.parser")
 
     def _wait_for_network_idle(self) -> None:
         """Aguarda a rede estabilizar após navegação."""

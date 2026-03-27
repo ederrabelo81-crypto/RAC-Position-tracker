@@ -198,7 +198,7 @@ class MLScraper(BaseScraper):
         Returns:
             Lista de dicts no formato do DataFrame de saída.
         """
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         items = soup.select(_SELECTORS["item_container"])
         logger.info(f"[{self.platform_name}] {len(items)} itens encontrados na página")
 

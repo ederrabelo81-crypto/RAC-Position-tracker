@@ -49,7 +49,7 @@ class FastShopScraper(BaseScraper):
         keyword_category_map: dict,
         page_offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         items = soup.select(_SELECTORS["item_container"])
         logger.info(f"[{self.platform_name}] {len(items)} itens encontrados na página")
 
