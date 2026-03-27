@@ -1,20 +1,23 @@
 """
 scrapers/magalu.py — Scraper do Magazine Luiza (magazineluiza.com.br).
 
-Estratégia de extração:
-  - URL de busca: https://www.magazineluiza.com.br/busca/{keyword_encoded}/
-  - Paginação: parâmetro `?page={n}` na URL
-  - Anti-bot: Magalu usa Cloudflare + PerimeterX; o script aplica delays
-    generosos, scroll humano e cabeçalhos stealth.
-  - Estrutura HTML: os resultados estão em <li> com data-testid="product-card"
-    (pode mudar; atualize _SELECTORS se necessário)
+Estratégia de extração (em ordem de prioridade):
+  1. Intercepção XHR da API interna (/api/product-search/v3/queries/search)
+  2. Parse DOM com cadeia de seletores fallback (vários layouts)
+  3. Dump de debug HTML quando 0 itens (para análise manual de seletores)
 
-Notas de manutenção:
-  Se a Magalu alterar o DOM, inspecione a requisição XHR que popula os
-  resultados em: https://www.magazineluiza.com.br/busca/?q=...
-  A API interna retorna JSON e pode ser mais estável que o scraping de HTML.
+Proteções detectadas:
+  - PerimeterX (px-captcha, _pxAppId)
+  - Cloudflare (#challenge-form)
+  - Página silenciosa (carregou mas sem conteúdo útil)
+
+Paginação: parâmetro ?page={n} ou &page={n} na URL de busca.
 """
 
+import json
+import time
+import random
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
@@ -22,24 +25,98 @@ from bs4 import BeautifulSoup, Tag
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import MAX_PAGES
+from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
 from utils.text import parse_price, parse_rating, parse_review_count
 
 # ---------------------------------------------------------------------------
-# Seletores CSS centralizados
+# Seletores CSS — cadeia de fallback para múltiplas versões do layout
 # ---------------------------------------------------------------------------
 _SELECTORS = {
-    "item_container": 'li[data-testid="product-card"]',
-    "title":          '[data-testid="product-title"]',
-    "price":          '[data-testid="price-value"]',
-    "seller":         '[data-testid="seller-name"]',
-    "rating":         '[data-testid="review-score"]',
-    "review_count":   '[data-testid="review-count"]',
-    "tag_destaque":   '[data-testid="product-tag"]',
-    # Magalu não tem fulfillment próprio da mesma forma que o ML
-    "sponsored":      '[data-testid="sponsored-tag"]',
+    # Container de produto — tenta em ordem até encontrar resultados
+    "item_candidates": [
+        'li[data-testid="product-card"]',            # v1 (antigo)
+        '[data-testid="item"]',                       # v2
+        '[data-testid="product-card-container"]',     # v3
+        'li[class*="ProductCard"]',                   # styled-components v1
+        'li[class*="product-card"]',                  # styled-components v2
+        '[class*="ProductCard__Wrapper"]',
+        '[class*="sc-"][data-cy]',                    # qualquer sc- com data-cy
+        'a[data-testid="product-card-link"]',         # link direto
+        'li[class*="nm-"]',                           # novo design system Magalu
+        '[data-cy="product-card"]',
+        'li > a[href*="/p/"]',                        # fallback por estrutura de link
+    ],
+    # Título do produto
+    "title_candidates": [
+        '[data-testid="product-title"]',
+        '[data-testid="product-name"]',
+        'h2[data-testid]',
+        '[class*="ProductTitle"]',
+        '[class*="product-title"]',
+        '[class*="Title__Wrapper"]',
+        'h2[class*="sc-"]',
+        'h2',
+    ],
+    # Preço principal
+    "price_candidates": [
+        '[data-testid="price-value"]',
+        '[data-testid="main-price"]',
+        '[data-testid="price"]',
+        '[class*="PriceTag__Price"]',
+        '[class*="price-value"]',
+        '[class*="Price__Value"]',
+        '[class*="sc-"][class*="price"]',
+        'p[class*="Price"]',
+    ],
+    # Seller/lojista
+    "seller_candidates": [
+        '[data-testid="seller-name"]',
+        '[data-testid="seller"]',
+        '[class*="SellerName"]',
+        '[class*="seller-name"]',
+        'a[href*="/loja/"]',
+    ],
+    # Avaliação
+    "rating_candidates": [
+        '[data-testid="review-score"]',
+        '[data-testid="rating"]',
+        '[class*="Rating__Score"]',
+        '[class*="rating-score"]',
+    ],
+    # Contagem de avaliações
+    "review_count_candidates": [
+        '[data-testid="review-count"]',
+        '[data-testid="reviews-count"]',
+        '[class*="ReviewCount"]',
+        '[class*="review-count"]',
+    ],
+    # Tag destaque (Best Seller, Mais Vendido, etc.)
+    "tag_candidates": [
+        '[data-testid="product-tag"]',
+        '[data-testid="badge"]',
+        '[class*="ProductBadge"]',
+        '[class*="Badge"]',
+        '[class*="Tag"]',
+    ],
+    # Patrocinado
+    "sponsored_candidates": [
+        '[data-testid="sponsored-tag"]',
+        '[data-testid="sponsored"]',
+        '[class*="Sponsored"]',
+        '[class*="sponsored"]',
+    ],
+    # Detecção de bloqueio
+    "px_block":    "#px-captcha, #pxCaptcha, [id*='px-'], [class*='px-captcha']",
+    "cf_block":    "#challenge-form, #challenge-running",
+    "no_results":  '[data-testid="no-results"], [class*="NoResults"], [class*="empty-results"]',
 }
+
+# URL da API interna XHR do Magalu (mais estável que HTML)
+_API_URL = (
+    "https://www.magazineluiza.com.br/api/product-search/v3/queries/search"
+    "?query={kw}&page={page}&size=24&sort=relevance&include=facets,suggestions"
+)
 
 
 class MagaluScraper(BaseScraper):
@@ -47,70 +124,114 @@ class MagaluScraper(BaseScraper):
 
     platform_name = "Magalu"
 
+    def __init__(self, headless: bool = True) -> None:
+        super().__init__(headless=headless)
+        self._api_results: List[Dict] = []   # resultados capturados via XHR
+
+    # ------------------------------------------------------------------
+    # URL builders
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
-        """
-        Constrói URL de busca paginada da Magalu.
-
-        Ex: https://www.magazineluiza.com.br/busca/ar+condicionado+split/?page=2
-        """
+        """URL de busca padrão da Magalu."""
         encoded = quote_plus(keyword)
         base = f"https://www.magazineluiza.com.br/busca/{encoded}/"
-        if page > 1:
-            return f"{base}?page={page}"
-        return base
+        return f"{base}?page={page}" if page > 1 else base
 
     @staticmethod
-    def _is_sponsored(item: Tag) -> bool:
-        sponsored_el = item.select_one(_SELECTORS["sponsored"])
-        if sponsored_el:
-            return True
-        # fallback: atributo data-position="ad" ou similar
-        return item.get("data-position", "").lower() in ("ad", "ads", "sponsored")
+    def _build_url_v2(keyword: str, page: int = 1) -> str:
+        """URL alternativa usada em algumas versões do site (?q= format)."""
+        encoded = quote_plus(keyword)
+        return (
+            f"https://www.magazineluiza.com.br/busca/"
+            f"?q={encoded}&from=submit&page={page}"
+        )
 
-    def _parse_results(
+    # ------------------------------------------------------------------
+    # Intercepção XHR — captura resposta da API interna
+    # ------------------------------------------------------------------
+
+    def _setup_xhr_intercept(self) -> None:
+        """Registra listener para capturar respostas da API interna do Magalu."""
+        self._api_results = []
+
+        def handle_response(response):
+            try:
+                url = response.url
+                if (
+                    "product-search" in url
+                    or "search_items" in url
+                    or ("/api/" in url and "search" in url)
+                ) and response.status == 200:
+                    ct = response.headers.get("content-type", "")
+                    if "json" in ct:
+                        data = response.json()
+                        self._api_results.append(data)
+                        logger.debug(
+                            f"[{self.platform_name}] XHR capturado: {url[:80]}"
+                        )
+            except Exception:
+                pass  # respostas binárias/erros não bloqueiam
+
+        self._page.on("response", handle_response)
+
+    def _parse_api_results(
         self,
-        html: str,
+        data: Dict,
         keyword: str,
         keyword_category_map: dict,
-        page_offset: int = 0,
+        page_offset: int,
     ) -> List[Dict[str, Any]]:
-        soup = BeautifulSoup(html, "html.parser")
-        items = soup.select(_SELECTORS["item_container"])
-        logger.info(f"[{self.platform_name}] {len(items)} itens encontrados na página")
-
+        """Extrai registros da resposta JSON da API interna."""
         records = []
-        organic_counter   = 0
-        sponsored_counter = 0
 
-        for idx, item in enumerate(items):
+        # Tenta diferentes estruturas conhecidas da API
+        products = (
+            data.get("products")
+            or data.get("items")
+            or data.get("results")
+            or data.get("data", {}).get("products")
+            or []
+        )
+
+        org_ctr = spo_ctr = 0
+        for idx, prod in enumerate(products):
             pos_general = page_offset + idx + 1
-            sponsored   = self._is_sponsored(item)
+            sponsored = prod.get("isSponsored") or prod.get("sponsored", False)
 
             if sponsored:
-                sponsored_counter += 1
-                pos_organic, pos_sponsored = None, sponsored_counter
+                spo_ctr += 1
+                pos_organic, pos_sponsored = None, spo_ctr
             else:
-                organic_counter += 1
-                pos_organic, pos_sponsored = organic_counter, None
+                org_ctr += 1
+                pos_organic, pos_sponsored = org_ctr, None
 
-            title_el = item.select_one(_SELECTORS["title"])
-            title    = title_el.get_text(strip=True) if title_el else None
+            # Normaliza campos que podem ter nomes diferentes entre versões
+            title = (
+                prod.get("title")
+                or prod.get("name")
+                or prod.get("description")
+            )
+            price_val = (
+                prod.get("price")
+                or prod.get("sellPrice")
+                or prod.get("bestPrice")
+                or prod.get("priceValue")
+            )
+            seller = (
+                prod.get("sellerName")
+                or prod.get("seller", {}).get("name") if isinstance(prod.get("seller"), dict) else prod.get("seller")
+                or "Magalu"
+            )
+            rating = prod.get("rating") or prod.get("ratingAverage")
+            review_count = prod.get("reviewCount") or prod.get("ratingsCount")
+            tag = prod.get("badge") or prod.get("tag")
 
-            price_el  = item.select_one(_SELECTORS["price"])
-            price_raw = price_el.get_text(strip=True) if price_el else None
-
-            seller_el = item.select_one(_SELECTORS["seller"])
-            seller    = seller_el.get_text(strip=True) if seller_el else "Magalu"
-
-            rating_el    = item.select_one(_SELECTORS["rating"])
-            rating       = parse_rating(rating_el.get_text() if rating_el else None)
-
-            reviews_el   = item.select_one(_SELECTORS["review_count"])
-            review_count = parse_review_count(reviews_el.get_text() if reviews_el else None)
-
-            tag_el = item.select_one(_SELECTORS["tag_destaque"])
-            tag    = tag_el.get_text(strip=True) if tag_el else None
+            try:
+                price_float = float(str(price_val).replace(",", ".")) if price_val else None
+            except (ValueError, TypeError):
+                price_float = None
 
             records.append(self._build_record(
                 keyword=keyword,
@@ -119,19 +240,160 @@ class MagaluScraper(BaseScraper):
                 position_general=pos_general,
                 position_organic=pos_organic,
                 position_sponsored=pos_sponsored,
-                price_raw=price_raw,
+                price_float=price_float,
                 seller=seller,
                 is_fulfillment=False,
-                rating=rating,
-                review_count=review_count,
-                tag_destaque=tag,
+                rating=parse_rating(str(rating)) if rating else None,
+                review_count=int(review_count) if review_count else None,
+                tag_destaque=str(tag) if tag else None,
             ))
 
         return records
 
+    # ------------------------------------------------------------------
+    # Parse DOM — com cadeia de fallback
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _first_match(item: Tag, candidates: List[str]) -> Optional[Tag]:
+        """Retorna o primeiro elemento que combinar com qualquer seletor."""
+        for sel in candidates:
+            el = item.select_one(sel)
+            if el:
+                return el
+        return None
+
+    @staticmethod
+    def _detect_items(soup: BeautifulSoup) -> tuple[List[Tag], str]:
+        """
+        Itera pelos seletores de container até encontrar ≥3 itens.
+        Retorna (items, seletor_usado).
+        """
+        for sel in _SELECTORS["item_candidates"]:
+            items = soup.select(sel)
+            if len(items) >= 3:
+                return items, sel
+        return [], "nenhum"
+
+    @staticmethod
+    def _is_sponsored_dom(item: Tag) -> bool:
+        for sel in _SELECTORS["sponsored_candidates"]:
+            if item.select_one(sel):
+                return True
+        text = item.get_text(" ", strip=True).lower()
+        return "patrocinado" in text or "sponsored" in text
+
+    def _parse_results_dom(
+        self,
+        html: str,
+        keyword: str,
+        keyword_category_map: dict,
+        page: int,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Detecção de bloqueios silenciosos
+        if soup.select_one(_SELECTORS["px_block"]):
+            logger.warning(f"[{self.platform_name}] PerimeterX detectado (página {page})")
+            return []
+        if soup.select_one(_SELECTORS["cf_block"]):
+            logger.warning(f"[{self.platform_name}] Cloudflare challenge detectado (página {page})")
+            return []
+
+        items, sel_used = self._detect_items(soup)
+        logger.info(
+            f"[{self.platform_name}] {len(items)} itens encontrados na página "
+            f"(seletor: {sel_used})"
+        )
+
+        # Debug dump quando vazio
+        if len(items) == 0:
+            self._dump_debug_html(html, page, keyword)
+            return []
+
+        records = []
+        org_ctr = spo_ctr = 0
+
+        for idx, item in enumerate(items):
+            pos_general = page_offset + idx + 1
+            sponsored = self._is_sponsored_dom(item)
+
+            if sponsored:
+                spo_ctr += 1
+                pos_organic, pos_sponsored = None, spo_ctr
+            else:
+                org_ctr += 1
+                pos_organic, pos_sponsored = org_ctr, None
+
+            title_el  = self._first_match(item, _SELECTORS["title_candidates"])
+            price_el  = self._first_match(item, _SELECTORS["price_candidates"])
+            seller_el = self._first_match(item, _SELECTORS["seller_candidates"])
+            rating_el = self._first_match(item, _SELECTORS["rating_candidates"])
+            review_el = self._first_match(item, _SELECTORS["review_count_candidates"])
+            tag_el    = self._first_match(item, _SELECTORS["tag_candidates"])
+
+            records.append(self._build_record(
+                keyword=keyword,
+                keyword_category_map=keyword_category_map,
+                title=title_el.get_text(strip=True) if title_el else None,
+                position_general=pos_general,
+                position_organic=pos_organic,
+                position_sponsored=pos_sponsored,
+                price_raw=price_el.get_text(strip=True) if price_el else None,
+                seller=seller_el.get_text(strip=True) if seller_el else "Magalu",
+                is_fulfillment=False,
+                rating=parse_rating(rating_el.get_text() if rating_el else None),
+                review_count=parse_review_count(review_el.get_text() if review_el else None),
+                tag_destaque=tag_el.get_text(strip=True) if tag_el else None,
+            ))
+
+        return records
+
+    # ------------------------------------------------------------------
+    # Debug dump
+    # ------------------------------------------------------------------
+
+    def _dump_debug_html(self, html: str, page: int, keyword: str) -> None:
+        """Salva HTML bruto em logs/ para análise manual de seletores."""
+        try:
+            log_dir = Path(LOGS_DIR)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            safe_kw = keyword[:30].replace(" ", "_").replace("/", "-")
+            path = log_dir / f"magalu_debug_p{page}_{safe_kw}.html"
+            path.write_text(html, encoding="utf-8")
+            logger.warning(
+                f"[{self.platform_name}] 0 itens — HTML salvo para diagnóstico: {path}\n"
+                f"  → Abra o arquivo no browser e inspecione o seletor correto."
+            )
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] Erro ao salvar debug: {e}")
+
+    # ------------------------------------------------------------------
+    # Espera inteligente por conteúdo
+    # ------------------------------------------------------------------
+
+    def _wait_for_products(self, timeout_ms: int = 15_000) -> bool:
+        """
+        Aguarda até que algum seletor de container de produto apareça.
+        Retorna True se encontrou, False se timeout.
+        """
+        for sel in _SELECTORS["item_candidates"][:5]:  # testa os 5 primeiros
+            try:
+                self._page.wait_for_selector(sel, timeout=timeout_ms)
+                logger.debug(f"[{self.platform_name}] Produtos encontrados com: {sel}")
+                return True
+            except Exception:
+                continue
+        return False
+
+    # ------------------------------------------------------------------
+    # Search principal
+    # ------------------------------------------------------------------
+
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=5, max=20),
+        wait=wait_exponential(multiplier=1, min=6, max=25),
         reraise=True,
     )
     def search(
@@ -143,48 +405,98 @@ class MagaluScraper(BaseScraper):
         """Busca keyword na Magalu por até `page_limit` páginas."""
         all_records: List[Dict[str, Any]] = []
 
+        # Configura intercepção XHR antes de navegar
+        self._setup_xhr_intercept()
+
         for page in range(1, page_limit + 1):
             url = self._build_url(keyword, page)
             logger.info(f"[{self.platform_name}] Página {page}/{page_limit} → {url}")
 
             try:
                 self._page.goto(url, wait_until="domcontentloaded")
-                self._wait_for_network_idle()
 
-                # Magalu tem proteção mais agressiva; aguarda mais e faz scroll lento
-                self._random_delay(min_s=3.0, max_s=8.0)
-                self._human_scroll(steps=12, step_px=250)
-
-                soup = self._get_soup()
-
-                # Detecta bloqueio por Cloudflare / CAPTCHA
-                if "challenge" in self._page.url or soup.select_one("#challenge-form"):
-                    logger.warning(
-                        f"[{self.platform_name}] Possível CAPTCHA/Cloudflare detectado. "
-                        "Considere usar proxy residencial rotativo."
+                # Aguarda produtos aparecerem (máx 15s)
+                found = self._wait_for_products(timeout_ms=15_000)
+                if not found:
+                    logger.debug(
+                        f"[{self.platform_name}] wait_for_products timeout — "
+                        "continuando com o que carregou"
                     )
-                    break
 
-                # Detecta página sem resultados
-                if soup.select_one('[data-testid="no-results"]'):
-                    logger.warning(f"[{self.platform_name}] Sem resultados na página {page}.")
-                    break
+                # Aguarda rede estabilizar + delay humanizado
+                self._wait_for_network_idle()
+                self._random_delay(min_s=3.5, max_s=8.5)
+                self._human_scroll(steps=10, step_px=280)
+                self._random_delay(min_s=1.0, max_s=2.5)
 
-                # Página 1 não tem offset; páginas seguintes têm ~40 itens cada
-                offset = (page - 1) * 40
-                records = self._parse_results(
-                    html=self._page.content(),
-                    keyword=keyword,
-                    keyword_category_map=keyword_category_map,
-                    page_offset=offset,
-                )
-                all_records.extend(records)
+                # --- Tenta usar resultados XHR capturados primeiro ---
+                api_records: List[Dict[str, Any]] = []
+                if self._api_results:
+                    offset = (page - 1) * 24
+                    for data in self._api_results:
+                        api_records.extend(
+                            self._parse_api_results(
+                                data, keyword, keyword_category_map, offset
+                            )
+                        )
+                    self._api_results = []   # limpa para próxima página
 
-                if not records:
-                    break
+                if api_records:
+                    logger.info(
+                        f"[{self.platform_name}] {len(api_records)} itens via API XHR"
+                    )
+                    all_records.extend(api_records)
+                else:
+                    # --- Fallback: parse DOM ---
+                    offset = (page - 1) * 40
+                    records = self._parse_results_dom(
+                        html=self._page.content(),
+                        keyword=keyword,
+                        keyword_category_map=keyword_category_map,
+                        page=page,
+                        page_offset=offset,
+                    )
+
+                    # Se ainda 0, tenta URL alternativa (?q= format) na pág 1
+                    if not records and page == 1:
+                        alt_url = self._build_url_v2(keyword, page)
+                        logger.info(
+                            f"[{self.platform_name}] 0 resultados — tentando URL alternativa: {alt_url}"
+                        )
+                        self._page.goto(alt_url, wait_until="domcontentloaded")
+                        self._wait_for_products(timeout_ms=12_000)
+                        self._wait_for_network_idle()
+                        self._random_delay(min_s=2.5, max_s=6.0)
+                        self._human_scroll(steps=8, step_px=280)
+
+                        # Checa XHR capturado na segunda tentativa
+                        if self._api_results:
+                            for data in self._api_results:
+                                records.extend(
+                                    self._parse_api_results(
+                                        data, keyword, keyword_category_map, 0
+                                    )
+                                )
+                            self._api_results = []
+                        else:
+                            records = self._parse_results_dom(
+                                html=self._page.content(),
+                                keyword=keyword,
+                                keyword_category_map=keyword_category_map,
+                                page=page,
+                                page_offset=0,
+                            )
+
+                    all_records.extend(records)
+                    if not records:
+                        logger.warning(
+                            f"[{self.platform_name}] Página {page} retornou 0 itens — "
+                            "possível bloqueio ou fim de resultados. Parando keyword."
+                        )
+                        break
 
                 if page < page_limit:
-                    self._random_delay()
+                    self._random_delay(min_s=2.0, max_s=5.0)
 
             except Exception as exc:
                 logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
