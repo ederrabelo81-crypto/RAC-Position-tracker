@@ -362,36 +362,48 @@ class ShopeeScraper(BaseScraper):
             self._captured_items = []
             offset = (page - 1) * _ITEMS_PER_PAGE
 
+            # --- Navegação ---
             try:
                 self._page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
             except Exception as exc:
                 logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
                 break
 
-            # ── FAIL FAST: aguarda redirect JS (Shopee usa redirect assíncrono) ──
-            # wait_for_url retorna imediatamente se já estamos no login,
-            # ou aguarda até 4s por um redirect — nunca bloqueia mais que isso.
+            # ── FAIL FAST: redirect JS para login ──
             try:
                 self._page.wait_for_url("**/buyer/login**", timeout=4_000)
-                # Se chegou aqui, a Shopee nos redirecionou para login
                 logger.warning(
                     f"[{self.platform_name}] Redirect detectado para login "
-                    f"(URL: {self._page.url}). Shopee bloqueou automação."
+                    f"(URL: {self._page.url}). Shopee bloqueou automação.\n"
+                    "  → Execute utils/session_grabber.py para bypass manual."
                 )
                 self._dump_debug_html(self._page.content(), "login_redirect")
                 break
             except Exception:
-                pass  # URL não mudou para login — estamos na página de busca
+                pass  # URL não mudou → estamos na página de busca
 
-            # Verifica também via HTML (redirect sem mudança de URL)
             if self._check_blocked():
                 break
 
-            self._wait_for_products(timeout_ms=4_000)   # 5 seletores × 4s = 20s max
+            # ── SCROLL PRIMEIRO — key fix para lazy loading ──
+            # A Shopee só renderiza produtos quando detecta scroll do viewport.
+            # Chamar _wait_for_products ANTES do scroll resulta em 0 itens.
             self._wait_for_network_idle()
-            self._random_delay(min_s=3.0, max_s=6.0)
-            self._human_scroll(steps=8, step_px=300)
-            time.sleep(2.0)
+            self._random_delay(min_s=1.5, max_s=3.0)
+
+            # Scroll inicial para trigger lazy loading
+            self._human_scroll(steps=5, step_px=250)
+            time.sleep(1.5)
+
+            # Agora espera os produtos aparecerem (com timeout adequado)
+            found = self._wait_for_products(timeout_ms=8_000)
+            if found:
+                logger.debug(f"[{self.platform_name}] Produtos detectados no DOM após scroll")
+
+            # Scroll final para carregar restante da página
+            self._human_scroll(steps=6, step_px=300)
+            self._random_delay(min_s=2.0, max_s=4.0)
+            time.sleep(2.0)  # aguarda XHR tardio pós-scroll
 
             html = self._page.content()
             records: List[Dict[str, Any]] = []
