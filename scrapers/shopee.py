@@ -2,15 +2,17 @@
 scrapers/shopee.py — Scraper da Shopee Brasil (shopee.com.br).
 
 Estratégia (em ordem de prioridade):
-  1. Intercepção XHR via page.on("response") — persiste durante redirecionamentos SPA.
+  0. API direta via curl_cffi — replica TLS fingerprint do Chrome real, difícil de
+     detectar. Tenta /api/v4/search/search_items sem browser. Fail fast em 15s.
+  1. Intercepção XHR via page.on("response") + browser (fallback quando API falha).
   2. __NEXT_DATA__ JSON embutido (Shopee usa Next.js SSR).
   3. Parse DOM com seletores fallback.
   4. Debug HTML dump em logs/ quando 0 itens.
 
 Proteção anti-bot:
   A Shopee redireciona silenciosamente para /buyer/login quando detecta automação.
-  O scraper detecta esse redirect logo após o goto() e falha rapidamente (fail fast)
-  em vez de aguardar 76s por XHR de produtos que nunca chegam.
+  O scraper detecta esse redirect logo após o goto() e falha rapidamente (fail fast).
+  Sessão manual (utils/session_grabber.py) é aplicada ao browser quando disponível.
 """
 
 import json
@@ -28,7 +30,17 @@ from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
 from utils.text import parse_rating
 
+# curl_cffi: replica TLS fingerprint real do Chrome (detectado como navegador legítimo)
+try:
+    from curl_cffi import requests as _cffi_requests
+    _HAS_CURL_CFFI = True
+except ImportError:
+    _HAS_CURL_CFFI = False
+
 _ITEMS_PER_PAGE = 60
+
+# Endpoint direto da API Shopee — evita browser completamente
+_SHOPEE_SEARCH_API = "https://shopee.com.br/api/v4/search/search_items"
 
 _SELECTORS = {
     "item_candidates": [
@@ -85,6 +97,77 @@ class ShopeeScraper(BaseScraper):
     def __init__(self, headless: bool = True) -> None:
         super().__init__(headless=headless)
         self._captured_items: List[Dict] = []
+
+    # ------------------------------------------------------------------
+    # Estratégia 0: API direta via curl_cffi (sem browser)
+    # ------------------------------------------------------------------
+
+    def _direct_api_search(self, keyword: str, page: int) -> List[Dict]:
+        """
+        Consulta a API de busca da Shopee diretamente via curl_cffi.
+        curl_cffi replica o TLS fingerprint real do Chrome124, tornando a
+        requisição indistinguível de um navegador real para a maioria dos WAFs.
+
+        Retorna a lista bruta de items da API (formato igual ao XHR capturado),
+        ou [] se a API estiver bloqueando ou curl_cffi não disponível.
+        """
+        if not _HAS_CURL_CFFI:
+            return []
+
+        params = {
+            "by": "relevancy",
+            "keyword": keyword,
+            "limit": _ITEMS_PER_PAGE,
+            "newest": page * _ITEMS_PER_PAGE,
+            "order": "desc",
+            "page_type": "search",
+            "scenario": "PAGE_GLOBAL_SEARCH",
+            "version": 2,
+        }
+        headers = {
+            "Referer": f"https://shopee.com.br/search?keyword={quote_plus(keyword)}",
+            "x-api-source": "pc",
+            "x-requested-with": "XMLHttpRequest",
+        }
+        try:
+            session = _cffi_requests.Session()
+            # Visita home para obter cookies de sessão (csrftoken etc.)
+            session.get(
+                "https://shopee.com.br",
+                impersonate="chrome124",
+                timeout=10,
+            )
+            resp = session.get(
+                _SHOPEE_SEARCH_API,
+                params=params,
+                headers=headers,
+                impersonate="chrome124",
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                items = (
+                    data.get("items")
+                    or (data.get("data") or {}).get("items")
+                    or []
+                )
+                if items:
+                    logger.info(
+                        f"[{self.platform_name}] API direta (curl_cffi): "
+                        f"{len(items)} itens (página {page + 1})"
+                    )
+                    return items
+                logger.debug(
+                    f"[{self.platform_name}] API direta: 200 mas sem itens "
+                    f"(Shopee pode estar detectando — fallback para browser)"
+                )
+            else:
+                logger.debug(
+                    f"[{self.platform_name}] API direta: HTTP {resp.status_code}"
+                )
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] API direta erro: {exc}")
+        return []
 
     # ------------------------------------------------------------------
     # Detecção de redirect anti-bot (fail fast)
@@ -320,8 +403,10 @@ class ShopeeScraper(BaseScraper):
     # Espera
     # ------------------------------------------------------------------
 
-    def _wait_for_products(self, timeout_ms: int = 12_000) -> bool:
-        for sel in _SELECTORS["item_candidates"][:5]:
+    def _wait_for_products(self, timeout_ms: int = 3_000) -> bool:
+        # Timeout curto por seletor: Shopee ou renderizou ou não vai renderizar.
+        # 8 000ms × 5 seletores = 40s desperdiçados; 3 000ms × 3 = 9s máximo.
+        for sel in _SELECTORS["item_candidates"][:3]:
             try:
                 self._page.wait_for_selector(sel, timeout=timeout_ms)
                 return True
@@ -345,13 +430,50 @@ class ShopeeScraper(BaseScraper):
         page_limit: int = MAX_PAGES,
     ) -> List[Dict[str, Any]]:
         all_records: List[Dict[str, Any]] = []
+
+        # ── Estratégia 0: API direta via curl_cffi (sem browser) ──────────────
+        # curl_cffi replica o TLS fingerprint do Chrome real; muito mais difícil
+        # de detectar que requests padrão ou Playwright headless.
+        api_success = False
+        for page in range(1, page_limit + 1):
+            offset = (page - 1) * _ITEMS_PER_PAGE
+            raw_items = self._direct_api_search(keyword, page - 1)
+            if not raw_items:
+                # API bloqueou nesta página — interrompe tentativa direta
+                break
+            self._captured_items = raw_items
+            records = self._parse_captured_items(keyword, keyword_category_map, offset)
+            all_records.extend(records)
+            api_success = True
+            if page < page_limit:
+                time.sleep(0.5)
+
+        if api_success:
+            logger.success(
+                f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos "
+                "(via API direta curl_cffi)"
+            )
+            return all_records
+
+        # ── Estratégia 1+: Browser + XHR / __NEXT_DATA__ / DOM ───────────────
+        logger.info(
+            f"[{self.platform_name}] API direta falhou — usando browser com XHR interception"
+        )
         self._setup_xhr_intercept()
+
+        # Aplica sessão manual salva (se existir), ajuda contra redirect para login
+        try:
+            from utils.session_grabber import apply_session_to_context
+            if apply_session_to_context("shopee", self._context):
+                logger.info(f"[{self.platform_name}] Sessão manual carregada (session_grabber)")
+        except Exception:
+            pass
 
         # Visita home para cookies de sessão
         try:
             self._page.goto("https://shopee.com.br", wait_until="domcontentloaded",
                             timeout=20_000)
-            self._random_delay(min_s=2.0, max_s=4.0)
+            self._random_delay(min_s=1.5, max_s=3.0)
         except Exception as exc:
             logger.warning(f"[{self.platform_name}] Erro ao visitar home: {exc}")
 
@@ -375,7 +497,7 @@ class ShopeeScraper(BaseScraper):
                 logger.warning(
                     f"[{self.platform_name}] Redirect detectado para login "
                     f"(URL: {self._page.url}). Shopee bloqueou automação.\n"
-                    "  → Execute utils/session_grabber.py para bypass manual."
+                    "  → Execute: python utils/session_grabber.py --site shopee"
                 )
                 self._dump_debug_html(self._page.content(), "login_redirect")
                 break
@@ -385,25 +507,19 @@ class ShopeeScraper(BaseScraper):
             if self._check_blocked():
                 break
 
-            # ── SCROLL PRIMEIRO — key fix para lazy loading ──
-            # A Shopee só renderiza produtos quando detecta scroll do viewport.
-            # Chamar _wait_for_products ANTES do scroll resulta em 0 itens.
-            self._wait_for_network_idle()
-            self._random_delay(min_s=1.5, max_s=3.0)
-
-            # Scroll inicial para trigger lazy loading
+            # ── Scroll primeiro (lazy loading), sem _wait_for_network_idle ──
+            # _wait_for_network_idle() trava em SPAs com polling contínuo.
+            # Scroll antes de wait_for_products: produtos só renderizam após scroll.
+            self._random_delay(min_s=1.0, max_s=2.0)
             self._human_scroll(steps=5, step_px=250)
             time.sleep(1.5)
 
-            # Agora espera os produtos aparecerem (com timeout adequado)
-            found = self._wait_for_products(timeout_ms=8_000)
-            if found:
-                logger.debug(f"[{self.platform_name}] Produtos detectados no DOM após scroll")
+            # Espera curta: se não apareceu em 3s por seletor, não vai aparecer.
+            self._wait_for_products(timeout_ms=3_000)
 
-            # Scroll final para carregar restante da página
-            self._human_scroll(steps=6, step_px=300)
-            self._random_delay(min_s=2.0, max_s=4.0)
-            time.sleep(2.0)  # aguarda XHR tardio pós-scroll
+            self._human_scroll(steps=5, step_px=300)
+            self._random_delay(min_s=1.5, max_s=3.0)
+            time.sleep(1.5)  # XHR tardio pós-scroll
 
             html = self._page.content()
             records: List[Dict[str, Any]] = []
@@ -428,7 +544,7 @@ class ShopeeScraper(BaseScraper):
                 break
 
             if page < page_limit:
-                self._random_delay(min_s=2.0, max_s=5.0)
+                self._random_delay(min_s=2.0, max_s=4.0)
 
         logger.success(
             f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"

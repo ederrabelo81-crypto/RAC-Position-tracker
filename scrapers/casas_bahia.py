@@ -2,15 +2,16 @@
 scrapers/casas_bahia.py — Scraper da Casas Bahia (casasbahia.com.br).
 
 Estratégia (em ordem de prioridade):
-  0. API VTEX direta via requests — bypass do Akamai WAF (chamadas HTTP simples
-     não sofrem fingerprinting JS; tenta catalog_system e intelligent-search).
-  1. Intercepção XHR da API VTEX IO via browser (se API direta falhar).
-  2. Parse DOM com cadeia de seletores fallback + img[alt].
-  3. Debug HTML dump automático em logs/ quando 0 itens.
+  0. API VTEX via curl_cffi — replica TLS fingerprint do Chrome real, muito mais
+     difícil de bloquear que requests padrão. Tenta catalog_system e IS endpoints.
+  1. API VTEX via requests — fallback simples (pode ser bloqueado pelo Akamai).
+  2. Browser + sessão salva (session_grabber.py) + XHR interception.
+  3. Parse DOM com cadeia de seletores fallback + img[alt].
+  4. Debug HTML dump automático em logs/ quando 0 itens.
 
 Proteção: WAF Akamai / PerimeterX bloqueia browsers headless.
-  A API direta contorna esse bloqueio na maioria dos casos.
-  Se ainda bloquear: proxy residencial brasileiro.
+  curl_cffi contorna o Akamai na camada TLS (JA3/JA4 fingerprint real do Chrome).
+  Se ainda bloquear: rodar session_grabber.py para bypass manual ou proxy residencial.
 Paginação: parâmetro &page={n}.
 """
 
@@ -21,6 +22,13 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
 import requests
+
+# curl_cffi: TLS fingerprint real do Chrome — bypassa Akamai JA3/JA4 detection
+try:
+    from curl_cffi import requests as _cffi_requests
+    _HAS_CURL_CFFI = True
+except ImportError:
+    _HAS_CURL_CFFI = False
 from bs4 import BeautifulSoup, Tag
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -131,7 +139,85 @@ class CasasBahiaScraper(BaseScraper):
         return url
 
     # ------------------------------------------------------------------
-    # Estratégia 0: VTEX API direta (bypass Akamai WAF)
+    # Estratégia 0: VTEX API via curl_cffi (TLS fingerprint real do Chrome)
+    # ------------------------------------------------------------------
+
+    def _vtex_cffi_search(
+        self,
+        keyword: str,
+        keyword_category_map: dict,
+        page: int,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Consulta a API VTEX usando curl_cffi com impersonation do Chrome124.
+        O Akamai Bot Manager usa JA3/JA4 TLS fingerprint para detectar bots;
+        curl_cffi replica o fingerprint exato do Chrome real, bypass efetivo.
+        """
+        if not _HAS_CURL_CFFI:
+            return []
+
+        from_idx = page_offset
+        to_idx   = page_offset + _ITEMS_PER_PAGE - 1
+        encoded  = quote_plus(keyword)
+
+        # Endpoint 1: Catalog System
+        try:
+            resp = _cffi_requests.get(
+                f"{_VTEX_CATALOG_URL}/{encoded}",
+                headers=_VTEX_HEADERS,
+                params={"_from": from_idx, "_to": to_idx},
+                impersonate="chrome124",
+                timeout=_API_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                products = resp.json()
+                if isinstance(products, list) and products:
+                    logger.info(
+                        f"[{self.platform_name}] VTEX curl_cffi catalog: "
+                        f"{len(products)} produtos (pág {page})"
+                    )
+                    return self._parse_api_products(keyword, keyword_category_map,
+                                                    page_offset, products=products)
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] VTEX curl_cffi catalog erro: {exc}")
+
+        # Endpoint 2: Intelligent Search
+        try:
+            resp = _cffi_requests.get(
+                _VTEX_IS_URL,
+                headers=_VTEX_HEADERS,
+                params={
+                    "query": keyword,
+                    "page": page,
+                    "count": _ITEMS_PER_PAGE,
+                    "sort": "score_desc",
+                    "hideUnavailableItems": "false",
+                },
+                impersonate="chrome124",
+                timeout=_API_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                products = (
+                    data.get("products")
+                    or (data.get("productSearch") or {}).get("products")
+                    or []
+                )
+                if products:
+                    logger.info(
+                        f"[{self.platform_name}] VTEX curl_cffi IS: "
+                        f"{len(products)} produtos (pág {page})"
+                    )
+                    return self._parse_api_products(keyword, keyword_category_map,
+                                                    page_offset, products=products)
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] VTEX curl_cffi IS erro: {exc}")
+
+        return []
+
+    # ------------------------------------------------------------------
+    # Estratégia 1: VTEX API via requests (fallback)
     # ------------------------------------------------------------------
 
     def _vtex_api_search(
@@ -458,13 +544,32 @@ class CasasBahiaScraper(BaseScraper):
             offset = (page - 1) * _ITEMS_PER_PAGE
             records: List[Dict[str, Any]] = []
 
-            # --- Estratégia 0: VTEX API direta (primário — bypass Akamai WAF) ---
-            # Chamadas HTTP simples via requests geralmente não são bloqueadas pelo
-            # Akamai Bot Manager, que foca em fingerprinting de browsers headless.
-            records = self._vtex_api_search(keyword, keyword_category_map, page, offset)
+            # --- Estratégia 0: VTEX API via curl_cffi (TLS fingerprint Chrome real) ---
+            records = self._vtex_cffi_search(keyword, keyword_category_map, page, offset)
+
+            # --- Estratégia 1: VTEX API via requests (fallback) ---
+            if not records:
+                records = self._vtex_api_search(keyword, keyword_category_map, page, offset)
 
             if not records:
-                # --- Estratégias 1/2: Browser + XHR + DOM ---
+                # --- Estratégias 2/3: Browser + sessão salva + XHR + DOM ---
+                # Aplica cookies de sessão manual se disponível (session_grabber.py)
+                if page == 1:
+                    try:
+                        from utils.session_grabber import apply_session_to_context
+                        if apply_session_to_context("casasbahia", self._context):
+                            logger.info(
+                                f"[{self.platform_name}] Sessão manual aplicada "
+                                "(session_grabber) — pode bypass Akamai"
+                            )
+                        else:
+                            logger.warning(
+                                f"[{self.platform_name}] Sem sessão manual. "
+                                "Execute: python utils/session_grabber.py --site casasbahia"
+                            )
+                    except Exception:
+                        pass
+
                 try:
                     self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
                 except Exception as exc:
