@@ -419,8 +419,7 @@ class ShopeeScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     @retry(
-        stop=stop_after_attempt(2),
-        wait=wait_exponential(multiplier=1, min=8, max=20),
+        stop=stop_after_attempt(1),  # sem retry — 403 e bot detection são permanentes
         reraise=False,  # não propaga — retorna [] em vez de quebrar o teste
     )
     def search(
@@ -510,14 +509,22 @@ class ShopeeScraper(BaseScraper):
             # ── Scroll primeiro (lazy loading), sem _wait_for_network_idle ──
             # _wait_for_network_idle() trava em SPAs com polling contínuo.
             # Scroll antes de wait_for_products: produtos só renderizam após scroll.
+            # page.evaluate() pode lançar se Shopee redirecionar durante scroll —
+            # capturamos para não propagar a exceção ao decorator @retry.
             self._random_delay(min_s=1.0, max_s=2.0)
-            self._human_scroll(steps=5, step_px=250)
+            try:
+                self._human_scroll(steps=5, step_px=250)
+            except Exception:
+                pass
             time.sleep(1.5)
 
             # Espera curta: se não apareceu em 3s por seletor, não vai aparecer.
             self._wait_for_products(timeout_ms=3_000)
 
-            self._human_scroll(steps=5, step_px=300)
+            try:
+                self._human_scroll(steps=5, step_px=300)
+            except Exception:
+                pass
             self._random_delay(min_s=1.5, max_s=3.0)
             time.sleep(1.5)  # XHR tardio pós-scroll
 

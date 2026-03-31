@@ -154,12 +154,9 @@ class LeroyMerlinScraper(BaseScraper):
             "query": keyword,
             "hitsPerPage": _ITEMS_PER_PAGE,
             "page": page - 1,  # Algolia é 0-indexed
-            "attributesToRetrieve": [
-                "description", "name", "title", "productName",
-                "price", "preco", "sellingPrice", "bestPrice",
-                "priceRange", "rating", "ratingAverage",
-                "reviewCount", "totalReviews", "objectID",
-            ],
+            # Sem attributesToRetrieve → retorna todos os campos do hit.
+            # Isso nos permite descobrir os campos reais de preço/título
+            # e evita o problema de 0% de preços causado por whitelist incompleta.
         }
         try:
             resp = requests.post(
@@ -193,20 +190,37 @@ class LeroyMerlinScraper(BaseScraper):
     ) -> List[Dict[str, Any]]:
         records = []
         for idx, hit in enumerate(hits):
+            # Debug: dump estrutura do primeiro hit para descobrir campos reais.
+            # Aparece apenas no primeiro item — útil para identificar price fields.
+            if idx == 0:
+                logger.debug(
+                    f"[{self.platform_name}] Estrutura do primeiro hit Algolia:\n"
+                    + json.dumps(hit, indent=2, ensure_ascii=False)[:2000]
+                )
+
+            # Título: prioridade para nome curto (name/title), não descrição longa.
+            # "description" em Leroy tende a conter texto HTML/bullet como
+            # "•Inverter: mais eficiência..." — usar como último recurso.
             title = (
-                hit.get("description")
-                or hit.get("name")
-                or hit.get("productName")
+                hit.get("name")
                 or hit.get("title")
+                or hit.get("productName")
+                or hit.get("description")
             )
-            # Algolia Leroy: price pode ser float direto ou em priceRange
+
+            # Preço: tenta múltiplos paths conhecidos do schema Algolia Leroy.
+            # O debug do primeiro hit (acima) vai revelar o path real se todos falharem.
             price_val = (
                 hit.get("price")
                 or hit.get("preco")
                 or hit.get("sellingPrice")
                 or hit.get("bestPrice")
+                or hit.get("final_price")
+                or hit.get("sale_price")
                 or (hit.get("priceRange") or {}).get("sellingPrice", {}).get("lowPrice")
                 or (hit.get("priceRange") or {}).get("minPrice")
+                or (hit.get("prices") or {}).get("selling_price")
+                or (hit.get("price_data") or {}).get("value")
             )
             # Alguns hits têm prices como dict {"value": 123.45}
             if isinstance(price_val, dict):

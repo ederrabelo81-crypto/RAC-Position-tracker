@@ -170,7 +170,7 @@ class CasasBahiaScraper(BaseScraper):
                 impersonate="chrome124",
                 timeout=_API_TIMEOUT,
             )
-            if resp.status_code == 200:
+            if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
                 products = resp.json()
                 if isinstance(products, list) and products:
                     logger.info(
@@ -197,7 +197,7 @@ class CasasBahiaScraper(BaseScraper):
                 impersonate="chrome124",
                 timeout=_API_TIMEOUT,
             )
-            if resp.status_code == 200:
+            if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
                 data = resp.json()
                 products = (
                     data.get("products")
@@ -245,7 +245,7 @@ class CasasBahiaScraper(BaseScraper):
                 params={"_from": from_idx, "_to": to_idx},
                 timeout=_API_TIMEOUT,
             )
-            if resp.status_code == 200:
+            if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
                 products = resp.json()
                 if isinstance(products, list) and products:
                     logger.info(
@@ -271,7 +271,7 @@ class CasasBahiaScraper(BaseScraper):
                 },
                 timeout=_API_TIMEOUT,
             )
-            if resp.status_code == 200:
+            if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
                 data = resp.json()
                 products = (
                     data.get("products")
