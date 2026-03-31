@@ -66,6 +66,11 @@ SITE_CONFIG = {
 def grab_session(site: str, headless: bool = False) -> bool:
     """
     Abre browser visível, aguarda interação humana e salva a sessão.
+
+    Usa Google Chrome real (menos detectável que Chromium) quando disponível.
+    NÃO navega automaticamente para a URL de busca — o usuário navega manualmente
+    para evitar redirecionamentos inesperados do WAF (ex.: Akamai).
+
     Retorna True se sessão salva com sucesso.
     """
     if site not in SITE_CONFIG:
@@ -79,21 +84,74 @@ def grab_session(site: str, headless: bool = False) -> bool:
     print(f"\n{'='*60}")
     print(f"  Session Grabber — {site.upper()}")
     print(f"{'='*60}")
-    print(f"  URL: {cfg['check_url']}")
     print(cfg["wait_message"])
 
+    # Patch JS completo anti-detecção de automação
+    _STEALTH_JS = """
+        // Remove navigator.webdriver (principal flag de detecção)
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        try { delete navigator.__proto__.webdriver; } catch(_) {}
+
+        // Simula Chrome real (runtime, loadTimes, csi)
+        window.chrome = {
+            runtime: {
+                onConnect: {addListener: () => {}},
+                onMessage: {addListener: () => {}},
+                id: undefined,
+            },
+            loadTimes: () => ({}),
+            csi: () => ({}),
+        };
+
+        // Plugins não-vazios (browsers reais têm plugins)
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => { const a = [1,2,3,4,5]; a.item = () => null; return a; }
+        });
+
+        // Idiomas brasileiros
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['pt-BR', 'pt', 'en-US', 'en']
+        });
+
+        // Permissions API correta para browsers reais
+        const _origQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = (p) =>
+            p.name === 'notifications'
+                ? Promise.resolve({state: Notification.permission})
+                : _origQuery(p);
+    """
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=headless,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--start-maximized",
-            ],
-        )
+        # Tenta Chrome real primeiro (instalado pelo usuário), fallback Chromium.
+        # Chrome real tem TLS fingerprint diferente do Chromium — Shopee e Akamai
+        # aceitam Chrome real mesmo com --disable-blink-features.
+        browser = None
+        used_channel = None
+        for channel in ["chrome", "msedge", None]:
+            try:
+                browser = p.chromium.launch(
+                    headless=headless,
+                    channel=channel,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-infobars",
+                        "--disable-dev-shm-usage",
+                    ],
+                )
+                used_channel = channel or "chromium"
+                break
+            except Exception:
+                continue
+
+        if browser is None:
+            print("  ERRO: Não foi possível iniciar nenhum browser.")
+            return False
+
+        print(f"  Browser: {used_channel}")
 
         context = browser.new_context(
-            viewport={"width": 1366, "height": 768},
+            no_viewport=True,  # usa tamanho da janela real
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -102,52 +160,40 @@ def grab_session(site: str, headless: bool = False) -> bool:
             locale="pt-BR",
             timezone_id="America/Sao_Paulo",
         )
-
-        # Patch anti-detecção
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            window.chrome = {runtime: {}};
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-        """)
-
+        context.add_init_script(_STEALTH_JS)
         page = context.new_page()
 
-        print(f"  → Abrindo {cfg['url']}...")
+        # Navega apenas para a home — o usuário navega o resto manualmente.
+        # Navegação automática para /busca pode causar redirecionamentos WAF.
+        print(f"\n  → Abrindo: {cfg['url']}")
         try:
             page.goto(cfg["url"], wait_until="domcontentloaded", timeout=30_000)
         except Exception as e:
-            print(f"  AVISO: Erro ao carregar home: {e}")
+            print(f"  AVISO: Timeout ao carregar home (normal): {e}")
 
-        print(f"  → Navegando para página de busca...")
+        print(f"\n  ════════════════════════════════════════")
+        print(f"  INSTRUÇÃO — navegue MANUALMENTE no browser:")
+        print(f"  1. Aguarde a página carregar completamente")
+        print(f"  2. Se aparecer desafio/CAPTCHA, resolva-o")
+        print(f"  3. Navegue até: {cfg['check_url']}")
+        print(f"  4. Verifique que produtos aparecem normalmente")
+        print(f"  5. {cfg['success_hint']}")
+        print(f"  ════════════════════════════════════════")
+
         try:
-            page.goto(cfg["check_url"], wait_until="domcontentloaded", timeout=30_000)
-        except Exception as e:
-            print(f"  AVISO: Erro ao carregar busca: {e}")
-
-        print(f"\n  ⏳ {cfg['success_hint']}")
-        print("  Quando estiver pronto, volte aqui e pressione ENTER...")
-
-        try:
-            input("\n  → Pressione ENTER para salvar a sessão: ")
+            input("\n  → Volte aqui e pressione ENTER para salvar a sessão: ")
         except KeyboardInterrupt:
-            print("\n  Cancelado pelo usuário.")
+            print("\n  Cancelado.")
             browser.close()
             return False
 
-        # Captura estado da sessão
         cookies = context.cookies()
         current_url = page.url
-        html_sample = page.content()[:500]
 
-        # Verifica se está na página certa
-        blocked = cfg["blocked_text"] in current_url or cfg["blocked_text"] in html_sample
-        if blocked:
-            print(f"\n  ⚠️  AVISO: Parece que o site ainda está bloqueado.")
-            print(f"  URL atual: {current_url}")
-            confirm = input("  Salvar mesmo assim? (s/N): ").strip().lower()
-            if confirm != "s":
-                browser.close()
-                return False
+        if not cookies:
+            print("  ⚠️  Nenhum cookie capturado. O site pode não ter carregado.")
+            browser.close()
+            return False
 
         session_data = {
             "site": site,
@@ -158,9 +204,8 @@ def grab_session(site: str, headless: bool = False) -> bool:
 
         session_path.write_text(json.dumps(session_data, indent=2, ensure_ascii=False))
         print(f"\n  ✅ Sessão salva: {session_path}")
-        print(f"  Total de cookies: {len(cookies)}")
-        print(f"  URL no momento do save: {current_url}")
-
+        print(f"  Cookies: {len(cookies)}")
+        print(f"  URL atual: {current_url}")
         browser.close()
 
     return True

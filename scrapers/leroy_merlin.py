@@ -190,45 +190,29 @@ class LeroyMerlinScraper(BaseScraper):
     ) -> List[Dict[str, Any]]:
         records = []
         for idx, hit in enumerate(hits):
-            # Dump do primeiro hit — sempre visível (WARNING) para diagnóstico de preço.
-            # Mostra todos os campos retornados pela API Algolia, permitindo
-            # identificar o path correto do preço caso ainda venha None.
-            if idx == 0:
-                price_fields = {k: v for k, v in hit.items()
-                                if any(p in k.lower() for p in
-                                       ['price', 'preco', 'valor', 'sale', 'selling',
-                                        'cost', 'offer', 'pric', 'amount'])}
-                logger.warning(
-                    f"[{self.platform_name}] DEBUG hit[0] — campos de preço encontrados: "
-                    f"{json.dumps(price_fields, ensure_ascii=False)}\n"
-                    f"  TODAS as chaves: {sorted(hit.keys())}"
-                )
-
-            # Título: prioridade para nome curto (name/title), não descrição longa.
-            # "description" em Leroy tende a conter texto HTML/bullet como
-            # "•Inverter: mais eficiência..." — usar como último recurso.
+            # Título: prioridade para nome curto (name/shortName/title).
+            # "description" em Leroy tende a conter texto de bullet points.
             title = (
                 hit.get("name")
+                or hit.get("shortName")
                 or hit.get("title")
                 or hit.get("productName")
                 or hit.get("description")
             )
 
-            # Preço: tenta múltiplos paths conhecidos do schema Algolia Leroy.
-            # O debug do primeiro hit (acima) vai revelar o path real se todos falharem.
+            # Preço: campos confirmados via debug em produção (30/03/2026).
+            # averagePromotionalPrice e medianPromotionalPrice são os únicos
+            # campos de preço retornados pelo índice production_products.
             price_val = (
-                hit.get("price")
+                hit.get("averagePromotionalPrice")
+                or hit.get("medianPromotionalPrice")
+                or hit.get("price")
                 or hit.get("preco")
                 or hit.get("sellingPrice")
                 or hit.get("bestPrice")
-                or hit.get("final_price")
-                or hit.get("sale_price")
                 or (hit.get("priceRange") or {}).get("sellingPrice", {}).get("lowPrice")
                 or (hit.get("priceRange") or {}).get("minPrice")
-                or (hit.get("prices") or {}).get("selling_price")
-                or (hit.get("price_data") or {}).get("value")
             )
-            # Alguns hits têm prices como dict {"value": 123.45}
             if isinstance(price_val, dict):
                 price_val = price_val.get("value") or price_val.get("amount")
 
