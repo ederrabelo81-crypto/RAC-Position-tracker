@@ -5,9 +5,11 @@ Status das plataformas (validado em produção — Mar/2026):
   ✅ Mercado Livre   — funcional (popup de CEP tratado automaticamente)
   ✅ Amazon          — funcional
   ✅ Magalu          — funcional (seletores confirmados via diagnóstico)
-  ⚡ Shopee          — ativo com stealth; pode exigir cookies se bloquear
-  ⚡ Casas Bahia     — ativo com stealth; WAF Akamai pode bloquear
-  ⚡ Google Shopping — ativo com stealth; reCAPTCHA pode bloquear
+  ✅ Google Shopping — funcional
+  ✅ Leroy Merlin    — funcional (Algolia API, preço via averagePromotionalPrice)
+  ✅ Fast Shop       — ativo
+  ⏸️  Shopee         — em stand by (requer sessão autenticada via session_grabber)
+  ⏸️  Casas Bahia    — em stand by (WAF Akamai, requer sessão via session_grabber)
 """
 
 from dataclasses import dataclass, field
@@ -28,16 +30,22 @@ class Keyword:
 
 KEYWORDS_LIST: List[Keyword] = [
     # ── Head terms genéricos ────────────────────────────────────
+    # Maior volume absoluto no Google Search BR — base da pirâmide RAC
     Keyword("ar condicionado split",                    "Genérica",          "alta"),
     Keyword("ar condicionado inverter",                 "Genérica",          "alta"),
     Keyword("ar condicionado",                          "Genérica",          "alta"),
     Keyword("ar condicionado split inverter",           "Genérica",          "alta"),
 
     # ── Capacidade / BTU ────────────────────────────────────────
+    # 9k e 12k são os BTUs mais buscados no Brasil (ambientes até 20m²)
+    # 18k e 24k = ticket maior, consumidor mais qualificado
     Keyword("ar condicionado 9000 btus",                "Capacidade BTU",    "alta"),
     Keyword("ar condicionado 12000 btus",               "Capacidade BTU",    "alta"),
     Keyword("ar condicionado 18000 btus",               "Capacidade BTU",    "alta"),
     Keyword("ar condicionado 24000 btus",               "Capacidade BTU",    "alta"),
+    # Combos BTU+inverter: maior intenção de compra no Google Search
+    Keyword("ar condicionado 9000 btus inverter",       "Capacidade + Tipo", "alta"),
+    Keyword("ar condicionado 12000 btus inverter",      "Capacidade + Tipo", "alta"),
     Keyword("split 12000 btus inverter",                "Capacidade + Tipo", "alta"),
     Keyword("split 9000 btus inverter",                 "Capacidade + Tipo", "alta"),
 
@@ -45,12 +53,14 @@ KEYWORDS_LIST: List[Keyword] = [
     Keyword("ar condicionado midea",                    "Marca",             "alta"),
     Keyword("midea inverter",                           "Marca",             "alta"),
     Keyword("midea 12000 btus",                         "Marca",             "alta"),
+    Keyword("ar condicionado midea 12000",              "Marca",             "alta"),
     Keyword("midea ecomaster",                          "Modelo Midea",      "alta"),
     Keyword("midea airvolution",                        "Modelo Midea",      "alta"),
 
     # ── Concorrentes ────────────────────────────────────────────
     Keyword("ar condicionado lg",                       "Marca",             "alta"),
     Keyword("lg dual inverter",                         "Marca",             "alta"),
+    Keyword("ar condicionado lg dual inverter 12000",   "Marca",             "alta"),
     Keyword("ar condicionado samsung",                  "Marca",             "alta"),
     Keyword("samsung windfree",                         "Marca",             "alta"),
     Keyword("ar condicionado gree",                     "Marca",             "media"),
@@ -59,15 +69,11 @@ KEYWORDS_LIST: List[Keyword] = [
     Keyword("ar condicionado tcl",                      "Marca",             "media"),
 
     # ── Intenção de compra ──────────────────────────────────────
-    Keyword("melhor ar condicionado custo beneficio",   "Intenção Compra",   "alta"),
+    # Versões com acento são suficientes — marketplaces normalizam acento
     Keyword("melhor ar condicionado custo benefício",   "Intenção Compra",   "alta"),
     Keyword("melhor ar condicionado 2026",              "Intenção Compra",   "alta"),
     Keyword("comprar ar condicionado",                  "Intenção Compra",   "media"),
     Keyword("ar condicionado em promoção",              "Preço / Promoção",  "media"),
-    Keyword("ar condicionado em promocao",              "Preço / Promoção",  "media"),
-
-    # ── Comparação ──────────────────────────────────────────────
-    Keyword("midea vs lg",                              "Comparação",        "media"),
 ]
 
 # Mantém compatibilidade com o formato dict usado em config legado
@@ -87,11 +93,11 @@ ACTIVE_PLATFORMS = {
     "ml":             True,   # ✅ Mercado Livre — funcional
     "magalu":         True,   # ✅ Magalu — funcional
     "amazon":         True,   # ✅ Amazon — funcional
-    "shopee":         True,   # ⚡ Shopee — ativo com stealth
-    "casasbahia":     True,   # ⚡ Casas Bahia — ativo com stealth
-    "google_shopping":True,   # ⚡ Google Shopping — ativo com stealth
-    "leroy":          False,  # ⚡ Leroy Merlin — desativado por padrão
-    "fast":           False,  # ⚡ Fast Shop — desativado por padrão
+    "shopee":         False,  # ⏸️  Shopee — em stand by (aguardando sessão válida)
+    "casasbahia":     False,  # ⏸️  Casas Bahia — em stand by (Akamai WAF)
+    "google_shopping":True,   # ✅ Google Shopping — funcional
+    "leroy":          True,   # ✅ Leroy Merlin — funcional (Algolia API)
+    "fast":           True,   # ✅ Fast Shop — ativo
 }
 
 # ---------------------------------------------------------------------------
