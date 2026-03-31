@@ -131,12 +131,42 @@ class ShopeeScraper(BaseScraper):
         }
         try:
             session = _cffi_requests.Session()
-            # Visita home para obter cookies de sessão (csrftoken etc.)
-            session.get(
-                "https://shopee.com.br",
-                impersonate="chrome124",
-                timeout=10,
-            )
+
+            # Prioridade: usar cookies de sessão manual (session_grabber.py).
+            # Cookies reais do browser incluem csrftoken, SPC_ST, etc.
+            # que fazem a API Shopee responder com resultados reais.
+            session_cookies = []
+            try:
+                from utils.session_grabber import load_session
+                session_cookies = load_session("shopee")
+            except Exception:
+                pass
+
+            if session_cookies:
+                for c in session_cookies:
+                    session.cookies.set(
+                        c["name"], c["value"],
+                        domain=c.get("domain", ".shopee.com.br"),
+                    )
+                logger.info(
+                    f"[{self.platform_name}] Usando sessão salva "
+                    f"({len(session_cookies)} cookies) para API direta"
+                )
+            else:
+                # Sem sessão salva: visita home para obter cookies básicos.
+                # Esses cookies NÃO incluem csrftoken válido — provável 403.
+                # Execute: python utils/session_grabber.py --site shopee
+                logger.debug(f"[{self.platform_name}] Sem sessão — tentando API sem cookies")
+                try:
+                    session.get("https://shopee.com.br", impersonate="chrome124", timeout=8)
+                except Exception:
+                    pass
+
+            # Adiciona x-csrftoken ao header se disponível nos cookies
+            csrftoken = session.cookies.get("csrftoken", "")
+            if csrftoken:
+                headers["x-csrftoken"] = csrftoken
+
             resp = session.get(
                 _SHOPEE_SEARCH_API,
                 params=params,
@@ -157,13 +187,15 @@ class ShopeeScraper(BaseScraper):
                         f"{len(items)} itens (página {page + 1})"
                     )
                     return items
-                logger.debug(
-                    f"[{self.platform_name}] API direta: 200 mas sem itens "
-                    f"(Shopee pode estar detectando — fallback para browser)"
+                logger.warning(
+                    f"[{self.platform_name}] API direta: 200 mas 0 itens. "
+                    "Execute session_grabber para cookies válidos: "
+                    "python utils/session_grabber.py --site shopee"
                 )
             else:
-                logger.debug(
-                    f"[{self.platform_name}] API direta: HTTP {resp.status_code}"
+                logger.warning(
+                    f"[{self.platform_name}] API direta: HTTP {resp.status_code}. "
+                    "Execute session_grabber: python utils/session_grabber.py --site shopee"
                 )
         except Exception as exc:
             logger.debug(f"[{self.platform_name}] API direta erro: {exc}")

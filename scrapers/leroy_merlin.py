@@ -190,12 +190,18 @@ class LeroyMerlinScraper(BaseScraper):
     ) -> List[Dict[str, Any]]:
         records = []
         for idx, hit in enumerate(hits):
-            # Debug: dump estrutura do primeiro hit para descobrir campos reais.
-            # Aparece apenas no primeiro item — útil para identificar price fields.
+            # Dump do primeiro hit — sempre visível (WARNING) para diagnóstico de preço.
+            # Mostra todos os campos retornados pela API Algolia, permitindo
+            # identificar o path correto do preço caso ainda venha None.
             if idx == 0:
-                logger.debug(
-                    f"[{self.platform_name}] Estrutura do primeiro hit Algolia:\n"
-                    + json.dumps(hit, indent=2, ensure_ascii=False)[:2000]
+                price_fields = {k: v for k, v in hit.items()
+                                if any(p in k.lower() for p in
+                                       ['price', 'preco', 'valor', 'sale', 'selling',
+                                        'cost', 'offer', 'pric', 'amount'])}
+                logger.warning(
+                    f"[{self.platform_name}] DEBUG hit[0] — campos de preço encontrados: "
+                    f"{json.dumps(price_fields, ensure_ascii=False)}\n"
+                    f"  TODAS as chaves: {sorted(hit.keys())}"
                 )
 
             # Título: prioridade para nome curto (name/title), não descrição longa.

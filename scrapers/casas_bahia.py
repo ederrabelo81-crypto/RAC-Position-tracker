@@ -161,44 +161,66 @@ class CasasBahiaScraper(BaseScraper):
         to_idx   = page_offset + _ITEMS_PER_PAGE - 1
         encoded  = quote_plus(keyword)
 
+        # Carrega cookies de sessão manual (session_grabber.py).
+        # Akamai pode liberar baseado em cookies de sessão válida do browser.
+        session_cookies = []
+        try:
+            from utils.session_grabber import load_session
+            session_cookies = load_session("casasbahia")
+            if session_cookies:
+                logger.info(
+                    f"[{self.platform_name}] Usando sessão salva para API curl_cffi "
+                    f"({len(session_cookies)} cookies)"
+                )
+        except Exception:
+            pass
+
+        def _cffi_get(url: str, params: dict) -> Optional[object]:
+            """Helper: GET com curl_cffi + cookies de sessão + content-type guard."""
+            cffi_session = _cffi_requests.Session()
+            if session_cookies:
+                for c in session_cookies:
+                    cffi_session.cookies.set(
+                        c["name"], c["value"],
+                        domain=c.get("domain", ".casasbahia.com.br"),
+                    )
+            resp = cffi_session.get(
+                url, headers=_VTEX_HEADERS, params=params,
+                impersonate="chrome124", timeout=_API_TIMEOUT,
+            )
+            ct = resp.headers.get("content-type", "")
+            if resp.status_code == 200 and "application/json" in ct:
+                return resp.json()
+            logger.debug(
+                f"[{self.platform_name}] curl_cffi: HTTP {resp.status_code} "
+                f"CT={ct[:60]} url={url[:70]}"
+            )
+            return None
+
         # Endpoint 1: Catalog System
         try:
-            resp = _cffi_requests.get(
+            data = _cffi_get(
                 f"{_VTEX_CATALOG_URL}/{encoded}",
-                headers=_VTEX_HEADERS,
-                params={"_from": from_idx, "_to": to_idx},
-                impersonate="chrome124",
-                timeout=_API_TIMEOUT,
+                {"_from": from_idx, "_to": to_idx},
             )
-            if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
-                products = resp.json()
-                if isinstance(products, list) and products:
-                    logger.info(
-                        f"[{self.platform_name}] VTEX curl_cffi catalog: "
-                        f"{len(products)} produtos (pág {page})"
-                    )
-                    return self._parse_api_products(keyword, keyword_category_map,
-                                                    page_offset, products=products)
+            if isinstance(data, list) and data:
+                logger.info(
+                    f"[{self.platform_name}] VTEX curl_cffi catalog: "
+                    f"{len(data)} produtos (pág {page})"
+                )
+                return self._parse_api_products(keyword, keyword_category_map,
+                                                page_offset, products=data)
         except Exception as exc:
             logger.debug(f"[{self.platform_name}] VTEX curl_cffi catalog erro: {exc}")
 
         # Endpoint 2: Intelligent Search
         try:
-            resp = _cffi_requests.get(
+            data = _cffi_get(
                 _VTEX_IS_URL,
-                headers=_VTEX_HEADERS,
-                params={
-                    "query": keyword,
-                    "page": page,
-                    "count": _ITEMS_PER_PAGE,
-                    "sort": "score_desc",
-                    "hideUnavailableItems": "false",
-                },
-                impersonate="chrome124",
-                timeout=_API_TIMEOUT,
+                {"query": keyword, "page": page, "count": _ITEMS_PER_PAGE,
+                 "sort": "score_desc", "hideUnavailableItems": "false"},
             )
-            if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
-                data = resp.json()
+            if isinstance(data, dict):
                 products = (
                     data.get("products")
                     or (data.get("productSearch") or {}).get("products")
