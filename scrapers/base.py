@@ -60,67 +60,81 @@ class BaseScraper(ABC):
     # Gerenciamento de ciclo de vida do browser
     # ------------------------------------------------------------------
 
+    # Patch JS completo — mesma versão do session_grabber para consistência
+    _STEALTH_JS = """
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        try { delete navigator.__proto__.webdriver; } catch(_) {}
+
+        window.chrome = {
+            runtime: {
+                onConnect: {addListener: () => {}},
+                onMessage: {addListener: () => {}},
+                id: undefined,
+            },
+            loadTimes: () => ({}),
+            csi: () => ({}),
+        };
+
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => { const a = [1,2,3,4,5]; a.item = () => null; return a; }
+        });
+
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['pt-BR', 'pt', 'en-US', 'en']
+        });
+
+        const _origQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = (p) =>
+            p.name === 'notifications'
+                ? Promise.resolve({state: Notification.permission})
+                : _origQuery(p);
+    """
+
     def _launch(self) -> None:
         """Inicia o Playwright, o browser e o contexto com configurações stealth."""
         self._playwright = sync_playwright().start()
 
-        self._browser = self._playwright.chromium.launch(
-            headless=self.headless,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                # desabilita aceleração de hardware (evita erros em servidores)
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-            ],
-        )
+        # Tenta Chrome real primeiro (menos detectável que Chromium headless).
+        # Chrome real tem TLS fingerprint diferente — Shopee e Akamai aceitam melhor.
+        _launch_args = [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--disable-infobars",
+        ]
+        self._browser = None
+        used_channel = None
+        for channel in ["chrome", "msedge", None]:
+            try:
+                self._browser = self._playwright.chromium.launch(
+                    headless=self.headless,
+                    channel=channel,
+                    args=_launch_args,
+                )
+                used_channel = channel or "chromium"
+                break
+            except Exception:
+                continue
+
+        if self._browser is None:
+            raise RuntimeError("Não foi possível iniciar nenhum browser (chrome/msedge/chromium)")
 
         self._context = self._browser.new_context(
             user_agent=self._user_agent,
             viewport={"width": 1366, "height": 768},
             locale="pt-BR",
             timezone_id="America/Sao_Paulo",
-            # aceita todos os cookies automaticamente
             accept_downloads=False,
         )
 
-        # -----------------------------------------------------------
-        # Patch JavaScript anti-detecção (equivalente ao playwright-stealth)
-        # Remove as "digital fingerprints" que denunciam o WebDriver
-        # -----------------------------------------------------------
-        self._context.add_init_script("""
-            // Remove o atributo webdriver do navigator
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined,
-            });
-
-            // Simula plugins normais de browser real
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5],
-            });
-
-            // Simula linguagens normais
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['pt-BR', 'pt', 'en-US', 'en'],
-            });
-
-            // Mascara o uso do chrome headless
-            window.chrome = { runtime: {} };
-
-            // Corrige permissões que navegadores headless retornam diferente
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications'
-                    ? Promise.resolve({ state: Notification.permission })
-                    : originalQuery(parameters)
-            );
-        """)
+        self._context.add_init_script(self._STEALTH_JS)
 
         self._page = self._context.new_page()
         self._page.set_default_timeout(PAGE_TIMEOUT)
         logger.info(
-            f"[{self.platform_name}] Browser iniciado | UA: {self._user_agent[:60]}..."
+            f"[{self.platform_name}] Browser iniciado ({used_channel}) | UA: {self._user_agent[:60]}..."
         )
 
     def _close(self) -> None:

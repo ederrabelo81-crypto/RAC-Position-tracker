@@ -45,14 +45,20 @@ _VTEX_CATALOG_URL = f"{_VTEX_BASE}/api/catalog_system/pub/products/search"
 _VTEX_IS_URL      = f"{_VTEX_BASE}/_v/api/intelligent-search/product_search/pt/pt-BR/search"
 
 _VTEX_HEADERS = {
-    "Accept": "application/json",
-    "Accept-Language": "pt-BR,pt;q=0.9",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
+    "Origin": "https://www.casasbahia.com.br",
     "Referer": "https://www.casasbahia.com.br/",
+    # Sec-Fetch headers são críticos para Akamai — indicam requisição AJAX legítima
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
 }
 _API_TIMEOUT = 8
 
@@ -179,10 +185,21 @@ class CasasBahiaScraper(BaseScraper):
             """Helper: GET com curl_cffi + cookies de sessão + content-type guard."""
             cffi_session = _cffi_requests.Session()
             if session_cookies:
+                # Remove o ponto inicial do domínio: ".casasbahia.com.br" → "casasbahia.com.br"
+                # curl_cffi/httpx não envia cookies com domínio ".xxx" para "www.xxx"
+                # da mesma forma que os browsers fazem — removendo o ponto corrige isso.
                 for c in session_cookies:
-                    cffi_session.cookies.set(
-                        c["name"], c["value"],
-                        domain=c.get("domain", ".casasbahia.com.br"),
+                    domain = c.get("domain", "casasbahia.com.br").lstrip(".")
+                    cffi_session.cookies.set(c["name"], c["value"], domain=domain)
+                # Log de cookies Akamai aplicados (diagnóstico)
+                akamai_present = [
+                    c["name"] for c in session_cookies
+                    if c["name"] in ("AKA_A2", "ak_bmsc", "bm_sz", "bm_sv", "akavpau_wwwcasasbahia")
+                ]
+                if akamai_present:
+                    logger.info(
+                        f"[{self.platform_name}] Cookies Akamai aplicados: "
+                        f"{', '.join(akamai_present)}"
                     )
             resp = cffi_session.get(
                 url, headers=_VTEX_HEADERS, params=params,

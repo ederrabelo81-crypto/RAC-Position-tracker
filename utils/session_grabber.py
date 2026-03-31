@@ -40,6 +40,9 @@ SITE_CONFIG = {
         "check_url": "https://www.casasbahia.com.br/busca?q=ar+condicionado",
         "success_hint": "Aguarde os produtos aparecerem na página de busca.",
         "blocked_text": "Ops! Algo deu errado",
+        # Casas Bahia: NÃO navega automaticamente — Akamai pode redirecionar
+        # com parâmetros que indicam bot detection. Usuário navega manualmente.
+        "auto_navigate": False,
         "wait_message": (
             "\n🔑 INSTRUÇÃO — CASAS BAHIA:\n"
             "  O Akamai WAF pode exibir uma página de erro.\n"
@@ -51,13 +54,20 @@ SITE_CONFIG = {
     "shopee": {
         "url": "https://shopee.com.br",
         "check_url": "https://shopee.com.br/search?keyword=ar+condicionado",
-        "success_hint": "Faça login se solicitado e aguarde os produtos aparecerem.",
+        "success_hint": "Faça login se necessário, aguarde os PRODUTOS aparecerem na busca.",
         "blocked_text": "buyer/login",
+        # Shopee: navega automaticamente para a busca após a homepage.
+        # Necessário para capturar cookies de sessão válidos para a API de busca.
+        # Sem esses cookies (csrftoken + SPC_ST), a API retorna 403.
+        "auto_navigate": True,
         "wait_message": (
             "\n🔑 INSTRUÇÃO — SHOPEE:\n"
-            "  Se aparecer tela de login, faça login com sua conta.\n"
-            "  Aguarde a página de busca carregar com produtos.\n"
-            "  Quando ver os PRODUTOS listados, pressione ENTER.\n"
+            "  1. Aguarde a homepage carregar\n"
+            "  2. O script vai navegar automaticamente para a página de busca\n"
+            "  3. Se aparecer tela de LOGIN, faça login com sua conta Shopee\n"
+            "  4. Após login, navegue para: shopee.com.br/search?keyword=ar+condicionado\n"
+            "  5. Aguarde os PRODUTOS aparecerem na tela\n"
+            "  6. Quando ver produtos listados, pressione ENTER aqui\n"
         ),
     },
 }
@@ -163,21 +173,39 @@ def grab_session(site: str, headless: bool = False) -> bool:
         context.add_init_script(_STEALTH_JS)
         page = context.new_page()
 
-        # Navega apenas para a home — o usuário navega o resto manualmente.
-        # Navegação automática para /busca pode causar redirecionamentos WAF.
+        # Navega para a homepage primeiro (sempre seguro)
         print(f"\n  → Abrindo: {cfg['url']}")
         try:
             page.goto(cfg["url"], wait_until="domcontentloaded", timeout=30_000)
         except Exception as e:
             print(f"  AVISO: Timeout ao carregar home (normal): {e}")
 
+        # Para sites com auto_navigate=True (ex.: Shopee), navega automaticamente
+        # para a página de busca após a homepage — captura cookies de sessão de busca.
+        if cfg.get("auto_navigate"):
+            print(f"\n  → Navegando para busca: {cfg['check_url']}")
+            try:
+                page.wait_for_timeout(3_000)  # pausa para home carregar
+                page.goto(cfg["check_url"], wait_until="domcontentloaded", timeout=30_000)
+                page.wait_for_timeout(3_000)  # aguarda JS inicial
+            except Exception as e:
+                print(f"  AVISO: Timeout ao navegar para busca (normal): {e}")
+
         print(f"\n  ════════════════════════════════════════")
-        print(f"  INSTRUÇÃO — navegue MANUALMENTE no browser:")
-        print(f"  1. Aguarde a página carregar completamente")
-        print(f"  2. Se aparecer desafio/CAPTCHA, resolva-o")
-        print(f"  3. Navegue até: {cfg['check_url']}")
-        print(f"  4. Verifique que produtos aparecem normalmente")
-        print(f"  5. {cfg['success_hint']}")
+        if cfg.get("auto_navigate"):
+            print(f"  INSTRUÇÃO:")
+            print(f"  1. Se aparecer tela de LOGIN, faça login com sua conta")
+            print(f"  2. Após login, o browser deve ir para: {cfg['check_url']}")
+            print(f"  3. Se não ir automaticamente, navegue até lá manualmente")
+            print(f"  4. Aguarde os PRODUTOS aparecerem na lista")
+            print(f"  5. {cfg['success_hint']}")
+        else:
+            print(f"  INSTRUÇÃO — navegue MANUALMENTE no browser:")
+            print(f"  1. Aguarde a página carregar completamente")
+            print(f"  2. Se aparecer desafio/CAPTCHA, resolva-o")
+            print(f"  3. Navegue até: {cfg['check_url']}")
+            print(f"  4. Verifique que produtos aparecem normalmente")
+            print(f"  5. {cfg['success_hint']}")
         print(f"  ════════════════════════════════════════")
 
         try:
@@ -195,17 +223,62 @@ def grab_session(site: str, headless: bool = False) -> bool:
             browser.close()
             return False
 
+        # Captura localStorage e sessionStorage — Shopee armazena tokens de sessão
+        # nesses storages que são necessários para a API de busca.
+        local_storage: dict = {}
+        session_storage: dict = {}
+        try:
+            local_storage = page.evaluate("""() => {
+                const data = {};
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    data[key] = localStorage.getItem(key);
+                }
+                return data;
+            }""") or {}
+        except Exception:
+            pass
+        try:
+            session_storage = page.evaluate("""() => {
+                const data = {};
+                for (let i = 0; i < sessionStorage.length; i++) {
+                    const key = sessionStorage.key(i);
+                    data[key] = sessionStorage.getItem(key);
+                }
+                return data;
+            }""") or {}
+        except Exception:
+            pass
+
         session_data = {
             "site": site,
             "saved_at": datetime.now().isoformat(),
             "url": current_url,
             "cookies": cookies,
+            "localStorage": local_storage,
+            "sessionStorage": session_storage,
         }
 
         session_path.write_text(json.dumps(session_data, indent=2, ensure_ascii=False))
         print(f"\n  ✅ Sessão salva: {session_path}")
         print(f"  Cookies: {len(cookies)}")
+        print(f"  localStorage: {len(local_storage)} keys")
+        print(f"  sessionStorage: {len(session_storage)} keys")
         print(f"  URL atual: {current_url}")
+
+        # Diagnóstico rápido de cookies críticos
+        _CRITICAL = {
+            "shopee": ["csrftoken", "SPC_SI", "SPC_SEC_SI"],
+            "casasbahia": ["AKA_A2", "ak_bmsc", "bm_sz"],
+        }
+        for name in _CRITICAL.get(site, []):
+            found = any(c["name"] == name for c in cookies)
+            status = "✅" if found else "⚠️  AUSENTE"
+            print(f"  {status} {name}")
+        if site == "shopee":
+            url_ok = "buyer/login" not in current_url
+            print(f"  {'✅' if url_ok else '⚠️  URL É LOGIN PAGE — volte a rodar e navegue para produtos!'} URL: {current_url[:60]}")
+
         browser.close()
 
     return True

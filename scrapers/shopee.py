@@ -143,14 +143,18 @@ class ShopeeScraper(BaseScraper):
                 pass
 
             if session_cookies:
+                # Remove ponto inicial do domínio para compatibilidade curl_cffi
                 for c in session_cookies:
-                    session.cookies.set(
-                        c["name"], c["value"],
-                        domain=c.get("domain", ".shopee.com.br"),
-                    )
+                    domain = c.get("domain", "shopee.com.br").lstrip(".")
+                    session.cookies.set(c["name"], c["value"], domain=domain)
+                critical_present = [
+                    c["name"] for c in session_cookies
+                    if c["name"] in ("csrftoken", "SPC_SI", "SPC_SEC_SI", "SPC_ST")
+                ]
                 logger.info(
-                    f"[{self.platform_name}] Usando sessão salva "
-                    f"({len(session_cookies)} cookies) para API direta"
+                    f"[{self.platform_name}] Sessão salva aplicada "
+                    f"({len(session_cookies)} cookies). Críticos: "
+                    f"{', '.join(critical_present) or 'nenhum — re-execute session_grabber'}"
                 )
             else:
                 # Sem sessão salva: visita home para obter cookies básicos.
