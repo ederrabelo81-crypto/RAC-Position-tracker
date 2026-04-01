@@ -15,6 +15,7 @@ Paginação: parâmetro ?page={n} ou &page={n} na URL de busca.
 """
 
 import json
+import re
 import time
 import random
 from pathlib import Path
@@ -33,24 +34,29 @@ from utils.text import parse_price, parse_rating, parse_review_count
 # Seletores CSS — cadeia de fallback para múltiplas versões do layout
 # ---------------------------------------------------------------------------
 _SELECTORS = {
-    # Container de produto — tenta em ordem até encontrar resultados
+    # Container de produto — tenta em ordem até encontrar resultados.
+    # Magalu migrou para design system "nm-" (New Magalu) em 2024/2025.
+    # Os seletores nm-* têm prioridade; data-testid e sc-* como fallback legado.
     "item_candidates": [
-        'li[data-testid="product-card"]',            # v1 (antigo)
-        '[data-testid="item"]',                       # v2
-        '[data-testid="product-card-container"]',     # v3
+        'li[class*="nm-product-card"]',               # nm design system (atual)
+        '[data-testid="product-card-container"]',     # legado v3
+        'li[data-testid="product-card"]',             # legado v1
+        '[data-testid="item"]',                       # legado v2
         'li[class*="ProductCard"]',                   # styled-components v1
         'li[class*="product-card"]',                  # styled-components v2
         '[class*="ProductCard__Wrapper"]',
-        '[class*="sc-"][data-cy]',                    # qualquer sc- com data-cy
         'a[data-testid="product-card-link"]',         # link direto
-        'li[class*="nm-"]',                           # novo design system Magalu
+        'li[class*="nm-"]',                           # nm genérico
         '[data-cy="product-card"]',
-        'li > a[href*="/p/"]',                        # fallback por estrutura de link
+        'li > a[href*="/p/"]',                        # estrutura de link (último recurso)
     ],
     # Título do produto
     "title_candidates": [
-        '[data-testid="product-title"]',
-        '[data-testid="product-name"]',
+        '[data-testid="product-title"]',              # legado
+        '[data-testid="product-name"]',               # legado
+        'h2[class*="nm-product-card"]',               # nm atual
+        '[class*="nm-product-card__name"]',           # nm específico
+        '[class*="nm-product-card__title"]',          # nm alternativo
         'h2[data-testid]',
         '[class*="ProductTitle"]',
         '[class*="product-title"]',
@@ -60,19 +66,21 @@ _SELECTORS = {
     ],
     # Preço principal
     "price_candidates": [
-        '[data-testid="price-value"]',
-        '[data-testid="main-price"]',
-        '[data-testid="price"]',
+        '[data-testid="price-value"]',                # legado
+        '[data-testid="main-price"]',                 # legado
+        '[class*="nm-price-details__main-price"]',    # nm atual
+        '[class*="nm-price"]',                        # nm genérico
+        'p[class*="nm-price"]',                       # nm em parágrafo
         '[class*="PriceTag__Price"]',
         '[class*="price-value"]',
         '[class*="Price__Value"]',
-        '[class*="sc-"][class*="price"]',
         'p[class*="Price"]',
     ],
     # Seller/lojista
     "seller_candidates": [
         '[data-testid="seller-name"]',
-        '[data-testid="seller"]',
+        '[class*="nm-seller"]',                       # nm atual
+        '[class*="nm-product-card__seller"]',         # nm específico
         '[class*="SellerName"]',
         '[class*="seller-name"]',
         'a[href*="/loja/"]',
@@ -80,7 +88,7 @@ _SELECTORS = {
     # Avaliação
     "rating_candidates": [
         '[data-testid="review-score"]',
-        '[data-testid="rating"]',
+        '[class*="nm-rating"]',
         '[class*="Rating__Score"]',
         '[class*="rating-score"]',
     ],
@@ -88,6 +96,7 @@ _SELECTORS = {
     "review_count_candidates": [
         '[data-testid="review-count"]',
         '[data-testid="reviews-count"]',
+        '[class*="nm-review-count"]',
         '[class*="ReviewCount"]',
         '[class*="review-count"]',
     ],
@@ -95,14 +104,14 @@ _SELECTORS = {
     "tag_candidates": [
         '[data-testid="product-tag"]',
         '[data-testid="badge"]',
+        '[class*="nm-badge"]',
         '[class*="ProductBadge"]',
         '[class*="Badge"]',
-        '[class*="Tag"]',
     ],
     # Patrocinado
     "sponsored_candidates": [
         '[data-testid="sponsored-tag"]',
-        '[data-testid="sponsored"]',
+        '[class*="nm-sponsored"]',
         '[class*="Sponsored"]',
         '[class*="sponsored"]',
     ],
@@ -219,9 +228,10 @@ class MagaluScraper(BaseScraper):
                 or prod.get("bestPrice")
                 or prod.get("priceValue")
             )
+            _seller_raw = prod.get("seller")
             seller = (
                 prod.get("sellerName")
-                or prod.get("seller", {}).get("name") if isinstance(prod.get("seller"), dict) else prod.get("seller")
+                or (_seller_raw.get("name") if isinstance(_seller_raw, dict) else _seller_raw)
                 or "Magalu"
             )
             rating = prod.get("rating") or prod.get("ratingAverage")
@@ -333,14 +343,29 @@ class MagaluScraper(BaseScraper):
             review_el = self._first_match(item, _SELECTORS["review_count_candidates"])
             tag_el    = self._first_match(item, _SELECTORS["tag_candidates"])
 
+            # Título: fallback para img[alt] quando seletores CSS não encontram
+            title = title_el.get_text(strip=True) if title_el else None
+            if not title:
+                img = item.select_one("img[alt]")
+                if img:
+                    title = img.get("alt", "").strip() or None
+
+            # Preço: fallback regex R$ quando seletores CSS não encontram
+            price_raw = price_el.get_text(strip=True) if price_el else None
+            if not price_raw:
+                item_text = item.get_text(" ", strip=True)
+                m = re.search(r"R\$\s*[\d.,]+", item_text)
+                if m:
+                    price_raw = m.group(0)
+
             records.append(self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
-                title=title_el.get_text(strip=True) if title_el else None,
+                title=title,
                 position_general=pos_general,
                 position_organic=pos_organic,
                 position_sponsored=pos_sponsored,
-                price_raw=price_el.get_text(strip=True) if price_el else None,
+                price_raw=price_raw,
                 seller=seller_el.get_text(strip=True) if seller_el else "Magalu",
                 is_fulfillment=False,
                 rating=parse_rating(rating_el.get_text() if rating_el else None),
@@ -378,7 +403,8 @@ class MagaluScraper(BaseScraper):
         Aguarda até que algum seletor de container de produto apareça.
         Retorna True se encontrou, False se timeout.
         """
-        for sel in _SELECTORS["item_candidates"][:5]:  # testa os 5 primeiros
+        # Inclui nm-* no topo — design system atual do Magalu
+        for sel in _SELECTORS["item_candidates"][:6]:  # testa os 6 primeiros
             try:
                 self._page.wait_for_selector(sel, timeout=timeout_ms)
                 logger.debug(f"[{self.platform_name}] Produtos encontrados com: {sel}")

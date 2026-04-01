@@ -14,6 +14,7 @@ Notas de manutenção:
   verifique o arquivo logs/amazon_debug_p{n}_{kw}.html para inspecionar o DOM.
 """
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
@@ -46,12 +47,9 @@ _SELECTORS = {
     ],
     "price_whole":    ".a-price-whole",
     "price_fraction": ".a-price-fraction",
-    # Seller
-    "seller_candidates": [
-        ".a-size-small.a-color-base",
-        "[data-cy='delivery-recipe'] .a-color-base",
-        ".s-item-fulfillment .a-color-base",
-    ],
+    # Seller — NOTE: .a-size-small.a-color-base é demasiado genérico (captura ratings).
+    # Usamos _extract_seller() baseada em texto "Vendido por" / link de seller.
+    "seller_link": 'a[href*="seller="], a[href*="/shops/"], a[href*="m=A"]',
     "rating":         ".a-icon-alt",
     "review_count":   "[aria-label*='estrela'], [aria-label*='avaliação'], .a-size-small[aria-label]",
     "tag_destaque":   ".a-badge-text",
@@ -124,6 +122,41 @@ class AmazonScraper(BaseScraper):
                 return el
         return None
 
+    @staticmethod
+    def _extract_seller(item: Tag) -> Optional[str]:
+        """
+        Extrai o nome do vendedor de forma robusta.
+
+        Estratégias em ordem:
+          1. Link com href de seller (atributo seller= ou /shops/)
+          2. Texto "Vendido por X" em qualquer span/a da linha
+          3. Texto "por X" em span pequeno (excluindo "por R$", "por estrelas")
+
+        NÃO usa .a-size-small.a-color-base — essa classe é genérica demais e
+        frequentemente captura o texto de avaliação ("4,5 de 5 estrelas").
+        """
+        # 1. Link direto do seller na Amazon
+        for a in item.select(_SELECTORS["seller_link"]):
+            t = a.get_text(strip=True)
+            if t and 2 < len(t) < 80:
+                return t
+
+        # 2. Span/a com "Vendido por" — padrão de seller de terceiros
+        for el in item.find_all(["span", "a"]):
+            t = el.get_text(strip=True)
+            if "Vendido por" in t:
+                seller = t.split("Vendido por")[-1].strip()
+                if seller and len(seller) < 80:
+                    return seller
+
+        # 3. Texto "por X" curto sem dígitos na sequência (≠ "por R$ 1.999")
+        for el in item.find_all("span"):
+            t = el.get_text(strip=True)
+            if t.startswith("por ") and len(t) < 60 and not re.match(r"por\s*R?\$?\s*\d", t):
+                return t[4:].strip()
+
+        return None
+
     def _dump_debug_html(self, html: str, page: int, keyword: str) -> None:
         try:
             log_dir = Path(LOGS_DIR)
@@ -189,8 +222,7 @@ class AmazonScraper(BaseScraper):
 
             price = self._extract_price(item)
 
-            seller_el = self._first_match(item, _SELECTORS["seller_candidates"])
-            seller    = seller_el.get_text(strip=True) if seller_el else "Amazon"
+            seller = self._extract_seller(item) or "Amazon"
 
             fulfillment = bool(item.select_one(_SELECTORS["fulfillment"]))
 

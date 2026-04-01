@@ -139,29 +139,47 @@ class GoogleShoppingScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _clean_title(raw: str) -> Optional[str]:
+        """
+        Remove fragmentos que não fazem parte do título do produto:
+        padrões de preço (R$), avaliações ("4,5 estrelas"), sellers concatenados.
+        Retorna None se o resultado ficar muito curto após a limpeza.
+        """
+        # Remove padrão de preço: R$ 1.234,56 ou R$1234
+        cleaned = re.sub(r"R\$\s*[\d.,]+", "", raw)
+        # Remove "X estrelas" / "X avaliações"
+        cleaned = re.sub(r"\d[\d.,]*\s*(estrelas?|avaliações?|stars?)", "", cleaned, flags=re.I)
+        # Remove múltiplos espaços
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        return cleaned if len(cleaned) >= 5 else None
+
+    @staticmethod
     def _extract_title(item: Tag) -> Optional[str]:
-        # 1. Seletores CSS conhecidos
+        # 1. Seletores CSS conhecidos — mais confiáveis (retornam só o nome)
         title = _first_text(item, _SELECTORS["title_candidates"])
         if title:
-            return title
+            return GoogleShoppingScraper._clean_title(title)
 
-        # 2. aria-label no próprio container (Google frequentemente define isso)
-        al = item.get("aria-label", "").strip()
-        if al:
-            return al
-
-        # 3. img[alt] — Google sempre preenche o alt com o nome do produto
+        # 2. img[alt] — Google preenche o alt só com o nome do produto
         img = item.select_one("img[alt]")
         if img:
             alt = img.get("alt", "").strip()
             if alt and len(alt) > 3:
-                return alt
+                return GoogleShoppingScraper._clean_title(alt)
 
-        # 4. Primeiro link com texto significativo
+        # 3. aria-label no container — frequentemente concatena nome+preço+seller.
+        # Só usa se for curto o suficiente para ser apenas o nome (< 120 chars).
+        al = item.get("aria-label", "").strip()
+        if al and len(al) < 120:
+            cleaned = GoogleShoppingScraper._clean_title(al)
+            if cleaned:
+                return cleaned
+
+        # 4. Primeiro link com texto curto (< 150 chars, sem R$) — último recurso
         for a_tag in item.select("a[href]"):
             txt = a_tag.get_text(strip=True)
-            if txt and len(txt) > 5:
-                return txt
+            if txt and 5 < len(txt) < 150 and "R$" not in txt:
+                return GoogleShoppingScraper._clean_title(txt)
 
         return None
 

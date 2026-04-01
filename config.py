@@ -91,13 +91,13 @@ PRIORITY_FILTER: Optional[List[str]] = None  # ex: ["alta"] para coletas rápida
 # ---------------------------------------------------------------------------
 ACTIVE_PLATFORMS = {
     "ml":             True,   # ✅ Mercado Livre — funcional
-    "magalu":         True,   # ✅ Magalu — funcional
-    "amazon":         True,   # ✅ Amazon — funcional
-    "shopee":         False,  # ⏸️  Shopee — em stand by (aguardando sessão válida)
-    "casasbahia":     False,  # ⏸️  Casas Bahia — em stand by (Akamai WAF)
-    "google_shopping":True,   # ✅ Google Shopping — funcional
+    "magalu":         True,   # ✅ Magalu — seletores nm-* atualizados
+    "amazon":         True,   # ✅ Amazon — extração de seller corrigida
+    "shopee":         False,  # ⏸️  Shopee — em stand by
+    "casasbahia":     False,  # ⏸️  Casas Bahia — em stand by
+    "google_shopping":True,   # ✅ Google Shopping — limpeza de título corrigida
     "leroy":          True,   # ✅ Leroy Merlin — funcional (Algolia API)
-    "fast":           True,   # ✅ Fast Shop — ativo
+    "fast":           False,  # ⏸️  Fast Shop — aguardando validação de extração
 }
 
 # ---------------------------------------------------------------------------
