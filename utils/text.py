@@ -20,16 +20,17 @@ def parse_price(raw: Optional[str]) -> Optional[float]:
     Converte string de preço brasileiro para float.
 
     Exemplos:
-        "R$ 2.799,90"  → 2799.90
-        "2799,90"      → 2799.90
-        "2.799"        → 2799.0   (sem centavos)
-        None / ""      → None
+        "R$ 2.799,90"      → 2799.90
+        "R$\xa02.184,05"   → 2184.05  (non-breaking space do Google Shopping)
+        "2799,90"          → 2799.90
+        "2.799"            → 2799.0   (sem centavos)
+        None / ""          → None
     """
     if not raw:
         return None
 
-    # remove símbolo de moeda e espaços
-    cleaned = re.sub(r"[R$\s]", "", raw).strip()
+    # remove símbolo de moeda, espaços normais e \xa0 (non-breaking space do Google)
+    cleaned = re.sub(r"[R$\s\xa0]", "", raw).strip()
 
     # padrão: ponto como separador de milhar, vírgula como decimal
     if "," in cleaned:

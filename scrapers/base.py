@@ -156,6 +156,17 @@ class BaseScraper(ABC):
             self._browser = None
             self._playwright = None
 
+    def _rotate_browser(self) -> None:
+        """
+        Fecha e reinicia o browser para resetar cookies e fingerprint de
+        bot-managers (ex: Radware). Sorteia um novo User-Agent também.
+        """
+        logger.info(f"[{self.platform_name}] Rotacionando browser (reset de fingerprint)...")
+        self._close()
+        self._user_agent = random.choice(USER_AGENTS)
+        time.sleep(random.uniform(3.0, 7.0))
+        self._launch()
+
     # ------------------------------------------------------------------
     # Context manager — permite uso com `with MLScraper() as s:`
     # ------------------------------------------------------------------

@@ -133,9 +133,13 @@ class MagaluScraper(BaseScraper):
 
     platform_name = "Magalu"
 
+    # Rotar o browser a cada N keywords para evitar Radware Bot Manager
+    _ROTATION_INTERVAL = 15
+
     def __init__(self, headless: bool = True) -> None:
         super().__init__(headless=headless)
         self._api_results: List[Dict] = []   # resultados capturados via XHR
+        self._keywords_processed: int = 0    # contador para rotação proativa
 
     # ------------------------------------------------------------------
     # URL builders
@@ -406,6 +410,32 @@ class MagaluScraper(BaseScraper):
             logger.debug(f"[{self.platform_name}] Erro ao salvar debug: {e}")
 
     # ------------------------------------------------------------------
+    # Detecção de Radware Bot Manager
+    # ------------------------------------------------------------------
+
+    def _is_radware_blocked(self) -> bool:
+        """
+        Detecta página de CAPTCHA do Radware Bot Manager.
+
+        Radware injeta uma página com título "Radware Bot Manager Captcha"
+        quando detecta comportamento automatizado. A detecção também cobre
+        variações via body text e meta tags.
+        """
+        try:
+            title = self._page.title().lower()
+            if "radware" in title or "bot manager" in title:
+                return True
+            # Fallback: verificação no HTML (evita re-parse completo com BeautifulSoup)
+            html_snippet = self._page.content()[:4000]
+            return (
+                "Radware Bot Manager" in html_snippet
+                or "radware_captcha" in html_snippet.lower()
+                or "rdaformdiv" in html_snippet.lower()
+            )
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
     # Espera inteligente por conteúdo
     # ------------------------------------------------------------------
 
@@ -442,6 +472,15 @@ class MagaluScraper(BaseScraper):
         """Busca keyword na Magalu por até `page_limit` páginas."""
         all_records: List[Dict[str, Any]] = []
 
+        # Rotação proativa a cada _ROTATION_INTERVAL keywords (reseta fingerprint do Radware)
+        self._keywords_processed += 1
+        if self._keywords_processed > 1 and self._keywords_processed % self._ROTATION_INTERVAL == 0:
+            logger.info(
+                f"[{self.platform_name}] Rotação proativa — "
+                f"{self._keywords_processed} keywords processadas"
+            )
+            self._rotate_browser()
+
         # Configura intercepção XHR antes de navegar
         self._setup_xhr_intercept()
 
@@ -451,6 +490,22 @@ class MagaluScraper(BaseScraper):
 
             try:
                 self._page.goto(url, wait_until="domcontentloaded")
+
+                # Detecta Radware Bot Manager (dispara após ~25 requests no mesmo contexto)
+                if self._is_radware_blocked():
+                    logger.warning(
+                        f"[{self.platform_name}] Radware detectado em '{keyword}' (página {page}) "
+                        "— rotacionando browser e retentando"
+                    )
+                    self._rotate_browser()
+                    self._setup_xhr_intercept()
+                    self._page.goto(url, wait_until="domcontentloaded")
+                    if self._is_radware_blocked():
+                        logger.error(
+                            f"[{self.platform_name}] Radware persiste após rotação — "
+                            "pulando keyword"
+                        )
+                        break
 
                 # Aguarda produtos aparecerem (máx 15s)
                 found = self._wait_for_products(timeout_ms=15_000)

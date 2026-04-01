@@ -7,11 +7,12 @@ Estratégia:
     Com stealth e delays adequados, coletas esporádicas funcionam.
     Para volume alto (todas as keywords diariamente), use proxy residencial.
   - Paginação: parâmetro `&start={offset}` (10 resultados por página no shopping)
-  - Patrocinados: anúncios no Google Shopping têm classe diferente dos orgânicos.
 
-Manutenção de seletores:
-  O Google Shopping rotaciona seus nomes de classe constantemente.
-  Esta implementação usa cadeia de fallback + img[alt] + regex R$ para máxima resiliência.
+Manutenção de seletores — estrutura confirmada via debug HTML de 31/mar/2026:
+  Container: div.rwVHAc (75 por página)
+  Título:    primeiro <div> folha (sem filhos, sem classe) com 15-200 chars, sem R$
+  Preço:     span.VbBaOe — texto "R$\xa02.184,05" (non-breaking space, não espaço normal)
+  O Google Shopping rotaciona nomes de classe constantemente; guardamos fallbacks.
   Quando 0 itens: HTML salvo em logs/google_debug_p{n}_{kw}.html
 """
 
@@ -29,43 +30,25 @@ from scrapers.base import BaseScraper
 from utils.text import parse_price, parse_rating, parse_review_count
 
 # ---------------------------------------------------------------------------
-# Seletores — cadeia de fallback por ordem de confiabilidade
+# Seletores — confirmados em 31/mar/2026 + fallbacks legacy
 # ---------------------------------------------------------------------------
 _SELECTORS = {
-    # Containers de produto — orgânicos
-    "item_organic_candidates": [
-        "[data-docid]",                   # atributo estável do Google Shopping
+    # Container de card de produto (confirmado: 75/página em 31/mar/2026)
+    # Fallbacks para versões anteriores do layout
+    "item_candidates": [
+        "div.rwVHAc",           # layout atual (31/mar/2026) ← PRIMÁRIO
+        "[data-docid]",         # layout anterior (estável por anos)
         ".sh-dgr__gr-auto",
         ".sh-dlr__list-result",
         ".KZmu8e",
         ".i0X6df",
-        ".EI11Pd",
         "div[jsaction*='rcm']",
-        "[data-item-id]",
-    ],
-    # Containers de patrocinados (anúncios PLA)
-    "item_sponsored_candidates": [
-        ".cu-container",
+        ".cu-container",        # PLAs patrocinados
         ".pla-unit",
-        "[data-hveid]",
-        ".mnr-c.pla-unit",
-        ".commercial-unit-desktop-top",
     ],
-    # Título do produto (múltiplos fallbacks)
-    "title_candidates": [
-        ".Lq5OHe",
-        ".tAxDx",
-        ".rgHvZc",
-        ".EI11Pd",
-        ".muB3Ob",
-        ".sh-np__click-target",
-        "h3.sh-np__click-target",
-        "h3",
-        "h2",
-        "[aria-label]",
-    ],
-    # Preço
+    # Preço — confirmado: span.VbBaOe (31/mar/2026), fallbacks legacy
     "price_candidates": [
+        ".VbBaOe",              # layout atual (31/mar/2026) ← PRIMÁRIO
         ".a8Pemb",
         ".OFFNJ",
         ".g9WsWb",
@@ -75,7 +58,7 @@ _SELECTORS = {
         "span[class*='price']",
         "span[class*='Price']",
     ],
-    # Vendedor / loja
+    # Vendedor / loja — fallbacks, o layout atual não usa classe estável
     "seller_candidates": [
         ".E5ocAb",
         ".aULzUe",
@@ -83,6 +66,7 @@ _SELECTORS = {
         ".NkoJne",
         ".vf0Yd",
         ".XrAfOe",
+        ".LbUacb",
     ],
     # Rating
     "rating_candidates": [
@@ -99,30 +83,18 @@ _SELECTORS = {
         "[class*='offer']",
         "[class*='tag']",
     ],
-    # Contagem de avaliações — Google Shopping nem sempre exibe no grid;
-    # captura quando disponível via aria-label "N avaliações" ou texto numérico
+    # Contagem de avaliações (best-effort — nem sempre disponível no grid)
     "review_count_candidates": [
         "[aria-label*='avaliações']",
         "[aria-label*='reviews']",
-        ".Rsc7Yb + span",   # span após o rating em alguns layouts
-        ".QIrs8",           # classe vista em alguns resultados
+        ".Rsc7Yb + span",
+        ".QIrs8",
     ],
     # Detecção de CAPTCHA / bloqueio
     "captcha": "#captcha-form, #recaptcha, .g-recaptcha, #challenge-form",
 }
 
 _RESULTS_PER_PAGE = 10
-
-
-def _first_text(tag: Tag, candidates: List[str]) -> Optional[str]:
-    """Tenta cada seletor e retorna o primeiro texto encontrado."""
-    for sel in candidates:
-        el = tag.select_one(sel)
-        if el:
-            text = el.get_text(strip=True)
-            if text:
-                return text
-    return None
 
 
 class GoogleShoppingScraper(BaseScraper):
@@ -143,71 +115,110 @@ class GoogleShoppingScraper(BaseScraper):
         return url
 
     # ------------------------------------------------------------------
-    # Extração robusta de título (3 estratégias)
+    # Detecção de containers de produto
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _clean_title(raw: str) -> Optional[str]:
-        """
-        Remove fragmentos que não fazem parte do título do produto:
-        padrões de preço (R$), avaliações ("4,5 estrelas"), sellers concatenados.
-        Retorna None se o resultado ficar muito curto após a limpeza.
-        """
-        # Remove padrão de preço: R$ 1.234,56 ou R$1234
-        cleaned = re.sub(r"R\$\s*[\d.,]+", "", raw)
-        # Remove "X estrelas" / "X avaliações"
-        cleaned = re.sub(r"\d[\d.,]*\s*(estrelas?|avaliações?|stars?)", "", cleaned, flags=re.I)
-        # Remove múltiplos espaços
-        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-        return cleaned if len(cleaned) >= 5 else None
+    def _detect_items(soup: BeautifulSoup) -> tuple[List[Tag], str]:
+        """Retorna (items, selector_usado) usando a cadeia de fallback."""
+        for sel in _SELECTORS["item_candidates"]:
+            items = soup.select(sel)
+            if len(items) >= 2:
+                return items, sel
+        return [], "nenhum"
+
+    # ------------------------------------------------------------------
+    # Extração de título — estratégia leaf-div (confirmada 31/mar/2026)
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_title(item: Tag) -> Optional[str]:
-        # 1. Seletores CSS conhecidos — mais confiáveis (retornam só o nome)
-        title = _first_text(item, _SELECTORS["title_candidates"])
-        if title:
-            return GoogleShoppingScraper._clean_title(title)
+        """
+        Extrai o título do produto de um card .rwVHAc.
 
-        # 2. img[alt] — Google preenche o alt só com o nome do produto
+        No layout atual, o título está em um <div> FOLHA (sem filhos, sem classe)
+        dentro do container. É o único div com texto longo (15-200 chars) que
+        não contém "R$" nem quebras de linha.
+
+        Fallbacks para layouts anteriores: seletores CSS legacy e img[alt].
+        """
+        # Estratégia 1 (layout atual): primeiro div folha com texto de produto
+        for div in item.find_all("div"):
+            if div.find():          # tem filhos → não é folha, pula
+                continue
+            if div.get("class"):    # tem classe → provável componente UI, pula
+                continue
+            text = div.get_text(strip=True)
+            if (15 <= len(text) <= 200
+                    and "R$" not in text
+                    and "\n" not in text
+                    and "\xa0" not in text):
+                return GoogleShoppingScraper._clean_title(text)
+
+        # Estratégia 2 (layouts legacy): seletores CSS conhecidos
+        legacy_selectors = [
+            ".Lq5OHe", ".tAxDx", ".rgHvZc", ".muB3Ob",
+            ".sh-np__click-target", "h3.sh-np__click-target",
+        ]
+        for sel in legacy_selectors:
+            el = item.select_one(sel)
+            if el:
+                text = el.get_text(strip=True)
+                if text:
+                    return GoogleShoppingScraper._clean_title(text)
+
+        # Estratégia 3: img[alt] — Google preenche o alt apenas com o nome
         img = item.select_one("img[alt]")
         if img:
             alt = img.get("alt", "").strip()
             if alt and len(alt) > 3:
                 return GoogleShoppingScraper._clean_title(alt)
 
-        # 3. aria-label no container — frequentemente concatena nome+preço+seller.
-        # Só usa se for curto o suficiente para ser apenas o nome (< 120 chars).
+        # Estratégia 4: aria-label curto (< 120 chars) no container
         al = item.get("aria-label", "").strip()
-        if al and len(al) < 120:
-            cleaned = GoogleShoppingScraper._clean_title(al)
-            if cleaned:
-                return cleaned
-
-        # 4. Primeiro link com texto curto (< 150 chars, sem R$) — último recurso
-        for a_tag in item.select("a[href]"):
-            txt = a_tag.get_text(strip=True)
-            if txt and 5 < len(txt) < 150 and "R$" not in txt:
-                return GoogleShoppingScraper._clean_title(txt)
+        if al and len(al) < 120 and "R$" not in al:
+            return GoogleShoppingScraper._clean_title(al)
 
         return None
 
     @staticmethod
+    def _clean_title(raw: str) -> Optional[str]:
+        """Remove artefatos de preço/rating que aparecem concatenados ao nome."""
+        cleaned = re.sub(r"R\$[\s\xa0]*[\d.,]+", "", raw)
+        cleaned = re.sub(r"\d[\d.,]*\s*(estrelas?|avaliações?|stars?)", "", cleaned, flags=re.I)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        return cleaned if len(cleaned) >= 5 else None
+
+    # ------------------------------------------------------------------
+    # Extração de preço
+    # ------------------------------------------------------------------
+
+    @staticmethod
     def _extract_price(item: Tag) -> Optional[str]:
-        # 1. Seletores CSS conhecidos
+        """
+        Extrai o preço do card.
+
+        No layout atual: span.VbBaOe com texto "R$\xa02.184,05".
+        parse_price() trata \xa0 (non-breaking space) como separador.
+        """
         for sel in _SELECTORS["price_candidates"]:
             el = item.select_one(sel)
             if el:
                 t = el.get_text(strip=True)
-                if t:
+                if t and "R$" in t or re.search(r"[\d.,]+", t):
                     return t
 
-        # 2. Regex scan: procura qualquer "R$" no texto do item
-        item_text = item.get_text(" ", strip=True)
+        # Fallback regex no texto completo do card
+        item_text = item.get_text(" ", strip=True).replace("\xa0", " ")
         match = re.search(r"R\$\s*[\d.,]+", item_text)
         if match:
             return match.group(0)
 
         return None
+
+    # ------------------------------------------------------------------
+    # Extração de seller
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_seller(item: Tag) -> Optional[str]:
@@ -215,21 +226,9 @@ class GoogleShoppingScraper(BaseScraper):
             el = item.select_one(sel)
             if el:
                 t = el.get_text(strip=True)
-                if t:
+                if t and len(t) < 60:
                     return t
         return None
-
-    # ------------------------------------------------------------------
-    # Detecção de containers de produto
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _detect_items(soup: BeautifulSoup, candidates: List[str]) -> tuple[List[Tag], str]:
-        for sel in candidates:
-            items = soup.select(sel)
-            if len(items) >= 2:
-                return items, sel
-        return [], "nenhum"
 
     # ------------------------------------------------------------------
     # Debug dump
@@ -242,9 +241,7 @@ class GoogleShoppingScraper(BaseScraper):
             safe_kw = keyword[:30].replace(" ", "_").replace("/", "-")
             path = log_dir / f"google_debug_p{page}_{safe_kw}.html"
             path.write_text(html, encoding="utf-8")
-            logger.warning(
-                f"[{self.platform_name}] 0 itens — HTML salvo: {path}"
-            )
+            logger.warning(f"[{self.platform_name}] HTML salvo para diagnóstico: {path}")
         except Exception as e:
             logger.debug(f"[{self.platform_name}] Erro ao salvar debug: {e}")
 
@@ -265,53 +262,33 @@ class GoogleShoppingScraper(BaseScraper):
         # Detecta CAPTCHA
         if soup.select_one(_SELECTORS["captcha"]):
             logger.warning(
-                f"[{self.platform_name}] reCAPTCHA/bloqueio detectado. "
+                f"[{self.platform_name}] reCAPTCHA detectado. "
                 "Use proxy residencial para coletas em escala."
             )
             return []
 
-        # Coleta orgânicos + patrocinados
-        organic_items, org_sel = self._detect_items(soup, _SELECTORS["item_organic_candidates"])
-        sponsored_items, _     = self._detect_items(soup, _SELECTORS["item_sponsored_candidates"])
-
+        items, sel_used = self._detect_items(soup)
         logger.info(
-            f"[{self.platform_name}] {len(organic_items)} orgânicos (seletor: {org_sel}) + "
-            f"{len(sponsored_items)} patrocinados"
+            f"[{self.platform_name}] {len(items)} cards encontrados "
+            f"(seletor: {sel_used})"
         )
 
-        if not organic_items and not sponsored_items:
+        if not items:
             self._dump_debug(html, page, keyword)
             return []
 
-        # Remove patrocinados que também estejam no set de orgânicos (evita duplicatas)
-        organic_set = set(id(i) for i in organic_items)
-        sponsored_unique = [i for i in sponsored_items if id(i) not in organic_set]
-
-        # Preserva ordem DOM
-        all_items_with_flag = (
-            [(item, False) for item in organic_items] +
-            [(item, True)  for item in sponsored_unique]
-        )
-
         records = []
-        organic_counter   = 0
-        sponsored_counter = 0
         empty_title_count = 0
 
-        for pos_general, (item, is_sponsored) in enumerate(all_items_with_flag, start=page_offset + 1):
-            if is_sponsored:
-                sponsored_counter += 1
-                pos_organic, pos_sponsored = None, sponsored_counter
-            else:
-                organic_counter += 1
-                pos_organic, pos_sponsored = organic_counter, None
+        for idx, item in enumerate(items):
+            pos_general = page_offset + idx + 1
 
-            title    = self._extract_title(item)
+            title     = self._extract_title(item)
             price_raw = self._extract_price(item)
-            seller   = self._extract_seller(item) or "Google Shopping"
+            seller    = self._extract_seller(item) or "Google Shopping"
 
-            rating_el    = item.select_one(_SELECTORS["rating_candidates"][0])
-            rating       = parse_rating(rating_el.get_text() if rating_el else None)
+            # Rating
+            rating = None
             for rating_sel in _SELECTORS["rating_candidates"]:
                 rel = item.select_one(rating_sel)
                 if rel:
@@ -320,34 +297,38 @@ class GoogleShoppingScraper(BaseScraper):
                         rating = r
                         break
 
-            tag_el = None
+            # Tag de destaque
+            tag = None
             for tag_sel in _SELECTORS["tag_candidates"]:
                 tag_el = item.select_one(tag_sel)
                 if tag_el:
+                    tag = tag_el.get_text(strip=True)
                     break
-            tag = tag_el.get_text(strip=True) if tag_el else None
 
-            # Contagem de avaliações — Google Shopping exibe em alguns layouts
+            # Contagem de avaliações (best-effort)
             review_count = None
             for rev_sel in _SELECTORS["review_count_candidates"]:
                 rev_el = item.select_one(rev_sel)
                 if rev_el:
-                    raw = rev_el.get("aria-label") or rev_el.get_text(strip=True)
-                    review_count = parse_review_count(raw)
-                    if review_count and review_count > 5:  # evita capturar rating (≤5)
+                    raw_rv = rev_el.get("aria-label") or rev_el.get_text(strip=True)
+                    rc = parse_review_count(raw_rv)
+                    if rc and rc > 5:        # descarta valores que seriam ratings (≤5)
+                        review_count = rc
                         break
-                    review_count = None
 
             if not title:
                 empty_title_count += 1
 
+            # Google Shopping: todos os resultados são PLAs (anúncios pagos).
+            # Registramos como orgânicos em ordem de posição (sem posição patrocinada)
+            # para manter consistência com os outros scrapers.
             records.append(self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
                 title=title,
                 position_general=pos_general,
-                position_organic=pos_organic,
-                position_sponsored=pos_sponsored,
+                position_organic=pos_general,
+                position_sponsored=None,
                 price_raw=price_raw,
                 seller=seller,
                 is_fulfillment=False,
@@ -356,10 +337,16 @@ class GoogleShoppingScraper(BaseScraper):
                 tag_destaque=tag,
             ))
 
+        if empty_title_count > 0:
+            logger.info(
+                f"[{self.platform_name}] {len(records) - empty_title_count}/"
+                f"{len(records)} títulos extraídos "
+                f"(seletor: {sel_used})"
+            )
         if empty_title_count > len(records) // 2:
             logger.warning(
-                f"[{self.platform_name}] {empty_title_count}/{len(records)} itens sem título. "
-                "Seletores podem estar desatualizados — HTML salvo para diagnóstico."
+                f"[{self.platform_name}] {empty_title_count}/{len(records)} sem título — "
+                "seletores possivelmente desatualizados. HTML salvo."
             )
             self._dump_debug(html, page, keyword)
 
@@ -386,7 +373,7 @@ class GoogleShoppingScraper(BaseScraper):
             try:
                 self._page.goto(url, wait_until="domcontentloaded")
                 self._wait_for_network_idle()
-                # Delay mais longo — Google detecta padrões rápidos
+                # Delay generoso — Google detecta padrões rápidos com alta precisão
                 self._random_delay(min_s=5.0, max_s=10.0)
                 self._human_scroll(steps=8, step_px=350)
 

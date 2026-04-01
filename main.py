@@ -331,16 +331,22 @@ def main() -> None:
         logger.info(f"Iniciando scraper: {scraper_cls.platform_name}")
         logger.info(f"{'='*60}")
 
-        records = _run_scraper(
-            scraper_cls=scraper_cls,
-            keywords_map=keywords_map,
-            page_limit=args.pages,
-            headless=args.headless,
-        )
-        all_records.extend(records)
-        logger.info(
-            f"{scraper_cls.platform_name}: {len(records)} registros coletados"
-        )
+        try:
+            records = _run_scraper(
+                scraper_cls=scraper_cls,
+                keywords_map=keywords_map,
+                page_limit=args.pages,
+                headless=args.headless,
+            )
+            all_records.extend(records)
+            logger.info(
+                f"{scraper_cls.platform_name}: {len(records)} registros coletados"
+            )
+        except Exception as exc:
+            logger.error(
+                f"{scraper_cls.platform_name}: falhou com erro inesperado — {exc}. "
+                "Continuando para o próximo scraper."
+            )
 
     # --- Exporta resultados ---
     if all_records:
