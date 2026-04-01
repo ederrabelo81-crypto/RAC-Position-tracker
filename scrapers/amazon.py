@@ -50,8 +50,15 @@ _SELECTORS = {
     # Seller — NOTE: .a-size-small.a-color-base é demasiado genérico (captura ratings).
     # Usamos _extract_seller() baseada em texto "Vendido por" / link de seller.
     "seller_link": 'a[href*="seller="], a[href*="/shops/"], a[href*="m=A"]',
+    # ".a-icon-alt" = span oculto "4,5 de 5 estrelas" — parse_rating extrai o float
     "rating":         ".a-icon-alt",
-    "review_count":   "[aria-label*='estrela'], [aria-label*='avaliação'], .a-size-small[aria-label]",
+    # Contagem de avaliações: elemento com aria-label "1.234 avaliações" (plural).
+    # NÃO usar [aria-label*='estrela'] aqui — captura o ícone de rating em vez da contagem.
+    "review_count":   (
+        "a[aria-label*='avaliações'], "
+        "span[aria-label*='avaliações'], "
+        "[data-csa-c-slot-id='alf-reviews'] .a-size-base"
+    ),
     "tag_destaque":   ".a-badge-text",
     "fulfillment":    ".a-icon-prime, [aria-label='Amazon Prime'], [class*='prime']",
 
@@ -229,10 +236,13 @@ class AmazonScraper(BaseScraper):
             rating_el   = item.select_one(_SELECTORS["rating"])
             rating      = parse_rating(rating_el.get_text() if rating_el else None)
 
-            reviews_el  = item.select_one(_SELECTORS["review_count"])
-            review_count = parse_review_count(
-                reviews_el.get("aria-label", "") if reviews_el else None
-            )
+            reviews_el = item.select_one(_SELECTORS["review_count"])
+            if reviews_el:
+                # Prioriza aria-label ("1.234 avaliações") sobre texto visível
+                review_raw = reviews_el.get("aria-label") or reviews_el.get_text(strip=True)
+                review_count = parse_review_count(review_raw)
+            else:
+                review_count = None
 
             tag_el = item.select_one(_SELECTORS["tag_destaque"])
             tag    = tag_el.get_text(strip=True) if tag_el else None

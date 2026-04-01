@@ -221,8 +221,22 @@ class LeroyMerlinScraper(BaseScraper):
             except (ValueError, TypeError):
                 price_float = None
 
-            rating = hit.get("rating") or hit.get("ratingAverage")
-            review_count = hit.get("reviewCount") or hit.get("totalReviews")
+            rating = (
+                hit.get("rating")
+                or hit.get("ratingAverage")
+                or hit.get("averageRating")
+                or (hit.get("ratings") or {}).get("average")
+                or (hit.get("reviews") or {}).get("average")
+            )
+            review_count = (
+                hit.get("reviewCount")
+                or hit.get("totalReviews")
+                or hit.get("numberOfRatings")
+                or hit.get("numberOfReviews")
+                or hit.get("reviewsCount")
+                or (hit.get("ratings") or {}).get("total")
+                or (hit.get("reviews") or {}).get("total")
+            )
             pos = page_offset + idx + 1
 
             records.append(self._build_record(

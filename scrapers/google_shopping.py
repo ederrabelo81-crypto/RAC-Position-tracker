@@ -26,7 +26,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
-from utils.text import parse_price, parse_rating
+from utils.text import parse_price, parse_rating, parse_review_count
 
 # ---------------------------------------------------------------------------
 # Seletores — cadeia de fallback por ordem de confiabilidade
@@ -98,6 +98,14 @@ _SELECTORS = {
         "[class*='badge']",
         "[class*='offer']",
         "[class*='tag']",
+    ],
+    # Contagem de avaliações — Google Shopping nem sempre exibe no grid;
+    # captura quando disponível via aria-label "N avaliações" ou texto numérico
+    "review_count_candidates": [
+        "[aria-label*='avaliações']",
+        "[aria-label*='reviews']",
+        ".Rsc7Yb + span",   # span após o rating em alguns layouts
+        ".QIrs8",           # classe vista em alguns resultados
     ],
     # Detecção de CAPTCHA / bloqueio
     "captcha": "#captcha-form, #recaptcha, .g-recaptcha, #challenge-form",
@@ -319,6 +327,17 @@ class GoogleShoppingScraper(BaseScraper):
                     break
             tag = tag_el.get_text(strip=True) if tag_el else None
 
+            # Contagem de avaliações — Google Shopping exibe em alguns layouts
+            review_count = None
+            for rev_sel in _SELECTORS["review_count_candidates"]:
+                rev_el = item.select_one(rev_sel)
+                if rev_el:
+                    raw = rev_el.get("aria-label") or rev_el.get_text(strip=True)
+                    review_count = parse_review_count(raw)
+                    if review_count and review_count > 5:  # evita capturar rating (≤5)
+                        break
+                    review_count = None
+
             if not title:
                 empty_title_count += 1
 
@@ -333,7 +352,7 @@ class GoogleShoppingScraper(BaseScraper):
                 seller=seller,
                 is_fulfillment=False,
                 rating=rating,
-                review_count=None,
+                review_count=review_count,
                 tag_destaque=tag,
             ))
 

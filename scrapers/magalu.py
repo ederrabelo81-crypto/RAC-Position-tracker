@@ -234,8 +234,19 @@ class MagaluScraper(BaseScraper):
                 or (_seller_raw.get("name") if isinstance(_seller_raw, dict) else _seller_raw)
                 or "Magalu"
             )
-            rating = prod.get("rating") or prod.get("ratingAverage")
-            review_count = prod.get("reviewCount") or prod.get("ratingsCount")
+            rating = (
+                prod.get("rating")
+                or prod.get("ratingAverage")
+                or prod.get("averageRating")
+                or prod.get("starRating")
+            )
+            review_count = (
+                prod.get("reviewCount")
+                or prod.get("ratingsCount")
+                or prod.get("numberOfRatings")
+                or prod.get("numberOfReviews")
+                or prod.get("reviewsCount")
+            )
             tag = prod.get("badge") or prod.get("tag")
 
             try:

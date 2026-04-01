@@ -157,6 +157,15 @@ BRANDS: List[str] = [
     "Gree",
     "TCL",
     "Hisense",
+    # Marcas low-tier com presença crescente no segmento RAC sub-R$2K
+    "Aufit",
+    "Haier",
+    "Britânia",         # grafia com acento (mais comum em produtos)
+    "Britania",         # sem acento (fallback)
+    "Vix",
+    "HQ",
+    "Colormaq",
+    # Outras
     "EOS",
     "Komeco",
     "LG",
