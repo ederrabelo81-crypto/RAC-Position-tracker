@@ -44,6 +44,7 @@ from scrapers.casas_bahia import CasasBahiaScraper
 from scrapers.google_shopping import GoogleShoppingScraper
 from scrapers.leroy_merlin import LeroyMerlinScraper
 from scrapers.fast_shop import FastShopScraper
+from scrapers.dealers import DealerScraper, DEALER_CONFIGS
 
 # ---------------------------------------------------------------------------
 # Mapeamento de apelidos de linha de comando para classes de scraper
@@ -57,6 +58,12 @@ SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
     "google_shopping": GoogleShoppingScraper,
     "leroy":          LeroyMerlinScraper,
     "fast":           FastShopScraper,
+    "dealers":        DealerScraper,
+}
+
+# Keywords map para DealerScraper: cada dealer name vira a "keyword"
+_DEALER_KEYWORDS_MAP: Dict[str, List[str]] = {
+    "Dealers": list(DEALER_CONFIGS.keys())
 }
 
 # Colunas na ordem exata do DataFrame de saída
@@ -331,10 +338,15 @@ def main() -> None:
         logger.info(f"Iniciando scraper: {scraper_cls.platform_name}")
         logger.info(f"{'='*60}")
 
+        # DealerScraper usa mapa próprio de dealers, não keywords de mercado
+        effective_map = (
+            _DEALER_KEYWORDS_MAP if scraper_cls is DealerScraper else keywords_map
+        )
+
         try:
             records = _run_scraper(
                 scraper_cls=scraper_cls,
-                keywords_map=keywords_map,
+                keywords_map=effective_map,
                 page_limit=args.pages,
                 headless=args.headless,
             )

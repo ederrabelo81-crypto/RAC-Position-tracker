@@ -1,0 +1,611 @@
+"""
+scrapers/dealers.py — Scraper para varejistas/dealers especializados em ar condicionado.
+
+Diferente dos scrapers de marketplace, navega diretamente em páginas de
+categoria (sem busca por keyword). Cada dealer é identificado pelo nome e
+mapeado para uma URL fixa de catálogo.
+
+Estratégia de extração (em ordem de prioridade):
+  1. Extração via window.__RUNTIME__ / window.__STATE__ (VTEX)
+  2. Parse DOM com cadeia de seletores — cobre VTEX IO, WooCommerce, genérico
+  3. Debug HTML dump quando 0 itens encontrados
+
+Paginação por tipo:
+  - vtex        → ?page=2  (acrescenta ao final; mantém query string existente)
+  - param_zero  → page=0 → page=1 → ... (troca o param na URL, 0-indexed)
+  - woocommerce → /page/2/ (insere no path antes de query string)
+  - query       → ?page=2 (genérico, igual vtex)
+"""
+
+import re
+import time
+import random
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse, urlunparse
+
+from bs4 import BeautifulSoup, Tag
+from loguru import logger
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+from config import LOGS_DIR, PLATFORM_TYPE
+from scrapers.base import BaseScraper
+from utils.text import parse_price, parse_rating, parse_review_count
+
+# ---------------------------------------------------------------------------
+# Configuração por dealer
+# ---------------------------------------------------------------------------
+
+DEALER_CONFIGS: Dict[str, Dict] = {
+    "Frigelar": {
+        "url":        "https://www.frigelar.com.br/split-inverter/c",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "CentralAr": {
+        "url":        "https://www.centralar.com.br/ar-condicionado/inverter/c/INVERTER",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "PoloAr": {
+        "url": (
+            "https://www.poloar.com.br/ar-condicionado/inverter"
+            "?category-1=ar-condicionado&category-2=inverter"
+            "&fuzzy=0&operator=and"
+            "&facets=category-1%2Ccategory-2%2Cfuzzy%2Coperator"
+            "&sort=score_desc&page=0"
+        ),
+        "pagination": "param_zero",   # page=0 → page=1 → page=2 …
+        "max_pages":  5,
+    },
+    "Belmicro": {
+        "url":        "https://www.belmicro.com.br/climatizacao",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "GoCompras": {
+        "url":        "https://www.gocompras.com.br/ar-condicionado/split-hi-wall/",
+        "pagination": "query",
+        "max_pages":  5,
+    },
+    "FrioPecas": {
+        "url":        "https://www.friopecas.com.br/ar-condicionado/ar-condicionado-split-inverter",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "WebContinental": {
+        "url": (
+            "https://www.webcontinental.com.br/climatizacao"
+            "/ar-condicionado/ar-condicionado-split-hi-wall"
+        ),
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "Dufrio": {
+        "url":        "https://www.dufrio.com.br/ar-condicionado/ar-condicionado-split-inverter",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "Leveros": {
+        "url":        "https://www.leveros.com.br/ar-condicionado/inverter",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "ArCerto": {
+        "url":        "https://www.arcerto.com/categoria/ar-condicionado-inverter/",
+        "pagination": "woocommerce",  # /page/2/
+        "max_pages":  5,
+    },
+    "FerreiraCoasta": {
+        "url":        "https://www.ferreiracosta.com/Destaque/split-inverter-subcategoria",
+        "pagination": "query",
+        "max_pages":  5,
+    },
+    "Climario": {
+        "url":        "https://www.climario.com.br/ar-condicionado?order=OrderByTopSaleDESC",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "EngageEletro": {
+        "url":        "https://www.engageeletro.com.br/ar-e-clima/ar-condicionado/",
+        "pagination": "query",
+        "max_pages":  5,
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Seletores CSS — cadeia de fallback cobrindo VTEX IO, WooCommerce e genérico
+# ---------------------------------------------------------------------------
+
+_SELECTORS = {
+    "item_candidates": [
+        # ── VTEX IO (2020+) ──────────────────────────────────────────────
+        'article[class*="vtex-product-summary-2-x-element"]',
+        'section[class*="vtex-product-summary-2-x-element"]',
+        'div[class*="vtex-product-summary-2-x-element"]',
+        '[class*="vtex-product-summary-2-x-container"]',
+        # ── VTEX legacy / styled-components ─────────────────────────────
+        'li.product-summary',
+        'div[class*="productSummary"]',
+        '.prateleira li',
+        '.shelves li',
+        'li[class*="ProductCard"]',
+        'div[class*="ProductCard__Wrapper"]',
+        # ── WooCommerce ──────────────────────────────────────────────────
+        'ul.products li.product',
+        'ul.products li[class*="product"]',
+        'li.product-type-simple',
+        'li.type-product',
+        # ── Genérico ─────────────────────────────────────────────────────
+        '[class*="product-card"]:not(script)',
+        '[class*="ProductCard"]:not(script)',
+        'li[class*="product-item"]',
+        'div[class*="product-item"]',
+        '[data-product-id]',
+        '[data-sku]',
+        'article[class*="product"]',
+    ],
+    "title_candidates": [
+        # VTEX IO
+        '[class*="vtex-product-summary-2-x-productNameContainer"]',
+        '[class*="productNameContainer"]',
+        '[class*="ProductName__Link"]',
+        '[class*="ProductName"]',
+        '[class*="productName"]',
+        '[class*="nameContainer"]',
+        # WooCommerce
+        '.woocommerce-loop-product__title',
+        'h2.product-title',
+        'h3.product-title',
+        # Genérico
+        'h2[class*="title"]', 'h3[class*="title"]', 'h4[class*="title"]',
+        'h2[class*="name"]',  'h3[class*="name"]',
+        '[class*="product-title"]',
+        '[class*="product-name"]',
+        'h2', 'h3',
+    ],
+    "price_candidates": [
+        # VTEX IO
+        '[class*="vtex-product-price-1-x-sellingPriceValue"]',
+        '[class*="vtex-product-price-1-x-sellingPrice"]',
+        '[class*="sellingPriceValue"]',
+        '[class*="sellingPrice"]',
+        '[class*="spotPriceValue"]',
+        '[class*="spotPrice"]',
+        # VTEX legacy
+        '.price .skuBestPrice',
+        '.product-summary-price .skuBestPrice',
+        # WooCommerce
+        '.price ins .woocommerce-Price-amount',
+        '.price .woocommerce-Price-amount bdi',
+        'span.woocommerce-Price-amount',
+        # Genérico
+        '[class*="sale-price"]',
+        '[class*="salePrice"]',
+        '[class*="price-value"]',
+        '[class*="PriceValue"]',
+        '[class*="product-price"]',
+        '[class*="ProductPrice"]',
+        '[class*="BestPrice"]',
+        '[class*="bestPrice"]',
+        '[class*="price"]',
+    ],
+    "rating_candidates": [
+        '[class*="vtex-product-review"]',
+        '[class*="rating"]',
+        '[class*="Rating"]',
+        '.star-rating',
+        '[class*="stars"]',
+        '[class*="review-score"]',
+    ],
+    "review_count_candidates": [
+        '[class*="review-count"]',
+        '[class*="reviewCount"]',
+        '[class*="ReviewCount"]',
+        '[class*="ratings-count"]',
+        '[class*="totalReviews"]',
+    ],
+    # Indicadores de "próxima página" para detecção de fim de catálogo
+    "next_page_candidates": [
+        'a[aria-label*="próxima" i]',
+        'a[aria-label*="next" i]',
+        'a[class*="pagination-next"]:not([disabled])',
+        'a[class*="paginationNext"]:not([disabled])',
+        '.woocommerce-pagination a.next',
+        '[class*="pagination"] a[rel="next"]',
+        'a[class*="next"]:not([disabled])',
+    ],
+}
+
+# Número mínimo de itens para considerar a página válida
+_MIN_ITEMS = 3
+
+
+class DealerScraper(BaseScraper):
+    """
+    Scraper para varejistas/dealers especializados em ar condicionado.
+
+    Cada chamada a search() corresponde a um dealer (identificado pelo nome).
+    A URL de catálogo e estratégia de paginação são definidas em DEALER_CONFIGS.
+    """
+
+    platform_name = "Dealer"   # sobrescrito dinamicamente por search()
+
+    def __init__(self, headless: bool = True) -> None:
+        super().__init__(headless=headless)
+        self._current_dealer: str = ""
+
+    # ------------------------------------------------------------------
+    # URL builders
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_page_url(base_url: str, page: int, pagination: str) -> str:
+        """
+        Gera a URL para a página N do catálogo de acordo com a estratégia
+        de paginação do dealer.
+
+        Args:
+            base_url:   URL da primeira página (conforme DEALER_CONFIGS)
+            page:       número da página (1-indexed)
+            pagination: "vtex" | "param_zero" | "woocommerce" | "query"
+
+        Returns:
+            URL da página N.
+        """
+        if page == 1:
+            return base_url
+
+        if pagination == "woocommerce":
+            # Insere /page/N/ no path antes de qualquer query string
+            parsed = urlparse(base_url)
+            path = parsed.path.rstrip("/")
+            new_path = f"{path}/page/{page}/"
+            return urlunparse(parsed._replace(path=new_path))
+
+        if pagination == "param_zero":
+            # 0-indexed: page 1 → page=0, page 2 → page=1, …
+            return re.sub(r"(page=)\d+", rf"\g<1>{page - 1}", base_url)
+
+        # "vtex" e "query": acrescenta ?page=N ou &page=N
+        sep = "&" if "?" in base_url else "?"
+        return f"{base_url}{sep}page={page}"
+
+    # ------------------------------------------------------------------
+    # Detecção de itens no DOM
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_items(soup: BeautifulSoup) -> Tuple[List[Tag], str]:
+        """
+        Itera pelos seletores de container até encontrar ≥ _MIN_ITEMS.
+        Retorna (items, seletor_usado).
+        """
+        for sel in _SELECTORS["item_candidates"]:
+            items = soup.select(sel)
+            if len(items) >= _MIN_ITEMS:
+                return items, sel
+        return [], "nenhum"
+
+    @staticmethod
+    def _first_match(item: Tag, candidates: List[str]) -> Optional[Tag]:
+        for sel in candidates:
+            el = item.select_one(sel)
+            if el:
+                return el
+        return None
+
+    # ------------------------------------------------------------------
+    # Extração via VTEX __RUNTIME__ (JS state injection)
+    # ------------------------------------------------------------------
+
+    def _try_vtex_runtime(
+        self,
+        dealer: str,
+        keyword_category_map: dict,
+        page: int,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Tenta extrair produtos do objeto window.__RUNTIME__ ou window.__STATE__
+        injetado pelo VTEX IO na página. Retorna lista vazia se não encontrado.
+        """
+        try:
+            runtime = self._page.evaluate("window.__RUNTIME__")
+        except Exception:
+            runtime = None
+
+        if not runtime:
+            return []
+
+        # Procura o queryData que contém os produtos
+        query_data = (
+            runtime.get("queryData")
+            or runtime.get("initialState", {}).get("queryData")
+        )
+        if not query_data:
+            return []
+
+        # queryData é um dict cujas chaves são strings de query hash
+        products_raw = []
+        for _key, val in query_data.items():
+            if not isinstance(val, dict):
+                continue
+            data = val.get("data") or {}
+            product_search = (
+                data.get("productSearch")
+                or data.get("search")
+                or data.get("searchResult")
+            )
+            if not product_search:
+                continue
+            products_raw = (
+                product_search.get("products")
+                or product_search.get("items")
+                or []
+            )
+            if products_raw:
+                break
+
+        if not products_raw:
+            return []
+
+        records = []
+        org_ctr = spo_ctr = 0
+        for idx, prod in enumerate(products_raw):
+            sponsored = prod.get("advertisement") is not None
+
+            if sponsored:
+                spo_ctr += 1
+                pos_organic, pos_sponsored = None, spo_ctr
+            else:
+                org_ctr += 1
+                pos_organic, pos_sponsored = org_ctr, None
+
+            # Título
+            title = prod.get("productName") or prod.get("name")
+
+            # Preço — pega o menor preço entre sellers
+            price_float = None
+            items = prod.get("items") or []
+            for item in items:
+                for seller in item.get("sellers") or []:
+                    offer = (seller.get("commertialOffer") or
+                             seller.get("commercialOffer") or {})
+                    best = offer.get("Price") or offer.get("ListPrice")
+                    if best:
+                        try:
+                            v = float(best)
+                            if price_float is None or v < price_float:
+                                price_float = v
+                        except (ValueError, TypeError):
+                            pass
+
+            # Seller (primeiro seller do primeiro item)
+            seller_name = dealer
+            if items:
+                sellers = items[0].get("sellers") or []
+                if sellers:
+                    seller_name = sellers[0].get("sellerName", dealer)
+
+            records.append(self._build_record(
+                keyword=dealer,
+                keyword_category_map=keyword_category_map,
+                title=title,
+                position_general=page_offset + idx + 1,
+                position_organic=pos_organic,
+                position_sponsored=pos_sponsored,
+                price_float=price_float,
+                seller=seller_name,
+                is_fulfillment=False,
+            ))
+
+        logger.info(
+            f"[{self.platform_name}] {len(records)} itens via VTEX __RUNTIME__"
+        )
+        return records
+
+    # ------------------------------------------------------------------
+    # Parse DOM — cadeia de fallback
+    # ------------------------------------------------------------------
+
+    def _parse_results_dom(
+        self,
+        html: str,
+        dealer: str,
+        keyword_category_map: dict,
+        page: int,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        soup = BeautifulSoup(html, "html.parser")
+        items, sel_used = self._detect_items(soup)
+
+        logger.info(
+            f"[{self.platform_name}] {len(items)} itens no DOM "
+            f"(seletor: {sel_used})"
+        )
+
+        if not items:
+            self._dump_debug_html(html, page, dealer)
+            return []
+
+        records = []
+        org_ctr = 0
+
+        for idx, item in enumerate(items):
+            org_ctr += 1
+
+            title_el  = self._first_match(item, _SELECTORS["title_candidates"])
+            price_el  = self._first_match(item, _SELECTORS["price_candidates"])
+            rating_el = self._first_match(item, _SELECTORS["rating_candidates"])
+            review_el = self._first_match(item, _SELECTORS["review_count_candidates"])
+
+            # Título: fallback para img[alt] e link title
+            title = title_el.get_text(strip=True) if title_el else None
+            if not title:
+                img = item.select_one("img[alt]")
+                if img:
+                    title = img.get("alt", "").strip() or None
+            if not title:
+                link = item.select_one("a[title]")
+                if link:
+                    title = link.get("title", "").strip() or None
+
+            # Preço: fallback regex R$ no texto do item
+            price_raw = price_el.get_text(strip=True) if price_el else None
+            if not price_raw:
+                item_text = item.get_text(" ", strip=True)
+                m = re.search(r"R\$\s*[\d.,]+", item_text)
+                if m:
+                    price_raw = m.group(0)
+
+            records.append(self._build_record(
+                keyword=dealer,
+                keyword_category_map=keyword_category_map,
+                title=title,
+                position_general=page_offset + idx + 1,
+                position_organic=org_ctr,
+                position_sponsored=None,
+                price_raw=price_raw,
+                seller=dealer,
+                is_fulfillment=False,
+                rating=parse_rating(rating_el.get_text() if rating_el else None),
+                review_count=parse_review_count(review_el.get_text() if review_el else None),
+            ))
+
+        return records
+
+    # ------------------------------------------------------------------
+    # Detecção de fim de catálogo
+    # ------------------------------------------------------------------
+
+    def _has_next_page(self, soup: BeautifulSoup) -> bool:
+        """
+        Verifica se existe botão/link de próxima página ativo.
+        Retorna True se ainda há mais páginas.
+        """
+        for sel in _SELECTORS["next_page_candidates"]:
+            el = soup.select_one(sel)
+            if el:
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Debug dump
+    # ------------------------------------------------------------------
+
+    def _dump_debug_html(self, html: str, page: int, dealer: str) -> None:
+        try:
+            log_dir = Path(LOGS_DIR)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = dealer[:30].replace(" ", "_")
+            path = log_dir / f"dealer_debug_{safe_name}_p{page}.html"
+            path.write_text(html, encoding="utf-8")
+            logger.warning(
+                f"[{self.platform_name}] 0 itens — HTML salvo para diagnóstico: {path}"
+            )
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] Erro ao salvar debug: {e}")
+
+    # ------------------------------------------------------------------
+    # search() — interface principal compatível com BaseScraper
+    # ------------------------------------------------------------------
+
+    @retry(
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1, min=8, max=30),
+        reraise=True,
+    )
+    def search(
+        self,
+        keyword: str,
+        keyword_category_map: dict,
+        page_limit: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """
+        Scrapa o catálogo de um dealer.
+
+        Args:
+            keyword:              nome do dealer (chave de DEALER_CONFIGS)
+            keyword_category_map: não usado; mantido por compatibilidade
+            page_limit:           limite de páginas (sobrescrito por max_pages do dealer)
+
+        Returns:
+            Lista de registros no formato padrão _build_record.
+        """
+        dealer = keyword
+        config = DEALER_CONFIGS.get(dealer)
+        if not config:
+            logger.error(
+                f"[DealerScraper] Dealer '{dealer}' não encontrado em DEALER_CONFIGS"
+            )
+            return []
+
+        # Atualiza platform_name dinamicamente para logs e registros
+        self.platform_name = dealer
+        self._current_dealer = dealer
+
+        base_url   = config["url"]
+        pagination = config.get("pagination", "query")
+        max_pages  = min(config.get("max_pages", 5), page_limit)
+
+        all_records: List[Dict[str, Any]] = []
+        # keyword_category_map para _build_record: trata dealer como categoria "Dealers"
+        _cat_map = {"Dealers": [dealer]}
+
+        for page in range(1, max_pages + 1):
+            url = self._build_page_url(base_url, page, pagination)
+            logger.info(f"[{self.platform_name}] Página {page}/{max_pages} → {url}")
+
+            try:
+                self._page.goto(url, wait_until="domcontentloaded")
+                self._wait_for_network_idle()
+                self._random_delay(min_s=3.0, max_s=7.0)
+                self._human_scroll(steps=8, step_px=300)
+                self._random_delay(min_s=1.0, max_s=2.5)
+
+                page_offset = (page - 1) * 48   # VTEX default = 48/página
+
+                # 1. Tenta VTEX __RUNTIME__
+                vtex_records = self._try_vtex_runtime(
+                    dealer, _cat_map, page, page_offset
+                )
+                if vtex_records:
+                    all_records.extend(vtex_records)
+                else:
+                    # 2. Parse DOM
+                    html = self._page.content()
+                    dom_records = self._parse_results_dom(
+                        html, dealer, _cat_map, page, page_offset
+                    )
+                    all_records.extend(dom_records)
+
+                    if not dom_records:
+                        logger.warning(
+                            f"[{self.platform_name}] 0 itens na página {page} — "
+                            "possível bloqueio ou fim do catálogo."
+                        )
+                        break
+
+                # Verifica se há próxima página
+                soup = BeautifulSoup(self._page.content(), "html.parser")
+                if not self._has_next_page(soup) and page < max_pages:
+                    logger.info(
+                        f"[{self.platform_name}] Sem próxima página detectada — "
+                        f"encerrando em página {page}"
+                    )
+                    break
+
+                if page < max_pages:
+                    self._random_delay(min_s=2.5, max_s=6.0)
+
+            except Exception as exc:
+                logger.error(
+                    f"[{self.platform_name}] Erro na página {page}: {exc}"
+                )
+                raise
+
+        logger.success(
+            f"[{self.platform_name}] '{dealer}' → {len(all_records)} produtos coletados"
+        )
+        return all_records

@@ -98,6 +98,7 @@ ACTIVE_PLATFORMS = {
     "google_shopping":True,   # ✅ Google Shopping — limpeza de título corrigida
     "leroy":          True,   # ✅ Leroy Merlin — funcional (Algolia API)
     "fast":           False,  # ⏸️  Fast Shop — aguardando validação de extração
+    "dealers":        True,   # ✅ Dealers/varejistas especializados
 }
 
 # ---------------------------------------------------------------------------
@@ -128,13 +129,20 @@ PLATFORM_TYPE: Dict[str, str] = {
     "Google Shopping":  "Comparador de Preços",
     "Leroy Merlin":     "Nacional Varejo Especializado",
     "Fast Shop":        "Nacional Varejo Especializado",
-    "Leveros":         "Regional Especializado",
-    "Frio Peças":      "Regional Especializado",
-    "Clima Rio":       "Regional Especializado",
-    "Frigelar":        "Regional Especializado",
-    "DuFrio":          "Regional Especializado",
-    "Web Continental": "Nacional Varejo Especializado",
-    "Go Compras":      "Nacional Marketplace",
+    # Dealers/varejistas especializados
+    "Frigelar":         "Regional Especializado",
+    "CentralAr":        "Regional Especializado",
+    "PoloAr":           "Regional Especializado",
+    "Belmicro":         "Regional Especializado",
+    "GoCompras":        "Nacional Marketplace",
+    "FrioPecas":        "Regional Especializado",
+    "WebContinental":   "Nacional Varejo Especializado",
+    "Dufrio":           "Regional Especializado",
+    "Leveros":          "Regional Especializado",
+    "ArCerto":          "Regional Especializado",
+    "FerreiraCoasta":   "Regional Especializado",
+    "Climario":         "Regional Especializado",
+    "EngageEletro":     "Regional Especializado",
 }
 
 # ---------------------------------------------------------------------------
