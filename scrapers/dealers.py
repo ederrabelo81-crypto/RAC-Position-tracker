@@ -17,11 +17,12 @@ Paginação por tipo:
   - query       → ?page=2 (genérico, igual vtex)
 """
 
+import json
 import re
 import time
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, urlunparse
 
 from bs4 import BeautifulSoup, Tag
@@ -484,34 +485,158 @@ class DealerScraper(BaseScraper):
     @staticmethod
     def _deduplicate(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Remove duplicatas por (Plataforma, Produto/SKU normalizado, Posição Orgânica).
+        Remove duplicatas por (Plataforma, Produto/SKU normalizado).
+        Chave deliberadamente SEM posição — cobre carrosséis onde o mesmo
+        produto aparece em posições consecutivas diferentes.
         Quando há colisão, mantém o registro com preço preenchido.
-        Loga warning se registros com preço vazio forem descartados.
+        Reatribui posição orgânica e geral em sequência limpa após dedup.
         """
         seen: Dict[tuple, Dict[str, Any]] = {}
-        no_price = 0
 
         for row in records:
             title = (row.get("Produto / SKU") or "").lower().strip()
-            key = (
-                row.get("Plataforma", ""),
-                title,
-                row.get("Posição Orgânica"),
-            )
+            key = (row.get("Plataforma", ""), title)
             if key in seen:
-                # Prefere o registro com preço
                 if not seen[key].get("Preço (R$)") and row.get("Preço (R$)"):
                     seen[key] = row
             else:
                 seen[key] = row
 
         result = list(seen.values())
+
+        # Reatribui posições em sequência limpa (1, 2, 3, …)
+        for i, row in enumerate(result, start=1):
+            row["Posição Orgânica"] = i
+            row["Posição Geral"]    = i
+
         no_price = sum(1 for r in result if not r.get("Preço (R$)"))
         if no_price:
             logger.warning(
                 f"{no_price}/{len(result)} registros sem preço após dedup"
             )
         return result
+
+    # ------------------------------------------------------------------
+    # Correção de título com marca concatenada (ArCerto bug)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fix_brand_concat(title: str) -> str:
+        """
+        Corrige casos onde o texto de um elemento de marca foi concatenado
+        diretamente ao nome do produto sem espaço, ex:
+          "ElginAr Condicionado Split..." → "Ar Condicionado Split..."
+          "MideaAr Condicionado..."      → "Ar Condicionado..."
+
+        Isso ocorre quando o seletor captura um container que tem tanto o
+        elemento de marca quanto o de título como filhos, e get_text() os une.
+        """
+        from config import BRANDS
+        for brand in BRANDS:
+            if title.startswith(brand) and len(title) > len(brand):
+                next_char = title[len(brand)]
+                # Concatenação sem espaço: "ElginAr" — próximo char é maiúscula ou dígito
+                if next_char.isupper() or next_char.isdigit():
+                    return title[len(brand):]
+        return title
+
+    # ------------------------------------------------------------------
+    # Extração de preço via JSON-LD (schema.org/Product)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_jsonld_prices(html: str) -> Dict[str, float]:
+        """
+        Lê scripts application/ld+json e constrói um dict {nome_lower: preco}.
+        Funciona em VTEX, WooCommerce e qualquer site com schema.org/Product.
+        Usado como fallback quando seletores CSS não capturam o preço.
+        """
+        prices: Dict[str, float] = {}
+        soup = BeautifulSoup(html, "html.parser")
+        for script in soup.find_all("script", {"type": "application/ld+json"}):
+            try:
+                raw = (script.string or "").strip()
+                if not raw:
+                    continue
+                data = json.loads(raw)
+                # Pode ser um único objeto ou uma lista
+                entries = data if isinstance(data, list) else [data]
+                for entry in entries:
+                    # ItemList → percorre os itemListElement
+                    if entry.get("@type") == "ItemList":
+                        entries.extend(entry.get("itemListElement") or [])
+                        continue
+                    if entry.get("@type") != "Product":
+                        # Tenta "item" (BreadcrumbList ou ListItem wrapping Product)
+                        inner = entry.get("item") or {}
+                        if inner.get("@type") == "Product":
+                            entry = inner
+                        else:
+                            continue
+                    name = entry.get("name", "")
+                    offers = entry.get("offers") or {}
+                    if isinstance(offers, list):
+                        offers = offers[0] if offers else {}
+                    price_raw = (
+                        offers.get("price")
+                        or offers.get("lowPrice")
+                        or offers.get("highPrice")
+                    )
+                    if name and price_raw is not None:
+                        try:
+                            prices[name.lower().strip()] = float(price_raw)
+                        except (ValueError, TypeError):
+                            pass
+            except Exception:
+                pass
+        return prices
+
+    # ------------------------------------------------------------------
+    # Validação de resultados — alertas de qualidade antes do CSV
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_results(dealer: str, records: List[Dict[str, Any]]) -> None:
+        """
+        Emite warnings de qualidade dos dados sem modificar os registros.
+        Detecta: sem preço, sem produto, duplicatas, marca concatenada.
+        """
+        total = len(records)
+        if total == 0:
+            logger.error(f"[{dealer}] ALERTA: nenhum produto extraído!")
+            return
+
+        sem_preco   = sum(1 for r in records if not r.get("Preço (R$)"))
+        sem_produto = sum(1 for r in records if not (r.get("Produto / SKU") or "").strip())
+
+        chaves = [(r.get("Produto / SKU", "").lower(), r.get("Posição Orgânica")) for r in records]
+        dupes  = total - len(set(chaves))
+
+        from config import BRANDS
+        concat_bugs = sum(
+            1 for r in records
+            if any(
+                (r.get("Produto / SKU") or "").startswith(b)
+                and len(r.get("Produto / SKU", "")) > len(b)
+                and r["Produto / SKU"][len(b)].isupper()
+                for b in BRANDS
+            )
+        )
+
+        pct_sem_preco = 100 * sem_preco / total
+        logger.info(
+            f"[{dealer}] Validação: {total} registros | "
+            f"sem preço: {sem_preco} ({pct_sem_preco:.0f}%) | "
+            f"sem produto: {sem_produto} | dupes: {dupes} | concat brand: {concat_bugs}"
+        )
+        if pct_sem_preco > 20:
+            logger.warning(f"[{dealer}] {pct_sem_preco:.0f}% dos produtos sem preço ({sem_preco}/{total})")
+        if sem_produto > 0:
+            logger.warning(f"[{dealer}] {sem_produto} linhas com Produto/SKU vazio")
+        if dupes > 0:
+            logger.warning(f"[{dealer}] {dupes} entradas duplicadas após dedup final")
+        if concat_bugs > 0:
+            logger.warning(f"[{dealer}] {concat_bugs} nomes com marca concatenada detectados")
 
     # ------------------------------------------------------------------
     # Extração via VTEX __RUNTIME__ (JS state injection)
@@ -648,8 +773,19 @@ class DealerScraper(BaseScraper):
             self._dump_debug_html(html, page, dealer)
             return []
 
+        # Pré-carrega preços via JSON-LD (schema.org/Product) — fallback eficaz
+        # para VTEX/WooCommerce quando seletores CSS falham (preço em JS separado)
+        jsonld_prices = self._extract_jsonld_prices(html)
+        if jsonld_prices:
+            logger.debug(
+                f"[{self.platform_name}] JSON-LD: {len(jsonld_prices)} preços carregados"
+            )
+
         records = []
         org_ctr = 0
+        # Dedup por título dentro desta página — evita duplicatas de carrossel/galeria
+        # (ex: Leveros exibe N imagens por produto, gerando N elementos idênticos no DOM)
+        seen_titles_this_page: Set[str] = set()
 
         for item in items:
             # ── Título ────────────────────────────────────────────────
@@ -672,11 +808,35 @@ class DealerScraper(BaseScraper):
             if self._is_junk_title(title):
                 continue
 
+            # Corrige "MarcaNome do produto" → "Nome do produto" (ArCerto bug)
+            title = self._fix_brand_concat(title)
+
+            # Dedup de carrossel/galeria: mesmo título já visto nesta página → skip
+            title_key = title.lower().strip()
+            if title_key in seen_titles_this_page:
+                continue
+            seen_titles_this_page.add(title_key)
+
             org_ctr += 1
             pos_general = base_position + org_ctr
 
-            # ── Preço ─────────────────────────────────────────────────
+            # ── Preço: seletores CSS → JSON-LD fallback ───────────────
             price_raw = self._extract_price_el(item)
+
+            # Se seletores CSS falharam, tenta correspondência no dict JSON-LD
+            if not price_raw and jsonld_prices:
+                matched_price = jsonld_prices.get(title_key)
+                if matched_price is None:
+                    # Correspondência parcial (início do título)
+                    for jname, jprice in jsonld_prices.items():
+                        if title_key.startswith(jname[:30]) or jname.startswith(title_key[:30]):
+                            matched_price = jprice
+                            break
+                if matched_price is not None:
+                    price_raw = f"R$ {matched_price}"
+
+            if not price_raw:
+                logger.debug(f"[{self.platform_name}] Sem preço: '{title[:50]}'")
 
             # ── Rating / reviews ──────────────────────────────────────
             rating_el = self._first_match(item, _SELECTORS["rating_candidates"])
@@ -845,8 +1005,11 @@ class DealerScraper(BaseScraper):
                 )
                 raise
 
-        # Deduplicação defensiva — remove registros duplicados e botões de UI
+        # Deduplicação defensiva final — remove residuais entre páginas
         all_records = self._deduplicate(all_records)
+
+        # Validação de qualidade — loga alertas antes de entregar ao CSV
+        self._validate_results(dealer, all_records)
 
         logger.success(
             f"[{self.platform_name}] '{dealer}' → {len(all_records)} produtos coletados"
