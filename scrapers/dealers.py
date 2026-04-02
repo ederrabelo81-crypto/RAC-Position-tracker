@@ -87,9 +87,11 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  5,
     },
     "Leveros": {
-        "url":        "https://www.leveros.com.br/ar-condicionado/inverter",
-        "pagination": "vtex",
-        "max_pages":  5,
+        "url":           "https://www.leveros.com.br/ar-condicionado/inverter",
+        "pagination":    "vtex",
+        "max_pages":     5,
+        # Seletor específico confirmado em inspeção — evita capturar botões UI
+        "item_selector": "div.product-list > div.product-item",
     },
     "ArCerto": {
         "url":        "https://www.arcerto.com/categoria/ar-condicionado-inverter/",
@@ -97,9 +99,10 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  5,
     },
     "FerreiraCoasta": {
-        "url":        "https://www.ferreiracosta.com/Destaque/split-inverter-subcategoria",
-        "pagination": "query",
-        "max_pages":  5,
+        "url":             "https://www.ferreiracosta.com/Destaque/split-inverter-subcategoria",
+        "pagination":      "query",
+        "max_pages":       5,
+        "infinite_scroll": True,   # carrega produtos via scroll; paginação tradicional ausente
     },
     "Climario": {
         "url":        "https://www.climario.com.br/ar-condicionado?order=OrderByTopSaleDESC",
@@ -112,6 +115,17 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  5,
     },
 }
+
+# ---------------------------------------------------------------------------
+# Strings de UI que não são produtos — filtradas antes de registrar
+# ---------------------------------------------------------------------------
+_JUNK_STRINGS: frozenset = frozenset({
+    "favoritar esse produto", "adicionar ao carrinho", "comparar",
+    "ver detalhes", "comprar", "saiba mais", "adicionar", "ver produto",
+    "ver oferta", "adicionar à lista", "lista de desejos", "wishlist",
+    "favoritar", "adicionar à sacola", "ir para o produto",
+    "ver mais detalhes", "selecione", "escolha",
+})
 
 # ---------------------------------------------------------------------------
 # Seletores CSS — cadeia de fallback cobrindo VTEX IO, WooCommerce e genérico
@@ -157,29 +171,43 @@ _SELECTORS = {
         '.woocommerce-loop-product__title',
         'h2.product-title',
         'h3.product-title',
-        # Genérico
-        'h2[class*="title"]', 'h3[class*="title"]', 'h4[class*="title"]',
-        'h2[class*="name"]',  'h3[class*="name"]',
+        # Ferrreira Costa e genéricos
+        'h2.product-name',
+        '.product-name a',
         '[class*="product-title"]',
         '[class*="product-name"]',
+        # Fallback headings
+        'h2[class*="title"]', 'h3[class*="title"]', 'h4[class*="title"]',
+        'h2[class*="name"]',  'h3[class*="name"]',
         'h2', 'h3',
     ],
     "price_candidates": [
-        # VTEX IO
+        # ── VTEX IO — valor montado ──────────────────────────────────────
         '[class*="vtex-product-price-1-x-sellingPriceValue"]',
-        '[class*="vtex-product-price-1-x-sellingPrice"]',
+        '[class*="vtex-product-price-1-x-sellingPrice"]:not([class*="Container"])',
         '[class*="sellingPriceValue"]',
-        '[class*="sellingPrice"]',
+        '[class*="sellingPrice"]:not([class*="Container"])',
         '[class*="spotPriceValue"]',
-        '[class*="spotPrice"]',
-        # VTEX legacy
+        '[class*="spotPrice"]:not([class*="Container"])',
+        # ── VTEX IO — partes do preço (integer + decimal) ────────────────
+        # Tratadas em _extract_vtex_split_price(); listadas aqui como fallback
+        '[class*="currencyContainer"]',
+        '[class*="currencyInteger"]',
+        # ── VTEX legacy ──────────────────────────────────────────────────
         '.price .skuBestPrice',
         '.product-summary-price .skuBestPrice',
-        # WooCommerce
+        '.skuBestPrice',
+        # ── WooCommerce ──────────────────────────────────────────────────
         '.price ins .woocommerce-Price-amount',
         '.price .woocommerce-Price-amount bdi',
         'span.woocommerce-Price-amount',
-        # Genérico
+        # ── Atributos de dados / microdata ───────────────────────────────
+        '[itemprop="price"]',
+        '[data-price]',
+        # ── Genérico ─────────────────────────────────────────────────────
+        '.price strong',
+        '.price > span',
+        'span.price-value',
         '[class*="sale-price"]',
         '[class*="salePrice"]',
         '[class*="price-value"]',
@@ -219,6 +247,8 @@ _SELECTORS = {
 
 # Número mínimo de itens para considerar a página válida
 _MIN_ITEMS = 3
+_MIN_TITLE_LEN = 8    # títulos menores que isso são UI/lixo
+_MAX_TITLE_LEN = 300
 
 
 class DealerScraper(BaseScraper):
@@ -276,11 +306,26 @@ class DealerScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _detect_items(soup: BeautifulSoup) -> Tuple[List[Tag], str]:
+    def _detect_items(
+        soup: BeautifulSoup,
+        item_selector: Optional[str] = None,
+    ) -> Tuple[List[Tag], str]:
         """
         Itera pelos seletores de container até encontrar ≥ _MIN_ITEMS.
+        Se `item_selector` (override de config) for fornecido, tenta ele primeiro.
         Retorna (items, seletor_usado).
         """
+        # Override específico do dealer (ex: Leveros "div.product-list > div.product-item")
+        if item_selector:
+            items = soup.select(item_selector)
+            if len(items) >= _MIN_ITEMS:
+                return items, item_selector
+            # override não funcionou — avisa e cai no fallback genérico
+            logger.debug(
+                f"item_selector override '{item_selector}' retornou {len(items)} itens — "
+                "usando cadeia genérica"
+            )
+
         for sel in _SELECTORS["item_candidates"]:
             items = soup.select(sel)
             if len(items) >= _MIN_ITEMS:
@@ -294,6 +339,179 @@ class DealerScraper(BaseScraper):
             if el:
                 return el
         return None
+
+    # ------------------------------------------------------------------
+    # Validação de título
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_junk_title(text: Optional[str]) -> bool:
+        """
+        Retorna True para strings que claramente não são nomes de produto:
+        botões de UI, textos vazios, strings muito curtas ou muito longas.
+        """
+        if not text:
+            return True
+        t = text.strip()
+        if len(t) < _MIN_TITLE_LEN or len(t) > _MAX_TITLE_LEN:
+            return True
+        if t.lower() in _JUNK_STRINGS:
+            return True
+        # String só com dígitos/símbolos não é título de produto
+        if re.match(r'^[\d\s.,R$%\-/]+$', t):
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Extração de preço — VTEX split e meta[itemprop]
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_vtex_split_price(item: Tag) -> Optional[str]:
+        """
+        VTEX IO fragmenta o preço em três elementos:
+          currencyInteger + currencyDecimalSeparator + currencyDecimalDigits
+        Este método os une e retorna a string "R$ NNNN,NN".
+        Retorna None se o padrão não for encontrado.
+        """
+        int_el = item.select_one('[class*="currencyInteger"]')
+        if not int_el:
+            return None
+        price_str = int_el.get_text(strip=True)
+        sep_el = item.select_one('[class*="currencyDecimalSeparator"]')
+        dec_el = item.select_one('[class*="currencyDecimalDigits"]')
+        if sep_el:
+            price_str += sep_el.get_text(strip=True)
+        if dec_el:
+            price_str += dec_el.get_text(strip=True)
+        return f"R$ {price_str}" if price_str else None
+
+    @staticmethod
+    def _extract_price_el(item: Tag) -> Optional[str]:
+        """
+        Extrai o preço de um item tentando, em ordem:
+          1. Seletores CSS da cadeia _SELECTORS["price_candidates"]
+          2. VTEX split price (currencyInteger + partes)
+          3. meta[itemprop="price"] (valor no atributo content)
+          4. [data-price] atributo
+          5. Regex R$ no texto completo do item
+        """
+        # 1. Seletores CSS
+        for sel in _SELECTORS["price_candidates"]:
+            el = item.select_one(sel)
+            if el:
+                # meta e elementos com atributo data-price → valor no atributo
+                if el.name == "meta":
+                    val = el.get("content", "").strip()
+                    if val:
+                        return f"R$ {val}"
+                    continue
+                text = el.get_text(strip=True)
+                # Evita capturar container vazio ou texto sem dígito
+                if text and re.search(r'\d', text):
+                    return text
+
+        # 2. VTEX split
+        split = DealerScraper._extract_vtex_split_price(item)
+        if split:
+            return split
+
+        # 3. [data-price] atributo direto
+        for el in item.select("[data-price]"):
+            val = el.get("data-price", "").strip()
+            if val and re.search(r'\d', val):
+                return f"R$ {val}"
+
+        # 4. Regex R$ no texto completo
+        item_text = item.get_text(" ", strip=True)
+        m = re.search(r'R\$\s*[\d.,]+', item_text)
+        if m:
+            return m.group(0)
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Aguarda carregamento de preços (JS lazy-load)
+    # ------------------------------------------------------------------
+
+    def _wait_for_prices(self) -> None:
+        """
+        Aguarda até que algum elemento de preço apareça na página.
+        VTEX IO e outros sites carregam preços via fetch separado após o DOM.
+        """
+        price_wait_selectors = [
+            '[class*="sellingPrice"]',
+            '[class*="currencyInteger"]',
+            '[class*="skuBestPrice"]',
+            '.price',
+            '[data-price]',
+            '[itemprop="price"]',
+        ]
+        for sel in price_wait_selectors:
+            try:
+                self._page.wait_for_selector(sel, timeout=7_000)
+                logger.debug(f"[{self.platform_name}] Preços carregados ({sel})")
+                return
+            except Exception:
+                continue
+        logger.debug(f"[{self.platform_name}] Timeout aguardando preços — extraindo HTML assim mesmo")
+
+    # ------------------------------------------------------------------
+    # Infinite scroll (FerreiraCoasta e similares)
+    # ------------------------------------------------------------------
+
+    def _scroll_to_load_all(self, max_scrolls: int = 15) -> None:
+        """
+        Rola a página até o fim repetidamente para disparar infinite scroll.
+        Para quando a altura da página não cresce mais ou atinge max_scrolls.
+        """
+        prev_height = 0
+        for _ in range(max_scrolls):
+            curr_height = self._page.evaluate("document.body.scrollHeight")
+            if curr_height == prev_height:
+                break
+            prev_height = curr_height
+            self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(random.uniform(1.5, 2.5))
+        # Volta ao topo para estabilizar o DOM
+        self._page.evaluate("window.scrollTo(0, 0)")
+        time.sleep(0.5)
+
+    # ------------------------------------------------------------------
+    # Deduplicação defensiva
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _deduplicate(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Remove duplicatas por (Plataforma, Produto/SKU normalizado, Posição Orgânica).
+        Quando há colisão, mantém o registro com preço preenchido.
+        Loga warning se registros com preço vazio forem descartados.
+        """
+        seen: Dict[tuple, Dict[str, Any]] = {}
+        no_price = 0
+
+        for row in records:
+            title = (row.get("Produto / SKU") or "").lower().strip()
+            key = (
+                row.get("Plataforma", ""),
+                title,
+                row.get("Posição Orgânica"),
+            )
+            if key in seen:
+                # Prefere o registro com preço
+                if not seen[key].get("Preço (R$)") and row.get("Preço (R$)"):
+                    seen[key] = row
+            else:
+                seen[key] = row
+
+        result = list(seen.values())
+        no_price = sum(1 for r in result if not r.get("Preço (R$)"))
+        if no_price:
+            logger.warning(
+                f"{no_price}/{len(result)} registros sem preço após dedup"
+            )
+        return result
 
     # ------------------------------------------------------------------
     # Extração via VTEX __RUNTIME__ (JS state injection)
@@ -415,10 +633,11 @@ class DealerScraper(BaseScraper):
         dealer: str,
         keyword_category_map: dict,
         page: int,
-        page_offset: int,
+        base_position: int,          # posição real do 1º item desta página
+        item_selector: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
-        items, sel_used = self._detect_items(soup)
+        items, sel_used = self._detect_items(soup, item_selector)
 
         logger.info(
             f"[{self.platform_name}] {len(items)} itens no DOM "
@@ -432,38 +651,42 @@ class DealerScraper(BaseScraper):
         records = []
         org_ctr = 0
 
-        for idx, item in enumerate(items):
-            org_ctr += 1
-
-            title_el  = self._first_match(item, _SELECTORS["title_candidates"])
-            price_el  = self._first_match(item, _SELECTORS["price_candidates"])
-            rating_el = self._first_match(item, _SELECTORS["rating_candidates"])
-            review_el = self._first_match(item, _SELECTORS["review_count_candidates"])
-
-            # Título: fallback para img[alt] e link title
+        for item in items:
+            # ── Título ────────────────────────────────────────────────
+            title_el = self._first_match(item, _SELECTORS["title_candidates"])
             title = title_el.get_text(strip=True) if title_el else None
-            if not title:
+
+            # Fallback: img[alt]
+            if not title or self._is_junk_title(title):
                 img = item.select_one("img[alt]")
                 if img:
                     title = img.get("alt", "").strip() or None
-            if not title:
+
+            # Fallback: a[title]
+            if not title or self._is_junk_title(title):
                 link = item.select_one("a[title]")
                 if link:
                     title = link.get("title", "").strip() or None
 
-            # Preço: fallback regex R$ no texto do item
-            price_raw = price_el.get_text(strip=True) if price_el else None
-            if not price_raw:
-                item_text = item.get_text(" ", strip=True)
-                m = re.search(r"R\$\s*[\d.,]+", item_text)
-                if m:
-                    price_raw = m.group(0)
+            # Descarta itens de UI (botões, labels) sem título real
+            if self._is_junk_title(title):
+                continue
+
+            org_ctr += 1
+            pos_general = base_position + org_ctr
+
+            # ── Preço ─────────────────────────────────────────────────
+            price_raw = self._extract_price_el(item)
+
+            # ── Rating / reviews ──────────────────────────────────────
+            rating_el = self._first_match(item, _SELECTORS["rating_candidates"])
+            review_el = self._first_match(item, _SELECTORS["review_count_candidates"])
 
             records.append(self._build_record(
                 keyword=dealer,
                 keyword_category_map=keyword_category_map,
                 title=title,
-                position_general=page_offset + idx + 1,
+                position_general=pos_general,
                 position_organic=org_ctr,
                 position_sponsored=None,
                 price_raw=price_raw,
@@ -550,8 +773,10 @@ class DealerScraper(BaseScraper):
         max_pages  = min(config.get("max_pages", 5), page_limit)
 
         all_records: List[Dict[str, Any]] = []
-        # keyword_category_map para _build_record: trata dealer como categoria "Dealers"
+        # keyword_category_map para _build_record
         _cat_map = {"Dealers": [dealer]}
+        infinite_scroll = config.get("infinite_scroll", False)
+        item_selector   = config.get("item_selector")   # override de seletor
 
         for page in range(1, max_pages + 1):
             url = self._build_page_url(base_url, page, pagination)
@@ -561,14 +786,23 @@ class DealerScraper(BaseScraper):
                 self._page.goto(url, wait_until="domcontentloaded")
                 self._wait_for_network_idle()
                 self._random_delay(min_s=3.0, max_s=7.0)
-                self._human_scroll(steps=8, step_px=300)
+
+                # Infinite scroll: carrega todos os itens antes de extrair
+                if infinite_scroll:
+                    self._scroll_to_load_all(max_scrolls=12)
+                else:
+                    self._human_scroll(steps=8, step_px=300)
+
+                # Aguarda preços carregarem (fetch separado em VTEX/SPAs)
+                self._wait_for_prices()
                 self._random_delay(min_s=1.0, max_s=2.5)
 
-                page_offset = (page - 1) * 48   # VTEX default = 48/página
+                # base_position = quantos itens já coletamos (posição contínua)
+                base_position = len(all_records)
 
                 # 1. Tenta VTEX __RUNTIME__
                 vtex_records = self._try_vtex_runtime(
-                    dealer, _cat_map, page, page_offset
+                    dealer, _cat_map, page, base_position
                 )
                 if vtex_records:
                     all_records.extend(vtex_records)
@@ -576,7 +810,9 @@ class DealerScraper(BaseScraper):
                     # 2. Parse DOM
                     html = self._page.content()
                     dom_records = self._parse_results_dom(
-                        html, dealer, _cat_map, page, page_offset
+                        html, dealer, _cat_map, page,
+                        base_position=base_position,
+                        item_selector=item_selector,
                     )
                     all_records.extend(dom_records)
 
@@ -586,6 +822,10 @@ class DealerScraper(BaseScraper):
                             "possível bloqueio ou fim do catálogo."
                         )
                         break
+
+                # Sites com infinite scroll expõem tudo em página única
+                if infinite_scroll:
+                    break
 
                 # Verifica se há próxima página
                 soup = BeautifulSoup(self._page.content(), "html.parser")
@@ -604,6 +844,9 @@ class DealerScraper(BaseScraper):
                     f"[{self.platform_name}] Erro na página {page}: {exc}"
                 )
                 raise
+
+        # Deduplicação defensiva — remove registros duplicados e botões de UI
+        all_records = self._deduplicate(all_records)
 
         logger.success(
             f"[{self.platform_name}] '{dealer}' → {len(all_records)} produtos coletados"
