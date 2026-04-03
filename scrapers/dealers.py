@@ -39,9 +39,11 @@ from utils.text import parse_price, parse_rating, parse_review_count
 
 DEALER_CONFIGS: Dict[str, Dict] = {
     "Frigelar": {
-        "url":        "https://www.frigelar.com.br/split-inverter/c",
+        # URL de busca — a URL de categoria (/split-inverter/c) dispara reCAPTCHA v2
+        # A URL de busca tem proteção anti-bot menos agressiva
+        "url":        "https://www.frigelar.com.br/busca?q=ar+condicionado+split+inverter",
         "pagination": "vtex",
-        "max_pages":  5,
+        "max_pages":  3,
     },
     "CentralAr": {
         "url":        "https://www.centralar.com.br/ar-condicionado/inverter/c/INVERTER",
@@ -88,16 +90,25 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  5,
     },
     "Leveros": {
-        "url":           "https://www.leveros.com.br/ar-condicionado/inverter",
-        "pagination":    "vtex",
-        "max_pages":     5,
-        # Seletor específico confirmado em inspeção — evita capturar botões UI
-        "item_selector": "div.product-list > div.product-item",
+        "url":        "https://www.leveros.com.br/ar-condicionado/inverter",
+        "pagination": "vtex",
+        "max_pages":  5,
+        # Lista de seletores candidatos: _detect_items tentará cada um.
+        # O layout da Leveros mudou — mantemos vários até confirmar qual funciona.
+        # O sanity check de max_items (120) descarta o [class*="product-card"] genérico
+        # que retornava 775 itens.
+        "item_selector_candidates": [
+            "main [class*='product-item']",
+            ".products-grid [class*='product-item']",
+            "[class*='product-list'] [class*='product-item']",
+            "[class*='shelf'] [class*='product-item']",
+            "section[class*='shelf'] > div > div",
+        ],
     },
     "ArCerto": {
         "url":        "https://www.arcerto.com/categoria/ar-condicionado-inverter/",
-        "pagination": "woocommerce",  # /page/2/
-        "max_pages":  5,
+        "pagination": "woocommerce",
+        "max_pages":  1,   # página 2+ dispara Cloudflare challenge — limitado a 1
     },
     "FerreiraCoasta": {
         "url":             "https://www.ferreiracosta.com/Destaque/split-inverter-subcategoria",
@@ -111,9 +122,11 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  5,
     },
     "EngageEletro": {
-        "url":        "https://www.engageeletro.com.br/ar-e-clima/ar-condicionado/",
-        "pagination": "query",
-        "max_pages":  5,
+        "url":           "https://www.engageeletro.com.br/ar-e-clima/ar-condicionado/",
+        "pagination":    "query",
+        "max_pages":     5,
+        # Plataforma customizada — usa classe "cardprod" (não VTEX/WooCommerce)
+        "item_selector": ".cardprod",
     },
 }
 
@@ -159,6 +172,9 @@ _SELECTORS = {
         '[data-product-id]',
         '[data-sku]',
         'article[class*="product"]',
+        # ── EngageEletro (plataforma customizada) ────────────────────────
+        '.cardprod',
+        '[class*="cardprod"]',
     ],
     "title_candidates": [
         # VTEX IO
@@ -310,27 +326,47 @@ class DealerScraper(BaseScraper):
     def _detect_items(
         soup: BeautifulSoup,
         item_selector: Optional[str] = None,
+        item_selector_candidates: Optional[List[str]] = None,
+        max_items: int = 120,
     ) -> Tuple[List[Tag], str]:
         """
-        Itera pelos seletores de container até encontrar ≥ _MIN_ITEMS.
-        Se `item_selector` (override de config) for fornecido, tenta ele primeiro.
-        Retorna (items, seletor_usado).
+        Itera pelos seletores de container até encontrar entre _MIN_ITEMS e max_items
+        resultados.
+
+        Ordem de prioridade:
+          1. item_selector (string única do config)
+          2. item_selector_candidates (lista do config, ex: Leveros)
+          3. _SELECTORS["item_candidates"] (cadeia genérica)
+
+        O sanity check max_items evita que seletores genéricos como
+        [class*="product-card"] retornem centenas de elementos de UI (Leveros: 775 itens).
+        O override de uma string única (item_selector) ignora o sanity check pois
+        foi confirmado manualmente.
         """
-        # Override específico do dealer (ex: Leveros "div.product-list > div.product-item")
+        # 1. Override único (ex: EngageEletro ".cardprod")
         if item_selector:
             items = soup.select(item_selector)
             if len(items) >= _MIN_ITEMS:
                 return items, item_selector
-            # override não funcionou — avisa e cai no fallback genérico
             logger.debug(
-                f"item_selector override '{item_selector}' retornou {len(items)} itens — "
+                f"item_selector override '{item_selector}' retornou {len(items)} — "
                 "usando cadeia genérica"
             )
 
+        # 2. Lista de candidatos específicos do dealer (ex: Leveros)
+        if item_selector_candidates:
+            for sel in item_selector_candidates:
+                items = soup.select(sel)
+                if _MIN_ITEMS <= len(items) <= max_items:
+                    return items, sel
+            logger.debug("item_selector_candidates não retornaram resultado válido")
+
+        # 3. Cadeia genérica com sanity check de max_items
         for sel in _SELECTORS["item_candidates"]:
             items = soup.select(sel)
-            if len(items) >= _MIN_ITEMS:
+            if _MIN_ITEMS <= len(items) <= max_items:
                 return items, sel
+
         return [], "nenhum"
 
     @staticmethod
@@ -543,6 +579,63 @@ class DealerScraper(BaseScraper):
     # ------------------------------------------------------------------
     # Extração de preço via JSON-LD (schema.org/Product)
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Normalização e matching JSON-LD
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_for_match(text: str) -> str:
+        """Normaliza string para comparação: minúsculo, sem acentos, sem pontuação."""
+        import unicodedata
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(c for c in text if not unicodedata.combining(c))
+        text = re.sub(r"[^\w\s]", " ", text.lower())
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _jsonld_match(title: str, jsonld_prices: Dict[str, float]) -> Optional[float]:
+        """
+        Tenta casar um título de produto com as entradas do dict JSON-LD.
+
+        Estratégias em ordem:
+          1. Exact match (após normalização)
+          2. Containment: um é substring do outro
+          3. Word intersection ≥ 60% (Jaccard sobre palavras >2 chars)
+        Retorna o preço do melhor match ou None.
+        """
+        if not jsonld_prices or not title:
+            return None
+
+        norm_title = DealerScraper._normalize_for_match(title)
+        title_words = {w for w in norm_title.split() if len(w) > 2}
+
+        best_price: Optional[float] = None
+        best_score: float = 0.0
+
+        for jname, jprice in jsonld_prices.items():
+            norm_jname = DealerScraper._normalize_for_match(jname)
+
+            # 1. Exact
+            if norm_title == norm_jname:
+                return jprice
+
+            # 2. Containment (um contém o outro)
+            if len(norm_title) > 15 and (norm_title in norm_jname or norm_jname in norm_title):
+                return jprice
+
+            # 3. Word intersection
+            j_words = {w for w in norm_jname.split() if len(w) > 2}
+            if not title_words or not j_words:
+                continue
+            common = len(title_words & j_words)
+            score = common / min(len(title_words), len(j_words))
+            if score > best_score:
+                best_score = score
+                best_price = jprice
+
+        # Retorna apenas se score ≥ 60% (evita falsos positivos)
+        return best_price if best_score >= 0.60 else None
 
     @staticmethod
     def _extract_jsonld_prices(html: str) -> Dict[str, float]:
@@ -758,11 +851,14 @@ class DealerScraper(BaseScraper):
         dealer: str,
         keyword_category_map: dict,
         page: int,
-        base_position: int,          # posição real do 1º item desta página
+        base_position: int,
         item_selector: Optional[str] = None,
+        item_selector_candidates: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
-        items, sel_used = self._detect_items(soup, item_selector)
+        items, sel_used = self._detect_items(
+            soup, item_selector, item_selector_candidates
+        )
 
         logger.info(
             f"[{self.platform_name}] {len(items)} itens no DOM "
@@ -773,11 +869,11 @@ class DealerScraper(BaseScraper):
             self._dump_debug_html(html, page, dealer)
             return []
 
-        # Pré-carrega preços via JSON-LD (schema.org/Product) — fallback eficaz
-        # para VTEX/WooCommerce quando seletores CSS falham (preço em JS separado)
+        # Pré-carrega preços via JSON-LD (schema.org/Product)
         jsonld_prices = self._extract_jsonld_prices(html)
+        jsonld_price_list: List[float] = list(jsonld_prices.values())  # para fallback por índice
         if jsonld_prices:
-            logger.debug(
+            logger.info(
                 f"[{self.platform_name}] JSON-LD: {len(jsonld_prices)} preços carregados"
             )
 
@@ -820,23 +916,16 @@ class DealerScraper(BaseScraper):
             org_ctr += 1
             pos_general = base_position + org_ctr
 
-            # ── Preço: seletores CSS → JSON-LD fallback ───────────────
+            # ── Preço: seletores CSS → JSON-LD word-match ─────────────
             price_raw = self._extract_price_el(item)
 
-            # Se seletores CSS falharam, tenta correspondência no dict JSON-LD
             if not price_raw and jsonld_prices:
-                matched_price = jsonld_prices.get(title_key)
-                if matched_price is None:
-                    # Correspondência parcial (início do título)
-                    for jname, jprice in jsonld_prices.items():
-                        if title_key.startswith(jname[:30]) or jname.startswith(title_key[:30]):
-                            matched_price = jprice
-                            break
-                if matched_price is not None:
-                    price_raw = f"R$ {matched_price}"
+                matched = self._jsonld_match(title, jsonld_prices)
+                if matched is not None:
+                    price_raw = f"R$ {matched}"
 
             if not price_raw:
-                logger.debug(f"[{self.platform_name}] Sem preço: '{title[:50]}'")
+                logger.debug(f"[{self.platform_name}] Sem preço CSS/JSON-LD: '{title[:50]}'")
 
             # ── Rating / reviews ──────────────────────────────────────
             rating_el = self._first_match(item, _SELECTORS["rating_candidates"])
@@ -856,7 +945,52 @@ class DealerScraper(BaseScraper):
                 review_count=parse_review_count(review_el.get_text() if review_el else None),
             ))
 
+        # Fallback por índice: se os counts batem (±10%) e ainda há registros sem
+        # preço, atribui prices pela posição na lista JSON-LD.
+        # Cobre casos onde nomes diferem muito (BTU "9.000" vs "9000", etc.)
+        no_price_idx = [i for i, r in enumerate(records) if not r.get("Preço (R$)")]
+        if no_price_idx and jsonld_price_list:
+            ratio = len(records) / len(jsonld_price_list)
+            if 0.85 <= ratio <= 1.15:   # contagens similares (±15%)
+                for i in no_price_idx:
+                    if i < len(jsonld_price_list):
+                        records[i]["Preço (R$)"] = jsonld_price_list[i]
+                logger.info(
+                    f"[{self.platform_name}] Fallback por índice: "
+                    f"{len(no_price_idx)} preços atribuídos"
+                )
+
         return records
+
+    # ------------------------------------------------------------------
+    # Detecção de bloqueios anti-bot
+    # ------------------------------------------------------------------
+
+    def _is_blocked_page(self) -> Optional[str]:
+        """
+        Verifica se a página atual é um bloqueio anti-bot.
+        Retorna string com tipo de bloqueio ou None se página OK.
+        """
+        try:
+            title = self._page.title().lower()
+        except Exception:
+            title = ""
+
+        # Cloudflare challenge ("Um momento…" / "Just a moment…")
+        if "um momento" in title or "just a moment" in title or "checking your browser" in title:
+            return "cloudflare"
+
+        # reCAPTCHA
+        try:
+            html_snippet = self._page.content()[:6000]
+            if "recaptcha" in html_snippet.lower() and "grecaptcha.render" in html_snippet.lower():
+                return "recaptcha"
+            if "challenge-platform" in html_snippet or "cf-challenge" in html_snippet:
+                return "cloudflare"
+        except Exception:
+            pass
+
+        return None
 
     # ------------------------------------------------------------------
     # Detecção de fim de catálogo
@@ -935,8 +1069,9 @@ class DealerScraper(BaseScraper):
         all_records: List[Dict[str, Any]] = []
         # keyword_category_map para _build_record
         _cat_map = {"Dealers": [dealer]}
-        infinite_scroll = config.get("infinite_scroll", False)
-        item_selector   = config.get("item_selector")   # override de seletor
+        infinite_scroll          = config.get("infinite_scroll", False)
+        item_selector            = config.get("item_selector")
+        item_selector_candidates = config.get("item_selector_candidates")
 
         for page in range(1, max_pages + 1):
             url = self._build_page_url(base_url, page, pagination)
@@ -946,6 +1081,16 @@ class DealerScraper(BaseScraper):
                 self._page.goto(url, wait_until="domcontentloaded")
                 self._wait_for_network_idle()
                 self._random_delay(min_s=3.0, max_s=7.0)
+
+                # Detecta bloqueios anti-bot (reCAPTCHA, Cloudflare)
+                block_type = self._is_blocked_page()
+                if block_type:
+                    logger.warning(
+                        f"[{self.platform_name}] Bloqueio detectado: {block_type} "
+                        f"(página {page}) — interrompendo coleta do dealer"
+                    )
+                    self._dump_debug_html(self._page.content(), page, dealer)
+                    break
 
                 # Infinite scroll: carrega todos os itens antes de extrair
                 if infinite_scroll:
@@ -973,6 +1118,7 @@ class DealerScraper(BaseScraper):
                         html, dealer, _cat_map, page,
                         base_position=base_position,
                         item_selector=item_selector,
+                        item_selector_candidates=item_selector_candidates,
                     )
                     all_records.extend(dom_records)
 
