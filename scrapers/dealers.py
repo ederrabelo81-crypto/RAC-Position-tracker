@@ -847,47 +847,83 @@ class DealerScraper(BaseScraper):
         """
         Tenta extrair produtos do objeto window.__RUNTIME__ ou window.__STATE__
         injetado pelo VTEX IO na página. Retorna lista vazia se não encontrado.
+        
+        CORREÇÃO: Adicionado suporte para window.__STATE__ (VTEX IO mais recente)
+        que armazena produtos diretamente em chaves como "Product:sp-12345".
         """
+        # 1. Tentar window.__RUNTIME__ (método original)
         try:
             runtime = self._page.evaluate("window.__RUNTIME__")
         except Exception:
             runtime = None
 
-        if not runtime:
-            return []
-
-        # Procura o queryData que contém os produtos
-        query_data = (
-            runtime.get("queryData")
-            or runtime.get("initialState", {}).get("queryData")
-        )
-        if not query_data:
-            return []
-
-        # queryData é um dict cujas chaves são strings de query hash
-        products_raw = []
-        for _key, val in query_data.items():
-            if not isinstance(val, dict):
-                continue
-            data = val.get("data") or {}
-            product_search = (
-                data.get("productSearch")
-                or data.get("search")
-                or data.get("searchResult")
+        if runtime:
+            # Procura o queryData que contém os produtos
+            query_data = (
+                runtime.get("queryData")
+                or runtime.get("initialState", {}).get("queryData")
             )
-            if not product_search:
-                continue
-            products_raw = (
-                product_search.get("products")
-                or product_search.get("items")
-                or []
-            )
+            if query_data:
+                # queryData é um dict cujas chaves são strings de query hash
+                products_raw = []
+                for _key, val in query_data.items():
+                    if not isinstance(val, dict):
+                        continue
+                    data = val.get("data") or {}
+                    product_search = (
+                        data.get("productSearch")
+                        or data.get("search")
+                        or data.get("searchResult")
+                    )
+                    if not product_search:
+                        continue
+                    products_raw = (
+                        product_search.get("products")
+                        or product_search.get("items")
+                        or []
+                    )
+                    if products_raw:
+                        break
+
+                if products_raw:
+                    return self._build_records_from_vtex_products(
+                        products_raw, dealer, keyword_category_map, page_offset
+                    )
+
+        # 2. Tentar window.__STATE__ (VTEX IO mais recente)
+        try:
+            state = self._page.evaluate("window.__STATE__")
+        except Exception:
+            state = None
+        
+        if state and isinstance(state, dict):
+            # Extrair todos os produtos do formato "Product:sp-XXXXX"
+            products_raw = []
+            for key, val in state.items():
+                if key.startswith("Product:") and isinstance(val, dict):
+                    products_raw.append(val)
+            
             if products_raw:
-                break
+                logger.info(
+                    f"[{self.platform_name}] {len(products_raw)} itens via VTEX __STATE__"
+                )
+                return self._build_records_from_vtex_products(
+                    products_raw, dealer, keyword_category_map, page_offset
+                )
 
-        if not products_raw:
-            return []
+        return []
 
+    def _build_records_from_vtex_products(
+        self,
+        products_raw: List[Dict],
+        dealer: str,
+        keyword_category_map: dict,
+        page_offset: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Constrói registros a partir da lista bruta de produtos VTEX.
+        Usado por _try_vtex_runtime para __RUNTIME__ e __STATE__.
+        """
         records = []
         org_ctr = spo_ctr = 0
         for idx, prod in enumerate(products_raw):
@@ -939,7 +975,7 @@ class DealerScraper(BaseScraper):
             ))
 
         logger.info(
-            f"[{self.platform_name}] {len(records)} itens via VTEX __RUNTIME__"
+            f"[{self.platform_name}] {len(records)} itens via VTEX __STATE__/__RUNTIME__"
         )
         return records
 
@@ -1126,25 +1162,40 @@ class DealerScraper(BaseScraper):
         CORREÇÃO PROBLEMA #1: Detecta se o HTML contém mensagens de erro
         ao invés de produtos válidos.
         
-        Strings detectadas:
-          - "Página não encontrada", "404", "Indisponível"
-          - "Oops!", "Not Found", "Page not found"
+        ATENÇÃO: Não usar "404" isolado como critério — muitos sites VTEX/e-commerce
+        exibem "404" em rodapés/menus mesmo em páginas válidas.
+        
+        Strings detectadas (apenas em contexto explícito de erro):
+          - Título/headings com "Página não encontrada"
+          - "Indisponível" em contexto de categoria/produto
+          - "Oops!", "Not Found" em headings principais
           - Mensagens específicas por dealer
         
         Retorna True se for página de erro, False caso contrário.
         """
         html_lower = html.lower()
+        soup = BeautifulSoup(html, "html.parser")
         
-        # Strings de erro genéricas
-        error_strings = [
+        # Extrair título da página e headings principais (h1, h2)
+        page_title = soup.title.get_text(strip=True).lower() if soup.title else ""
+        headings = []
+        for tag in soup.find_all(["h1", "h2"]):
+            text = tag.get_text(strip=True).lower()
+            if text:
+                headings.append(text)
+        headings_text = " ".join(headings)
+        
+        # Contextos críticos onde erro é mais provável
+        critical_contexts = [page_title, headings_text]
+        
+        # Strings de erro genéricas — apenas em títulos/headings (contexto crítico)
+        error_strings_critical = [
             "página não encontrada",
             "pagina não encontrada",  # sem acento
             "page not found",
             "not found",
-            "404",
             "indisponível",
             "indisponivel",  # sem acento
-            "oops!",
             "página ausente",
             "link está incorreto",
             "produto indisponível",
@@ -1153,12 +1204,18 @@ class DealerScraper(BaseScraper):
             "access denied",
         ]
         
-        for err in error_strings:
-            if err in html_lower:
-                logger.warning(
-                    f"[{dealer}] Erro detectado na página: '{err}'"
-                )
-                return True
+        for ctx in critical_contexts:
+            for err in error_strings_critical:
+                if err in ctx:
+                    logger.warning(
+                        f"[{dealer}] Erro detectado no título/heading: '{err}' em '{ctx[:80]}'"
+                    )
+                    return True
+        
+        # "Oops!" é menos específico — verificar apenas se estiver sozinho no h1
+        if "oops!" in headings_text:
+            logger.warning(f"[{dealer}] Erro detectado: 'oops!' no heading")
+            return True
         
         # Heurística adicional: página muito curta (<500 chars) sem "product" ou "item"
         if len(html) < 500:
