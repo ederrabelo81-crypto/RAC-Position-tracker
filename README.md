@@ -262,7 +262,7 @@ NETWORK_IDLE_TIMEOUT = 30000
 
 Uso interno. Consulte o proprietário do projeto para termos de licenciamento.
 
-## 👤 Autor
+## 👤 Eder Rabelo
 
 Desenvolvido para monitoramento competitivo de preços no varejo brasileiro.
 
