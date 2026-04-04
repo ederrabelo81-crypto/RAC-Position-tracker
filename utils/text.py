@@ -18,12 +18,16 @@ from config import TURNO_ABERTURA_MAX_HOUR
 def parse_price(raw: Optional[str]) -> Optional[float]:
     """
     Converte string de preço brasileiro para float.
+    
+    CORREÇÃO PROBLEMA #4: Implementa sanitização robusta para formato pt-BR,
+    removendo primeiro separadores de milhar antes de converter decimal.
 
     Exemplos:
         "R$ 2.799,90"      → 2799.90
         "R$\xa02.184,05"   → 2184.05  (non-breaking space do Google Shopping)
         "2799,90"          → 2799.90
         "2.799"            → 2799.0   (sem centavos)
+        "1520.1"           → 1520.1   (já formatado incorretamente, preserva)
         None / ""          → None
     """
     if not raw:
@@ -31,19 +35,44 @@ def parse_price(raw: Optional[str]) -> Optional[float]:
 
     # remove símbolo de moeda, espaços normais e \xa0 (non-breaking space do Google)
     cleaned = re.sub(r"[R$\s\xa0]", "", raw).strip()
+    
+    # Remove tudo que não é dígito, ponto ou vírgula (sanitização defensiva)
+    cleaned = re.sub(r'[^\d.,]', '', cleaned)
+    
+    if not cleaned:
+        return None
 
-    # padrão: ponto como separador de milhar, vírgula como decimal
+    # CORREÇÃO: Lógica aprimorada para distinguir milhar vs decimal
+    # Caso 1: Tem vírgula → formato brasileiro (ponto=milhar, vírgula=decimal)
     if "," in cleaned:
-        # ex: "2.799,90" → "2799.90"
+        # Remove pontos (milhar) e converte vírgula para ponto decimal
+        # ex: "2.799,90" → "2799.90", "1.994,91" → "1994.91"
         cleaned = cleaned.replace(".", "").replace(",", ".")
-    else:
-        # ex: "2.799" (sem centavos, ponto de milhar) → "2799"
-        # heurística: se há exatamente um ponto e 3 dígitos após → milhar
+    
+    # Caso 2: Sem vírgula, mas tem múltiplos pontos → pode ser erro de formatação
+    elif cleaned.count('.') > 1:
+        # Múltiplos pontos sem vírgula → assume todos são separadores de milhar
+        # ex: "1.520.100" → "1520100"
+        cleaned = cleaned.replace(".", "")
+    
+    # Caso 3: Sem vírgula, apenas um ponto → ambíguo, tenta heurística
+    elif "." in cleaned:
+        # Se tem exatamente um ponto e 3 dígitos após → provavelmente milhar
+        # ex: "2.799" → "2799"
+        # Mas se não tiver 3 dígitos após → pode ser decimal já formatado
+        # ex: "1520.1" → preserva como "1520.1"
         if re.match(r"^\d{1,3}\.\d{3}$", cleaned):
             cleaned = cleaned.replace(".", "")
+        # else: preserva o ponto como decimal (formato já convertido)
 
     try:
-        return float(cleaned)
+        result = float(cleaned)
+        # Validação defensiva: preço deve ser positivo e razoável
+        if result <= 0:
+            return None
+        if result > 10_000_000:  # Preço acima de 10 milhões provavelmente é erro
+            return None
+        return result
     except ValueError:
         return None
 

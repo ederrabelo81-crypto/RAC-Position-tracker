@@ -1,1 +1,43 @@
-(scrapers/__pycache__/)
+```gitignore
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Compiled and build artifacts
+*.o
+*.obj
+*.out
+*.so
+*.dll
+*.exe
+*.class
+*.a
+
+# Dependencies
+.venv/
+venv/
+.env
+.env.local
+*.env.*
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
+
+# System files
+.DS_Store
+Thumbs.db
+```
