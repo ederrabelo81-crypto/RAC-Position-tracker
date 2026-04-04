@@ -140,7 +140,7 @@ PLATFORM_TYPE: Dict[str, str] = {
     "Dufrio":           "Regional Especializado",
     "Leveros":          "Regional Especializado",
     "ArCerto":          "Regional Especializado",
-    "FerreiraCoasta":   "Regional Especializado",
+    "FerreiraCosta":    "Regional Especializado",
     "Climario":         "Regional Especializado",
     "EngageEletro":     "Regional Especializado",
 }
