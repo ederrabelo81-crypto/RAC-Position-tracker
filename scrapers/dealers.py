@@ -439,6 +439,9 @@ class DealerScraper(BaseScraper):
           3. meta[itemprop="price"] (valor no atributo content)
           4. [data-price] atributo
           5. Regex R$ no texto completo do item
+        
+        CORREÇÃO PROBLEMA #2: Usa get_text(separator=' ') para evitar concatenação
+        de strings sem espaço. Aplica sanitização robusta antes de retornar.
         """
         # 1. Seletores CSS
         for sel in _SELECTORS["price_candidates"]:
@@ -450,7 +453,8 @@ class DealerScraper(BaseScraper):
                     if val:
                         return f"R$ {val}"
                     continue
-                text = el.get_text(strip=True)
+                # CORREÇÃO: usa separator=' ' para evitar "13% OFFR$ 1.994,91no pix"
+                text = el.get_text(separator=' ', strip=True)
                 # Evita capturar container vazio ou texto sem dígito
                 if text and re.search(r'\d', text):
                     return text
@@ -466,11 +470,11 @@ class DealerScraper(BaseScraper):
             if val and re.search(r'\d', val):
                 return f"R$ {val}"
 
-        # 4. Regex R$ no texto completo
+        # 4. Regex R$ no texto completo — CORREÇÃO: extrai primeiro valor válido
         item_text = item.get_text(" ", strip=True)
-        m = re.search(r'R\$\s*[\d.,]+', item_text)
+        m = re.search(r'R\$\s*([\d.,]+)', item_text)
         if m:
-            return m.group(0)
+            return f"R$ {m.group(1)}"
 
         return None
 
@@ -590,6 +594,53 @@ class DealerScraper(BaseScraper):
                 if next_char.isupper() or next_char.isdigit():
                     return title[len(brand):]
         return title
+
+    # ------------------------------------------------------------------
+    # Validação de produto — filtro de ruído (PROBLEMA #5)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_valid_product_title(title: str) -> bool:
+        """
+        CORREÇÃO PROBLEMA #5: Valida se o título corresponde a um produto real
+        de ar-condicionado, filtrando banners, promoções e elementos de UI.
+        
+        Exige pelo menos UM dos termos obrigatórios:
+          - BTU (unidade de capacidade)
+          - Split (tipo)
+          - Ar Condicionado / Ar-Condicionado (produto)
+          - Inverter (tecnologia)
+        
+        Retorna False para títulos que parecem ser ruído.
+        """
+        if not title:
+            return False
+        
+        title_lower = title.lower()
+        
+        # Termos obrigatórios — pelo menos um deve estar presente
+        required_patterns = [
+            r'\bbtu\b',              # Unidade de capacidade (ex: "9000 BTU")
+            r'\bsplit\b',            # Tipo (ex: "Split Hi-Wall")
+            r'\bar[- ]condicionado\b',  # Produto (ex: "Ar Condicionado")
+            r'\binverter\b',         # Tecnologia (ex: "Inverter Dual")
+        ]
+        
+        for pattern in required_patterns:
+            if re.search(pattern, title_lower):
+                return True
+        
+        # Fallback: se tiver "ar" e "clima" juntos, pode ser produto relacionado
+        if 'ar' in title_lower and 'clima' in title_lower:
+            return True
+        
+        # Títulos curtos (<15 chars) sem os termos acima são provavelmente ruído
+        if len(title) < 15:
+            return False
+        
+        # Caso especial: títulos longos mas sem termos de AC → provavelmente banner
+        logger.debug(f"[ProdutoInválido] Título sem termos de AC: '{title[:60]}'")
+        return False
 
     # ------------------------------------------------------------------
     # Extração de preço via JSON-LD (schema.org/Product)
@@ -724,8 +775,11 @@ class DealerScraper(BaseScraper):
     @staticmethod
     def _validate_results(dealer: str, records: List[Dict[str, Any]]) -> None:
         """
-        Emite warnings de qualidade dos dados sem modificar os registros.
+        CORREÇÃO PROBLEMA #3 e #6: Emite warnings de qualidade dos dados.
         Detecta: sem preço, sem produto, duplicatas, marca concatenada.
+        
+        Validação adicional para Posição Patrocinada (PROBLEMA #3):
+        - Verifica se campo está sempre vazio e alerta para possível falha de detecção
         """
         total = len(records)
         if total == 0:
@@ -734,6 +788,13 @@ class DealerScraper(BaseScraper):
 
         sem_preco   = sum(1 for r in records if not r.get("Preço (R$)"))
         sem_produto = sum(1 for r in records if not (r.get("Produto / SKU") or "").strip())
+        
+        # CORREÇÃO PROBLEMA #3: Valida campos de posição patrocinada
+        pos_patrocinada_vazios = sum(
+            1 for r in records 
+            if r.get("Posição Patrocinada") is None or r.get("Posição Patrocinada") == ""
+        )
+        pct_patrocinada_vazio = 100 * pos_patrocinada_vazios / total
 
         chaves = [(r.get("Produto / SKU", "").lower(), r.get("Posição Orgânica")) for r in records]
         dupes  = total - len(set(chaves))
@@ -748,21 +809,33 @@ class DealerScraper(BaseScraper):
                 for b in BRANDS
             )
         )
+        
+        # Validação de avaliação (PROBLEMA #3)
+        sem_avaliacao = sum(1 for r in records if not r.get("Avaliação"))
+        sem_qtd_avaliacoes = sum(1 for r in records if not r.get("Qtd Avaliações"))
 
         pct_sem_preco = 100 * sem_preco / total
         logger.info(
             f"[{dealer}] Validação: {total} registros | "
             f"sem preço: {sem_preco} ({pct_sem_preco:.0f}%) | "
-            f"sem produto: {sem_produto} | dupes: {dupes} | concat brand: {concat_bugs}"
+            f"sem produto: {sem_produto} | pos.patrocinada vazia: {pos_patrocinada_vazios} ({pct_patrocinada_vazio:.0f}%) | "
+            f"dupes: {dupes} | concat brand: {concat_bugs}"
         )
         if pct_sem_preco > 20:
             logger.warning(f"[{dealer}] {pct_sem_preco:.0f}% dos produtos sem preço ({sem_preco}/{total})")
         if sem_produto > 0:
             logger.warning(f"[{dealer}] {sem_produto} linhas com Produto/SKU vazio")
+        # Alerta se TODAS as posições patrocinadas estão vazias (possível falha de detecção)
+        if pct_patrocinada_vazio == 100:
+            logger.warning(f"[{dealer}] 100% das Posições Patrocinadas vazias — verificar seletores de anúncio")
         if dupes > 0:
             logger.warning(f"[{dealer}] {dupes} entradas duplicadas após dedup final")
         if concat_bugs > 0:
             logger.warning(f"[{dealer}] {concat_bugs} nomes com marca concatenada detectados")
+        if sem_avaliacao > total * 0.7:
+            logger.debug(f"[{dealer}] {sem_avaliacao} produtos sem Avaliação ({100*sem_avaliacao/total:.0f}%) — comum em dealers")
+        if sem_qtd_avaliacoes > total * 0.7:
+            logger.debug(f"[{dealer}] {sem_qtd_avaliacoes} produtos sem Qtd Avaliações — comum em dealers")
 
     # ------------------------------------------------------------------
     # Extração via VTEX __RUNTIME__ (JS state injection)
@@ -919,7 +992,8 @@ class DealerScraper(BaseScraper):
         for item in items:
             # ── Título ────────────────────────────────────────────────
             title_el = self._first_match(item, _SELECTORS["title_candidates"])
-            title = title_el.get_text(strip=True) if title_el else None
+            # CORREÇÃO PROBLEMA #2: usa separator=' ' para evitar concatenação
+            title = title_el.get_text(separator=' ', strip=True) if title_el else None
 
             # Fallback: img[alt]
             if not title or self._is_junk_title(title):
@@ -935,6 +1009,12 @@ class DealerScraper(BaseScraper):
 
             # Descarta itens de UI (botões, labels) sem título real
             if self._is_junk_title(title):
+                continue
+
+            # CORREÇÃO PROBLEMA #5: Validação de produto — exige termos mínimos
+            # para evitar falsos positivos (banners, promoções, UI)
+            if not self._is_valid_product_title(title):
+                logger.debug(f"[{self.platform_name}] Produto inválido (ruído): '{title[:60]}'")
                 continue
 
             # Corrige "MarcaNome do produto" → "Nome do produto" (ArCerto bug)
@@ -1039,6 +1119,58 @@ class DealerScraper(BaseScraper):
             pass
 
         return None
+
+    # ------------------------------------------------------------------
+    # CORREÇÃO PROBLEMA #1: Detecção de páginas de erro (404, indisponível)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_error_page(html: str, dealer: str) -> bool:
+        """
+        CORREÇÃO PROBLEMA #1: Detecta se o HTML contém mensagens de erro
+        ao invés de produtos válidos.
+        
+        Strings detectadas:
+          - "Página não encontrada", "404", "Indisponível"
+          - "Oops!", "Not Found", "Page not found"
+          - Mensagens específicas por dealer
+        
+        Retorna True se for página de erro, False caso contrário.
+        """
+        html_lower = html.lower()
+        
+        # Strings de erro genéricas
+        error_strings = [
+            "página não encontrada",
+            "pagina não encontrada",  # sem acento
+            "page not found",
+            "not found",
+            "404",
+            "indisponível",
+            "indisponivel",  # sem acento
+            "oops!",
+            "página ausente",
+            "link está incorreto",
+            "produto indisponível",
+            "categoria indisponível",
+            "acesso negado",
+            "access denied",
+        ]
+        
+        for err in error_strings:
+            if err in html_lower:
+                logger.warning(
+                    f"[{dealer}] Erro detectado na página: '{err}'"
+                )
+                return True
+        
+        # Heurística adicional: página muito curta (<500 chars) sem "product" ou "item"
+        if len(html) < 500:
+            if "product" not in html_lower and "item" not in html_lower:
+                logger.warning(f"[{dealer}] Página muito curta ({len(html)} chars) — possível erro")
+                return True
+        
+        return False
 
     # ------------------------------------------------------------------
     # Detecção de fim de catálogo
@@ -1162,8 +1294,18 @@ class DealerScraper(BaseScraper):
                 if vtex_records:
                     all_records.extend(vtex_records)
                 else:
-                    # 2. Parse DOM
+                    # CORREÇÃO PROBLEMA #1: Validação de HTTP/Conteúdo antes de parsear
                     html = self._page.content()
+                    
+                    # Detecta páginas de erro 404 ou mensagens de fallback
+                    if self._is_error_page(html, dealer):
+                        logger.warning(
+                            f"[{self.platform_name}] Página {page} contém erro (404/indisponível) — "
+                            "skipando extração"
+                        )
+                        break
+                    
+                    # 2. Parse DOM
                     dom_records = self._parse_results_dom(
                         html, dealer, _cat_map, page,
                         base_position=base_position,
