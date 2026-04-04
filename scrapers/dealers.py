@@ -39,11 +39,9 @@ from utils.text import parse_price, parse_rating, parse_review_count
 
 DEALER_CONFIGS: Dict[str, Dict] = {
     "Frigelar": {
-        # URL de busca — a URL de categoria (/split-inverter/c) dispara reCAPTCHA v2
-        # A URL de busca tem proteção anti-bot menos agressiva
-        "url":        "https://www.frigelar.com.br/busca?q=ar+condicionado+split+inverter",
+        "url":        "https://www.frigelar.com.br/split-inverter/c",
         "pagination": "vtex",
-        "max_pages":  3,
+        "max_pages":  5,
     },
     "CentralAr": {
         "url":        "https://www.centralar.com.br/ar-condicionado/inverter/c/INVERTER",
@@ -53,10 +51,8 @@ DEALER_CONFIGS: Dict[str, Dict] = {
     "PoloAr": {
         "url": (
             "https://www.poloar.com.br/ar-condicionado/inverter"
-            "?category-1=ar-condicionado&category-2=inverter"
-            "&fuzzy=0&operator=and"
-            "&facets=category-1%2Ccategory-2%2Cfuzzy%2Coperator"
-            "&sort=score_desc&page=0"
+            "?category-1=ar-condicionado&category-2=inverter&fuzzy=0&operator=and"
+            "&facets=category-1%2Ccategory-2%2Cfuzzy%2Coperator&sort=score_desc&page=0"
         ),
         "pagination": "param_zero",   # page=0 → page=1 → page=2 …
         "max_pages":  5,
@@ -114,7 +110,7 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "pagination": "woocommerce",
         "max_pages":  1,   # página 2+ dispara Cloudflare challenge — limitado a 1
     },
-    "FerreiraCoasta": {
+    "FerreiraCosta": {
         "url":             "https://www.ferreiracosta.com/Destaque/split-inverter-subcategoria",
         "pagination":      "query",
         "max_pages":       5,
@@ -513,7 +509,7 @@ class DealerScraper(BaseScraper):
         logger.info(f"[{self.platform_name}] Timeout aguardando preços — extraindo HTML assim mesmo")
 
     # ------------------------------------------------------------------
-    # Infinite scroll (FerreiraCoasta e similares)
+    # Infinite scroll (FerreiraCosta e similares)
     # ------------------------------------------------------------------
 
     def _scroll_to_load_all(self, max_scrolls: int = 15) -> None:
