@@ -94,15 +94,19 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "pagination": "vtex",
         "max_pages":  5,
         # Lista de seletores candidatos: _detect_items tentará cada um.
-        # O layout da Leveros mudou — mantemos vários até confirmar qual funciona.
-        # O sanity check de max_items (120) descarta o [class*="product-card"] genérico
-        # que retornava 775 itens.
+        # O layout da Leveros mudou — adicionamos seletores mais restritivos
+        # para evitar capturar 775 elementos do seletor genérico.
+        # O sanity check de max_items (120) descarta resultados excessivos.
         "item_selector_candidates": [
+            # Seletores restritivos ao container principal
             "main [class*='product-item']",
             ".products-grid [class*='product-item']",
             "[class*='product-list'] [class*='product-item']",
             "[class*='shelf'] [class*='product-item']",
             "section[class*='shelf'] > div > div",
+            # Fallback: product-card dentro de container principal apenas
+            "main [class*='product-card']",
+            ".products-grid [class*='product-card']",
         ],
     },
     "ArCerto": {
@@ -127,6 +131,9 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":     5,
         # Plataforma customizada — usa classe "cardprod" (não VTEX/WooCommerce)
         "item_selector": ".cardprod",
+        # Seletores específicos para nome e preço na plataforma customizada
+        "name_selector": "a[title], .cardprod a",
+        "price_selector": ".cardprod [class*='price'], .cardprod [class*='Price']",
     },
 }
 
@@ -475,6 +482,9 @@ class DealerScraper(BaseScraper):
         """
         Aguarda até que algum elemento de preço apareça na página.
         VTEX IO e outros sites carregam preços via fetch separado após o DOM.
+        
+        Timeout aumentado para 10s por seletor (total ~60s) para cobrir sites
+        mais lentos como PoloAr e ArCerto (WooCommerce).
         """
         price_wait_selectors = [
             '[class*="sellingPrice"]',
@@ -483,15 +493,20 @@ class DealerScraper(BaseScraper):
             '.price',
             '[data-price]',
             '[itemprop="price"]',
+            # WooCommerce
+            '.woocommerce-Price-amount',
+            'span[class*="Price"]',
+            # Fallback genérico para qualquer elemento com "price" no class
+            '[class*="price"]',
         ]
         for sel in price_wait_selectors:
             try:
-                self._page.wait_for_selector(sel, timeout=7_000)
+                self._page.wait_for_selector(sel, timeout=10_000)
                 logger.debug(f"[{self.platform_name}] Preços carregados ({sel})")
                 return
             except Exception:
                 continue
-        logger.debug(f"[{self.platform_name}] Timeout aguardando preços — extraindo HTML assim mesmo")
+        logger.info(f"[{self.platform_name}] Timeout aguardando preços — extraindo HTML assim mesmo")
 
     # ------------------------------------------------------------------
     # Infinite scroll (FerreiraCoasta e similares)
@@ -636,6 +651,24 @@ class DealerScraper(BaseScraper):
 
         # Retorna apenas se score ≥ 60% (evita falsos positivos)
         return best_price if best_score >= 0.60 else None
+
+    @staticmethod
+    def _jsonld_match_by_index(
+        title: str,
+        jsonld_prices: Dict[str, float],
+        jsonld_price_list: List[float],
+        item_index: int,
+    ) -> Optional[float]:
+        """
+        Fallback: tenta atribuir preço por posição quando o matching por nome falha.
+        Usado quando JSON-LD e DOM têm número similar de itens mas os nomes não batem.
+        """
+        if not jsonld_price_list or item_index >= len(jsonld_price_list):
+            return None
+        # Só usa fallback por índice se tiver pelo menos 1 preço no JSON-LD
+        if len(jsonld_prices) == 0:
+            return None
+        return jsonld_price_list[item_index]
 
     @staticmethod
     def _extract_jsonld_prices(html: str) -> Dict[str, float]:
@@ -916,13 +949,27 @@ class DealerScraper(BaseScraper):
             org_ctr += 1
             pos_general = base_position + org_ctr
 
-            # ── Preço: seletores CSS → JSON-LD word-match ─────────────
+            # ── Preço: seletores CSS → JSON-LD word-match → fallback por índice ──
             price_raw = self._extract_price_el(item)
 
             if not price_raw and jsonld_prices:
                 matched = self._jsonld_match(title, jsonld_prices)
                 if matched is not None:
                     price_raw = f"R$ {matched}"
+
+            # Fallback por índice: se o matching por nome falhou mas temos JSON-LD,
+            # tenta atribuir preço pela posição (item_index) na lista de preços
+            if not price_raw and jsonld_price_list:
+                item_index = len(records)
+                matched_by_idx = self._jsonld_match_by_index(
+                    title, jsonld_prices, jsonld_price_list, item_index
+                )
+                if matched_by_idx is not None:
+                    price_raw = f"R$ {matched_by_idx}"
+                    logger.debug(
+                        f"[{self.platform_name}] Preço atribuído por índice [{item_index}]: "
+                        f"'{title[:40]}' → R$ {matched_by_idx}"
+                    )
 
             if not price_raw:
                 logger.debug(f"[{self.platform_name}] Sem preço CSS/JSON-LD: '{title[:50]}'")
@@ -945,9 +992,10 @@ class DealerScraper(BaseScraper):
                 review_count=parse_review_count(review_el.get_text() if review_el else None),
             ))
 
-        # Fallback por índice: se os counts batem (±10%) e ainda há registros sem
-        # preço, atribui prices pela posição na lista JSON-LD.
+        # Fallback por índice (pós-loop): se os counts batem (±15%) e ainda há 
+        # registros sem preço, atribui prices pela posição na lista JSON-LD.
         # Cobre casos onde nomes diferem muito (BTU "9.000" vs "9000", etc.)
+        # OU quando o matching por nome falha mas a ordem dos produtos é consistente.
         no_price_idx = [i for i, r in enumerate(records) if not r.get("Preço (R$)")]
         if no_price_idx and jsonld_price_list:
             ratio = len(records) / len(jsonld_price_list)
@@ -956,7 +1004,7 @@ class DealerScraper(BaseScraper):
                     if i < len(jsonld_price_list):
                         records[i]["Preço (R$)"] = jsonld_price_list[i]
                 logger.info(
-                    f"[{self.platform_name}] Fallback por índice: "
+                    f"[{self.platform_name}] Fallback por índice (pós-loop): "
                     f"{len(no_price_idx)} preços atribuídos"
                 )
 
@@ -1072,6 +1120,8 @@ class DealerScraper(BaseScraper):
         infinite_scroll          = config.get("infinite_scroll", False)
         item_selector            = config.get("item_selector")
         item_selector_candidates = config.get("item_selector_candidates")
+        name_selector            = config.get("name_selector")
+        price_selector           = config.get("price_selector")
 
         for page in range(1, max_pages + 1):
             url = self._build_page_url(base_url, page, pagination)
