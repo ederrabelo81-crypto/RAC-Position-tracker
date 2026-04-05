@@ -89,7 +89,9 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "extended_wait": 12000,
     },
     "Belmicro": {
-        "url":        "https://www.belmicro.com.br/climatizacao",
+        # FIX PROBLEMA #1: URL desatualizada - apontando para categoria genérica
+        # URL corrigida para subcategoria específica de Split
+        "url":        "https://www.belmicro.com.br/climatizacao/Ar-Condicionado-Split",
         "pagination": "vtex",
         "max_pages":  5,
     },
@@ -117,14 +119,17 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  5,
     },
     "Leveros": {
+        # FIX PROBLEMA #4: Parser incompatível - 0 produtos extraídos
+        # Adicionado seletor específico [data-sku] e priorização de JSON-LD
         "url":        "https://www.leveros.com.br/ar-condicionado/inverter",
         "pagination": "vtex",
         "max_pages":  5,
-        # Lista de seletores candidatos: _detect_items tentará cada um.
-        # O layout da Leveros mudou — adicionamos seletores mais restritivos
-        # para evitar capturar 775 elementos do seletor genérico.
-        # O sanity check de max_items (120) descarta resultados excessivos.
+        # Priorizar JSON-LD como fonte primária (118 preços detectados)
+        "prefer_jsonld": True,
+        # Seletores customizados para o layout Leveros
         "item_selector_candidates": [
+            # Seletor principal detectado no DOM
+            "[data-sku]",
             # Seletores restritivos ao container principal
             "main [class*='product-item']",
             ".products-grid [class*='product-item']",
@@ -134,6 +139,8 @@ DEALER_CONFIGS: Dict[str, Dict] = {
             # Fallback: product-card dentro de container principal apenas
             "main [class*='product-card']",
             ".products-grid [class*='product-card']",
+            ".shelf-item",
+            ".product-list-item",
         ],
     },
     "ArCerto": {
@@ -142,14 +149,26 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  1,   # página 2+ dispara Cloudflare challenge — limitado a 1
     },
     "Climario": {
-        "url":        "https://www.climario.com.br/ar-condicionado?order=OrderByTopSaleDESC",
+        # FIX PROBLEMA #3: URL desatualizada - faltam filtros VTEX para Hi-Wall Inverter
+        # URL corrigida com map=category-2 para isolar produtos específicos
+        "url": (
+            "https://www.climario.com.br/ar-condicionado"
+            "?initialMap=c&initialQuery=ar-condicionado"
+            "&map=category-1,category-2"
+            "&query=/ar-condicionado/ar-condicionado-hi-wall-inverter"
+            "&order=OrderByTopSaleDESC&searchState"
+        ),
         "pagination": "vtex",
         "max_pages":  5,
     },
     "EngageEletro": {
+        # FIX PROBLEMA #5: Ruído "Ofer Seman" - filtro anti-ruído muito agressivo
+        # URL corrigida e configuração para priorizar JSON-LD (15 produtos limpos)
         "url":           "https://www.engageeletro.com.br/ar-e-clima/ar-condicionado/",
         "pagination":    "query",
         "max_pages":     5,
+        # Priorizar JSON-LD como fonte primária (produtos já filtrados)
+        "prefer_jsonld": True,
         # Plataforma customizada — usa classe "cardprod" (não VTEX/WooCommerce)
         "item_selector": ".cardprod",
         # Seletores específicos para nome e preço na plataforma customizada
@@ -630,44 +649,77 @@ class DealerScraper(BaseScraper):
     @staticmethod
     def _is_valid_product_title(title: str) -> bool:
         """
-        CORREÇÃO PROBLEMA #5: Valida se o título corresponde a um produto real
+        CORREÇÃO PROBLEMA #5 (ENHANCED): Valida se o título corresponde a um produto real
         de ar-condicionado, filtrando banners, promoções e elementos de UI.
         
-        Exige pelo menos UM dos termos obrigatórios:
-          - BTU (unidade de capacidade)
-          - Split (tipo)
-          - Ar Condicionado / Ar-Condicionado (produto)
-          - Inverter (tecnologia)
+        Estratégia:
+          1. Lista negra EXATA para ruídos conhecidos (ex: "ofer seman")
+          2. Lista branca com patterns obrigatórios (BTU, Split, Inverter, etc.)
+          3. Comprimento mínimo para evitar fragmentos
         
-        Retorna False para títulos que parecem ser ruído.
+        Args:
+            title: Título do produto extraído do DOM/JSON-LD
+        
+        Returns:
+            True se for produto válido, False se for ruído/UI
         """
         if not title:
             return False
         
-        title_lower = title.lower()
+        name = title.lower().strip()
         
-        # Termos obrigatórios — pelo menos um deve estar presente
-        required_patterns = [
-            r'\bbtu\b',              # Unidade de capacidade (ex: "9000 BTU")
-            r'\bsplit\b',            # Tipo (ex: "Split Hi-Wall")
-            r'\bar[- ]condicionado\b',  # Produto (ex: "Ar Condicionado")
-            r'\binverter\b',         # Tecnologia (ex: "Inverter Dual")
-        ]
+        # 1. LISTA NEGRA EXATA - rejeita matches completos conhecidos
+        # Estes são banners/promoções que não são produtos
+        exact_blacklist = {
+            'ofer seman',
+            'oferta semana',
+            'oferta da semana',
+            'banner',
+            'promoção',
+            'promo',
+            'destaque',
+            'mais vendidos',
+            ''
+        }
         
-        for pattern in required_patterns:
-            if re.search(pattern, title_lower):
-                return True
-        
-        # Fallback: se tiver "ar" e "clima" juntos, pode ser produto relacionado
-        if 'ar' in title_lower and 'clima' in title_lower:
-            return True
-        
-        # Títulos curtos (<15 chars) sem os termos acima são provavelmente ruído
-        if len(title) < 15:
+        if name in exact_blacklist:
+            logger.debug(f"[BlacklistExata] Rejeitado: '{title[:60]}'")
             return False
         
-        # Caso especial: títulos longos mas sem termos de AC → provavelmente banner
-        logger.debug(f"[ProdutoInválido] Título sem termos de AC: '{title[:60]}'")
+        # 2. LISTA BRANCA - exige pelo menos 1 match para ser considerado produto
+        whitelist_patterns = [
+            r'\bbtu\b',                    # Unidade de capacidade (ex: "9000 BTU", "12000BTU")
+            r'\bsplit\b',                  # Tipo (ex: "Split Hi-Wall", "Splitão")
+            r'\bar[- ]?condicionado\b',   # Produto (ex: "Ar Condicionado", "Ar-Condicionado")
+            r'\binverter\b',               # Tecnologia (ex: "Inverter Dual", "Inverter Heat")
+            r'\bhi[- ]?wall\b',            # Tipo específico (ex: "Hi-Wall", "Hi Wall")
+            r'\bpiso[- ]?teto\b',          # Tipo específico (ex: "Piso Teto")
+            r'\bcassete\b',                # Tipo específico
+            r'\bquente[- ]?frio\b',        # Funcionalidade
+            r'\bs[oó][- ]?frio\b',         # Funcionalidade
+            r'\bportatil\b',               # Tipo específico
+            r'\bwindow\b',                 # Tipo específico
+        ]
+        
+        has_keyword = any(re.search(pattern, name) for pattern in whitelist_patterns)
+        
+        # 3. Fallback: se tiver "ar" e "clima" juntos, pode ser produto relacionado
+        if 'ar' in name and 'clima' in name:
+            has_keyword = True
+        
+        # 4. Comprimento mínimo (evita fragmentos de texto/UI)
+        min_length = len(title.strip()) >= 10
+        
+        # Válido se: tem keyword E comprimento mínimo
+        if has_keyword and min_length:
+            return True
+        
+        # Debug para títulos rejeitados
+        if not has_keyword:
+            logger.debug(f"[ProdutoInválido] Sem keywords AC: '{title[:60]}'")
+        if not min_length:
+            logger.debug(f"[ProdutoInválido] Muito curto ({len(title)} chars): '{title}'")
+        
         return False
 
     # ------------------------------------------------------------------
