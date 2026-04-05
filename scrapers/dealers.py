@@ -31,24 +31,37 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import LOGS_DIR, PLATFORM_TYPE
 from scrapers.base import BaseScraper
-from utils.text import parse_price, parse_rating, parse_review_count
+from utils.text import parse_price, parse_rating, parse_review_count, parse_price_brazil, is_valid_product
 
 # ---------------------------------------------------------------------------
-# Configuração por dealer
+# Dealer-specific configs with enhanced handling for problematic sites
 # ---------------------------------------------------------------------------
 
 DEALER_CONFIGS: Dict[str, Dict] = {
     "Frigelar": {
+        # FIX PROBLEMA #1: Oracle Commerce Cloud (SPA) - requer validação de CEP/sessão
         "url":        "https://www.frigelar.com.br/split-inverter/c",
         "pagination": "vtex",
         "max_pages":  5,
+        "requires_cep": True,       # Exige injeção de CEP para liberar preços
+        "default_cep":  "01310-100",  # CEP padrão (Av. Paulista, SP)
+        "price_wait_selector": ".vtex-product-price-1-x-sellingPriceValue, [class*='sellingPrice']",
+        "block_indicators": ["Valide seu acesso", "Insira um CEP do Brasil", "Código de acesso expirado"],
     },
-    "CentralAr": {
-        "url":        "https://www.centralar.com.br/ar-condicionado/inverter/c/INVERTER",
-        "pagination": "vtex",
-        "max_pages":  5,
+    "FerreiraCosta": {
+        # FIX PROBLEMA #2: Next.js com SSR/CSR misturado - preços concatenados no DOM
+        "url":             "https://www.ferreiracosta.com/Destaque/split-inverter-subcategoria",
+        "pagination":      "query",
+        "max_pages":       5,
+        "infinite_scroll": True,   # carrega produtos via scroll; paginação tradicional ausente
+        "nextjs_site": True,       # Site usa Next.js - extrair __NEXT_DATA__ se disponível
+        "name_selector": "h2.product-name, .product-name a, [class*='ProductName']",
+        "price_selector": "[class*='Price'], .price, [data-price]",
+        # FIX: Usar get_text(separator=' ') para evitar concatenação
+        "text_separator": " ",
     },
     "PoloAr": {
+        # FIX PROBLEMA #3: Preços injetados via XHR após carregamento inicial
         "url": (
             "https://www.poloar.com.br/ar-condicionado/inverter"
             "?category-1=ar-condicionado&category-2=inverter&fuzzy=0&operator=and"
@@ -56,6 +69,16 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         ),
         "pagination": "param_zero",   # page=0 → page=1 → page=2 …
         "max_pages":  5,
+        "ajax_prices": True,         # Preços carregados assincronamente
+        "extended_wait": 15000,      # Timeout estendido para aguardar XHR (ms)
+    },
+    "ArCerto": {
+        # FIX PROBLEMA #3: WooCommerce com preços lazy-load
+        "url":        "https://www.arcerto.com/categoria/ar-condicionado-inverter/",
+        "pagination": "woocommerce",
+        "max_pages":  1,   # página 2+ dispara Cloudflare challenge — limitado a 1
+        "ajax_prices": True,
+        "extended_wait": 12000,
     },
     "Belmicro": {
         "url":        "https://www.belmicro.com.br/climatizacao",
@@ -109,12 +132,6 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "url":        "https://www.arcerto.com/categoria/ar-condicionado-inverter/",
         "pagination": "woocommerce",
         "max_pages":  1,   # página 2+ dispara Cloudflare challenge — limitado a 1
-    },
-    "FerreiraCosta": {
-        "url":             "https://www.ferreiracosta.com/Destaque/split-inverter-subcategoria",
-        "pagination":      "query",
-        "max_pages":       5,
-        "infinite_scroll": True,   # carrega produtos via scroll; paginação tradicional ausente
     },
     "Climario": {
         "url":        "https://www.climario.com.br/ar-condicionado?order=OrderByTopSaleDESC",
