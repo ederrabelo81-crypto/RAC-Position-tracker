@@ -431,20 +431,39 @@ class DealerScraper(BaseScraper):
     @staticmethod
     def _is_junk_title(text: Optional[str]) -> bool:
         """
-        Retorna True para strings que claramente não são nomes de produto:
-        botões de UI, textos vazios, strings muito curtas ou muito longas.
+        CORREÇÃO PROBLEMA #2: Retorna True para strings que claramente não são nomes de produto.
+        Protege contra None e usa safe_lower para evitar AttributeError.
         """
         if not text:
             return True
         t = text.strip()
         if len(t) < _MIN_TITLE_LEN or len(t) > _MAX_TITLE_LEN:
             return True
-        if t.lower() in _JUNK_STRINGS:
+        # CORREÇÃO: usar safe_lower para proteger contra None
+        if DealerScraper._safe_lower(t) in _JUNK_STRINGS:
             return True
         # String só com dígitos/símbolos não é título de produto
         if re.match(r'^[\d\s.,R$%\-/]+$', t):
             return True
         return False
+
+    @staticmethod
+    def _safe_lower(text: Optional[str]) -> str:
+        """
+        CORREÇÃO PROBLEMA #2: Converte texto para lowercase com segurança.
+        Evita AttributeError quando text é None.
+        
+        Args:
+            text: Texto para converter (pode ser None)
+        
+        Returns:
+            String em lowercase ou string vazia se text for None
+        """
+        if text is None:
+            return ""
+        if not isinstance(text, str):
+            return str(text).lower()
+        return text.lower()
 
     # ------------------------------------------------------------------
     # Extração de preço — VTEX split e meta[itemprop]
@@ -596,7 +615,8 @@ class DealerScraper(BaseScraper):
         seen: Dict[tuple, Dict[str, Any]] = {}
 
         for row in records:
-            title = (row.get("Produto / SKU") or "").lower().strip()
+            # CORREÇÃO PROBLEMA #2: usar safe_lower para proteger contra None
+            title = self._safe_lower(row.get("Produto / SKU")).strip()
             key = (row.get("Plataforma", ""), title)
             if key in seen:
                 if not seen[key].get("Preço (R$)") and row.get("Preço (R$)"):
@@ -666,7 +686,8 @@ class DealerScraper(BaseScraper):
         if not title:
             return False
         
-        name = title.lower().strip()
+        # CORREÇÃO PROBLEMA #2: usar safe_lower estático para proteger contra None
+        name = DealerScraper._safe_lower(title).strip()
         
         # 1. LISTA NEGRA EXATA - rejeita matches completos conhecidos
         # Estes são banners/promoções que não são produtos
@@ -1007,6 +1028,9 @@ class DealerScraper(BaseScraper):
         """
         Constrói registros a partir da lista bruta de produtos VTEX.
         Usado por _try_vtex_runtime para __RUNTIME__ e __STATE__.
+        
+        CORREÇÃO PROBLEMA #1: Implementa extração robusta de preços com múltiplos fallbacks
+        para lidar com estruturas JSON diferentes entre dealers VTEX.
         """
         records = []
         org_ctr = spo_ctr = 0
@@ -1020,27 +1044,23 @@ class DealerScraper(BaseScraper):
                 org_ctr += 1
                 pos_organic, pos_sponsored = org_ctr, None
 
-            # Título
-            title = prod.get("productName") or prod.get("name")
+            # Título — CORREÇÃO: garantir que não seja None
+            title = prod.get("productName") or prod.get("name") or ""
+            if not title or not isinstance(title, str):
+                logger.debug(f"[{self.platform_name}] Produto sem título válido, pulando: {prod.get('id', 'SEM_ID')}")
+                continue
 
-            # Preço — pega o menor preço entre sellers
-            price_float = None
-            items = prod.get("items") or []
-            for item in items:
-                for seller in item.get("sellers") or []:
-                    # CORREÇÃO PROBLEMA #2: commercialOffer (correto, não commertialOffer)
-                    offer = seller.get("commercialOffer") or {}
-                    best = offer.get("Price") or offer.get("ListPrice")
-                    if best:
-                        try:
-                            v = float(best)
-                            if price_float is None or v < price_float:
-                                price_float = v
-                        except (ValueError, TypeError):
-                            pass
+            # Preço — CORREÇÃO: extrai com fallbacks múltiplos para diferentes estruturas VTEX
+            price_float = self._extract_vtex_price(prod)
+
+            # Pula produtos sem preço (não são válidos para coleta)
+            if price_float is None or price_float <= 0:
+                logger.debug(f"[{self.platform_name}] Produto sem preço válido: '{title[:60]}' (SKU: {prod.get('productId', 'N/A')})")
+                continue
 
             # Seller (primeiro seller do primeiro item)
             seller_name = dealer
+            items = prod.get("items") or []
             if items:
                 sellers = items[0].get("sellers") or []
                 if sellers:
@@ -1058,10 +1078,71 @@ class DealerScraper(BaseScraper):
                 is_fulfillment=False,
             ))
 
+        # Log de produtos sem preço após dedup — CRÍTICO para debugging
+        no_price_count = len(products_raw) - len(records)
+        if no_price_count > 0:
+            logger.warning(f"[{self.platform_name}] {no_price_count}/{len(products_raw)} registros sem preço após dedup")
+        
         logger.info(
             f"[{self.platform_name}] {len(records)} itens via VTEX __STATE__/__RUNTIME__"
         )
         return records
+
+    @staticmethod
+    def _extract_vtex_price(prod: Dict) -> Optional[float]:
+        """
+        CORREÇÃO PROBLEMA #1: Extrai preço de produtos VTEX com múltiplos fallbacks.
+        
+        Dealers VTEX podem usar estruturas JSON diferentes para armazenar preços.
+        Esta função tenta múltiplos caminhos até encontrar um preço válido.
+        
+        Args:
+            prod: Dicionário do produto VTEX
+        
+        Returns:
+            float do preço ou None se não encontrado
+        """
+        items = prod.get("items") or []
+        
+        # Estratégias de extração em ordem de prioridade
+        price_fields = [
+            # Caminho padrão VTEX: items[].sellers[].commercialOffer.Price
+            lambda item, seller: seller.get("commercialOffer", {}).get("Price"),
+            # Fallback: ListPrice
+            lambda item, seller: seller.get("commercialOffer", {}).get("ListPrice"),
+            # Fallback: spotPrice
+            lambda item, seller: seller.get("commercialOffer", {}).get("spotPrice"),
+            # Fallback: teasers (promoções)
+            lambda item, seller: seller.get("commercialOffer", {}).get("teasers", [{}])[0].get("price") if seller.get("commercialOffer", {}).get("teasers") else None,
+        ]
+        
+        lowest_price = None
+        
+        for item in items:
+            sellers = item.get("sellers") or []
+            for seller in sellers:
+                for field_extractor in price_fields:
+                    try:
+                        price_value = field_extractor(item, seller)
+                        if price_value is not None and isinstance(price_value, (int, float)) and price_value > 0:
+                            if lowest_price is None or price_value < lowest_price:
+                                lowest_price = float(price_value)
+                    except (KeyError, TypeError, IndexError, AttributeError):
+                        continue
+        
+        # Fallback adicional: buscar qualquer campo com "price" no nome em commercialOffer
+        if lowest_price is None:
+            for item in items:
+                sellers = item.get("sellers") or []
+                for seller in sellers:
+                    offer = seller.get("commercialOffer") or {}
+                    for key, value in offer.items():
+                        if "price" in key.lower() and isinstance(value, (int, float)) and value > 0:
+                            if lowest_price is None or value < lowest_price:
+                                lowest_price = float(value)
+                                logger.debug(f"[{self.platform_name}] Preço encontrado em campo alternativo: {key} = {value}")
+        
+        return lowest_price
 
     # ------------------------------------------------------------------
     # Parse DOM — cadeia de fallback
@@ -1137,7 +1218,8 @@ class DealerScraper(BaseScraper):
             title = self._fix_brand_concat(title)
 
             # Dedup de carrossel/galeria: mesmo título já visto nesta página → skip
-            title_key = title.lower().strip()
+            # CORREÇÃO PROBLEMA #2: usar safe_lower para proteger contra None
+            title_key = self._safe_lower(title).strip()
             if title_key in seen_titles_this_page:
                 continue
             seen_titles_this_page.add(title_key)

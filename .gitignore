@@ -19,22 +19,18 @@ requirements.txt.bak
 
 # Coverage
 .coverage
-htmlcov/
 coverage/
+htmlcov/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
+# Testing
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Build
-build/
+# Distribution / packaging
 dist/
+build/
 *.egg-info/
+.installed.cfg
+*.egg
 ```
