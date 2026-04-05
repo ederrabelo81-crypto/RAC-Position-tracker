@@ -47,6 +47,10 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "default_cep":  "01310-100",  # CEP padrão (Av. Paulista, SP)
         "price_wait_selector": ".vtex-product-price-1-x-sellingPriceValue, [class*='sellingPrice']",
         "block_indicators": ["Valide seu acesso", "Insira um CEP do Brasil", "Código de acesso expirado"],
+        # CORREÇÃO: Seletor específico para produtos OCC (knockout.js)
+        "item_selector": ".product-box-container",
+        "wait_for_js": True,        # Aguardar renderização JavaScript
+        "wait_timeout": 10000,      # 10s timeout para renderização
     },
     "FerreiraCosta": {
         # FIX PROBLEMA #2: Next.js com SSR/CSR misturado - preços concatenados no DOM
@@ -59,6 +63,10 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "price_selector": "[class*='Price'], .price, [data-price]",
         # FIX: Usar get_text(separator=' ') para evitar concatenação
         "text_separator": " ",
+        # CORREÇÃO: Seletor específico para produtos OCC (Oracle Commerce Cloud)
+        "item_selector": "[data-testid^='product-card']",
+        "wait_for_js": True,        # Aguardar renderização JavaScript
+        "wait_timeout": 10000,      # 10s timeout para renderização
     },
     "PoloAr": {
         # FIX PROBLEMA #3: Preços injetados via XHR após carregamento inicial
@@ -502,7 +510,14 @@ class DealerScraper(BaseScraper):
         
         Timeout aumentado para 10s por seletor (total ~60s) para cobrir sites
         mais lentos como PoloAr e ArCerto (WooCommerce).
+        
+        CORREÇÃO PROBLEMA #1: Respeita wait_timeout do config para sites OCC
+        (Frigelar, FerreiraCosta) que precisam de tempo extra para renderização.
         """
+        # Verifica se há timeout customizado no config do dealer
+        config = DEALER_CONFIGS.get(self._current_dealer, {})
+        wait_timeout = config.get("wait_timeout", 10_000)  # default 10s
+        
         price_wait_selectors = [
             '[class*="sellingPrice"]',
             '[class*="currencyInteger"]',
@@ -518,7 +533,7 @@ class DealerScraper(BaseScraper):
         ]
         for sel in price_wait_selectors:
             try:
-                self._page.wait_for_selector(sel, timeout=10_000)
+                self._page.wait_for_selector(sel, timeout=wait_timeout)
                 logger.debug(f"[{self.platform_name}] Preços carregados ({sel})")
                 return
             except Exception:
@@ -961,8 +976,8 @@ class DealerScraper(BaseScraper):
             items = prod.get("items") or []
             for item in items:
                 for seller in item.get("sellers") or []:
-                    offer = (seller.get("commertialOffer") or
-                             seller.get("commercialOffer") or {})
+                    # CORREÇÃO PROBLEMA #2: commercialOffer (correto, não commertialOffer)
+                    offer = seller.get("commercialOffer") or {}
                     best = offer.get("Price") or offer.get("ListPrice")
                     if best:
                         try:
