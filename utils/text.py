@@ -15,6 +15,71 @@ from typing import Optional
 from config import TURNO_ABERTURA_MAX_HOUR
 
 
+def parse_price_brazil(raw_text: Optional[str]) -> Optional[float]:
+    """
+    CORREÇÃO PROBLEMA #4: Parser robusto de preço brasileiro com regex.
+    
+    Extrai o primeiro padrão monetário válido de uma string, lidando com:
+      - Formato brasileiro: R$ 1.994,91 (ponto=milhar, vírgula=decimal)
+      - Concatenação de DOM: "13% OFFR$ 1.994,91no pix"
+      - Múltiplos preços na mesma string (usa o primeiro)
+      - Strings vazias ou inválidas
+    
+    Args:
+        raw_text: String bruta extraída do HTML (pode conter ruído)
+    
+    Returns:
+        float do preço ou None se não encontrar padrão válido
+    
+    Testes unitários rápidos:
+        >>> parse_price_brazil("R$ 1.994,91")
+        1994.91
+        >>> parse_price_brazil("13% OFFR$ 1.709,91no pix")
+        1709.91
+        >>> parse_price_brazil("R$ 2.309,90em 10x")
+        2309.9
+        >>> parse_price_brazil("")
+        None
+        >>> parse_price_brazil("125.0")
+        125.0
+        >>> parse_price_brazil(None)
+        None
+        >>> parse_price_brazil("R$ 2.799,90 à vista")
+        2799.9
+        >>> parse_price_brazil("1.520,10")
+        1520.1
+    """
+    if not raw_text:
+        return None
+    
+    # Extrai primeiro padrão monetário: R$ 1.994,91 ou R$1994,91 ou 1.994,91
+    match = re.search(r'R\$\s*([\d.,]+)|([\d]+\.[\d]{3},[\d]{2})', raw_text)
+    if not match:
+        # Tenta extrair apenas número com vírgula decimal
+        match = re.search(r'(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)', raw_text)
+        if not match:
+            return None
+    
+    val = match.group(1) if match.group(1) else match.group(2)
+    if not val:
+        return None
+    
+    # Remove separador de milhar (pontos), mantém vírgula para decimal
+    # ex: "1.994,91" → "1994,91" → "1994.91"
+    val = val.replace('.', '').replace(',', '.')
+    
+    try:
+        result = float(val)
+        # Validação defensiva: preço deve ser positivo e razoável
+        if result <= 0:
+            return None
+        if result > 10_000_000:  # Preço acima de 10 milhões provavelmente é erro
+            return None
+        return result
+    except ValueError:
+        return None
+
+
 def parse_price(raw: Optional[str]) -> Optional[float]:
     """
     Converte string de preço brasileiro para float.
@@ -30,6 +95,12 @@ def parse_price(raw: Optional[str]) -> Optional[float]:
         "1520.1"           → 1520.1   (já formatado incorretamente, preserva)
         None / ""          → None
     """
+    # FIX: Usa parse_price_brazil como parser primário mais robusto
+    result = parse_price_brazil(raw)
+    if result is not None:
+        return result
+    
+    # Fallback para lógica legada (casos edge não cobertos pelo regex)
     if not raw:
         return None
 
@@ -75,6 +146,47 @@ def parse_price(raw: Optional[str]) -> Optional[float]:
         return result
     except ValueError:
         return None
+
+
+def is_valid_product(name: str, price: Optional[float]) -> bool:
+    """
+    CORREÇÃO PROBLEMA #5: Valida se um item é um produto real de ar-condicionado.
+    
+    Filtra banners, promoções, elementos de UI e falsos positivos.
+    Exige pelo menos UM termo obrigatório E preço válido.
+    
+    Args:
+        name: Nome/título do produto
+        price: Preço parseado (float ou None)
+    
+    Returns:
+        True se for produto válido, False caso contrário
+    
+    Testes:
+        >>> is_valid_product("Ar Condicionado Split 9000 BTU Inverter", 1994.91)
+        True
+        >>> is_valid_product("Ofer Seman", 125.0)
+        False
+        >>> is_valid_product("Clique para ver preço", None)
+        False
+        >>> is_valid_product("Split Hi-Wall 12000 BTUs LG", 1520.1)
+        True
+    """
+    if price is None or price <= 0:
+        return False
+    
+    if not name:
+        return False
+    
+    keywords = [
+        r'\bbtu\b',              # Unidade de capacidade
+        r'\bsplit\b',            # Tipo
+        r'\bar[- ]condicionado\b',  # Produto
+        r'\binverter\b',         # Tecnologia
+    ]
+    
+    name_lower = name.lower()
+    return any(re.search(kw, name_lower) for kw in keywords)
 
 
 def parse_rating(raw: Optional[str]) -> Optional[float]:
