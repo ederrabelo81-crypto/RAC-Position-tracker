@@ -869,6 +869,134 @@ class DealerScraper(BaseScraper):
                 pass
         return prices
 
+    @staticmethod
+    def _extract_jsonld_products(
+        html: str,
+        dealer: str,
+        keyword_category_map: dict,
+        page: int,
+        base_position: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Extrai produtos diretamente de JSON-LD (schema.org/Product ou ItemList).
+        Usado como fonte primária quando prefer_jsonld=True no config do dealer.
+        
+        Args:
+            html: HTML da página
+            dealer: nome do dealer
+            keyword_category_map: mapa de keywords para categoria
+            page: número da página atual
+            base_position: posição base para cálculo de posição geral
+            
+        Returns:
+            Lista de registros extraídos do JSON-LD
+        """
+        records: List[Dict[str, Any]] = []
+        soup = BeautifulSoup(html, "html.parser")
+        seen_titles: Set[str] = set()
+        org_ctr = 0
+        
+        for script in soup.find_all("script", {"type": "application/ld+json"}):
+            try:
+                raw = (script.string or "").strip()
+                if not raw:
+                    continue
+                data = json.loads(raw)
+                
+                # Normaliza para lista de entradas
+                entries = data if isinstance(data, list) else [data]
+                processed_entries = []
+                
+                for entry in entries:
+                    # ItemList → expande itemListElement
+                    if entry.get("@type") == "ItemList":
+                        item_list = entry.get("itemListElement") or []
+                        for item in item_list:
+                            # Pode ser ListItem com "item" ou Product direto
+                            inner = item.get("item") if isinstance(item, dict) else item
+                            if inner:
+                                processed_entries.append(inner)
+                        continue
+                    
+                    # ListItem wrapper
+                    if isinstance(entry, dict) and entry.get("item"):
+                        processed_entries.append(entry["item"])
+                        continue
+                    
+                    processed_entries.append(entry)
+                
+                for entry in processed_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                        
+                    entry_type = entry.get("@type", "")
+                    
+                    # Aceita Product ou ItemListElement
+                    if entry_type not in ("Product", "ListItem", "Offer"):
+                        # Tenta encontrar Product aninhado
+                        inner = entry.get("item") or entry.get("product") or {}
+                        if isinstance(inner, dict) and inner.get("@type") == "Product":
+                            entry = inner
+                        elif entry_type and entry_type not in ("Product", "ListItem", "Offer"):
+                            continue
+                    
+                    name = entry.get("name", "")
+                    if not name or DealerScraper._is_junk_title(name):
+                        continue
+                    
+                    # Valida título como produto real
+                    if not DealerScraper._is_valid_product_title(name):
+                        continue
+                    
+                    # Dedup por título
+                    name_key = DealerScraper._safe_lower(name).strip()
+                    if name_key in seen_titles:
+                        continue
+                    seen_titles.add(name_key)
+                    
+                    # Extrai preço
+                    price_raw = None
+                    offers = entry.get("offers") or {}
+                    if isinstance(offers, list):
+                        offers = offers[0] if offers else {}
+                    if isinstance(offers, dict):
+                        price_val = (
+                            offers.get("price")
+                            or offers.get("lowPrice")
+                            or offers.get("highPrice")
+                        )
+                        if price_val is not None:
+                            try:
+                                price_raw = f"R$ {float(price_val)}"
+                            except (ValueError, TypeError):
+                                pass
+                    
+                    # Corrige marca concatenada
+                    name = DealerScraper._fix_brand_concat(name)
+                    
+                    org_ctr += 1
+                    pos_general = base_position + org_ctr
+                    
+                    records.append(DealerScraper._build_record(
+                        keyword=dealer,
+                        keyword_category_map=keyword_category_map,
+                        title=name,
+                        position_general=pos_general,
+                        position_organic=org_ctr,
+                        position_sponsored=None,
+                        price_raw=price_raw,
+                        seller=dealer,
+                        is_fulfillment=False,
+                        rating=None,
+                        review_count=None,
+                    ))
+                    
+            except Exception as exc:
+                logger.debug(f"[{dealer}] Erro ao parsear JSON-LD: {exc}")
+                continue
+        
+        return records
+
     # ------------------------------------------------------------------
     # Validação de resultados — alertas de qualidade antes do CSV
     # ------------------------------------------------------------------
@@ -1473,6 +1601,7 @@ class DealerScraper(BaseScraper):
         item_selector_candidates = config.get("item_selector_candidates")
         name_selector            = config.get("name_selector")
         price_selector           = config.get("price_selector")
+        prefer_jsonld            = config.get("prefer_jsonld", False)
 
         for page in range(1, max_pages + 1):
             url = self._build_page_url(base_url, page, pagination)
@@ -1524,16 +1653,38 @@ class DealerScraper(BaseScraper):
                         )
                         break
                     
-                    # 2. Parse DOM
-                    dom_records = self._parse_results_dom(
-                        html, dealer, _cat_map, page,
-                        base_position=base_position,
-                        item_selector=item_selector,
-                        item_selector_candidates=item_selector_candidates,
-                    )
-                    all_records.extend(dom_records)
+                    # 2. Parse JSON-LD como fonte primária se prefer_jsonld=True
+                    if prefer_jsonld:
+                        jsonld_records = self._extract_jsonld_products(
+                            html, dealer, _cat_map, page, base_position
+                        )
+                        if jsonld_records:
+                            logger.info(
+                                f"[{self.platform_name}] JSON-LD: {len(jsonld_records)} produtos extraídos"
+                            )
+                            all_records.extend(jsonld_records)
+                        else:
+                            logger.debug(
+                                f"[{self.platform_name}] JSON-LD não retornou produtos — fallback para DOM"
+                            )
+                            dom_records = self._parse_results_dom(
+                                html, dealer, _cat_map, page,
+                                base_position=base_position,
+                                item_selector=item_selector,
+                                item_selector_candidates=item_selector_candidates,
+                            )
+                            all_records.extend(dom_records)
+                    else:
+                        # 3. Parse DOM (fallback padrão)
+                        dom_records = self._parse_results_dom(
+                            html, dealer, _cat_map, page,
+                            base_position=base_position,
+                            item_selector=item_selector,
+                            item_selector_candidates=item_selector_candidates,
+                        )
+                        all_records.extend(dom_records)
 
-                    if not dom_records:
+                    if not all_records or (prefer_jsonld and not jsonld_records and not dom_records) or (not prefer_jsonld and not dom_records):
                         logger.warning(
                             f"[{self.platform_name}] 0 itens na página {page} — "
                             "possível bloqueio ou fim do catálogo."
