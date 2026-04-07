@@ -616,7 +616,7 @@ class DealerScraper(BaseScraper):
 
         for row in records:
             # CORREÇÃO PROBLEMA #2: usar safe_lower para proteger contra None
-            title = self._safe_lower(row.get("Produto / SKU")).strip()
+            title = DealerScraper._safe_lower(row.get("Produto / SKU")).strip()
             key = (row.get("Plataforma", ""), title)
             if key in seen:
                 if not seen[key].get("Preço (R$)") and row.get("Preço (R$)"):
@@ -1173,7 +1173,7 @@ class DealerScraper(BaseScraper):
             return []
 
         # Pré-carrega preços via JSON-LD (schema.org/Product)
-        jsonld_prices = self._extract_jsonld_prices(html)
+        jsonld_prices = DealerScraper._extract_jsonld_prices(html)
         jsonld_price_list: List[float] = list(jsonld_prices.values())  # para fallback por índice
         if jsonld_prices:
             logger.info(
@@ -1188,24 +1188,24 @@ class DealerScraper(BaseScraper):
 
         for item in items:
             # ── Título ────────────────────────────────────────────────
-            title_el = self._first_match(item, _SELECTORS["title_candidates"])
+            title_el = DealerScraper._first_match(item, _SELECTORS["title_candidates"])
             # CORREÇÃO PROBLEMA #2: usa separator=' ' para evitar concatenação
             title = title_el.get_text(separator=' ', strip=True) if title_el else None
 
             # Fallback: img[alt]
-            if not title or self._is_junk_title(title):
+            if not title or DealerScraper._is_junk_title(title):
                 img = item.select_one("img[alt]")
                 if img:
                     title = img.get("alt", "").strip() or None
 
             # Fallback: a[title]
-            if not title or self._is_junk_title(title):
+            if not title or DealerScraper._is_junk_title(title):
                 link = item.select_one("a[title]")
                 if link:
                     title = link.get("title", "").strip() or None
 
             # Descarta itens de UI (botões, labels) sem título real
-            if self._is_junk_title(title):
+            if DealerScraper._is_junk_title(title):
                 continue
 
             # CORREÇÃO PROBLEMA #5: Validação de produto — exige termos mínimos
@@ -1219,7 +1219,7 @@ class DealerScraper(BaseScraper):
 
             # Dedup de carrossel/galeria: mesmo título já visto nesta página → skip
             # CORREÇÃO PROBLEMA #2: usar safe_lower para proteger contra None
-            title_key = self._safe_lower(title).strip()
+            title_key = DealerScraper._safe_lower(title).strip()
             if title_key in seen_titles_this_page:
                 continue
             seen_titles_this_page.add(title_key)
@@ -1228,10 +1228,10 @@ class DealerScraper(BaseScraper):
             pos_general = base_position + org_ctr
 
             # ── Preço: seletores CSS → JSON-LD word-match → fallback por índice ──
-            price_raw = self._extract_price_el(item)
+            price_raw = DealerScraper._extract_price_el(item)
 
             if not price_raw and jsonld_prices:
-                matched = self._jsonld_match(title, jsonld_prices)
+                matched = DealerScraper._jsonld_match(title, jsonld_prices)
                 if matched is not None:
                     price_raw = f"R$ {matched}"
 
@@ -1239,7 +1239,7 @@ class DealerScraper(BaseScraper):
             # tenta atribuir preço pela posição (item_index) na lista de preços
             if not price_raw and jsonld_price_list:
                 item_index = len(records)
-                matched_by_idx = self._jsonld_match_by_index(
+                matched_by_idx = DealerScraper._jsonld_match_by_index(
                     title, jsonld_prices, jsonld_price_list, item_index
                 )
                 if matched_by_idx is not None:
@@ -1253,8 +1253,8 @@ class DealerScraper(BaseScraper):
                 logger.debug(f"[{self.platform_name}] Sem preço CSS/JSON-LD: '{title[:50]}'")
 
             # ── Rating / reviews ──────────────────────────────────────
-            rating_el = self._first_match(item, _SELECTORS["rating_candidates"])
-            review_el = self._first_match(item, _SELECTORS["review_count_candidates"])
+            rating_el = DealerScraper._first_match(item, _SELECTORS["rating_candidates"])
+            review_el = DealerScraper._first_match(item, _SELECTORS["review_count_candidates"])
 
             records.append(self._build_record(
                 keyword=dealer,
