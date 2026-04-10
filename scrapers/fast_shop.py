@@ -2,10 +2,8 @@
 scrapers/fast_shop.py — Scraper da Fast Shop (fastshop.com.br).
 
 Estratégia (em ordem de prioridade):
-  0. API VTEX via curl_cffi — replica TLS fingerprint Chrome real, bypassa PerimeterX.
-     PerimeterX descarta conexões Python (requests/urllib3) pelo JA3 fingerprint.
-     curl_cffi com impersonate="chrome124" contorna isso na camada TLS.
-  1. API VTEX Intelligent-Search via requests — fallback (pode ser bloqueado).
+  1. API VTEX Intelligent-Search direta — GET sem browser, mais confiável.
+     Endpoint: /_v/api/intelligent-search/product_search/...?query={kw}&page={n}
   2. Intercepção XHR da API VTEX IO (intelligent-search, catalog_system, GraphQL)
   3. Parse DOM com seletores VTEX IO + fallbacks genéricos
   4. Debug HTML dump em logs/ quando 0 itens
@@ -13,6 +11,9 @@ Estratégia (em ordem de prioridade):
 Plataforma: VTEX IO React — classes geradas como vtex-product-summary-2-x-*
 URL de busca: /busca?q={keyword}
 Paginação: &page={n} (1-indexed)
+
+STATUS: ⏸️  Stand-by — PerimeterX bloqueia API (timeout) e browser (domcontentloaded).
+Requer sessão real via session_grabber ou proxy residencial para funcionar.
 """
 
 import json
@@ -29,14 +30,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
 from utils.text import parse_price, parse_rating, parse_review_count
-
-# curl_cffi: TLS fingerprint real do Chrome — bypassa PerimeterX JA3/JA4 detection.
-# FastShop usa PerimeterX que descarta conexões Python com timeout silencioso.
-try:
-    from curl_cffi import requests as _cffi_requests
-    _HAS_CURL_CFFI = True
-except ImportError:
-    _HAS_CURL_CFFI = False
 
 _ITEMS_PER_PAGE = 20
 
@@ -162,91 +155,7 @@ class FastShopScraper(BaseScraper):
         return url
 
     # ------------------------------------------------------------------
-    # Estratégia 0: VTEX API via curl_cffi (TLS fingerprint Chrome real)
-    # ------------------------------------------------------------------
-
-    def _vtex_cffi_search(
-        self,
-        keyword: str,
-        keyword_category_map: dict,
-        page: int,
-        page_offset: int,
-    ) -> List[Dict[str, Any]]:
-        """
-        Consulta a API VTEX usando curl_cffi com impersonation do Chrome124.
-        A Fast Shop usa PerimeterX que faz timeout silencioso em conexões Python
-        (JA3 fingerprint diferente do Chrome). curl_cffi replica o TLS handshake
-        exato do Chrome real, contornando a detecção na camada de transporte.
-        """
-        if not _HAS_CURL_CFFI:
-            return []
-
-        cffi_session = _cffi_requests.Session()
-        params_is = {
-            "query": keyword,
-            "page": page,
-            "count": _ITEMS_PER_PAGE,
-            "sort": "score_desc",
-            "hideUnavailableItems": "false",
-        }
-
-        # Endpoint 1: Intelligent-Search
-        try:
-            resp = cffi_session.get(
-                _VTEX_SEARCH_URL,
-                headers=_VTEX_HEADERS,
-                params=params_is,
-                impersonate="chrome124",
-                timeout=15,
-            )
-            if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
-                data = resp.json()
-                products = (
-                    data.get("products")
-                    or data.get("data", {}).get("products")
-                    or (data.get("productSearch") or {}).get("products")
-                    or []
-                )
-                if products:
-                    logger.info(
-                        f"[{self.platform_name}] VTEX curl_cffi IS: "
-                        f"{len(products)} produtos (pág {page})"
-                    )
-                    return self._parse_vtex_products(products, keyword, keyword_category_map, page_offset)
-            else:
-                logger.debug(
-                    f"[{self.platform_name}] curl_cffi IS: HTTP {resp.status_code}"
-                )
-        except Exception as exc:
-            logger.debug(f"[{self.platform_name}] curl_cffi IS erro: {exc}")
-
-        # Endpoint 2: Catalog System (fallback)
-        from_idx = page_offset
-        to_idx   = page_offset + _ITEMS_PER_PAGE - 1
-        try:
-            encoded = __import__("urllib.parse", fromlist=["quote_plus"]).quote_plus(keyword)
-            resp = cffi_session.get(
-                f"{_VTEX_CATALOG_URL}/{encoded}",
-                headers=_VTEX_HEADERS,
-                params={"_from": from_idx, "_to": to_idx},
-                impersonate="chrome124",
-                timeout=15,
-            )
-            if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
-                products = resp.json()
-                if isinstance(products, list) and products:
-                    logger.info(
-                        f"[{self.platform_name}] VTEX curl_cffi catalog: "
-                        f"{len(products)} produtos (pág {page})"
-                    )
-                    return self._parse_vtex_products(products, keyword, keyword_category_map, page_offset)
-        except Exception as exc:
-            logger.debug(f"[{self.platform_name}] curl_cffi catalog erro: {exc}")
-
-        return []
-
-    # ------------------------------------------------------------------
-    # Estratégia 1: VTEX Intelligent-Search API direta (requests)
+    # Estratégia 1: VTEX Intelligent-Search API direta
     # ------------------------------------------------------------------
 
     def _vtex_search(
@@ -538,12 +447,8 @@ class FastShopScraper(BaseScraper):
             self._captured_products = []
             offset = (page - 1) * _ITEMS_PER_PAGE
 
-            # --- Estratégia 0: VTEX API via curl_cffi (TLS fingerprint Chrome real) ---
-            records = self._vtex_cffi_search(keyword, keyword_category_map, page, offset)
-
-            # --- Estratégia 1: VTEX API via requests (fallback) ---
-            if not records:
-                records = self._vtex_search(keyword, keyword_category_map, page, offset)
+            # --- Estratégia 1: VTEX API direta ---
+            records = self._vtex_search(keyword, keyword_category_map, page, offset)
 
             if not records:
                 # Carrega browser para XHR interception + DOM fallback

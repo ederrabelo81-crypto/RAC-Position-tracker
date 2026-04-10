@@ -7,7 +7,7 @@ Status das plataformas (validado em produção — Mar/2026):
   ✅ Magalu          — funcional (seletores confirmados via diagnóstico)
   ✅ Google Shopping — funcional
   ✅ Leroy Merlin    — funcional (Algolia API, preço via averagePromotionalPrice)
-  ✅ Fast Shop       — ativo (curl_cffi bypassa PerimeterX)
+  ⏸️  Fast Shop       — bloqueio total (PerimeterX bloqueia API + browser timeout)
   ⏸️  Shopee         — em stand by (requer sessão autenticada via session_grabber)
   ⏸️  Casas Bahia    — em stand by (WAF Akamai, requer sessão via session_grabber)
 """
@@ -97,7 +97,7 @@ ACTIVE_PLATFORMS = {
     "casasbahia":     False,  # ⏸️  Casas Bahia — em stand by
     "google_shopping":True,   # ✅ Google Shopping — limpeza de título corrigida
     "leroy":          True,   # ✅ Leroy Merlin — funcional (Algolia API)
-    "fast":           True,   # ✅ Fast Shop — curl_cffi bypassa PerimeterX timeout
+    "fast":           False,  # ⏸️  Fast Shop — bloqueio total (PerimeterX + browser timeout)
     "dealers":        True,   # ✅ Dealers/varejistas especializados
 }
 
