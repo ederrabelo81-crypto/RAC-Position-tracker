@@ -65,6 +65,9 @@ def _get_supabase():
         return None
 
 
+BTU_OPTIONS = ["9000", "12000", "18000", "24000", "36000", "48000", "60000"]
+
+
 def query_coletas(
     start_date: date,
     end_date: date,
@@ -72,6 +75,7 @@ def query_coletas(
     brands: list[str] | None = None,
     keywords: list[str] | None = None,
     product_search: str | None = None,
+    btu_filter: list[str] | None = None,
     limit: int = 5000,
 ) -> pd.DataFrame:
     """Query the coletas table with filters. Returns empty DataFrame on error."""
@@ -96,6 +100,10 @@ def query_coletas(
             q = q.in_("keyword", keywords)
         if product_search and product_search.strip():
             q = q.ilike("produto", f"%{product_search.strip()}%")
+        if btu_filter:
+            # OR across selected BTU values — matches "9000", "9.000", "9000 btu" etc.
+            conditions = ",".join(f"produto.ilike.%{btu}%" for btu in btu_filter)
+            q = q.or_(conditions)
 
         resp = q.execute()
         if not resp.data:
@@ -310,6 +318,11 @@ def page_results():
         sel_platforms    = st.multiselect("Platforms", opts["platforms"])
         sel_brands       = st.multiselect("Brands",    opts["brands"])
         sel_keywords     = st.multiselect("Keywords",  opts["keywords"])
+        sel_btu          = st.multiselect(
+            "Capacity (BTU)",
+            BTU_OPTIONS,
+            format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
+        )
         product_search   = st.text_input(
             "Product / SKU",
             placeholder="e.g. inverter 12000 midea",
@@ -330,6 +343,7 @@ def page_results():
             brands=sel_brands or None,
             keywords=sel_keywords or None,
             product_search=product_search or None,
+            btu_filter=sel_btu or None,
         )
 
     if df.empty:
@@ -401,6 +415,12 @@ def page_price_evolution():
         sel_brands       = st.multiselect("Brands",    opts["brands"],    key="evo_brands")
         sel_platforms    = st.multiselect("Platforms", opts["platforms"], key="evo_platforms")
         sel_keywords     = st.multiselect("Keywords",  opts["keywords"],  key="evo_keywords")
+        sel_btu          = st.multiselect(
+            "Capacity (BTU)",
+            BTU_OPTIONS,
+            format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
+            key="evo_btu",
+        )
         product_search   = st.text_input(
             "Product / SKU",
             placeholder="e.g. inverter 12000",
@@ -428,6 +448,7 @@ def page_price_evolution():
             brands=sel_brands or None,
             keywords=sel_keywords or None,
             product_search=product_search or None,
+            btu_filter=sel_btu or None,
             limit=10000,
         )
 
