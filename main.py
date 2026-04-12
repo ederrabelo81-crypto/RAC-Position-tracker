@@ -367,6 +367,14 @@ def main() -> None:
             f"\nColeta finalizada! {len(all_records)} registros totais.\n"
             f"Arquivo: {csv_path}"
         )
+
+        # --- Upload para Supabase (não bloqueia — CSV já está salvo) ---
+        try:
+            from utils.supabase_client import upload_to_supabase
+            upload_to_supabase(all_records)
+        except Exception as exc:
+            logger.warning(f"Supabase upload falhou (dados no CSV normalmente): {exc}")
+
     else:
         logger.warning(
             "Nenhum registro coletado. "
