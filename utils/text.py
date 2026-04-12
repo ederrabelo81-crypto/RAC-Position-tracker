@@ -148,45 +148,107 @@ def parse_price(raw: Optional[str]) -> Optional[float]:
         return None
 
 
-def is_valid_product(name: str, price: Optional[float]) -> bool:
+# ---------------------------------------------------------------------------
+# Filtro de produto AC — termos e listas usados por is_valid_product()
+# ---------------------------------------------------------------------------
+
+# Termos fortes: qualquer um confirma que é AC
+_AC_STRONG_TERMS = [
+    r'\bar[- ]condicionado\b',   # ar condicionado / ar-condicionado
+    r'\bbtu[s]?\b',               # BTU / BTUs
+    r'\bevaporadora\b',            # unidade interna
+    r'\bcondensadora\b',           # unidade externa
+    r'\bhi[- ]?wall\b',            # hi-wall split
+    r'\bmini[- ]?split\b',         # mini-split
+    r'\bcassete\b',                # teto cassete
+]
+
+# Termos fracos: precisam de pelo menos 2 para confirmar AC
+_AC_WEAK_TERMS = [
+    r'\bsplit\b',
+    r'\binverter\b',
+]
+
+# Blocklist: produtos claramente não-AC → rejeitados mesmo com termos AC
+_NON_AC_TERMS = [
+    r'\biphones?\b',
+    r'\bipad\b',
+    r'\bnotebook\b',
+    r'\blaptop\b',
+    r'\bcelular\b',
+    r'\bsmartphone\b',
+    r'\bfralda[s]?\b',
+    r'\bfrald[ao]\b',
+    r'\bgeladeira\b',
+    r'\brefrigerador\b',
+    r'\bfog[aã]o\b',
+    r'\bmicroondas\b',
+    r'\btablet\b',
+    r'\bairpods?\b',
+    r'\bmacbook\b',
+    r'\bcolch[aã]o\b',
+    r'\bsof[aá]\b',
+]
+
+
+def is_valid_product(name: str, price: Optional[float] = None) -> bool:
     """
-    CORREÇÃO PROBLEMA #5: Valida se um item é um produto real de ar-condicionado.
-    
-    Filtra banners, promoções, elementos de UI e falsos positivos.
-    Exige pelo menos UM termo obrigatório E preço válido.
-    
+    Valida se um item é um produto real de ar-condicionado.
+
+    Lógica:
+      1. Rejeita se preço fornecido for inválido ou fora da faixa R$ 200–R$ 80.000
+      2. Rejeita se nome bater com a blocklist (iPhone, fralda, notebook…)
+      3. Aprova se nome contiver qualquer termo forte (btu, ar condicionado…)
+      4. Aprova se nome contiver 2+ termos fracos (split + inverter)
+      5. Rejeita caso contrário
+
     Args:
-        name: Nome/título do produto
-        price: Preço parseado (float ou None)
-    
+        name:  Título/nome do produto
+        price: Preço parseado (float) — opcional; se None, ignora verificação de faixa
+
     Returns:
-        True se for produto válido, False caso contrário
-    
+        True se for produto AC válido, False caso contrário
+
     Testes:
         >>> is_valid_product("Ar Condicionado Split 9000 BTU Inverter", 1994.91)
         True
+        >>> is_valid_product("iPhone 15 Pro 256GB", 5999.0)
+        False
+        >>> is_valid_product("Fralda Pampers XXG 80 unidades", 89.9)
+        False
         >>> is_valid_product("Ofer Seman", 125.0)
         False
         >>> is_valid_product("Clique para ver preço", None)
         False
-        >>> is_valid_product("Split Hi-Wall 12000 BTUs LG", 1520.1)
+        >>> is_valid_product("Split Hi-Wall 12000 BTUs LG Dual Inverter", 1520.1)
+        True
+        >>> is_valid_product("Split Inverter 24000", 3200.0)
         True
     """
-    if price is None or price <= 0:
-        return False
-    
     if not name:
         return False
-    
-    keywords = [
-        r'\bbtu\b',              # Unidade de capacidade
-        r'\bsplit\b',            # Tipo
-        r'\bar[- ]condicionado\b',  # Produto
-        r'\binverter\b',         # Tecnologia
-    ]
-    
+
+    # Verificação de faixa de preço (somente se fornecido)
+    if price is not None:
+        if price <= 0:
+            return False
+        # ACs no Brasil: ~R$ 400 (portátil básico) a R$ 80.000 (industrial)
+        if price < 200 or price > 80_000:
+            return False
+
     name_lower = name.lower()
-    return any(re.search(kw, name_lower) for kw in keywords)
+
+    # Blocklist: produto claramente não-AC
+    if any(re.search(pattern, name_lower) for pattern in _NON_AC_TERMS):
+        return False
+
+    # Termo forte: qualquer um é suficiente
+    if any(re.search(pattern, name_lower) for pattern in _AC_STRONG_TERMS):
+        return True
+
+    # Termos fracos: precisa de 2+
+    weak_hits = sum(1 for p in _AC_WEAK_TERMS if re.search(p, name_lower))
+    return weak_hits >= 2
 
 
 def parse_rating(raw: Optional[str]) -> Optional[float]:

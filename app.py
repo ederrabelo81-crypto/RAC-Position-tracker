@@ -618,6 +618,102 @@ def page_import_history():
 
 
 # ---------------------------------------------------------------------------
+# Page 5 — Data Cleanup
+# ---------------------------------------------------------------------------
+
+def page_data_cleanup():
+    st.title("🧹 Data Cleanup")
+    st.caption(
+        "Scans Supabase for records that are not air-conditioner products "
+        "(e.g. iPhones, diapers, notebooks) and removes them."
+    )
+
+    st.info(
+        "**How it works:** Each record's product name is checked against a list of "
+        "strong AC terms (BTU, ar condicionado, evaporadora…), weak terms (split, inverter), "
+        "and a blocklist of known non-AC products. Records that fail the check are flagged for deletion."
+    )
+
+    col1, col2 = st.columns(2)
+
+    # --- Scan ---
+    with col1:
+        scan_btn = st.button("🔍 Scan for invalid records", use_container_width=True)
+
+    with col2:
+        delete_btn = st.button(
+            "🗑️ Delete invalid records",
+            type="primary",
+            use_container_width=True,
+            help="Permanently removes all records that don't pass the AC product filter.",
+        )
+
+    if scan_btn:
+        with st.spinner("Scanning Supabase… this may take a moment for large datasets."):
+            from utils.supabase_client import delete_invalid_from_supabase
+            result = delete_invalid_from_supabase(dry_run=True)
+
+        st.session_state["cleanup_scan"] = result
+
+    if "cleanup_scan" in st.session_state:
+        r = st.session_state["cleanup_scan"]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Records scanned", f"{r['scanned']:,}")
+        c2.metric("Invalid (non-AC)", f"{r['invalid']:,}", delta=f"-{r['invalid']:,}" if r["invalid"] else None, delta_color="inverse")
+        c3.metric("Valid", f"{r['scanned'] - r['invalid']:,}")
+
+        if r["invalid"] == 0:
+            st.success("✅ No invalid records found. Your dataset is clean!")
+        else:
+            pct = r["invalid"] / r["scanned"] * 100 if r["scanned"] else 0
+            st.warning(
+                f"Found **{r['invalid']:,}** records ({pct:.1f}%) that appear unrelated "
+                f"to air-conditioners. Click **Delete invalid records** to remove them."
+            )
+
+    if delete_btn:
+        if "cleanup_scan" not in st.session_state or st.session_state["cleanup_scan"]["invalid"] == 0:
+            st.warning("Run a scan first to confirm there are invalid records.")
+        else:
+            with st.spinner("Deleting invalid records…"):
+                from utils.supabase_client import delete_invalid_from_supabase
+                result = delete_invalid_from_supabase(dry_run=False)
+
+            if result["errors"] == 0:
+                st.success(
+                    f"✅ Done. **{result['deleted']:,}** invalid records deleted. "
+                    f"Your dataset now contains only AC-related products."
+                )
+            else:
+                st.warning(
+                    f"Partial cleanup: {result['deleted']:,} deleted, "
+                    f"{result['errors']:,} with errors. Check Supabase logs."
+                )
+            # Clear cached scan result
+            del st.session_state["cleanup_scan"]
+
+    st.divider()
+    st.subheader("Filter rules reference")
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.markdown("**✅ Strong AC terms** *(any one = keep)*")
+        st.code(
+            "ar condicionado\nBTU / BTUs\nevaporadora\ncondensadora\nhi-wall\nmini-split\ncassete",
+            language=None,
+        )
+    with col_b:
+        st.markdown("**🟡 Weak AC terms** *(need 2+ = keep)*")
+        st.code("split\ninverter", language=None)
+    with col_c:
+        st.markdown("**🚫 Blocklist** *(any one = remove)*")
+        st.code(
+            "iphone / ipad\nnotebook / laptop\ncelular / smartphone\nfralda\ngeladeira / refrigerador\nfogão / microondas\ntablet / airpods / macbook\ncolchão / sofá",
+            language=None,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Navigation
 # ---------------------------------------------------------------------------
 
@@ -626,6 +722,7 @@ PAGES = {
     "📊 Results":         page_results,
     "📈 Price Evolution":  page_price_evolution,
     "📂 Import History":  page_import_history,
+    "🧹 Data Cleanup":    page_data_cleanup,
 }
 
 with st.sidebar:

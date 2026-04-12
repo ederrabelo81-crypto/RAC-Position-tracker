@@ -19,9 +19,10 @@ REQUISITOS:
 import os
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
+from utils.text import is_valid_product
 
 # Carrega .env da raiz do projeto (pai de utils/)
 try:
@@ -147,6 +148,102 @@ def _map_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
+def _is_ac_row(row: Dict[str, Any]) -> bool:
+    """
+    Retorna True se o registro mapeado deve ser mantido.
+
+    Permite registros sem nome de produto (dados parciais com posição/preço).
+    Rejeita apenas quando o nome do produto está presente e claramente não é AC.
+    """
+    produto = row.get("produto") or ""
+    if not produto:
+        return True  # Sem nome → não é possível validar → mantém
+    preco = row.get("preco")  # None se não capturado
+    return is_valid_product(produto, preco)
+
+
+def delete_invalid_from_supabase(dry_run: bool = False) -> Dict[str, int]:
+    """
+    Varre a tabela `coletas` e remove registros que não passam no filtro AC.
+
+    Estratégia:
+      1. Busca id + produto + preco em lotes de 1.000 linhas (paginação)
+      2. Aplica is_valid_product() em cada linha client-side
+      3. Deleta IDs inválidos em lotes de 100
+
+    Args:
+        dry_run: Se True, apenas conta — não deleta nada.
+
+    Returns:
+        dict com chaves: scanned, invalid, deleted, errors
+    """
+    client = _get_client()
+    if client is None:
+        return {"scanned": 0, "invalid": 0, "deleted": 0, "errors": 1}
+
+    _FETCH_BATCH = 1_000
+    _DELETE_BATCH = 100
+
+    invalid_ids: List[int] = []
+    scanned = 0
+    offset = 0
+
+    logger.info("[Supabase] Iniciando varredura de registros inválidos...")
+
+    while True:
+        try:
+            resp = (
+                client.table("coletas")
+                .select("id,produto,preco")
+                .range(offset, offset + _FETCH_BATCH - 1)
+                .execute()
+            )
+        except Exception as exc:
+            logger.error(f"[Supabase] Erro ao buscar registros (offset={offset}): {exc}")
+            break
+
+        batch = resp.data or []
+        if not batch:
+            break
+
+        for row in batch:
+            scanned += 1
+            produto = row.get("produto") or ""
+            preco   = row.get("preco")
+            if produto and not is_valid_product(produto, preco):
+                invalid_ids.append(row["id"])
+
+        if len(batch) < _FETCH_BATCH:
+            break
+        offset += _FETCH_BATCH
+
+    logger.info(
+        f"[Supabase] Varredura concluída: {scanned} registros analisados, "
+        f"{len(invalid_ids)} inválidos encontrados."
+    )
+
+    if dry_run or not invalid_ids:
+        return {"scanned": scanned, "invalid": len(invalid_ids), "deleted": 0, "errors": 0}
+
+    # Deleta em lotes
+    deleted = 0
+    errors  = 0
+    total_batches = math.ceil(len(invalid_ids) / _DELETE_BATCH)
+
+    for i in range(total_batches):
+        batch_ids = invalid_ids[i * _DELETE_BATCH : (i + 1) * _DELETE_BATCH]
+        try:
+            client.table("coletas").delete().in_("id", batch_ids).execute()
+            deleted += len(batch_ids)
+            logger.debug(f"[Supabase] Delete lote {i+1}/{total_batches}: {len(batch_ids)} IDs")
+        except Exception as exc:
+            errors += len(batch_ids)
+            logger.warning(f"[Supabase] Erro ao deletar lote {i+1}: {exc}")
+
+    logger.info(f"[Supabase] Limpeza concluída: {deleted} deletados, {errors} com erro.")
+    return {"scanned": scanned, "invalid": len(invalid_ids), "deleted": deleted, "errors": errors}
+
+
 def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
     """
     Faz upload de uma lista de registros para a tabela `coletas` no Supabase.
@@ -170,8 +267,19 @@ def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
         return False
 
     rows = [_map_record(r) for r in records]
+
     # Remove linhas sem plataforma (requerida pela constraint NOT NULL)
     rows = [r for r in rows if r.get("plataforma")]
+
+    # Filtra produtos não relacionados a ar-condicionado
+    before_filter = len(rows)
+    rows = [r for r in rows if _is_ac_row(r)]
+    filtered_out = before_filter - len(rows)
+    if filtered_out > 0:
+        logger.info(
+            f"[Supabase] Filtro AC: {filtered_out} registro(s) removido(s) "
+            f"(não relacionados a ar-condicionado)."
+        )
 
     total   = len(rows)
     batches = math.ceil(total / _BATCH_SIZE)
