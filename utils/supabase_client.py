@@ -71,26 +71,35 @@ _BOOL_COLS  = {"fulfillment"}
 def _get_client() -> Optional["Client"]:
     """Cria e retorna o client Supabase, ou None se não configurado."""
     if not _HAS_SUPABASE:
-        logger.warning(
-            "[Supabase] Pacote 'supabase' não instalado. "
-            "Execute: pip install supabase python-dotenv"
+        logger.error(
+            "[Supabase] ❌ Pacote 'supabase' NÃO instalado. "
+            "Execute no terminal: pip install supabase"
         )
         return None
 
     url = os.getenv("SUPABASE_URL", "").strip()
     key = os.getenv("SUPABASE_KEY", "").strip()
 
-    if not url or not key:
-        logger.warning(
-            "[Supabase] Credenciais não encontradas. "
-            "Verifique SUPABASE_URL e SUPABASE_KEY no arquivo .env"
+    if not url:
+        logger.error(
+            "[Supabase] ❌ SUPABASE_URL não encontrada. "
+            f"Verifique o arquivo .env em: {Path(__file__).parent.parent / '.env'}"
+        )
+        return None
+    if not key:
+        logger.error(
+            "[Supabase] ❌ SUPABASE_KEY não encontrada. "
+            f"Verifique o arquivo .env em: {Path(__file__).parent.parent / '.env'}"
         )
         return None
 
+    logger.info(f"[Supabase] Conectando em: {url[:40]}...")
     try:
-        return create_client(url, key)
+        client = create_client(url, key)
+        logger.info("[Supabase] ✓ Conexão estabelecida.")
+        return client
     except Exception as exc:
-        logger.error(f"[Supabase] Falha ao criar client: {exc}")
+        logger.error(f"[Supabase] ❌ Falha ao criar client: {exc}")
         return None
 
 
@@ -152,9 +161,10 @@ def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
         True se upload bem-sucedido, False se falhou (CSV já foi salvo antes).
     """
     if not records:
-        logger.debug("[Supabase] Nenhum registro para enviar.")
+        logger.info("[Supabase] Nenhum registro para enviar.")
         return True
 
+    logger.info(f"[Supabase] Iniciando upload de {len(records)} registros...")
     client = _get_client()
     if client is None:
         return False
