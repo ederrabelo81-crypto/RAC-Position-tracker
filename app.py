@@ -71,6 +71,7 @@ def query_coletas(
     platforms: list[str] | None = None,
     brands: list[str] | None = None,
     keywords: list[str] | None = None,
+    product_search: str | None = None,
     limit: int = 5000,
 ) -> pd.DataFrame:
     """Query the coletas table with filters. Returns empty DataFrame on error."""
@@ -93,6 +94,8 @@ def query_coletas(
             q = q.in_("marca", brands)
         if keywords:
             q = q.in_("keyword", keywords)
+        if product_search and product_search.strip():
+            q = q.ilike("produto", f"%{product_search.strip()}%")
 
         resp = q.execute()
         if not resp.data:
@@ -304,9 +307,14 @@ def page_results():
 
         opts = get_filter_options()
 
-        sel_platforms = st.multiselect("Platforms", opts["platforms"])
-        sel_brands    = st.multiselect("Brands",    opts["brands"])
-        sel_keywords  = st.multiselect("Keywords",  opts["keywords"])
+        sel_platforms    = st.multiselect("Platforms", opts["platforms"])
+        sel_brands       = st.multiselect("Brands",    opts["brands"])
+        sel_keywords     = st.multiselect("Keywords",  opts["keywords"])
+        product_search   = st.text_input(
+            "Product / SKU",
+            placeholder="e.g. inverter 12000 midea",
+            help="Case-insensitive substring search on product name",
+        )
 
         load_btn = st.button("🔄 Load Data", type="primary", use_container_width=True)
 
@@ -321,6 +329,7 @@ def page_results():
             platforms=sel_platforms or None,
             brands=sel_brands or None,
             keywords=sel_keywords or None,
+            product_search=product_search or None,
         )
 
     if df.empty:
@@ -389,9 +398,15 @@ def page_price_evolution():
 
         opts = get_filter_options()
 
-        sel_brands    = st.multiselect("Brands",    opts["brands"],    key="evo_brands")
-        sel_platforms = st.multiselect("Platforms", opts["platforms"], key="evo_platforms")
-        sel_keywords  = st.multiselect("Keywords",  opts["keywords"],  key="evo_keywords")
+        sel_brands       = st.multiselect("Brands",    opts["brands"],    key="evo_brands")
+        sel_platforms    = st.multiselect("Platforms", opts["platforms"], key="evo_platforms")
+        sel_keywords     = st.multiselect("Keywords",  opts["keywords"],  key="evo_keywords")
+        product_search   = st.text_input(
+            "Product / SKU",
+            placeholder="e.g. inverter 12000",
+            help="Case-insensitive substring search on product name",
+            key="evo_product",
+        )
 
         group_by = st.radio(
             "Group chart by",
@@ -412,6 +427,7 @@ def page_price_evolution():
             platforms=sel_platforms or None,
             brands=sel_brands or None,
             keywords=sel_keywords or None,
+            product_search=product_search or None,
             limit=10000,
         )
 
