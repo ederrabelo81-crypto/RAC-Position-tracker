@@ -1,0 +1,504 @@
+"""
+app.py — RAC Price Monitor Dashboard
+
+Usage (local):
+    streamlit run app.py
+
+Usage (remote access):
+    streamlit run app.py --server.address=0.0.0.0 --server.port=8501
+    Then open: http://<your-ip>:8501
+"""
+
+import os
+import subprocess
+import sys
+import time
+from datetime import date, timedelta
+from pathlib import Path
+
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from dotenv import load_dotenv
+
+# ---------------------------------------------------------------------------
+# Bootstrap
+# ---------------------------------------------------------------------------
+
+load_dotenv(Path(__file__).parent / ".env")
+PROJECT_ROOT = Path(__file__).parent
+
+st.set_page_config(
+    page_title="RAC Price Monitor",
+    page_icon="❄️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ---------------------------------------------------------------------------
+# Platform registry (active platforms only)
+# ---------------------------------------------------------------------------
+
+PLATFORMS = {
+    "ml":              "Mercado Livre",
+    "magalu":          "Magalu",
+    "amazon":          "Amazon",
+    "google_shopping": "Google Shopping",
+    "leroy":           "Leroy Merlin",
+    "dealers":         "Dealers (13 sites)",
+}
+
+# ---------------------------------------------------------------------------
+# Supabase client (cached — one connection per session)
+# ---------------------------------------------------------------------------
+
+@st.cache_resource(show_spinner=False)
+def _get_supabase():
+    url = os.getenv("SUPABASE_URL", "").strip()
+    key = os.getenv("SUPABASE_KEY", "").strip()
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def query_coletas(
+    start_date: date,
+    end_date: date,
+    platforms: list[str] | None = None,
+    brands: list[str] | None = None,
+    keywords: list[str] | None = None,
+    limit: int = 5000,
+) -> pd.DataFrame:
+    """Query the coletas table with filters. Returns empty DataFrame on error."""
+    client = _get_supabase()
+    if client is None:
+        st.error("Supabase not connected. Check your .env file.")
+        return pd.DataFrame()
+    try:
+        q = (
+            client.table("coletas")
+            .select("*")
+            .gte("data", str(start_date))
+            .lte("data", str(end_date))
+            .order("data", desc=True)
+            .limit(limit)
+        )
+        if platforms:
+            q = q.in_("plataforma", platforms)
+        if brands:
+            q = q.in_("marca", brands)
+        if keywords:
+            q = q.in_("keyword", keywords)
+
+        resp = q.execute()
+        if not resp.data:
+            return pd.DataFrame()
+        df = pd.DataFrame(resp.data)
+        df["data"] = pd.to_datetime(df["data"]).dt.date
+        for col in ["posicao_organica", "posicao_patrocinada", "posicao_geral", "qtd_avaliacoes"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+        for col in ["preco", "avaliacao"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df
+    except Exception as exc:
+        st.error(f"Query error: {exc}")
+        return pd.DataFrame()
+
+
+def get_filter_options() -> dict:
+    """Fetch distinct values for filter dropdowns (last 90 days)."""
+    client = _get_supabase()
+    if client is None:
+        return {"platforms": [], "brands": [], "keywords": []}
+    try:
+        since = str(date.today() - timedelta(days=90))
+        resp = (
+            client.table("coletas")
+            .select("plataforma, marca, keyword")
+            .gte("data", since)
+            .limit(5000)
+            .execute()
+        )
+        df = pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+        return {
+            "platforms": sorted(df["plataforma"].dropna().unique().tolist()) if not df.empty else [],
+            "brands":    sorted(df["marca"].dropna().unique().tolist()) if not df.empty else [],
+            "keywords":  sorted(df["keyword"].dropna().unique().tolist()) if not df.empty else [],
+        }
+    except Exception:
+        return {"platforms": [], "brands": [], "keywords": []}
+
+
+# ---------------------------------------------------------------------------
+# Session state helpers
+# ---------------------------------------------------------------------------
+
+def _init_state():
+    defaults = {
+        "process":  None,
+        "running":  False,
+        "log":      "",
+        "run_done": False,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+# ---------------------------------------------------------------------------
+# Page 1 — Run Collection
+# ---------------------------------------------------------------------------
+
+def page_run_collection():
+    st.title("🚀 Run Collection")
+    st.caption("Select platforms and keywords, then start the scraping bot.")
+
+    _init_state()
+
+    col_left, col_right = st.columns([1, 1], gap="large")
+
+    with col_left:
+        st.subheader("Platforms")
+        selected_platforms = []
+        for key, label in PLATFORMS.items():
+            if st.checkbox(label, value=True, key=f"plat_{key}"):
+                selected_platforms.append(key)
+
+        st.subheader("Pages per keyword")
+        pages = st.slider("Pages", min_value=1, max_value=5, value=2)
+
+        st.subheader("Options")
+        headless = st.checkbox("Headless browser (recommended)", value=True)
+
+    with col_right:
+        st.subheader("Keywords")
+
+        # Load keywords from config
+        try:
+            sys.path.insert(0, str(PROJECT_ROOT))
+            from config import KEYWORDS_LIST
+            kw_by_cat: dict = {}
+            for kw in KEYWORDS_LIST:
+                kw_by_cat.setdefault(kw.category, []).append(kw.term)
+        except Exception:
+            kw_by_cat = {"All": []}
+
+        selected_keywords: list[str] = []
+        for cat, terms in kw_by_cat.items():
+            with st.expander(f"{cat} ({len(terms)})", expanded=False):
+                for term in terms:
+                    if st.checkbox(term, value=True, key=f"kw_{term}"):
+                        selected_keywords.append(term)
+
+    st.divider()
+
+    # --- Start / Stop ---
+    col_btn1, col_btn2, col_status = st.columns([1, 1, 4])
+
+    with col_btn1:
+        start = st.button(
+            "▶ Start Collection",
+            type="primary",
+            disabled=st.session_state.running or not selected_platforms,
+        )
+
+    with col_btn2:
+        stop = st.button(
+            "⏹ Stop",
+            disabled=not st.session_state.running,
+        )
+
+    with col_status:
+        if st.session_state.running:
+            st.info("⏳ Collection in progress...")
+        elif st.session_state.run_done:
+            st.success("✅ Collection completed.")
+
+    # --- Handle start ---
+    if start and not st.session_state.running and selected_platforms:
+        cmd = [sys.executable, str(PROJECT_ROOT / "main.py")]
+        cmd += ["--platforms"] + selected_platforms
+        cmd += ["--pages", str(pages)]
+        if selected_keywords:
+            cmd += ["--keywords"] + selected_keywords
+        if not headless:
+            cmd += ["--no-headless"]
+
+        st.session_state.process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(PROJECT_ROOT),
+            bufsize=1,
+        )
+        st.session_state.running  = True
+        st.session_state.run_done = False
+        st.session_state.log      = ""
+        st.rerun()
+
+    # --- Handle stop ---
+    if stop and st.session_state.process:
+        st.session_state.process.terminate()
+        st.session_state.running  = False
+        st.session_state.run_done = False
+        st.session_state.log     += "\n[Stopped by user]"
+        st.rerun()
+
+    # --- Live log ---
+    st.subheader("Log")
+    log_box = st.empty()
+
+    if st.session_state.running and st.session_state.process:
+        proc = st.session_state.process
+        # Read up to 50 lines per rerun cycle
+        for _ in range(50):
+            line = proc.stdout.readline()
+            if not line:
+                break
+            st.session_state.log += line
+
+        if proc.poll() is not None:
+            remaining = proc.stdout.read()
+            if remaining:
+                st.session_state.log += remaining
+            st.session_state.running  = False
+            st.session_state.run_done = True
+            st.session_state.process  = None
+        else:
+            time.sleep(0.3)
+            st.rerun()
+
+    log_box.code(
+        st.session_state.log[-4000:] if st.session_state.log else "No output yet.",
+        language="bash",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Page 2 — Results
+# ---------------------------------------------------------------------------
+
+def page_results():
+    st.title("📊 Results")
+    st.caption("Browse collected data. Filters are applied before loading.")
+
+    # --- Sidebar filters ---
+    with st.sidebar:
+        st.subheader("Filters")
+
+        date_range = st.date_input(
+            "Date range",
+            value=(date.today() - timedelta(days=7), date.today()),
+            max_value=date.today(),
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=7)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+
+        sel_platforms = st.multiselect("Platforms", opts["platforms"])
+        sel_brands    = st.multiselect("Brands",    opts["brands"])
+        sel_keywords  = st.multiselect("Keywords",  opts["keywords"])
+
+        load_btn = st.button("🔄 Load Data", type="primary", use_container_width=True)
+
+    if not load_btn:
+        st.info("Set your filters in the sidebar and click **Load Data**.")
+        return
+
+    with st.spinner("Loading data from Supabase..."):
+        df = query_coletas(
+            start_date,
+            end_date,
+            platforms=sel_platforms or None,
+            brands=sel_brands or None,
+            keywords=sel_keywords or None,
+        )
+
+    if df.empty:
+        st.warning("No data found for the selected filters.")
+        return
+
+    # --- Summary metrics ---
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total records",  f"{len(df):,}")
+    c2.metric("Platforms",      df["plataforma"].nunique() if "plataforma" in df else 0)
+    c3.metric("Brands",         df["marca"].nunique() if "marca" in df else 0)
+    c4.metric("With price",     f"{df['preco'].notna().sum():,}" if "preco" in df else 0)
+
+    st.divider()
+
+    # --- Display columns ---
+    display_cols = [
+        c for c in [
+            "data", "turno", "plataforma", "marca", "produto",
+            "posicao_geral", "posicao_organica", "preco",
+            "seller", "keyword", "tag",
+        ] if c in df.columns
+    ]
+
+    st.dataframe(
+        df[display_cols],
+        use_container_width=True,
+        height=520,
+        column_config={
+            "data":            st.column_config.DateColumn("Date"),
+            "preco":           st.column_config.NumberColumn("Price (R$)", format="R$ %.2f"),
+            "posicao_geral":   st.column_config.NumberColumn("Position"),
+            "posicao_organica":st.column_config.NumberColumn("Organic Pos."),
+        },
+    )
+
+    # --- Download ---
+    csv_bytes = df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        label="⬇️ Download CSV",
+        data=csv_bytes,
+        file_name=f"rac_{start_date}_{end_date}.csv",
+        mime="text/csv",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Page 3 — Price Evolution
+# ---------------------------------------------------------------------------
+
+def page_price_evolution():
+    st.title("📈 Price Evolution")
+    st.caption("Track price changes over time by product or brand.")
+
+    with st.sidebar:
+        st.subheader("Filters")
+
+        date_range = st.date_input(
+            "Date range",
+            value=(date.today() - timedelta(days=30), date.today()),
+            max_value=date.today(),
+            key="evo_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+
+        sel_brands    = st.multiselect("Brands",    opts["brands"],    key="evo_brands")
+        sel_platforms = st.multiselect("Platforms", opts["platforms"], key="evo_platforms")
+        sel_keywords  = st.multiselect("Keywords",  opts["keywords"],  key="evo_keywords")
+
+        group_by = st.radio(
+            "Group chart by",
+            ["Brand", "Platform", "Product"],
+            horizontal=True,
+        )
+
+        load_btn = st.button("🔄 Load Chart", type="primary", use_container_width=True)
+
+    if not load_btn:
+        st.info("Set your filters in the sidebar and click **Load Chart**.")
+        return
+
+    with st.spinner("Loading data..."):
+        df = query_coletas(
+            start_date,
+            end_date,
+            platforms=sel_platforms or None,
+            brands=sel_brands or None,
+            keywords=sel_keywords or None,
+            limit=10000,
+        )
+
+    if df.empty or "preco" not in df.columns:
+        st.warning("No price data found for the selected filters.")
+        return
+
+    df_price = df.dropna(subset=["preco", "data"])
+    if df_price.empty:
+        st.warning("No records with price data in this range.")
+        return
+
+    # Aggregate: median price per (date, group)
+    group_col_map = {
+        "Brand":    "marca",
+        "Platform": "plataforma",
+        "Product":  "produto",
+    }
+    group_col = group_col_map[group_by]
+
+    if group_col not in df_price.columns:
+        st.warning(f"Column '{group_col}' not available in data.")
+        return
+
+    agg = (
+        df_price
+        .groupby(["data", group_col], as_index=False)["preco"]
+        .median()
+        .rename(columns={"preco": "Median Price (R$)", group_col: group_by})
+    )
+    agg["data"] = pd.to_datetime(agg["data"])
+
+    # --- Line chart ---
+    fig = px.line(
+        agg,
+        x="data",
+        y="Median Price (R$)",
+        color=group_by,
+        markers=True,
+        title=f"Median Price Evolution by {group_by}",
+        labels={"data": "Date"},
+        template="plotly_white",
+    )
+    fig.update_layout(
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
+        height=500,
+    )
+    fig.update_traces(line=dict(width=2), marker=dict(size=5))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- Summary table ---
+    st.subheader("Price summary")
+    summary = (
+        df_price
+        .groupby(group_col)["preco"]
+        .agg(
+            Count="count",
+            Min="min",
+            Median="median",
+            Max="max",
+            Avg="mean",
+        )
+        .round(2)
+        .reset_index()
+        .rename(columns={group_col: group_by})
+        .sort_values("Median", ascending=True)
+    )
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# Navigation
+# ---------------------------------------------------------------------------
+
+PAGES = {
+    "🚀 Run Collection": page_run_collection,
+    "📊 Results":        page_results,
+    "📈 Price Evolution": page_price_evolution,
+}
+
+with st.sidebar:
+    st.markdown("## ❄️ RAC Monitor")
+    st.divider()
+    page = st.radio("", list(PAGES.keys()), label_visibility="collapsed")
+    st.divider()
+    client_ok = _get_supabase() is not None
+    st.caption(f"Supabase: {'🟢 connected' if client_ok else '🔴 not connected'}")
+
+PAGES[page]()
