@@ -129,7 +129,7 @@ PLATFORM_TYPE: Dict[str, str] = {
     "Google Shopping":  "Comparador de Preços",
     "Leroy Merlin":     "Nacional Varejo Especializado",
     "Fast Shop":        "Nacional Varejo Especializado",
-    # Dealers/varejistas especializados
+    # Dealers/varejistas especializados — Sprint 0 (originais)
     "Frigelar":         "Regional Especializado",
     "CentralAr":        "Regional Especializado",
     "PoloAr":           "Regional Especializado",
@@ -143,6 +143,30 @@ PLATFORM_TYPE: Dict[str, str] = {
     "FerreiraCosta":    "Regional Especializado",
     "Climario":         "Regional Especializado",
     "EngageEletro":     "Regional Especializado",
+    # Sprint 1 — Nacional/Grande Porte
+    "Carrefour":        "Nacional Retail",
+    # Sprint 2 — Regional Médio Porte
+    "GrupoMateus":      "Regional Especializado",
+    "Eletrozema":       "Regional Especializado",
+    "Angeloni":         "Regional Especializado",
+    "ImperioDigital":   "Regional Especializado",
+    # Sprint 3 — Regional Pequeno Porte
+    "NossoLar":         "Regional Especializado",
+    "Bemol":            "Regional Especializado",
+    "CasasDAgua":       "Regional Especializado",
+    "TVLar":            "Regional Especializado",
+    "Zenir":            "Regional Especializado",
+    "CenterKennedy":    "Regional Especializado",
+    "NorteRefrigeracao": "Regional Especializado",
+    "ArmazemParaiba":   "Regional Especializado",
+    "ADias":            "Regional Especializado",
+    # Sprint 4 — Regional Especializado/Nicho
+    "Carajas":          "Regional Especializado",
+    "QueroQuero":       "Regional Especializado",
+    "Fijioka":          "Regional Especializado",
+    "Edimil":           "Regional Especializado",
+    "UnicaAR":          "Regional Especializado",
+    "TopMoveis":        "Regional Especializado",
 }
 
 # ---------------------------------------------------------------------------

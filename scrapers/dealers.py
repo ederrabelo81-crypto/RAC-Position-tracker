@@ -143,10 +143,11 @@ DEALER_CONFIGS: Dict[str, Dict] = {
             ".product-list-item",
         ],
     },
-    "ArCerto": {
-        "url":        "https://www.arcerto.com/categoria/ar-condicionado-inverter/",
-        "pagination": "woocommerce",
-        "max_pages":  1,   # página 2+ dispara Cloudflare challenge — limitado a 1
+    "CentralAr": {
+        # Maior dealer especializado em AC do Brasil — VTEX IO
+        "url":        "https://www.centralar.com.br/ar-condicionado/inverter/c/INVERTER",
+        "pagination": "vtex",
+        "max_pages":  5,
     },
     "Climario": {
         # FIX PROBLEMA #3: URL desatualizada - faltam filtros VTEX para Hi-Wall Inverter
@@ -175,6 +176,167 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "name_selector": "a[title], .cardprod a",
         "price_selector": ".cardprod [class*='price'], .cardprod [class*='Price']",
     },
+
+    # ── SPRINT 1 ── Nacional/Grande Porte ───────────────────────────────────
+
+    "Carrefour": {
+        # Nacional Retail — plataforma própria VTEX com WAF Akamai
+        # Categoria específica de ar condicionado split inverter
+        "url": (
+            "https://www.carrefour.com.br/eletrodomesticos/climatizacao/"
+            "ar-condicionado/split?order=OrderByTopSaleDESC"
+        ),
+        "pagination": "vtex",
+        "max_pages":  8,
+        # Akamai WAF — aguarda JS antes de extrair
+        "wait_for_js":   True,
+        "wait_timeout":  15_000,
+        "block_indicators": ["Access Denied", "Please Wait", "checking your browser"],
+    },
+
+    # ── SPRINT 2 ── Regional Médio Porte ────────────────────────────────────
+
+    "GrupoMateus": {
+        # Norte/Nordeste — VTEX IO
+        "url": (
+            "https://www.grupoMateus.com.br/ar-condicionado/ar-condicionado-split"
+            "?order=OrderByTopSaleDESC"
+        ),
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "Eletrozema": {
+        # MG/GO/ES — VTEX IO
+        "url": "https://www.eletrozema.com.br/ar-condicionado/split-inverter/c",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "Angeloni": {
+        # Sul (SC/PR/RS) — plataforma própria WooCommerce-like
+        "url": "https://www.angeloni.com.br/super/c/eletrodomesticos/climatizacao/ar-condicionado",
+        "pagination": "query",
+        "max_pages":  5,
+    },
+    "ImperioDigital": {
+        # Nordeste — VTEX IO
+        "url": (
+            "https://www.imperiodigital.com.br/ar-condicionado/split"
+            "?order=OrderByTopSaleDESC"
+        ),
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+
+    # ── SPRINT 3 ── Regional Pequeno Porte ──────────────────────────────────
+
+    "NossoLar": {
+        # Norte/Centro-Oeste — VTEX IO
+        "url": "https://www.nossolar.com.br/ar-condicionado/split-inverter/c",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "Bemol": {
+        # Amazonas — VTEX IO
+        "url": (
+            "https://www.bemol.com.br/ar-condicionado/split"
+            "?order=OrderByTopSaleDESC"
+        ),
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "CasasDAgua": {
+        # Sul (SC/RS) — VTEX IO
+        "url": (
+            "https://www.casasdagua.com.br/ar-condicionado/split"
+            "?order=OrderByTopSaleDESC"
+        ),
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "TVLar": {
+        # Nordeste — VTEX IO
+        "url": "https://www.tvlar.com.br/ar-condicionado/split-inverter/c",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "Zenir": {
+        # Nordeste/Norte — plataforma própria
+        "url": "https://www.zenir.com.br/ar-condicionado/",
+        "pagination": "query",
+        "max_pages":  5,
+    },
+    "CenterKennedy": {
+        # Nordeste — VTEX IO
+        "url": "https://www.centerkennedy.com.br/ar-condicionado/split-inverter/c",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "NorteRefrigeracao": {
+        # Norte — especializado em climatização
+        "url": "https://www.norterefrigeracao.com.br/ar-condicionado/",
+        "pagination": "query",
+        "max_pages":  5,
+    },
+    "ArmazemParaiba": {
+        # Nordeste (PI/MA/CE/RN) — VTEX IO
+        "url": (
+            "https://www.armazemparaiba.com.br/ar-condicionado/split"
+            "?order=OrderByTopSaleDESC"
+        ),
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "ADias": {
+        # Nordeste (PE/AL) — VTEX IO
+        "url": "https://www.adias.com.br/ar-condicionado/split-inverter/c",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+
+    # ── SPRINT 4 ── Regional Especializado/Nicho ────────────────────────────
+
+    "Carajas": {
+        # Norte (PA/AP/AM) — VTEX IO
+        "url": (
+            "https://www.carajas.com.br/ar-condicionado/split"
+            "?order=OrderByTopSaleDESC"
+        ),
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "QueroQuero": {
+        # Sul (RS/SC/PR) — VTEX IO
+        "url": "https://www.queroquero.com.br/eletrodomesticos/climatizacao/ar-condicionado/c",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "Fijioka": {
+        # Sul (SC) — especializado AC
+        "url": "https://www.fijioka.com.br/ar-condicionado/split-inverter/",
+        "pagination": "woocommerce",
+        "max_pages":  5,
+    },
+    "Edimil": {
+        # Nordeste — VTEX IO
+        "url": "https://www.edimil.com.br/ar-condicionado/split-inverter/c",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "UnicaAR": {
+        # Especializado AC — VTEX IO
+        "url": "https://www.unicaar.com.br/ar-condicionado/split-inverter/c",
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
+    "TopMoveis": {
+        # Norte/Centro-Oeste — VTEX IO
+        "url": (
+            "https://www.topmoveiseletro.com.br/ar-condicionado/split"
+            "?order=OrderByTopSaleDESC"
+        ),
+        "pagination": "vtex",
+        "max_pages":  5,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -187,6 +349,71 @@ _JUNK_STRINGS: frozenset = frozenset({
     "favoritar", "adicionar à sacola", "ir para o produto",
     "ver mais detalhes", "selecione", "escolha",
 })
+
+# ---------------------------------------------------------------------------
+# Filtro RAC Residencial — inclui apenas splits/janeleiros residenciais BTU 7k-30k
+# ---------------------------------------------------------------------------
+
+# Termos FORTES — presença de qualquer um confirma produto RAC residencial
+_RAC_INCLUDE_STRONG: frozenset = frozenset({
+    "btu", "ar condicionado", "ar-condicionado",
+    "split", "inverter", "hi-wall", "hi wall", "hiwall",
+    "piso teto", "piso-teto", "cassete", "janeleiro",
+    "evaporadora", "condensadora",
+    "quente frio", "quente-frio", "só frio", "so frio",
+})
+
+# Termos FRACOS — necessários pelo menos 2 para confirmar
+_RAC_INCLUDE_WEAK: frozenset = frozenset({
+    "climatizador", "clima", "refrigeração", "refrigeracao",
+    "frio", "gelagem", "btus", "kw",
+    "monofasico", "monofásico", "bifasico", "bifásico",
+    "r32", "r410a", "r-32", "r-410a",
+})
+
+# Termos de EXCLUSÃO — presença de qualquer um exclui o produto
+_RAC_EXCLUDE: frozenset = frozenset({
+    # Produto errado — eletrodomésticos e eletrônicos
+    "geladeira", "refrigerador", "freezer", "frigobar",
+    "lavadora", "máquina de lavar", "maquina de lavar",
+    "secadora", "lava-louças", "lava louças",
+    "micro-ondas", "microondas", "forno",
+    "fogão", "fogao", "cooktop",
+    "televisão", "televisao", "tv ", " tv,", "monitor",
+    "notebook", "computador", "celular", "smartphone",
+    "tablet", "iphone", "ipad", "galaxy",
+    "fone", "headset", "headphone",
+    # Categoria errada — ventilação não-AC
+    "ventilador", "circulador", "purificador",
+    "umidificador", "desumidificador",
+    # Partes/acessórios — não são produtos RAC completos
+    "controle remoto", "suporte", "filtro hepa",
+    "capa para ar", "cobertura para ar",
+    "fralda", "calcinha", "cueca", "roupa",
+    "tênis", "sapato", "bolsa",
+    # Comercial/industrial — fora do escopo residencial
+    "chiller", "central de ar", "fan coil", "fancoil",
+    "self-contained", "self contained",
+    "vrv", "vrf", "condensadora central",
+})
+
+# Faixa de BTUs válida para RAC residencial
+_BTU_RANGE = (7_000, 60_000)
+
+# Regex compilados para performance
+_RAC_INCLUDE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(t) for t in _RAC_INCLUDE_STRONG) + r")\b",
+    re.IGNORECASE,
+)
+_RAC_WEAK_RE = re.compile(
+    r"\b(" + "|".join(re.escape(t) for t in _RAC_INCLUDE_WEAK) + r")\b",
+    re.IGNORECASE,
+)
+_RAC_EXCLUDE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(t) for t in _RAC_EXCLUDE) + r")\b",
+    re.IGNORECASE,
+)
+_BTU_RE = re.compile(r"\b(\d{4,6})\s*(?:btu|btus)\b", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Seletores CSS — cadeia de fallback cobrindo VTEX IO, WooCommerce e genérico
@@ -667,81 +894,86 @@ class DealerScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _is_rac_residential(title: str) -> bool:
+        """
+        Valida se o título corresponde a um produto RAC residencial (split/janeleiro, 7k-60k BTU).
+
+        Estratégia:
+          1. Exclusão imediata — termos que indicam categoria errada (geladeira, TV, etc.)
+          2. Inclusão forte — qualquer termo forte (BTU, split, inverter, hi-wall…)
+          3. Inclusão fraca — 2+ termos fracos (kW, R-32, bifásico…)
+          4. Validação de faixa BTU quando detectado no título
+
+        Returns:
+            True se for produto RAC residencial válido.
+        """
+        if not title or len(title.strip()) < 10:
+            return False
+
+        t = title.lower()
+
+        # 1. Exclusão imediata
+        if _RAC_EXCLUDE_RE.search(t):
+            logger.debug(f"[RACFilter] Excluído (blocklist): '{title[:60]}'")
+            return False
+
+        # 2. Inclusão forte — qualquer match confirma produto
+        if _RAC_INCLUDE_RE.search(t):
+            # Valida faixa de BTU quando explicitamente mencionado
+            m = _BTU_RE.search(t)
+            if m:
+                btu = int(m.group(1))
+                if not (_BTU_RANGE[0] <= btu <= _BTU_RANGE[1]):
+                    logger.debug(
+                        f"[RACFilter] BTU fora da faixa ({btu}): '{title[:60]}'"
+                    )
+                    return False
+            return True
+
+        # 3. Inclusão fraca — exige 2+ termos
+        weak_matches = _RAC_WEAK_RE.findall(t)
+        if len(weak_matches) >= 2:
+            return True
+
+        logger.debug(f"[RACFilter] Sem keywords suficientes: '{title[:60]}'")
+        return False
+
+    @staticmethod
     def _is_valid_product_title(title: str) -> bool:
         """
-        CORREÇÃO PROBLEMA #5 (ENHANCED): Valida se o título corresponde a um produto real
-        de ar-condicionado, filtrando banners, promoções e elementos de UI.
-        
-        Estratégia:
-          1. Lista negra EXATA para ruídos conhecidos (ex: "ofer seman")
-          2. Lista branca com patterns obrigatórios (BTU, Split, Inverter, etc.)
-          3. Comprimento mínimo para evitar fragmentos
-        
+        Valida se o título corresponde a um produto real de ar-condicionado,
+        filtrando banners, promoções e elementos de UI.
+
+        Delega a validação substantiva para _is_rac_residential() e adiciona
+        apenas filtros de formato (comprimento, junk strings exactas).
+
         Args:
             title: Título do produto extraído do DOM/JSON-LD
-        
+
         Returns:
             True se for produto válido, False se for ruído/UI
         """
         if not title:
             return False
-        
-        # CORREÇÃO PROBLEMA #2: usar safe_lower estático para proteger contra None
+
         name = DealerScraper._safe_lower(title).strip()
-        
-        # 1. LISTA NEGRA EXATA - rejeita matches completos conhecidos
-        # Estes são banners/promoções que não são produtos
+
+        # 1. LISTA NEGRA EXATA - rejeita banners/promoções conhecidos
         exact_blacklist = {
-            'ofer seman',
-            'oferta semana',
-            'oferta da semana',
-            'banner',
-            'promoção',
-            'promo',
-            'destaque',
-            'mais vendidos',
-            ''
+            'ofer seman', 'oferta semana', 'oferta da semana',
+            'banner', 'promoção', 'promo', 'destaque', 'mais vendidos', '',
         }
-        
         if name in exact_blacklist:
             logger.debug(f"[BlacklistExata] Rejeitado: '{title[:60]}'")
             return False
-        
-        # 2. LISTA BRANCA - exige pelo menos 1 match para ser considerado produto
-        whitelist_patterns = [
-            r'\bbtu\b',                    # Unidade de capacidade (ex: "9000 BTU", "12000BTU")
-            r'\bsplit\b',                  # Tipo (ex: "Split Hi-Wall", "Splitão")
-            r'\bar[- ]?condicionado\b',   # Produto (ex: "Ar Condicionado", "Ar-Condicionado")
-            r'\binverter\b',               # Tecnologia (ex: "Inverter Dual", "Inverter Heat")
-            r'\bhi[- ]?wall\b',            # Tipo específico (ex: "Hi-Wall", "Hi Wall")
-            r'\bpiso[- ]?teto\b',          # Tipo específico (ex: "Piso Teto")
-            r'\bcassete\b',                # Tipo específico
-            r'\bquente[- ]?frio\b',        # Funcionalidade
-            r'\bs[oó][- ]?frio\b',         # Funcionalidade
-            r'\bportatil\b',               # Tipo específico
-            r'\bwindow\b',                 # Tipo específico
-        ]
-        
-        has_keyword = any(re.search(pattern, name) for pattern in whitelist_patterns)
-        
-        # 3. Fallback: se tiver "ar" e "clima" juntos, pode ser produto relacionado
-        if 'ar' in name and 'clima' in name:
-            has_keyword = True
-        
-        # 4. Comprimento mínimo (evita fragmentos de texto/UI)
-        min_length = len(title.strip()) >= 10
-        
-        # Válido se: tem keyword E comprimento mínimo
-        if has_keyword and min_length:
-            return True
-        
-        # Debug para títulos rejeitados
-        if not has_keyword:
-            logger.debug(f"[ProdutoInválido] Sem keywords AC: '{title[:60]}'")
-        if not min_length:
+
+        # 2. Comprimento mínimo
+        if len(title.strip()) < 10:
             logger.debug(f"[ProdutoInválido] Muito curto ({len(title)} chars): '{title}'")
-        
-        return False
+            return False
+
+        # 3. Filtro RAC residencial
+        return DealerScraper._is_rac_residential(title)
 
     # ------------------------------------------------------------------
     # Extração de preço via JSON-LD (schema.org/Product)
