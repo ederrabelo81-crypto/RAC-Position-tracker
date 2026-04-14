@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 from utils.text import is_valid_product
+from utils.normalize_product import normalize_product_name
 
 # Carrega .env da raiz do projeto (pai de utils/)
 try:
@@ -144,6 +145,12 @@ def _map_record(record: Dict[str, Any]) -> Dict[str, Any]:
             val = val[:500]
 
         row[dest_col] = val
+
+    # Normalize product name for CSV imports (live scraping normalizes in _build_record)
+    if row.get("produto"):
+        normalized = normalize_product_name(row["produto"], row.get("marca"))
+        if normalized:
+            row["produto"] = normalized[:500]
 
     return row
 

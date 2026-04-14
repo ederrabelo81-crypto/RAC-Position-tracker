@@ -29,6 +29,7 @@ from config import (
 )
 from utils.brands import extract_brand
 from utils.text import get_turno, infer_keyword_category, normalize_text
+from utils.normalize_product import normalize_product_name
 
 
 class BaseScraper(ABC):
@@ -253,6 +254,9 @@ class BaseScraper(ABC):
         if price_float is None and price_raw:
             price_float = parse_price(price_raw)
 
+        brand = extract_brand(title_clean)
+        product_name = normalize_product_name(title_clean, brand)
+
         return {
             "Data":                now.strftime("%Y-%m-%d"),
             "Turno":               get_turno(now),
@@ -262,8 +266,8 @@ class BaseScraper(ABC):
             "Tipo Plataforma":     PLATFORM_TYPE.get(self.platform_name, "Outro"),
             "Keyword Buscada":     keyword,
             "Categoria Keyword":   infer_keyword_category(keyword, keyword_category_map),
-            "Marca Monitorada":    extract_brand(title_clean),
-            "Produto / SKU":       title_clean,
+            "Marca Monitorada":    brand,
+            "Produto / SKU":       product_name,
             "Posição Orgânica":    position_organic,
             "Posição Patrocinada": position_sponsored,
             "Posição Geral":       position_general,
