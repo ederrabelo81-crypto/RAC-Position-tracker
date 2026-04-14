@@ -938,13 +938,252 @@ def page_normalize_skus():
 
 
 # ---------------------------------------------------------------------------
-# Navigation
+# Page 7 — BuyBox Position
 # ---------------------------------------------------------------------------
+
+def page_buybox_position():
+    st.title("🏆 BuyBox Position")
+    st.caption(
+        "Quem está em posição #1 para cada produto/plataforma? "
+        "Analise quais marcas e sellers dominam o topo das buscas."
+    )
+
+    # --- Sidebar filters ---
+    with st.sidebar:
+        st.subheader("Filters")
+
+        date_range = st.date_input(
+            "Date range",
+            value=(date.today() - timedelta(days=30), date.today()),
+            max_value=date.today(),
+            key="bb_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+
+        sel_platforms = st.multiselect("Platforms", opts["platforms"], key="bb_platforms")
+        sel_brands    = st.multiselect("Brands",    opts["brands"],    key="bb_brands")
+        sel_btu       = st.multiselect(
+            "Capacity (BTU)",
+            BTU_OPTIONS,
+            format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
+            key="bb_btu",
+        )
+
+        # SKU drill-down
+        _sku_opts = get_sku_options(tuple(sorted(sel_brands)))
+        _sku_label = (
+            f"Product / SKU  ({len(_sku_opts)} available)"
+            if _sku_opts else "Product / SKU"
+        )
+        sel_skus = st.multiselect(
+            _sku_label,
+            _sku_opts,
+            placeholder="All SKUs" if not sel_brands else "Select SKU(s)…",
+            help="Type to search. Select a Brand first to narrow options.",
+            key="bb_skus",
+        )
+
+        top_n = st.slider(
+            "Top-N positions to consider as BuyBox",
+            min_value=1, max_value=5, value=1,
+            help="Position 1 = strict BuyBox winner. Increase to include near-top.",
+            key="bb_topn",
+        )
+
+        load_btn = st.button("🔄 Load BuyBox", type="primary", use_container_width=True)
+
+    if not load_btn:
+        st.info("Set your filters in the sidebar and click **Load BuyBox**.")
+        return
+
+    with st.spinner("Loading data..."):
+        df = query_coletas(
+            start_date,
+            end_date,
+            platforms=sel_platforms or None,
+            brands=sel_brands or None,
+            products=sel_skus or None,
+            btu_filter=sel_btu or None,
+            limit=20000,
+        )
+
+    if df.empty or "posicao_geral" not in df.columns:
+        st.warning("No data found for the selected filters.")
+        return
+
+    # Filter to top-N positions only
+    df_top = df[df["posicao_geral"].notna() & (df["posicao_geral"] <= top_n)].copy()
+
+    if df_top.empty:
+        st.warning(f"No records with position ≤ {top_n} in this range.")
+        return
+
+    # --- Summary metrics ---
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("BuyBox records",   f"{len(df_top):,}")
+    c2.metric("Platforms",        df_top["plataforma"].nunique() if "plataforma" in df_top else 0)
+    c3.metric("Brands in top",    df_top["marca"].nunique() if "marca" in df_top else 0)
+    c4.metric("Unique products",  df_top["produto"].nunique() if "produto" in df_top else 0)
+
+    st.divider()
+
+    tab_wins, tab_timeline, tab_detail = st.tabs(
+        ["🏅 Win Rate", "📅 Timeline", "📋 Detail"]
+    )
+
+    # ── Tab 1: BuyBox Win Rate by Brand ────────────────────────────────────
+    with tab_wins:
+        st.subheader("BuyBox share by brand")
+
+        if "marca" not in df_top.columns:
+            st.info("Brand (marca) column not available.")
+        else:
+            # Win count per brand
+            win_counts = (
+                df_top
+                .groupby("marca", as_index=False)
+                .size()
+                .rename(columns={"size": "BuyBox wins"})
+                .sort_values("BuyBox wins", ascending=False)
+            )
+            total_wins = win_counts["BuyBox wins"].sum()
+            win_counts["Win rate (%)"] = (
+                win_counts["BuyBox wins"] / total_wins * 100
+            ).round(1)
+
+            col_chart, col_table = st.columns([2, 1])
+            with col_chart:
+                fig_bar = px.bar(
+                    win_counts.head(15),
+                    x="BuyBox wins",
+                    y="marca",
+                    orientation="h",
+                    color="Win rate (%)",
+                    color_continuous_scale="Blues",
+                    text="Win rate (%)",
+                    labels={"marca": "Brand"},
+                    title=f"Top brands in position ≤ {top_n}",
+                    template="plotly_white",
+                )
+                fig_bar.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                fig_bar.update_layout(
+                    yaxis=dict(autorange="reversed"),
+                    coloraxis_showscale=False,
+                    height=420,
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            with col_table:
+                st.dataframe(win_counts, use_container_width=True, hide_index=True)
+
+        # BuyBox win rate by platform
+        if "plataforma" in df_top.columns:
+            st.subheader("BuyBox share by platform")
+            plat_counts = (
+                df_top
+                .groupby("plataforma", as_index=False)
+                .size()
+                .rename(columns={"size": "BuyBox wins"})
+                .sort_values("BuyBox wins", ascending=False)
+            )
+            fig_pie = px.pie(
+                plat_counts,
+                names="plataforma",
+                values="BuyBox wins",
+                title="Records in top position by platform",
+                template="plotly_white",
+            )
+            fig_pie.update_traces(textposition="inside", textinfo="percent+label")
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+    # ── Tab 2: Timeline ─────────────────────────────────────────────────────
+    with tab_timeline:
+        st.subheader("BuyBox wins over time")
+
+        group_opts = ["Brand", "Platform"]
+        group_choice = st.radio(
+            "Group by", group_opts, horizontal=True, key="bb_grp"
+        )
+        group_col = "marca" if group_choice == "Brand" else "plataforma"
+
+        if group_col not in df_top.columns or "data" not in df_top.columns:
+            st.info("Required columns not available.")
+        else:
+            timeline = (
+                df_top
+                .groupby(["data", group_col], as_index=False)
+                .size()
+                .rename(columns={"size": "BuyBox wins", group_col: group_choice})
+            )
+            timeline["data"] = pd.to_datetime(timeline["data"])
+
+            fig_line = px.line(
+                timeline,
+                x="data",
+                y="BuyBox wins",
+                color=group_choice,
+                markers=True,
+                title=f"Daily BuyBox wins by {group_choice}",
+                labels={"data": "Date"},
+                template="plotly_white",
+            )
+            fig_line.update_layout(
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                hovermode="x unified",
+                height=450,
+            )
+            fig_line.update_traces(line=dict(width=2), marker=dict(size=5))
+            st.plotly_chart(fig_line, use_container_width=True)
+
+    # ── Tab 3: Detail ────────────────────────────────────────────────────────
+    with tab_detail:
+        st.subheader(f"All records with position ≤ {top_n}")
+
+        display_cols = [
+            c for c in [
+                "data", "turno", "plataforma", "marca", "produto",
+                "posicao_geral", "posicao_organica", "posicao_patrocinada",
+                "preco", "seller", "keyword", "tag",
+            ] if c in df_top.columns
+        ]
+
+        st.dataframe(
+            df_top[display_cols].sort_values(
+                ["data", "plataforma", "posicao_geral"],
+                ascending=[False, True, True],
+            ),
+            use_container_width=True,
+            height=500,
+            column_config={
+                "data":                 st.column_config.DateColumn("Date"),
+                "preco":                st.column_config.NumberColumn("Price (R$)", format="R$ %.2f"),
+                "posicao_geral":        st.column_config.NumberColumn("Position"),
+                "posicao_organica":     st.column_config.NumberColumn("Organic"),
+                "posicao_patrocinada":  st.column_config.NumberColumn("Sponsored"),
+            },
+        )
+
+        csv_bytes = df_top[display_cols].to_csv(
+            index=False, sep=";", encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+        st.download_button(
+            label="⬇️ Download BuyBox CSV",
+            data=csv_bytes,
+            file_name=f"rac_buybox_{start_date}_{end_date}.csv",
+            mime="text/csv",
+        )
+
+
+
 
 PAGES = {
     "🚀 Run Collection":  page_run_collection,
     "📊 Results":         page_results,
     "📈 Price Evolution":  page_price_evolution,
+    "🏆 BuyBox Position": page_buybox_position,
     "📂 Import History":  page_import_history,
     "🧹 Data Cleanup":    page_data_cleanup,
     "🔤 Normalize SKUs":  page_normalize_skus,
