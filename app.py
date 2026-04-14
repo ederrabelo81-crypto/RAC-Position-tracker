@@ -67,6 +67,56 @@ def _get_supabase():
 
 BTU_OPTIONS = ["9000", "12000", "18000", "24000", "36000", "48000", "60000"]
 
+# ---------------------------------------------------------------------------
+# Brand alias expansion
+#
+# extract_brand() uses config.BRANDS verbatim, so the DB can contain:
+#   "Springer Midea", "Midea Carrier", "Springer", "Midea" (all = Midea canonical)
+#   "Britania" and "Britânia" (same brand, two spellings in BRANDS)
+#
+# We build two dicts from config.BRANDS + normalize_product._BRAND_ALIASES:
+#   _MARCA_TO_CANONICAL: raw DB value  → canonical display name
+#   _CANONICAL_TO_MARCAS: canonical   → [all raw DB values to query]
+# ---------------------------------------------------------------------------
+
+def _build_brand_maps() -> tuple:
+    """Build brand normalization maps from config + normalize_product."""
+    try:
+        from utils.normalize_product import _BRAND_ALIASES
+        from config import BRANDS
+    except Exception:
+        return {}, {}
+
+    canonical_to_raws: dict = {}
+    raw_to_canonical:  dict = {}
+
+    for raw_brand in BRANDS:
+        # _BRAND_ALIASES uses lowercase keys
+        canonical = _BRAND_ALIASES.get(raw_brand.lower(), raw_brand)
+        canonical_to_raws.setdefault(canonical, []).append(raw_brand)
+        raw_to_canonical[raw_brand] = canonical
+
+    return canonical_to_raws, raw_to_canonical
+
+
+_CANONICAL_TO_MARCAS, _MARCA_TO_CANONICAL = _build_brand_maps()
+
+
+def _expand_brands(brands: list) -> list:
+    """
+    Given a list of canonical brand names (what the user selected),
+    return the full set of raw DB marca values to include in the query.
+    E.g. ["Midea"] → ["Midea", "Springer Midea", "Midea Carrier", "Springer"]
+    """
+    expanded = set()
+    for b in brands:
+        variants = _CANONICAL_TO_MARCAS.get(b)
+        if variants:
+            expanded.update(variants)
+        else:
+            expanded.add(b)  # unknown brand — use as-is
+    return sorted(expanded)
+
 
 def query_coletas(
     start_date: date,
@@ -95,7 +145,9 @@ def query_coletas(
         if platforms:
             q = q.in_("plataforma", platforms)
         if brands:
-            q = q.in_("marca", brands)
+            # Expand canonical names to all raw DB variants
+            # (e.g. "Midea" → ["Midea", "Springer Midea", "Midea Carrier", "Springer"])
+            q = q.in_("marca", _expand_brands(brands))
         if keywords:
             q = q.in_("keyword", keywords)
         if products:
@@ -146,10 +198,20 @@ def get_filter_options() -> dict:
             .execute()
         )
         df = pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+        if df.empty:
+            return {"platforms": [], "brands": [], "keywords": []}
+
+        # Normalize raw marca values to canonical names so "Springer Midea",
+        # "Midea Carrier" and "Springer" all appear as "Midea" in the dropdown.
+        brands_canonical = sorted(set(
+            _MARCA_TO_CANONICAL.get(b, b)
+            for b in df["marca"].dropna().unique()
+        ))
+
         return {
-            "platforms": sorted(df["plataforma"].dropna().unique().tolist()) if not df.empty else [],
-            "brands":    sorted(df["marca"].dropna().unique().tolist()) if not df.empty else [],
-            "keywords":  sorted(df["keyword"].dropna().unique().tolist()) if not df.empty else [],
+            "platforms": sorted(df["plataforma"].dropna().unique().tolist()),
+            "brands":    brands_canonical,
+            "keywords":  sorted(df["keyword"].dropna().unique().tolist()),
         }
     except Exception:
         return {"platforms": [], "brands": [], "keywords": []}
@@ -159,7 +221,8 @@ def get_filter_options() -> dict:
 def get_sku_options(brands: tuple = ()) -> list:
     """
     Fetch distinct normalized product names from the last 90 days.
-    When brands is non-empty, only returns SKUs for those brands.
+    When brands is non-empty, filters by all raw DB marca variants of those
+    canonical brands (e.g. "Midea" also queries "Springer Midea" etc.).
     Returns a sorted list ready for st.multiselect.
     """
     client = _get_supabase()
@@ -175,7 +238,8 @@ def get_sku_options(brands: tuple = ()) -> list:
             .limit(10000)
         )
         if brands:
-            q = q.in_("marca", list(brands))
+            # Expand canonical names to all raw DB variants before filtering
+            q = q.in_("marca", _expand_brands(list(brands)))
         resp = q.execute()
         if not resp.data:
             return []
