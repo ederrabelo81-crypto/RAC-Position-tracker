@@ -259,10 +259,15 @@ def normalize_all_products_in_supabase(
     Varrer a tabela `coletas` e re-normaliza o campo `produto` usando
     normalize_product_name(), atualizando apenas as linhas que mudaram.
 
-    Estratégia:
-      1. Busca id + produto + marca em lotes de 1.000 (paginação)
-      2. Aplica normalize_product_name() a cada linha client-side
-      3. Atualiza linhas alteradas via upsert on_conflict="id" em lotes de 100
+    Estratégia em 2 fases:
+      Fase 1 — Identificação (lotes de 1.000 linhas):
+        Busca id + produto + marca, aplica normalize_product_name() e
+        registra quais IDs precisam atualizar e qual o novo nome.
+
+      Fase 2 — Atualização (lotes de 200 linhas):
+        Para cada lote de IDs alterados, busca TODAS as colunas da linha
+        (necessário porque upsert faz INSERT…ON CONFLICT, e colunas NOT NULL
+        não podem estar ausentes), substitui produto e faz upsert por id.
 
     Args:
         dry_run:       Se True, conta e exibe preview — não grava nada.
@@ -278,17 +283,19 @@ def normalize_all_products_in_supabase(
         return {"scanned": 0, "changed": 0, "unchanged": 0,
                 "updated": 0, "errors": 1, "preview": []}
 
-    _FETCH_BATCH  = 1_000
-    _UPDATE_BATCH = 100
+    _FETCH_BATCH  = 1_000   # linhas por página na varredura
+    _UPDATE_BATCH = 200     # IDs por lote na fase de atualização
 
-    changed_rows: List[Dict[str, Any]] = []
-    preview:      List[Dict[str, Any]] = []
+    # {id: novo_produto} — mapa de todas as linhas que precisam atualizar
+    changes: Dict[int, str] = {}
+    preview: List[Dict[str, Any]] = []
     scanned   = 0
     unchanged = 0
     offset    = 0
 
-    logger.info("[Supabase] Iniciando normalização de produtos…")
+    logger.info("[Supabase] Fase 1 — identificando produtos a normalizar…")
 
+    # ── Fase 1: identificar mudanças ──
     while True:
         try:
             resp = (
@@ -307,16 +314,15 @@ def normalize_all_products_in_supabase(
 
         for row in batch:
             scanned += 1
-            raw     = row.get("produto") or ""
-            marca   = row.get("marca")  or None
+            raw   = row.get("produto") or ""
+            marca = row.get("marca")  or None
             if not raw:
                 unchanged += 1
                 continue
 
             normalized = normalize_product_name(raw, marca)
-            # normalize_product_name returns raw unchanged when brand/BTU unknown
             if normalized and normalized != raw:
-                changed_rows.append({"id": row["id"], "produto": normalized[:500]})
+                changes[row["id"]] = normalized[:500]
                 if len(preview) < preview_limit:
                     preview.append({"id": row["id"], "before": raw, "after": normalized[:500]})
             else:
@@ -327,44 +333,72 @@ def normalize_all_products_in_supabase(
         offset += _FETCH_BATCH
 
     logger.info(
-        f"[Supabase] Varredura concluída: {scanned} registros, "
-        f"{len(changed_rows)} precisam atualizar, {unchanged} já normalizados."
+        f"[Supabase] Fase 1 concluída: {scanned} registros, "
+        f"{len(changes)} precisam atualizar, {unchanged} já normalizados."
     )
 
-    if dry_run or not changed_rows:
+    if dry_run or not changes:
         return {
             "scanned":   scanned,
-            "changed":   len(changed_rows),
+            "changed":   len(changes),
             "unchanged": unchanged,
             "updated":   0,
             "errors":    0,
             "preview":   preview,
         }
 
-    # ── Aplicar atualizações em lotes ──
+    # ── Fase 2: buscar colunas completas e upsert ──
+    # Não é possível upsert parcial (só id+produto) porque as colunas NOT NULL
+    # são validadas ANTES do ON CONFLICT — precisamos enviar a linha inteira.
+    changed_ids   = list(changes.keys())
     updated = 0
     errors  = 0
-    total_batches = math.ceil(len(changed_rows) / _UPDATE_BATCH)
+    total_batches = math.ceil(len(changed_ids) / _UPDATE_BATCH)
+
+    logger.info(f"[Supabase] Fase 2 — atualizando {len(changed_ids)} registros em {total_batches} lote(s)…")
 
     for i in range(total_batches):
-        batch_rows = changed_rows[i * _UPDATE_BATCH : (i + 1) * _UPDATE_BATCH]
+        batch_ids = changed_ids[i * _UPDATE_BATCH : (i + 1) * _UPDATE_BATCH]
+
+        # 2a — buscar linha completa para os IDs do lote
         try:
-            client.table("coletas").upsert(batch_rows, on_conflict="id").execute()
-            updated += len(batch_rows)
+            full_resp = (
+                client.table("coletas")
+                .select("*")
+                .in_("id", batch_ids)
+                .execute()
+            )
+            full_rows = full_resp.data or []
+        except Exception as exc:
+            errors += len(batch_ids)
+            logger.warning(f"[Supabase] Erro ao buscar lote {i+1}/{total_batches}: {exc}")
+            continue
+
+        if not full_rows:
+            continue
+
+        # 2b — substituir produto pelo nome normalizado
+        for row in full_rows:
+            row["produto"] = changes[row["id"]]
+
+        # 2c — upsert com linha completa (ON CONFLICT id DO UPDATE SET produto=…)
+        try:
+            client.table("coletas").upsert(full_rows, on_conflict="id").execute()
+            updated += len(full_rows)
             logger.debug(
                 f"[Supabase] Normalização lote {i+1}/{total_batches}: "
-                f"{len(batch_rows)} linhas OK"
+                f"{len(full_rows)} linhas OK"
             )
         except Exception as exc:
-            errors += len(batch_rows)
-            logger.warning(f"[Supabase] Erro no lote {i+1}/{total_batches}: {exc}")
+            errors += len(batch_ids)
+            logger.warning(f"[Supabase] Erro no upsert lote {i+1}/{total_batches}: {exc}")
 
     logger.info(
         f"[Supabase] Normalização concluída: {updated} atualizados, {errors} com erro."
     )
     return {
         "scanned":   scanned,
-        "changed":   len(changed_rows),
+        "changed":   len(changes),
         "unchanged": unchanged,
         "updated":   updated,
         "errors":    errors,
