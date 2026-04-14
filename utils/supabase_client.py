@@ -251,6 +251,127 @@ def delete_invalid_from_supabase(dry_run: bool = False) -> Dict[str, int]:
     return {"scanned": scanned, "invalid": len(invalid_ids), "deleted": deleted, "errors": errors}
 
 
+def normalize_all_products_in_supabase(
+    dry_run: bool = False,
+    preview_limit: int = 20,
+) -> Dict[str, Any]:
+    """
+    Varrer a tabela `coletas` e re-normaliza o campo `produto` usando
+    normalize_product_name(), atualizando apenas as linhas que mudaram.
+
+    Estratégia:
+      1. Busca id + produto + marca em lotes de 1.000 (paginação)
+      2. Aplica normalize_product_name() a cada linha client-side
+      3. Atualiza linhas alteradas via upsert on_conflict="id" em lotes de 100
+
+    Args:
+        dry_run:       Se True, conta e exibe preview — não grava nada.
+        preview_limit: Máximo de exemplos de mudança retornados no dry-run.
+
+    Returns:
+        dict com chaves:
+          scanned, changed, unchanged, updated, errors, preview
+          (preview = lista de dicts {id, before, after} para dry-run)
+    """
+    client = _get_client()
+    if client is None:
+        return {"scanned": 0, "changed": 0, "unchanged": 0,
+                "updated": 0, "errors": 1, "preview": []}
+
+    _FETCH_BATCH  = 1_000
+    _UPDATE_BATCH = 100
+
+    changed_rows: List[Dict[str, Any]] = []
+    preview:      List[Dict[str, Any]] = []
+    scanned   = 0
+    unchanged = 0
+    offset    = 0
+
+    logger.info("[Supabase] Iniciando normalização de produtos…")
+
+    while True:
+        try:
+            resp = (
+                client.table("coletas")
+                .select("id,produto,marca")
+                .range(offset, offset + _FETCH_BATCH - 1)
+                .execute()
+            )
+        except Exception as exc:
+            logger.error(f"[Supabase] Erro ao buscar registros (offset={offset}): {exc}")
+            break
+
+        batch = resp.data or []
+        if not batch:
+            break
+
+        for row in batch:
+            scanned += 1
+            raw     = row.get("produto") or ""
+            marca   = row.get("marca")  or None
+            if not raw:
+                unchanged += 1
+                continue
+
+            normalized = normalize_product_name(raw, marca)
+            # normalize_product_name returns raw unchanged when brand/BTU unknown
+            if normalized and normalized != raw:
+                changed_rows.append({"id": row["id"], "produto": normalized[:500]})
+                if len(preview) < preview_limit:
+                    preview.append({"id": row["id"], "before": raw, "after": normalized[:500]})
+            else:
+                unchanged += 1
+
+        if len(batch) < _FETCH_BATCH:
+            break
+        offset += _FETCH_BATCH
+
+    logger.info(
+        f"[Supabase] Varredura concluída: {scanned} registros, "
+        f"{len(changed_rows)} precisam atualizar, {unchanged} já normalizados."
+    )
+
+    if dry_run or not changed_rows:
+        return {
+            "scanned":   scanned,
+            "changed":   len(changed_rows),
+            "unchanged": unchanged,
+            "updated":   0,
+            "errors":    0,
+            "preview":   preview,
+        }
+
+    # ── Aplicar atualizações em lotes ──
+    updated = 0
+    errors  = 0
+    total_batches = math.ceil(len(changed_rows) / _UPDATE_BATCH)
+
+    for i in range(total_batches):
+        batch_rows = changed_rows[i * _UPDATE_BATCH : (i + 1) * _UPDATE_BATCH]
+        try:
+            client.table("coletas").upsert(batch_rows, on_conflict="id").execute()
+            updated += len(batch_rows)
+            logger.debug(
+                f"[Supabase] Normalização lote {i+1}/{total_batches}: "
+                f"{len(batch_rows)} linhas OK"
+            )
+        except Exception as exc:
+            errors += len(batch_rows)
+            logger.warning(f"[Supabase] Erro no lote {i+1}/{total_batches}: {exc}")
+
+    logger.info(
+        f"[Supabase] Normalização concluída: {updated} atualizados, {errors} com erro."
+    )
+    return {
+        "scanned":   scanned,
+        "changed":   len(changed_rows),
+        "unchanged": unchanged,
+        "updated":   updated,
+        "errors":    errors,
+        "preview":   preview,
+    }
+
+
 def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
     """
     Faz upload de uma lista de registros para a tabela `coletas` no Supabase.

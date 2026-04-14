@@ -714,6 +714,106 @@ def page_data_cleanup():
 
 
 # ---------------------------------------------------------------------------
+# Page 6 — Normalize SKUs
+# ---------------------------------------------------------------------------
+
+def page_normalize_skus():
+    st.title("🔤 Normalize SKUs")
+    st.caption(
+        "Re-applies the RAC normalization rules to every `produto` field stored in Supabase. "
+        "Only rows whose name actually changes are written back. "
+        "Records without a recognized brand or BTU value are left untouched."
+    )
+
+    st.info(
+        "**Format:** `Ar Condicionado {Marca} {Linha} {BTUs} {Tipo} {Ciclo} [{Forma}] [{Cor}]`\n\n"
+        "Run a **Scan** first to preview which records would change, then **Apply** to write the updates."
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        scan_btn = st.button("🔍 Scan for outdated names", use_container_width=True)
+    with col2:
+        apply_btn = st.button(
+            "✏️ Apply normalization",
+            type="primary",
+            use_container_width=True,
+            help="Updates only rows whose normalized name differs from the stored value.",
+        )
+
+    # ── Scan (dry-run) ──
+    if scan_btn:
+        with st.spinner("Scanning Supabase… this may take a moment for large datasets."):
+            from utils.supabase_client import normalize_all_products_in_supabase
+            result = normalize_all_products_in_supabase(dry_run=True, preview_limit=30)
+        st.session_state["norm_scan"] = result
+
+    if "norm_scan" in st.session_state:
+        r = st.session_state["norm_scan"]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Records scanned",     f"{r['scanned']:,}")
+        c2.metric("Need update",         f"{r['changed']:,}",
+                  delta=f"-{r['changed']:,}" if r["changed"] else None,
+                  delta_color="inverse")
+        c3.metric("Already normalized",  f"{r['unchanged']:,}")
+
+        if r["changed"] == 0:
+            st.success("✅ All product names are already normalized. Nothing to do.")
+        else:
+            pct = r["changed"] / r["scanned"] * 100 if r["scanned"] else 0
+            st.warning(
+                f"**{r['changed']:,}** records ({pct:.1f}%) have outdated names. "
+                "Click **Apply normalization** to update them."
+            )
+            if r.get("preview"):
+                with st.expander(f"Preview of changes ({len(r['preview'])} examples)", expanded=True):
+                    rows = [
+                        {"ID": ex["id"], "Before": ex["before"], "After": ex["after"]}
+                        for ex in r["preview"]
+                    ]
+                    st.dataframe(rows, use_container_width=True)
+
+    # ── Apply ──
+    if apply_btn:
+        scan = st.session_state.get("norm_scan")
+        if not scan or scan["changed"] == 0:
+            st.warning("Run a scan first and confirm there are records to update.")
+        else:
+            with st.spinner(f"Updating {scan['changed']:,} records…"):
+                from utils.supabase_client import normalize_all_products_in_supabase
+                result = normalize_all_products_in_supabase(dry_run=False)
+
+            if result["errors"] == 0:
+                st.success(
+                    f"✅ Done. **{result['updated']:,}** records updated "
+                    f"({result['unchanged']:,} were already normalized)."
+                )
+            else:
+                st.warning(
+                    f"Partial update: {result['updated']:,} updated, "
+                    f"{result['errors']:,} with errors. Check Supabase logs."
+                )
+            if "norm_scan" in st.session_state:
+                del st.session_state["norm_scan"]
+
+    st.divider()
+    st.subheader("Normalization rules")
+    st.markdown(
+        "| Component | Rule |\n"
+        "|-----------|------|\n"
+        "| **Marca** | Aliases unified (Springer Midea → Midea, TCL Semp → TCL, …) |\n"
+        "| **Linha** | Preserved exactly per brand — each model line stays distinct for phase-out tracking |\n"
+        "| **BTUs** | Brazilian format: 12.000 BTUs, 9.000 BTUs, … |\n"
+        "| **Tipo** | `Inverter` (default) or `On/Off` |\n"
+        "| **Ciclo** | `Frio` (default) or `Quente/Frio` |\n"
+        "| **Forma** | Omitted when Hi-Wall (default); shown for Janela, Cassete, Piso-Teto… |\n"
+        "| **Cor** | Omitted when white (default); shown for Preto, etc. |\n"
+        "| **Fallback** | Name unchanged when brand or BTU cannot be identified |\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Navigation
 # ---------------------------------------------------------------------------
 
@@ -723,6 +823,7 @@ PAGES = {
     "📈 Price Evolution":  page_price_evolution,
     "📂 Import History":  page_import_history,
     "🧹 Data Cleanup":    page_data_cleanup,
+    "🔤 Normalize SKUs":  page_normalize_skus,
 }
 
 with st.sidebar:
