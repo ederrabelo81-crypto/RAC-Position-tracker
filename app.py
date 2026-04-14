@@ -74,7 +74,7 @@ def query_coletas(
     platforms: list[str] | None = None,
     brands: list[str] | None = None,
     keywords: list[str] | None = None,
-    product_search: str | None = None,
+    products: list[str] | None = None,
     btu_filter: list[str] | None = None,
     limit: int = 5000,
 ) -> pd.DataFrame:
@@ -98,8 +98,8 @@ def query_coletas(
             q = q.in_("marca", brands)
         if keywords:
             q = q.in_("keyword", keywords)
-        if product_search and product_search.strip():
-            q = q.ilike("produto", f"%{product_search.strip()}%")
+        if products:
+            q = q.in_("produto", products)
         if btu_filter:
             # OR across selected BTU values — matches "9000", "9.000", "9000 btu" etc.
             conditions = ",".join(f"produto.ilike.%{btu}%" for btu in btu_filter)
@@ -144,6 +144,35 @@ def get_filter_options() -> dict:
         }
     except Exception:
         return {"platforms": [], "brands": [], "keywords": []}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_sku_options(brands: tuple = ()) -> list:
+    """
+    Fetch distinct normalized product names from the last 90 days.
+    When brands is non-empty, only returns SKUs for those brands.
+    Returns a sorted list ready for st.multiselect.
+    """
+    client = _get_supabase()
+    if client is None:
+        return []
+    try:
+        since = str(date.today() - timedelta(days=90))
+        q = (
+            client.table("coletas")
+            .select("produto")
+            .gte("data", since)
+            .not_.is_("produto", "null")
+            .limit(10000)
+        )
+        if brands:
+            q = q.in_("marca", list(brands))
+        resp = q.execute()
+        if not resp.data:
+            return []
+        return sorted({r["produto"] for r in resp.data if r.get("produto")})
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -315,18 +344,29 @@ def page_results():
 
         opts = get_filter_options()
 
-        sel_platforms    = st.multiselect("Platforms", opts["platforms"])
-        sel_brands       = st.multiselect("Brands",    opts["brands"])
-        sel_keywords     = st.multiselect("Keywords",  opts["keywords"])
-        sel_btu          = st.multiselect(
+        sel_platforms = st.multiselect("Platforms", opts["platforms"])
+        sel_brands    = st.multiselect("Brands",    opts["brands"])
+        sel_keywords  = st.multiselect("Keywords",  opts["keywords"])
+        sel_btu       = st.multiselect(
             "Capacity (BTU)",
             BTU_OPTIONS,
             format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
         )
-        product_search   = st.text_input(
-            "Product / SKU",
-            placeholder="e.g. inverter 12000 midea",
-            help="Case-insensitive substring search on product name",
+
+        # SKU drill-down — list refreshes when brand selection changes
+        _sku_opts = get_sku_options(tuple(sorted(sel_brands)))
+        _sku_label = (
+            f"Product / SKU  ({len(_sku_opts)} available)"
+            if _sku_opts else "Product / SKU"
+        )
+        sel_skus = st.multiselect(
+            _sku_label,
+            _sku_opts,
+            placeholder="All SKUs" if not sel_brands else "Select SKU(s)…",
+            help=(
+                "Type to search within the list. "
+                "Select a Brand first to narrow options."
+            ),
         )
 
         load_btn = st.button("🔄 Load Data", type="primary", use_container_width=True)
@@ -342,7 +382,7 @@ def page_results():
             platforms=sel_platforms or None,
             brands=sel_brands or None,
             keywords=sel_keywords or None,
-            product_search=product_search or None,
+            products=sel_skus or None,
             btu_filter=sel_btu or None,
         )
 
@@ -412,20 +452,28 @@ def page_price_evolution():
 
         opts = get_filter_options()
 
-        sel_brands       = st.multiselect("Brands",    opts["brands"],    key="evo_brands")
-        sel_platforms    = st.multiselect("Platforms", opts["platforms"], key="evo_platforms")
-        sel_keywords     = st.multiselect("Keywords",  opts["keywords"],  key="evo_keywords")
-        sel_btu          = st.multiselect(
+        sel_brands    = st.multiselect("Brands",    opts["brands"],    key="evo_brands")
+        sel_platforms = st.multiselect("Platforms", opts["platforms"], key="evo_platforms")
+        sel_keywords  = st.multiselect("Keywords",  opts["keywords"],  key="evo_keywords")
+        sel_btu       = st.multiselect(
             "Capacity (BTU)",
             BTU_OPTIONS,
             format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
             key="evo_btu",
         )
-        product_search   = st.text_input(
-            "Product / SKU",
-            placeholder="e.g. inverter 12000",
-            help="Case-insensitive substring search on product name",
-            key="evo_product",
+
+        # SKU drill-down
+        _sku_opts = get_sku_options(tuple(sorted(sel_brands)))
+        _sku_label = (
+            f"Product / SKU  ({len(_sku_opts)} available)"
+            if _sku_opts else "Product / SKU"
+        )
+        sel_skus = st.multiselect(
+            _sku_label,
+            _sku_opts,
+            placeholder="All SKUs" if not sel_brands else "Select SKU(s)…",
+            help="Type to search. Select a Brand first to narrow options.",
+            key="evo_skus",
         )
 
         group_by = st.radio(
@@ -447,7 +495,7 @@ def page_price_evolution():
             platforms=sel_platforms or None,
             brands=sel_brands or None,
             keywords=sel_keywords or None,
-            product_search=product_search or None,
+            products=sel_skus or None,
             btu_filter=sel_btu or None,
             limit=10000,
         )
