@@ -64,6 +64,7 @@ def main():
     changed   = result["changed"]
     unchanged = result["unchanged"]
     updated   = result["updated"]
+    deduped   = result.get("deduped", 0)
     errors    = result["errors"]
     preview   = result["preview"]
 
@@ -80,7 +81,10 @@ def main():
         else:
             pct = changed / scanned * 100 if scanned else 0
             print()
-            print(f"  ⚠  {changed:,} registros ({pct:.1f}%) seriam renormalizados.")
+            print(f"  ⚠  {changed:,} registros ({pct:.1f}%) seriam processados.")
+            print()
+            print("  Nota: registros cujo nome normalizado já existe para o mesmo")
+            print("  (data, turno, plataforma) serão deletados (duplicatas).")
 
             if preview:
                 print()
@@ -108,15 +112,18 @@ def main():
             print("  Normalizando registros…")
             result2 = normalize_all_products_in_supabase(dry_run=False)
             updated = result2["updated"]
+            deduped = result2.get("deduped", 0)
             errors  = result2["errors"]
 
             print()
             if errors == 0:
-                print(f"  ✓ {updated:,} registros atualizados com sucesso.")
+                print(f"  ✓ {updated:,} renomeados, {deduped:,} duplicatas removidas.")
             else:
-                print(f"  ⚠  {updated:,} atualizados, {errors:,} com erro.")
+                print(f"  ⚠  {updated:,} renomeados, {deduped:,} duplicatas removidas, "
+                      f"{errors:,} com erro.")
     else:
-        print(f"  Atualizados           : {updated:,}")
+        print(f"  Renomeados            : {updated:,}")
+        print(f"  Duplicatas removidas  : {deduped:,}")
         if errors:
             print(f"  Com erro              : {errors:,}")
         print()

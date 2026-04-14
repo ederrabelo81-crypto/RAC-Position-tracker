@@ -343,19 +343,35 @@ def normalize_all_products_in_supabase(
             "changed":   len(changes),
             "unchanged": unchanged,
             "updated":   0,
+            "deduped":   0,
             "errors":    0,
             "preview":   preview,
         }
 
-    # ── Fase 2: buscar colunas completas e upsert ──
-    # Não é possível upsert parcial (só id+produto) porque as colunas NOT NULL
-    # são validadas ANTES do ON CONFLICT — precisamos enviar a linha inteira.
+    # ── Fase 2: atualizar ou desduplicar ──
+    #
+    # Cenário A (sem conflito): o nome normalizado ainda não existe para esse
+    #   (data, turno, plataforma) → upsert com linha completa renomeia o produto.
+    #
+    # Cenário B (conflito 23505): já existe outra linha com o nome normalizado
+    #   para o mesmo (data, turno, plataforma) — o bot gravou versões normalizadas
+    #   em runs posteriores. A linha antiga é uma duplicata → DELETE.
+    #
+    # Fluxo por lote:
+    #   1. Tenta upsert em lote (rápido para Cenário A)
+    #   2. Se o lote falha com 23505: tenta cada linha individualmente via PATCH
+    #      (.update().eq("id", …)) — PATCH gera UPDATE SQL direto, sem INSERT
+    #   3. Linhas que ainda falham com 23505: DELETE em lote (duplicatas confirmadas)
     changed_ids   = list(changes.keys())
     updated = 0
+    deduped = 0   # linhas deletadas por já existir versão normalizada
     errors  = 0
     total_batches = math.ceil(len(changed_ids) / _UPDATE_BATCH)
 
-    logger.info(f"[Supabase] Fase 2 — atualizando {len(changed_ids)} registros em {total_batches} lote(s)…")
+    logger.info(
+        f"[Supabase] Fase 2 — {len(changed_ids)} registros em "
+        f"{total_batches} lote(s) (atualização ou deduplicação)…"
+    )
 
     for i in range(total_batches):
         batch_ids = changed_ids[i * _UPDATE_BATCH : (i + 1) * _UPDATE_BATCH]
@@ -377,30 +393,69 @@ def normalize_all_products_in_supabase(
         if not full_rows:
             continue
 
-        # 2b — substituir produto pelo nome normalizado
+        # 2b — aplicar nome normalizado
         for row in full_rows:
             row["produto"] = changes[row["id"]]
 
-        # 2c — upsert com linha completa (ON CONFLICT id DO UPDATE SET produto=…)
+        # 2c — caminho rápido: upsert em lote (funciona quando não há duplicatas)
         try:
             client.table("coletas").upsert(full_rows, on_conflict="id").execute()
             updated += len(full_rows)
-            logger.debug(
-                f"[Supabase] Normalização lote {i+1}/{total_batches}: "
-                f"{len(full_rows)} linhas OK"
-            )
-        except Exception as exc:
-            errors += len(batch_ids)
-            logger.warning(f"[Supabase] Erro no upsert lote {i+1}/{total_batches}: {exc}")
+            logger.debug(f"[Supabase] Lote {i+1}/{total_batches}: {len(full_rows)} OK (batch)")
+            continue
+        except Exception as batch_exc:
+            if "23505" not in str(batch_exc):
+                # Erro inesperado — não é duplicata, registra e segue
+                errors += len(batch_ids)
+                logger.warning(f"[Supabase] Lote {i+1}/{total_batches} falhou: {batch_exc}")
+                continue
+            # Pelo menos uma linha conflita — tratar individualmente
+
+        # 2d — caminho lento: PATCH individual (gera UPDATE SQL, sem INSERT)
+        to_delete: List[int] = []
+        for row in full_rows:
+            try:
+                client.table("coletas").update(
+                    {"produto": row["produto"]}
+                ).eq("id", row["id"]).execute()
+                updated += 1
+            except Exception as row_exc:
+                if "23505" in str(row_exc):
+                    # Nome normalizado já existe → linha atual é duplicata
+                    to_delete.append(row["id"])
+                else:
+                    errors += 1
+                    logger.warning(
+                        f"[Supabase] Erro ao atualizar id={row['id']}: {row_exc}"
+                    )
+
+        # 2e — deletar duplicatas em lote
+        if to_delete:
+            try:
+                client.table("coletas").delete().in_("id", to_delete).execute()
+                deduped += len(to_delete)
+            except Exception as del_exc:
+                errors += len(to_delete)
+                logger.warning(
+                    f"[Supabase] Erro ao deletar duplicatas lote {i+1}: {del_exc}"
+                )
+
+        logger.debug(
+            f"[Supabase] Lote {i+1}/{total_batches}: "
+            f"{len(full_rows) - len(to_delete)} atualizados, "
+            f"{len(to_delete)} duplicatas removidas"
+        )
 
     logger.info(
-        f"[Supabase] Normalização concluída: {updated} atualizados, {errors} com erro."
+        f"[Supabase] Normalização concluída: {updated} renomeados, "
+        f"{deduped} duplicatas removidas, {errors} com erro."
     )
     return {
         "scanned":   scanned,
         "changed":   len(changes),
         "unchanged": unchanged,
         "updated":   updated,
+        "deduped":   deduped,
         "errors":    errors,
         "preview":   preview,
     }

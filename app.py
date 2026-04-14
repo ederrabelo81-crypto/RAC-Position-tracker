@@ -784,15 +784,18 @@ def page_normalize_skus():
                 from utils.supabase_client import normalize_all_products_in_supabase
                 result = normalize_all_products_in_supabase(dry_run=False)
 
-            if result["errors"] == 0:
+            upd  = result["updated"]
+            ded  = result.get("deduped", 0)
+            errs = result["errors"]
+            if errs == 0:
                 st.success(
-                    f"✅ Done. **{result['updated']:,}** records updated "
-                    f"({result['unchanged']:,} were already normalized)."
+                    f"✅ Done. **{upd:,}** records renamed, "
+                    f"**{ded:,}** duplicate old-name records removed."
                 )
             else:
                 st.warning(
-                    f"Partial update: {result['updated']:,} updated, "
-                    f"{result['errors']:,} with errors. Check Supabase logs."
+                    f"Partial run: {upd:,} renamed, {ded:,} duplicates removed, "
+                    f"{errs:,} with errors. Check Supabase logs."
                 )
             if "norm_scan" in st.session_state:
                 del st.session_state["norm_scan"]
