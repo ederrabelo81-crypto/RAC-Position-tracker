@@ -114,103 +114,129 @@ _BRAND_IN_NAME = [
 # ---------------------------------------------------------------------------
 
 _LINE_PATTERNS: dict = {
+    # Each product line is kept DISTINCT — we never collapse an older line
+    # (e.g., Xtreme Save Connect) into a newer one (e.g., AI Ecomaster).
+    # Preserving line identity is essential for phase-out tracking.
     'Midea': [
-        (r'ecomaster\s*pro',                                    'AI Ecomaster Pro'),
-        (r'(?:xtreme\s*save|ecomaster).*?black'
-         r'|black.*?(?:xtreme\s*save|ecomaster)',               'AI Ecomaster Black Edition'),
-        (r'xtreme\s*save\s*connect|xtreme\s*save'
-         r'|ecomaster(?!\s*pro)',                               'AI Ecomaster'),
-        (r'air\s*volution\s*lite|airvolution\s*lite',           'Airvolution Lite'),
-        (r'airvolution|air\s*volution',                         'AI Airvolution'),
+        # Most specific first
+        (r'ecomaster\s*pro',                                        'AI Ecomaster Pro'),
+
+        # ── Black Edition variants (check before base names) ──
+        (r'xtreme\s*save\s*connect.*?black'
+         r'|black.*?xtreme\s*save\s*connect',                       'Xtreme Save Connect Black Edition'),
+        (r'xtreme\s*save.*?black|black.*?xtreme\s*save',            'Xtreme Save Black Edition'),
+        (r'ecomaster.*?black|black.*?ecomaster',                    'AI Ecomaster Black Edition'),
+
+        # ── Ecomaster / Xtreme Save (DISTINCT lines) ──
+        (r'xtreme\s*save\s*connect',                                'Xtreme Save Connect'),
+        (r'xtreme\s*save',                                          'Xtreme Save'),
+        (r'ecomaster(?!\s*pro)',                                    'AI Ecomaster'),
+
+        # ── AirVolution family (each sub-variant DISTINCT) ──
+        (r'air\s*volution\s*connect\s*barril'
+         r'|airvolution\s*connect\s*barril',                        'AI Airvolution Connect Barril'),
+        (r'air\s*volution\s*connect|airvolution\s*connect',         'AI Airvolution Connect'),
+        (r'air\s*volution\s*lite|airvolution\s*lite',               'Airvolution Lite'),
+        (r'airvolution|air\s*volution',                             'AI Airvolution'),
     ],
     'LG': [
-        (r'artcool|art\s*cool',                                 'Dual Inverter ARTCOOL'),
-        (r'uv\s*nano',                                          'Dual Inverter UV Nano'),
-        (r'compact.*?[+]|dual.*?compact|\+ai|\+ia',             'Dual Inverter Compact +AI'),
-        (r'voice',                                              'Dual Inverter AI Voice'),
-        (r'power',                                              'Dual Inverter Power'),
-        (r'dual\s*inverter|inverter',                           'Dual Inverter AI Voice'),
+        (r'artcool|art\s*cool',                                     'Dual Inverter ARTCOOL'),
+        (r'uv\s*nano',                                              'Dual Inverter UV Nano'),
+        (r'\bcompact\b|dual.*?comp(?:act)?|\+ai|\+ia',              'Dual Inverter Compact +AI'),
+        (r'voice',                                                  'Dual Inverter AI Voice'),
+        (r'\bpower\b',                                              'Dual Inverter Power'),
+        # Generic "Dual Inverter" stays generic — do NOT collapse into AI Voice
+        (r'dual\s*inverter',                                        'Dual Inverter'),
     ],
     'Samsung': [
-        (r'windfree.*?pro|wind\s*free.*?pro',                   'WindFree AI Pro'),
-        (r'windfree.*?black|wind\s*free.*?black',               'WindFree AI Black'),
-        (r'windfree.*?connect|wind\s*free.*?connect',           'WindFree Connect AI'),
-        (r'windfree|wind\s*free|wfree',                         'WindFree AI'),
-        (r'digital\s*inverter\s*ultra|di\s*ultra',              'Digital Inverter Ultra'),
+        (r'windfree.*?pro|wind\s*free.*?pro',                       'WindFree AI Pro'),
+        (r'windfree.*?black|wind\s*free.*?black',                   'WindFree AI Black'),
+        (r'windfree.*?connect|wind\s*free.*?connect',               'WindFree Connect AI'),
+        (r'windfree|wind\s*free|wfree',                             'WindFree AI'),
+        (r'digital\s*inverter\s*ultra|di\s*ultra',                  'Digital Inverter Ultra'),
     ],
     'Electrolux': [
-        (r'color\s*adapt|colour\s*adapt|color|yi\d|ye\d|j[i]?\d|ui\d|ue\d', 'Color Adapt'),
+        # Color Adapt is the single active Hi-Wall line (UI/UE = no Wi-Fi variant,
+        # YI/YE = Frio, J/JI = Quente/Frio — all Color Adapt per manufacturer)
+        (r'color\s*adapt|colour\s*adapt|\bcolor\b'
+         r'|yi\d|ye\d|j[i]?\d|ui\d|ue\d',                           'Color Adapt'),
     ],
     'Elgin': [
-        (r'eco\s*inverter\s*(?:iii|3)|hjfe',                    'Eco Inverter III'),
-        (r'eco\s*inverter\s*(?:ii|2)|hjfc',                     'Eco Inverter II'),
-        (r'eco\s*dream',                                        'Eco Dream'),
-        (r'eco\s*inverter|eco\s*inv',                           'Eco Inverter'),
+        (r'eco\s*inverter\s*(?:iii|3)|hjfe',                        'Eco Inverter III'),
+        (r'eco\s*inverter\s*(?:ii|2)|hjfc',                         'Eco Inverter II'),
+        (r'eco\s*dream',                                            'Eco Dream'),
+        (r'eco\s*inverter|eco\s*inv',                               'Eco Inverter'),
     ],
     'TCL': [
         (r'freshin.*?black'
          r'|fresh.*?in.*?3.*?(?:black|pret)'
-         r'|fresh.*?in.*?(?:preto|black)',                      'FreshIN 3.0 Black'),
+         r'|fresh.*?in.*?(?:preto|black)',                          'FreshIN 3.0 Black'),
         (r'freshin\s*3|fresh[\s-]in\s*3'
          r'|freshin(?!\s*(?:black|3))'
-         r'|fresh[\s-]in(?!\s*(?:black|3|pret))',               'FreshIN 3.0'),
-        (r't[\s-]?pro\s*2|tac.*?ctg2',                         'T-Pro 2.0'),
-        (r'elite\s*g2',                                         'Elite G2'),
-        (r'elite\s*gv|tac.*?sgv',                              'Elite GV'),
-        (r'elite',                                              'Elite GV'),
-        (r'(?:serie|series)\s*a2|\ba2\b',                       'Serie A2'),
-        (r'(?:serie|series)\s*a1|tac.*?csa1|convencional',      'Serie A1'),
+         r'|fresh[\s-]in(?!\s*(?:black|3|pret))',                   'FreshIN 3.0'),
+        (r't[\s-]?pro\s*2|tac.*?ctg2',                             'T-Pro 2.0'),
+        (r'elite\s*g2',                                             'Elite G2'),
+        (r'elite\s*gv|tac.*?sgv',                                  'Elite GV'),
+        # Generic "Elite" is ambiguous — keep it generic rather than collapse to GV
+        (r'\belite\b',                                              'Elite'),
+        (r'(?:serie|series)\s*a2|\ba2\b',                           'Serie A2'),
+        (r'(?:serie|series)\s*a1|tac.*?csa1|convencional',          'Serie A1'),
     ],
     'Gree': [
-        (r'g[\s-]?clima',                                       'G-Clima'),
-        (r'g[\s-]?top\s*connection',                            'G-Top Connection'),
-        (r'g[\s-]?top',                                         'G-Top Auto'),
-        (r'g[\s-]?diamond',                                     'G-Diamond'),
-        (r'fresh\s*in\s*3|freshin',                             'FreshIN 3.0'),
+        (r'g[\s-]?clima',                                           'G-Clima'),
+        (r'g[\s-]?top\s*connection',                                'G-Top Connection'),
+        (r'g[\s-]?top',                                             'G-Top Auto'),
+        (r'g[\s-]?diamond',                                         'G-Diamond'),
+        (r'fresh\s*in\s*3|freshin',                                 'FreshIN 3.0'),
     ],
     'Agratto': [
-        (r'zen\s*top|zen|zicst',                                'Zen Top'),
-        (r'liv\s*top|liv|lcst',                                 'Liv Top'),
-        (r'fit\s*top|fit|ficst',                                'Fit Top'),
-        (r'neo|ics\d',                                          'Neo'),
-        (r'one\s*top|one',                                      'One Top'),
+        (r'zen\s*top|zen|zicst',                                    'Zen Top'),
+        (r'liv\s*top|liv|lcst',                                     'Liv Top'),
+        (r'fit\s*top|fit|ficst',                                    'Fit Top'),
+        (r'neo|ics\d',                                              'Neo'),
+        (r'one\s*top|\bone\b',                                      'One Top'),
     ],
     'Consul': [
-        (r'triple\s*inverter|economaxi|econo\s*maxi',           'Triple Inverter EconoMaxi'),
-        (r'janela.*?eletr[oô]nico|ccn',                         'Janela Eletrônico'),
-        (r'janela.*?mec[aâ]nico|mec[aâ]nico|manual|ccb',        'Janela Mecânico'),
-        (r'janela',                                             'Janela Inverter'),
+        (r'triple\s*inverter|economaxi|econo\s*maxi',               'Triple Inverter EconoMaxi'),
+        (r'janela.*?eletr[oô]nico|ccn',                             'Janela Eletrônico'),
+        (r'janela.*?mec[aâ]nico|mec[aâ]nico|manual|ccb',            'Janela Mecânico'),
+        (r'janela.*?inverter|inverter.*?janela',                    'Janela Inverter'),
+        # Fallback only when it's clearly a Consul Hi-Wall inverter (not janela)
+        (r'\bcbk\b|\bcbo\b',                                        'Inverter'),
     ],
     'Daikin': [
-        (r'ecoswing|eco\s*swing',                               'EcoSwing'),
-        (r'skyair|sky\s*air',                                   'SkyAir'),
-        (r'full',                                               'Full Inverter'),
+        (r'ecoswing|eco\s*swing',                                   'EcoSwing'),
+        (r'skyair|sky\s*air',                                       'SkyAir'),
+        (r'full',                                                   'Full Inverter'),
     ],
     'Philco': [
-        (r'eco\s*inverter|eco\s*inv|pac\d',                     'Eco Inverter'),
-        (r'convencional|pas\d',                                 'Convencional'),
+        (r'eco\s*inverter|eco\s*inv|pac\d',                         'Eco Inverter'),
+        (r'convencional|pas\d',                                     'Convencional'),
     ],
     'Carrier': [
-        (r'xperience',                                          'Xperience'),
-        (r'xpower|x\s*power',                                   'XPower Connect'),
-        (r'cassete|cassette',                                   'Connect'),
+        (r'xperience',                                              'Xperience'),
+        (r'xpower|x\s*power',                                       'XPower Connect'),
+        # NOTE: generic Carrier cassete is NOT auto-mapped to "Connect" —
+        # multiple cassete lines exist; leave line blank when unknown
     ],
-    'Hitachi':   [(r'.*', 'Inverter')],
-    'Aufit':     [(r'.*', 'Inverter')],
+    # Hitachi & Aufit currently market a single residential line each;
+    # any older variants will surface as fallbacks (line left blank)
+    'Hitachi':   [(r'\binverter\b',                                 'Inverter')],
+    'Aufit':     [(r'\binverter\b',                                 'Inverter')],
     'Hisense': [
-        (r'eco\s*plus|ecoplus',                                 'Eco Plus'),
-        (r'connect',                                            'Connect'),
-        (r'.*',                                                 'Connect'),
+        (r'eco\s*plus|ecoplus',                                     'Eco Plus'),
+        (r'connect',                                                'Connect'),
+        # No fallback — unknown Hisense models keep blank line
     ],
     'Britânia': [
-        (r'prime\s*air',                                        'Prime Air'),
+        (r'prime\s*air',                                            'Prime Air'),
     ],
     'EOS': [
-        (r'master\s*comfort',                                   'Master Comfort'),
-        (r'master',                                             'Master Inverter'),
+        (r'master\s*comfort',                                       'Master Comfort'),
+        (r'master',                                                 'Master Inverter'),
     ],
     'Komeco': [
-        (r'eco\+|eco\s*plus',                                   'Eco+'),
+        (r'eco\+|eco\s*plus',                                       'Eco+'),
     ],
 }
 
@@ -344,9 +370,11 @@ def _identify_form(name_lower: str) -> Optional[str]:
 
 def _identify_color(name_lower: str, line: Optional[str]) -> Optional[str]:
     """Return color only when not white (white is the implicit default)."""
-    # Lines with color already in the name
-    if line in ('AI Ecomaster Black Edition', 'WindFree AI Black', 'FreshIN 3.0 Black'):
-        return None  # color is part of the line name — don't duplicate
+    # Lines with color already in the name — avoid duplicating
+    if line and 'Black Edition' in line:
+        return None
+    if line in ('WindFree AI Black', 'FreshIN 3.0 Black'):
+        return None
 
     _COLORS = [
         (r'\bblack\b|\bpreto\b',   'Preto'),
