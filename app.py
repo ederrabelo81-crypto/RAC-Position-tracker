@@ -101,9 +101,18 @@ def query_coletas(
         if products:
             q = q.in_("produto", products)
         if btu_filter:
-            # OR across selected BTU values — matches "9000", "9.000", "9000 btu" etc.
-            conditions = ",".join(f"produto.ilike.%{btu}%" for btu in btu_filter)
-            q = q.or_(conditions)
+            # Match both raw ("12000") and normalized ("12.000") formats —
+            # after normalization, product names contain "12.000 BTUs" with dot.
+            parts = []
+            for btu in btu_filter:
+                parts.append(f"produto.ilike.%{btu}%")
+                try:
+                    dotted = f"{int(btu):,}".replace(",", ".")  # "12000" → "12.000"
+                    if dotted != btu:
+                        parts.append(f"produto.ilike.%{dotted}%")
+                except ValueError:
+                    pass
+            q = q.or_(",".join(parts))
 
         resp = q.execute()
         if not resp.data:
@@ -478,7 +487,7 @@ def page_price_evolution():
 
         group_by = st.radio(
             "Group chart by",
-            ["Brand", "Platform", "Product"],
+            ["Product", "Brand", "Platform"],
             horizontal=True,
         )
 
