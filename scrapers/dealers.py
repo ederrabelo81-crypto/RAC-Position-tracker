@@ -114,9 +114,12 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  5,
     },
     "Dufrio": {
+        # FIX PROBLEMA DUFRIO: Preços concatenados sem separador decimal
+        # Ex: 182900 em vez de 1829,00 - corrigido em _extract_vtex_split_price()
         "url":        "https://www.dufrio.com.br/ar-condicionado/ar-condicionado-split-inverter",
         "pagination": "vtex",
         "max_pages":  5,
+        "vtex_split_price": True,  # Usa extração especial VTEX split price
     },
     "Leveros": {
         # FIX PROBLEMA #4: Parser incompatível - 0 produtos extraídos
@@ -703,6 +706,10 @@ class DealerScraper(BaseScraper):
           currencyInteger + currencyDecimalSeparator + currencyDecimalDigits
         Este método os une e retorna a string "R$ NNNN,NN".
         Retorna None se o padrão não for encontrado.
+        
+        CORREÇÃO: Garante inserção de vírgula decimal mesmo quando separador
+        está ausente no DOM (caso comum na Dufrio e outros sites VTEX).
+        Assume últimos 2 dígitos como centavos quando separador não encontrado.
         """
         int_el = item.select_one('[class*="currencyInteger"]')
         if not int_el:
@@ -710,10 +717,24 @@ class DealerScraper(BaseScraper):
         price_str = int_el.get_text(strip=True)
         sep_el = item.select_one('[class*="currencyDecimalSeparator"]')
         dec_el = item.select_one('[class*="currencyDecimalDigits"]')
-        if sep_el:
-            price_str += sep_el.get_text(strip=True)
-        if dec_el:
-            price_str += dec_el.get_text(strip=True)
+        
+        # Extrai texto do separador e decimais
+        sep_text = sep_el.get_text(strip=True) if sep_el else ""
+        dec_text = dec_el.get_text(strip=True) if dec_el else ""
+        
+        # CORREÇÃO DUFRIO: Se não há separador mas há decimais, insere vírgula
+        if not sep_text and dec_text:
+            sep_text = ","
+        
+        # Monta string de preço no formato brasileiro
+        price_str = price_str + sep_text + dec_text
+        
+        # Fallback: se ainda não tem separador e parece valor inteiro longo,
+        # assume que últimos 2 dígitos são centavos (VTEX split concatenado)
+        if ',' not in price_str and len(price_str) >= 3 and price_str.isdigit():
+            # Insere vírgula antes dos últimos 2 dígitos
+            price_str = price_str[:-2] + "," + price_str[-2:]
+        
         return f"R$ {price_str}" if price_str else None
 
     @staticmethod
