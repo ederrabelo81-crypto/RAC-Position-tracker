@@ -1652,10 +1652,16 @@ class DealerScraper(BaseScraper):
     # Detecção de bloqueios anti-bot
     # ------------------------------------------------------------------
 
-    def _is_blocked_page(self) -> Optional[str]:
+    def _is_blocked_page(self, extra_indicators: Optional[List[str]] = None) -> Optional[str]:
         """
         Verifica se a página atual é um bloqueio anti-bot.
-        Retorna string com tipo de bloqueio ou None se página OK.
+
+        Além dos padrões genéricos (Cloudflare, reCAPTCHA), verifica
+        `extra_indicators` — lista de strings do config do dealer (ex: Frigelar,
+        Carrefour) para detectar bloqueios/prompts específicos da plataforma.
+
+        Returns:
+            String com tipo de bloqueio ("cloudflare", "recaptcha", "custom") ou None.
         """
         try:
             title = self._page.title().lower()
@@ -1666,17 +1672,63 @@ class DealerScraper(BaseScraper):
         if "um momento" in title or "just a moment" in title or "checking your browser" in title:
             return "cloudflare"
 
-        # reCAPTCHA
         try:
-            html_snippet = self._page.content()[:6000]
-            if "recaptcha" in html_snippet.lower() and "grecaptcha.render" in html_snippet.lower():
-                return "recaptcha"
-            if "challenge-platform" in html_snippet or "cf-challenge" in html_snippet:
-                return "cloudflare"
+            html_snippet = self._page.content()[:8000]
         except Exception:
-            pass
+            html_snippet = ""
+
+        html_lower = html_snippet.lower()
+
+        # reCAPTCHA
+        if "recaptcha" in html_lower and "grecaptcha.render" in html_lower:
+            return "recaptcha"
+        if "challenge-platform" in html_snippet or "cf-challenge" in html_snippet:
+            return "cloudflare"
+
+        # Per-dealer custom block indicators (Frigelar CEP prompt, Carrefour WAF, etc.)
+        if extra_indicators:
+            for indicator in extra_indicators:
+                if indicator.lower() in html_lower or indicator.lower() in title:
+                    return f"custom:{indicator[:40]}"
 
         return None
+
+    def _inject_cep(self, cep: str) -> bool:
+        """
+        Injeta CEP em sites que bloqueiam preços sem localização (ex: Frigelar / OCC).
+
+        Estratégia:
+          1. Procura input de CEP visível na página
+          2. Preenche e submete (Enter ou botão)
+          3. Aguarda reload/fetch dos preços
+
+        Returns:
+            True se o CEP foi injetado com sucesso, False caso contrário.
+        """
+        cep_clean = re.sub(r"\D", "", cep)
+        cep_input_selectors = [
+            'input[placeholder*="CEP" i]',
+            'input[name*="cep" i]',
+            'input[id*="cep" i]',
+            'input[type="text"][maxlength="8"]',
+            'input[type="text"][maxlength="9"]',
+        ]
+        try:
+            for sel in cep_input_selectors:
+                try:
+                    el = self._page.wait_for_selector(sel, timeout=3_000)
+                    if el:
+                        el.fill(cep_clean)
+                        el.press("Enter")
+                        self._random_delay(min_s=2.0, max_s=4.0)
+                        self._wait_for_prices()
+                        logger.info(f"[{self.platform_name}] CEP {cep} injetado via '{sel}'")
+                        return True
+                except Exception:
+                    continue
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] _inject_cep falhou: {exc}")
+        return False
 
     # ------------------------------------------------------------------
     # CORREÇÃO PROBLEMA #1: Detecção de páginas de erro (404, indisponível)
@@ -1834,18 +1886,37 @@ class DealerScraper(BaseScraper):
         name_selector            = config.get("name_selector")
         price_selector           = config.get("price_selector")
         prefer_jsonld            = config.get("prefer_jsonld", False)
+        block_indicators         = config.get("block_indicators")        # per-dealer WAF/CEP strings
+        requires_cep             = config.get("requires_cep", False)
+        default_cep              = config.get("default_cep", "01310-100")
+        wait_for_js              = config.get("wait_for_js", False)
+        wait_timeout_ms          = config.get("wait_timeout", 10_000)
+        _cep_injected            = False   # inject only once per dealer run
 
         for page in range(1, max_pages + 1):
             url = self._build_page_url(base_url, page, pagination)
             logger.info(f"[{self.platform_name}] Página {page}/{max_pages} → {url}")
 
             try:
-                self._page.goto(url, wait_until="domcontentloaded")
+                wait_until = "networkidle" if wait_for_js else "domcontentloaded"
+                self._page.goto(url, wait_until=wait_until, timeout=wait_timeout_ms + 30_000)
                 self._wait_for_network_idle()
                 self._random_delay(min_s=3.0, max_s=7.0)
 
-                # Detecta bloqueios anti-bot (reCAPTCHA, Cloudflare)
-                block_type = self._is_blocked_page()
+                # Detecta bloqueios anti-bot genéricos + indicadores per-dealer
+                block_type = self._is_blocked_page(extra_indicators=block_indicators)
+
+                # Sites que exigem CEP para liberar preços (ex: Frigelar OCC)
+                if block_type and requires_cep and not _cep_injected:
+                    logger.info(
+                        f"[{self.platform_name}] Prompt de CEP detectado — "
+                        f"injetando CEP {default_cep}"
+                    )
+                    _cep_injected = self._inject_cep(default_cep)
+                    if _cep_injected:
+                        # Re-verifica bloqueio após injeção
+                        block_type = self._is_blocked_page(extra_indicators=block_indicators)
+
                 if block_type:
                     logger.warning(
                         f"[{self.platform_name}] Bloqueio detectado: {block_type} "

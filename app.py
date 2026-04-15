@@ -45,7 +45,7 @@ PLATFORMS = {
     "amazon":          "Amazon",
     "google_shopping": "Google Shopping",
     "leroy":           "Leroy Merlin",
-    "dealers":         "Dealers (13 sites)",
+    "dealers":         "Dealers (33 sites)",
 }
 
 # ---------------------------------------------------------------------------
