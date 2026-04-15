@@ -122,6 +122,7 @@ def query_coletas(
     start_date: date,
     end_date: date,
     platforms: list[str] | None = None,
+    platform_types: list[str] | None = None,
     brands: list[str] | None = None,
     keywords: list[str] | None = None,
     products: list[str] | None = None,
@@ -144,6 +145,8 @@ def query_coletas(
         )
         if platforms:
             q = q.in_("plataforma", platforms)
+        if platform_types:
+            q = q.in_("tipo_plataforma", platform_types)
         if brands:
             # Expand canonical names to all raw DB variants
             # (e.g. "Midea" → ["Midea", "Springer Midea", "Midea Carrier", "Springer"])
@@ -187,19 +190,19 @@ def get_filter_options() -> dict:
     """Fetch distinct values for filter dropdowns (last 90 days)."""
     client = _get_supabase()
     if client is None:
-        return {"platforms": [], "brands": [], "keywords": []}
+        return {"platforms": [], "platform_types": [], "brands": [], "keywords": []}
     try:
         since = str(date.today() - timedelta(days=90))
         resp = (
             client.table("coletas")
-            .select("plataforma, marca, keyword")
+            .select("plataforma, tipo_plataforma, marca, keyword")
             .gte("data", since)
             .limit(5000)
             .execute()
         )
         df = pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
         if df.empty:
-            return {"platforms": [], "brands": [], "keywords": []}
+            return {"platforms": [], "platform_types": [], "brands": [], "keywords": []}
 
         # Normalize raw marca values to canonical names so "Springer Midea",
         # "Midea Carrier" and "Springer" all appear as "Midea" in the dropdown.
@@ -209,12 +212,13 @@ def get_filter_options() -> dict:
         ))
 
         return {
-            "platforms": sorted(df["plataforma"].dropna().unique().tolist()),
-            "brands":    brands_canonical,
-            "keywords":  sorted(df["keyword"].dropna().unique().tolist()),
+            "platforms":      sorted(df["plataforma"].dropna().unique().tolist()),
+            "platform_types": sorted(df["tipo_plataforma"].dropna().unique().tolist()),
+            "brands":         brands_canonical,
+            "keywords":       sorted(df["keyword"].dropna().unique().tolist()),
         }
     except Exception:
-        return {"platforms": [], "brands": [], "keywords": []}
+        return {"platforms": [], "platform_types": [], "brands": [], "keywords": []}
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -417,6 +421,7 @@ def page_results():
 
         opts = get_filter_options()
 
+        sel_tipo      = st.multiselect("Tipo",      opts["platform_types"])
         sel_platforms = st.multiselect("Platforms", opts["platforms"])
         sel_brands    = st.multiselect("Brands",    opts["brands"])
         sel_keywords  = st.multiselect("Keywords",  opts["keywords"])
@@ -453,6 +458,7 @@ def page_results():
             start_date,
             end_date,
             platforms=sel_platforms or None,
+            platform_types=sel_tipo or None,
             brands=sel_brands or None,
             keywords=sel_keywords or None,
             products=sel_skus or None,
@@ -525,9 +531,10 @@ def page_price_evolution():
 
         opts = get_filter_options()
 
-        sel_brands    = st.multiselect("Brands",    opts["brands"],    key="evo_brands")
-        sel_platforms = st.multiselect("Platforms", opts["platforms"], key="evo_platforms")
-        sel_keywords  = st.multiselect("Keywords",  opts["keywords"],  key="evo_keywords")
+        sel_tipo      = st.multiselect("Tipo",      opts["platform_types"], key="evo_tipo")
+        sel_brands    = st.multiselect("Brands",    opts["brands"],         key="evo_brands")
+        sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="evo_platforms")
+        sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="evo_keywords")
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
             BTU_OPTIONS,
@@ -566,6 +573,7 @@ def page_price_evolution():
             start_date,
             end_date,
             platforms=sel_platforms or None,
+            platform_types=sel_tipo or None,
             brands=sel_brands or None,
             keywords=sel_keywords or None,
             products=sel_skus or None,
@@ -963,8 +971,9 @@ def page_buybox_position():
 
         opts = get_filter_options()
 
-        sel_platforms = st.multiselect("Platforms", opts["platforms"], key="bb_platforms")
-        sel_brands    = st.multiselect("Brands",    opts["brands"],    key="bb_brands")
+        sel_tipo      = st.multiselect("Tipo",      opts["platform_types"], key="bb_tipo")
+        sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="bb_platforms")
+        sel_brands    = st.multiselect("Brands",    opts["brands"],         key="bb_brands")
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
             BTU_OPTIONS,
@@ -1004,6 +1013,7 @@ def page_buybox_position():
             start_date,
             end_date,
             platforms=sel_platforms or None,
+            platform_types=sel_tipo or None,
             brands=sel_brands or None,
             products=sel_skus or None,
             btu_filter=sel_btu or None,
