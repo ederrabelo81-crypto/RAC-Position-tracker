@@ -68,6 +68,23 @@ def _get_supabase():
 BTU_OPTIONS = ["9000", "12000", "18000", "24000", "36000", "48000", "60000"]
 
 # ---------------------------------------------------------------------------
+# Product Type filter — patterns to match inside the normalized produto string
+# (Tipo + Forma combined, since both live in the produto column after
+# normalize_product_name())
+# ---------------------------------------------------------------------------
+PRODUCT_TYPE_OPTIONS: dict = {
+    # Tipo (compressor)
+    "Inverter":   ["inverter"],
+    "On/Off":     ["on/off", "on-off", "convencional"],
+    # Forma (form factor)
+    "Hi-Wall":    ["hi-wall", "hi wall", "hiwall"],
+    "Janela":     ["janela", "janeleiro", "window"],
+    "Cassete":    ["cassete", "cassette"],
+    "Piso-Teto":  ["piso-teto", "piso teto"],
+    "Portátil":   ["portátil", "portatil"],
+}
+
+# ---------------------------------------------------------------------------
 # Brand alias expansion
 #
 # extract_brand() uses config.BRANDS verbatim, so the DB can contain:
@@ -127,6 +144,7 @@ def query_coletas(
     keywords: list[str] | None = None,
     products: list[str] | None = None,
     btu_filter: list[str] | None = None,
+    product_types: list[str] | None = None,
     limit: int = 5000,
 ) -> pd.DataFrame:
     """Query the coletas table with filters. Returns empty DataFrame on error."""
@@ -146,7 +164,8 @@ def query_coletas(
         if platforms:
             q = q.in_("plataforma", platforms)
         if platform_types:
-            q = q.in_("tipo_plataforma", platform_types)
+            # DB column is "tipo" (mapped from CSV "Tipo Plataforma" — see _COLUMN_MAP)
+            q = q.in_("tipo", platform_types)
         if brands:
             # Expand canonical names to all raw DB variants
             # (e.g. "Midea" → ["Midea", "Springer Midea", "Midea Carrier", "Springer"])
@@ -168,6 +187,14 @@ def query_coletas(
                 except ValueError:
                     pass
             q = q.or_(",".join(parts))
+        if product_types:
+            # Each label may map to several spelling variants — OR them together.
+            parts = []
+            for label in product_types:
+                for pat in PRODUCT_TYPE_OPTIONS.get(label, [label]):
+                    parts.append(f"produto.ilike.%{pat}%")
+            if parts:
+                q = q.or_(",".join(parts))
 
         resp = q.execute()
         if not resp.data:
@@ -186,23 +213,26 @@ def query_coletas(
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_filter_options() -> dict:
     """Fetch distinct values for filter dropdowns (last 90 days)."""
+    empty = {"platforms": [], "platform_types": [], "brands": [], "keywords": []}
     client = _get_supabase()
     if client is None:
-        return {"platforms": [], "platform_types": [], "brands": [], "keywords": []}
+        return empty
     try:
         since = str(date.today() - timedelta(days=90))
+        # DB column is "tipo" (CSV "Tipo Plataforma" → DB "tipo" per _COLUMN_MAP).
         resp = (
             client.table("coletas")
-            .select("plataforma, tipo_plataforma, marca, keyword")
+            .select("plataforma, tipo, marca, keyword")
             .gte("data", since)
-            .limit(5000)
+            .limit(50000)
             .execute()
         )
         df = pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
         if df.empty:
-            return {"platforms": [], "platform_types": [], "brands": [], "keywords": []}
+            return empty
 
         # Normalize raw marca values to canonical names so "Springer Midea",
         # "Midea Carrier" and "Springer" all appear as "Midea" in the dropdown.
@@ -213,12 +243,13 @@ def get_filter_options() -> dict:
 
         return {
             "platforms":      sorted(df["plataforma"].dropna().unique().tolist()),
-            "platform_types": sorted(df["tipo_plataforma"].dropna().unique().tolist()),
+            "platform_types": sorted(df["tipo"].dropna().unique().tolist()) if "tipo" in df.columns else [],
             "brands":         brands_canonical,
             "keywords":       sorted(df["keyword"].dropna().unique().tolist()),
         }
-    except Exception:
-        return {"platforms": [], "platform_types": [], "brands": [], "keywords": []}
+    except Exception as exc:
+        st.warning(f"Filter options query failed: {exc}")
+        return empty
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -421,14 +452,19 @@ def page_results():
 
         opts = get_filter_options()
 
-        sel_tipo      = st.multiselect("Tipo",      opts["platform_types"])
-        sel_platforms = st.multiselect("Platforms", opts["platforms"])
-        sel_brands    = st.multiselect("Brands",    opts["brands"])
-        sel_keywords  = st.multiselect("Keywords",  opts["keywords"])
+        sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"])
+        sel_platforms = st.multiselect("Platforms",       opts["platforms"])
+        sel_brands    = st.multiselect("Brands",          opts["brands"])
+        sel_keywords  = st.multiselect("Keywords",        opts["keywords"])
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
             BTU_OPTIONS,
             format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
+        )
+        sel_ptype     = st.multiselect(
+            "Tipo Produto",
+            list(PRODUCT_TYPE_OPTIONS.keys()),
+            help="Filtra por tipo de produto detectado no nome (Inverter, On/Off, Janela…)",
         )
 
         # SKU drill-down — list refreshes when brand selection changes
@@ -463,6 +499,7 @@ def page_results():
             keywords=sel_keywords or None,
             products=sel_skus or None,
             btu_filter=sel_btu or None,
+            product_types=sel_ptype or None,
         )
 
     if df.empty:
@@ -531,7 +568,7 @@ def page_price_evolution():
 
         opts = get_filter_options()
 
-        sel_tipo      = st.multiselect("Tipo",      opts["platform_types"], key="evo_tipo")
+        sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"], key="evo_tipo")
         sel_brands    = st.multiselect("Brands",    opts["brands"],         key="evo_brands")
         sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="evo_platforms")
         sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="evo_keywords")
@@ -540,6 +577,12 @@ def page_price_evolution():
             BTU_OPTIONS,
             format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
             key="evo_btu",
+        )
+        sel_ptype     = st.multiselect(
+            "Tipo Produto",
+            list(PRODUCT_TYPE_OPTIONS.keys()),
+            help="Filtra por tipo de produto detectado no nome (Inverter, On/Off, Janela…)",
+            key="evo_ptype",
         )
 
         # SKU drill-down
@@ -578,6 +621,7 @@ def page_price_evolution():
             keywords=sel_keywords or None,
             products=sel_skus or None,
             btu_filter=sel_btu or None,
+            product_types=sel_ptype or None,
             limit=10000,
         )
 
@@ -971,7 +1015,7 @@ def page_buybox_position():
 
         opts = get_filter_options()
 
-        sel_tipo      = st.multiselect("Tipo",      opts["platform_types"], key="bb_tipo")
+        sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"], key="bb_tipo")
         sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="bb_platforms")
         sel_brands    = st.multiselect("Brands",    opts["brands"],         key="bb_brands")
         sel_btu       = st.multiselect(
@@ -979,6 +1023,12 @@ def page_buybox_position():
             BTU_OPTIONS,
             format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
             key="bb_btu",
+        )
+        sel_ptype     = st.multiselect(
+            "Tipo Produto",
+            list(PRODUCT_TYPE_OPTIONS.keys()),
+            help="Filtra por tipo de produto detectado no nome (Inverter, On/Off, Janela…)",
+            key="bb_ptype",
         )
 
         # SKU drill-down
@@ -1017,6 +1067,7 @@ def page_buybox_position():
             brands=sel_brands or None,
             products=sel_skus or None,
             btu_filter=sel_btu or None,
+            product_types=sel_ptype or None,
             limit=20000,
         )
 
