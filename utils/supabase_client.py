@@ -252,6 +252,80 @@ def delete_invalid_from_supabase(dry_run: bool = False) -> Dict[str, int]:
     return {"scanned": scanned, "invalid": len(invalid_ids), "deleted": deleted, "errors": errors}
 
 
+def normalize_brands_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
+    """
+    Consolida variantes de marca no campo `marca` da tabela `coletas`.
+
+    Mapeamento aplicado (mesmo que _BRAND_ALIASES em normalize_product.py):
+      "Springer Midea"  → "Midea"
+      "Midea Carrier"   → "Midea"
+      "Springer"        → "Midea"
+      "Britania"        → "Britânia"
+
+    Para cada variante faz um UPDATE direto (.eq("marca", source)) — sem risco
+    de conflito de UNIQUE pois `marca` não faz parte da constraint da tabela.
+
+    Args:
+        dry_run: Se True, apenas conta registros afetados — não atualiza.
+
+    Returns:
+        dict com: total_updated, errors, by_brand
+          by_brand = {source: {"count": N, "target": canonical}}
+    """
+    client = _get_client()
+    if client is None:
+        return {"total_updated": 0, "errors": 0, "by_brand": {}}
+
+    # Variants to consolidate — same mapping as normalize_product._BRAND_ALIASES
+    _BRAND_MAP: Dict[str, str] = {
+        "Springer Midea": "Midea",
+        "Midea Carrier":  "Midea",
+        "Springer":       "Midea",
+        "Britania":       "Britânia",
+    }
+
+    by_brand: Dict[str, Any] = {}
+    total_updated = 0
+    errors = 0
+
+    for source, target in _BRAND_MAP.items():
+        # Count how many records have this variant
+        try:
+            count_resp = (
+                client.table("coletas")
+                .select("id", count="exact")
+                .eq("marca", source)
+                .execute()
+            )
+            count = count_resp.count or 0
+        except Exception as exc:
+            logger.warning(f"[Supabase] Erro ao contar marca={source!r}: {exc}")
+            count = -1
+
+        by_brand[source] = {"count": count, "target": target}
+
+        if dry_run or count <= 0:
+            continue
+
+        # Update in-place — safe because marca is not in the UNIQUE constraint
+        try:
+            client.table("coletas").update({"marca": target}).eq("marca", source).execute()
+            total_updated += count
+            logger.info(
+                f"[Supabase] Marca normalizada: {source!r} → {target!r} ({count} registros)"
+            )
+        except Exception as exc:
+            errors += 1
+            logger.warning(f"[Supabase] Erro ao normalizar marca {source!r}: {exc}")
+
+    if not dry_run:
+        logger.info(
+            f"[Supabase] Normalização de marcas concluída: "
+            f"{total_updated} registros atualizados, {errors} erros."
+        )
+    return {"total_updated": total_updated, "errors": errors, "by_brand": by_brand}
+
+
 def normalize_all_products_in_supabase(
     dry_run: bool = False,
     preview_limit: int = 20,

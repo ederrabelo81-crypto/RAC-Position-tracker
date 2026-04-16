@@ -1113,6 +1113,94 @@ def page_normalize_skus():
                 del st.session_state["norm_scan"]
 
     st.divider()
+
+    # ── Brand Normalization ───────────────────────────────────────────────────
+    st.subheader("🏷️ Brand Normalization")
+    st.caption(
+        "Unifies brand variants stored in the `marca` column. "
+        '"Springer Midea", "Midea Carrier", and "Springer" are all Midea products — '
+        "this consolidates them under a single `Midea` entry for cleaner analysis."
+    )
+    st.info(
+        "| Variant in DB | → Canonical |\n|---|---|\n"
+        "| Springer Midea | **Midea** |\n"
+        "| Midea Carrier | **Midea** |\n"
+        "| Springer | **Midea** |\n"
+        "| Britania | **Britânia** |"
+    )
+
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        brand_scan_btn = st.button(
+            "🔍 Scan brand variants",
+            use_container_width=True,
+            key="brand_scan_btn",
+        )
+    with col_b2:
+        brand_apply_btn = st.button(
+            "✏️ Apply brand normalization",
+            type="primary",
+            use_container_width=True,
+            key="brand_apply_btn",
+            help="Updates marca for all variant rows to the canonical name.",
+        )
+
+    if brand_scan_btn:
+        with st.spinner("Scanning brand variants…"):
+            from utils.supabase_client import normalize_brands_in_supabase
+            brand_result = normalize_brands_in_supabase(dry_run=True)
+        st.session_state["brand_scan"] = brand_result
+
+    if "brand_scan" in st.session_state:
+        br = st.session_state["brand_scan"]
+        total_variants = sum(
+            v["count"] for v in br["by_brand"].values() if v["count"] > 0
+        )
+        rows = [
+            {
+                "Variant (DB)": src,
+                "→ Canonical": info["target"],
+                "Records": info["count"] if info["count"] >= 0 else "error",
+            }
+            for src, info in br["by_brand"].items()
+        ]
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+
+        if total_variants == 0:
+            st.success("✅ All brand names are already normalized!")
+        else:
+            st.warning(
+                f"Found **{total_variants:,}** records with non-canonical brand names. "
+                "Click **Apply brand normalization** to consolidate them."
+            )
+
+    if brand_apply_btn:
+        scan = st.session_state.get("brand_scan")
+        total_to_fix = (
+            sum(v["count"] for v in scan["by_brand"].values() if v["count"] > 0)
+            if scan else 0
+        )
+        if not scan or total_to_fix == 0:
+            st.warning("Run a scan first to confirm there are records to update.")
+        else:
+            with st.spinner(f"Normalizing {total_to_fix:,} brand records…"):
+                from utils.supabase_client import normalize_brands_in_supabase
+                brand_result = normalize_brands_in_supabase(dry_run=False)
+            if brand_result["errors"] == 0:
+                st.success(
+                    f"✅ Done. **{brand_result['total_updated']:,}** records updated."
+                )
+            else:
+                st.warning(
+                    f"Partial run: {brand_result['total_updated']:,} updated, "
+                    f"{brand_result['errors']:,} with errors."
+                )
+            if "brand_scan" in st.session_state:
+                del st.session_state["brand_scan"]
+            # Clear cached filter options so the brand dropdown refreshes
+            get_filter_options.clear()
+
+    st.divider()
     st.subheader("Normalization rules")
     st.markdown(
         "| Component | Rule |\n"
