@@ -1,1 +1,28 @@
-Nothing should be ignored based on the provided file changes. The only modified file is 'scrapers/dealers.py', which is a source code file and should not be added to .gitignore.
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.venv/
+venv/
+.env
+.env.local
+*.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+
+# Editors
+.vscode/
+.idea/
+
+# Build and distribution
+dist/
+build/
+*.egg-info/
+```
