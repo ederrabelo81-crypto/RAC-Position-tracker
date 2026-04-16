@@ -250,6 +250,12 @@ def query_coletas(
         for col in ["preco", "avaliacao"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+        # Normalize brand variants to canonical names so all analysis pages
+        # aggregate correctly (e.g. "Springer Midea" + "Midea" → "Midea").
+        if "marca" in df.columns and _MARCA_TO_CANONICAL:
+            df["marca"] = df["marca"].map(
+                lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
+            )
         return df
     except Exception as exc:
         st.error(f"Query error: {exc}")
