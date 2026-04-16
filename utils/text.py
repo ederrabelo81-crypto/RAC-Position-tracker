@@ -24,6 +24,7 @@ def parse_price_brazil(raw_text: Optional[str]) -> Optional[float]:
       - Concatenação de DOM: "13% OFFR$ 1.994,91no pix"
       - Múltiplos preços na mesma string (usa o primeiro)
       - Strings vazias ou inválidas
+      - VTEX split price concatenado: "182900" → 1829.00 (últimos 2 dígitos = centavos)
     
     Args:
         raw_text: String bruta extraída do HTML (pode conter ruído)
@@ -48,15 +49,38 @@ def parse_price_brazil(raw_text: Optional[str]) -> Optional[float]:
         2799.9
         >>> parse_price_brazil("1.520,10")
         1520.1
+        >>> parse_price_brazil("182900")
+        1829.0
+        >>> parse_price_brazil("165900")
+        1659.0
     """
     if not raw_text:
         return None
     
+    # Remove prefixo R$ e espaços para análise
+    cleaned = raw_text.strip()
+    if cleaned.upper().startswith('R$'):
+        cleaned = cleaned[2:].strip()
+    
+    # CASO ESPECIAL: Apenas dígitos (VTEX split concatenado sem separadores)
+    # Detecta antes dos outros regex para evitar extração parcial
+    if re.match(r'^\d{4,}$', cleaned):
+        # Assume últimos 2 dígitos como centavos
+        # ex: "182900" → "1829.00", "165900" → "1659.00", "9990" → "99.90"
+        val = cleaned[:-2] + '.' + cleaned[-2:]
+        try:
+            result = float(val)
+            if 0 < result <= 10_000_000:
+                return result
+        except ValueError:
+            pass
+        return None
+    
     # Extrai primeiro padrão monetário: R$ 1.994,91 ou R$1994,91 ou 1.994,91
-    match = re.search(r'R\$\s*([\d.,]+)|([\d]+\.[\d]{3},[\d]{2})', raw_text)
+    match = re.search(r'([\d.,]+)|([\d]+\.[\d]{3},[\d]{2})', cleaned)
     if not match:
-        # Tenta extrair apenas número com vírgula decimal
-        match = re.search(r'(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)', raw_text)
+        # Tenta extrair número no formato brasileiro: NNNN,NN ou N.NNN,NN
+        match = re.search(r'(\d+(?:\.\d{3})*,\d{1,2})', cleaned)
         if not match:
             return None
     
@@ -64,8 +88,8 @@ def parse_price_brazil(raw_text: Optional[str]) -> Optional[float]:
     if not val:
         return None
     
-    # Remove separador de milhar (pontos), mantém vírgula para decimal
-    # ex: "1.994,91" → "1994,91" → "1994.91"
+    # Formato brasileiro: remove pontos (milhar) e converte vírgula para ponto decimal
+    # ex: "1.994,91" → "1994.91", "1829,00" → "1829.00"
     val = val.replace('.', '').replace(',', '.')
     
     try:
