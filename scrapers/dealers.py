@@ -728,13 +728,11 @@ class DealerScraper(BaseScraper):
         
         # Monta string de preço no formato brasileiro
         price_str = price_str + sep_text + dec_text
-        
-        # Fallback: se ainda não tem separador e parece valor inteiro longo,
-        # assume que últimos 2 dígitos são centavos (VTEX split concatenado)
-        if ',' not in price_str and len(price_str) >= 3 and price_str.isdigit():
-            # Insere vírgula antes dos últimos 2 dígitos
-            price_str = price_str[:-2] + "," + price_str[-2:]
-        
+
+        # NOTE: não inserir vírgula em strings puramente numéricas sem decimais
+        # (ex: currencyInteger="1829" sem dec_el → preço é 1829,00, não 18,29)
+        # O Python float guard em parse_price_brazil cobre o caso "1829.0".
+
         return f"R$ {price_str}" if price_str else None
 
     @staticmethod
@@ -1208,7 +1206,9 @@ class DealerScraper(BaseScraper):
                     seen_titles.add(name_key)
                     
                     # Extrai preço
-                    price_raw = None
+                    # Extrai preço — passa float direto para evitar o bug "R$ 1829.0" → 18290
+                    # (parse_price_brazil trata o ponto de "1829.0" como separador de milhar)
+                    price_float_direct: Optional[float] = None
                     offers = entry.get("offers") or {}
                     if isinstance(offers, list):
                         offers = offers[0] if offers else {}
@@ -1220,7 +1220,7 @@ class DealerScraper(BaseScraper):
                         )
                         if price_val is not None:
                             try:
-                                price_raw = f"R$ {float(price_val)}"
+                                price_float_direct = float(price_val)
                             except (ValueError, TypeError):
                                 pass
                     
@@ -1237,7 +1237,7 @@ class DealerScraper(BaseScraper):
                         position_general=pos_general,
                         position_organic=org_ctr,
                         position_sponsored=None,
-                        price_raw=price_raw,
+                        price_float=price_float_direct,  # float direto — evita bug ×10
                         seller=dealer,
                         is_fulfillment=False,
                         rating=None,
@@ -1610,27 +1610,31 @@ class DealerScraper(BaseScraper):
 
             # ── Preço: seletores CSS → JSON-LD word-match → fallback por índice ──
             price_raw = DealerScraper._extract_price_el(item)
+            # JSON-LD prices are stored as Python floats (e.g. 1829.0).
+            # Passing them as price_float bypasses parse_price_brazil entirely,
+            # which would otherwise strip the dot in "1829.0" → 18290.0 (×10 bug).
+            price_float_jsonld: Optional[float] = None
 
             if not price_raw and jsonld_prices:
                 matched = DealerScraper._jsonld_match(title, jsonld_prices)
                 if matched is not None:
-                    price_raw = f"R$ {matched}"
+                    price_float_jsonld = matched  # float direto — evita bug ×10
 
             # Fallback por índice: se o matching por nome falhou mas temos JSON-LD,
             # tenta atribuir preço pela posição (item_index) na lista de preços
-            if not price_raw and jsonld_price_list:
+            if not price_raw and price_float_jsonld is None and jsonld_price_list:
                 item_index = len(records)
                 matched_by_idx = DealerScraper._jsonld_match_by_index(
                     title, jsonld_prices, jsonld_price_list, item_index
                 )
                 if matched_by_idx is not None:
-                    price_raw = f"R$ {matched_by_idx}"
+                    price_float_jsonld = matched_by_idx  # float direto — mesma correção
                     logger.debug(
                         f"[{self.platform_name}] Preço atribuído por índice [{item_index}]: "
                         f"'{title[:40]}' → R$ {matched_by_idx}"
                     )
 
-            if not price_raw:
+            if not price_raw and price_float_jsonld is None:
                 logger.debug(f"[{self.platform_name}] Sem preço CSS/JSON-LD: '{title[:50]}'")
 
             # ── Rating / reviews ──────────────────────────────────────
@@ -1645,6 +1649,7 @@ class DealerScraper(BaseScraper):
                 position_organic=org_ctr,
                 position_sponsored=None,
                 price_raw=price_raw,
+                price_float=price_float_jsonld,  # usado quando CSS não encontrou preço
                 seller=dealer,
                 is_fulfillment=False,
                 rating=parse_rating(rating_el.get_text() if rating_el else None),

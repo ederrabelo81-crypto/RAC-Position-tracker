@@ -182,6 +182,7 @@ def query_coletas(
     products: list[str] | None = None,
     btu_filter: list[str] | None = None,
     product_types: list[str] | None = None,
+    max_position: int | None = None,
     limit: int = 5000,
 ) -> pd.DataFrame:
     """Query the coletas table with filters. Returns empty DataFrame on error."""
@@ -211,31 +212,32 @@ def query_coletas(
             q = q.in_("keyword", keywords)
         if products:
             q = q.in_("produto", products)
-        # Combine btu_filter and product_types into a single OR expression
-        # to avoid multiple .or_() calls which create separate query params
-        or_patterns = []
-        
+        if max_position is not None:
+            # Server-side position cap — prevents LIMIT being consumed by one
+            # date when all platforms are selected (BuyBox use-case).
+            q = q.lte("posicao_geral", max_position)
         if btu_filter:
-            # Match both raw ("12000") and normalized ("12.000") formats —
-            # after normalization, product names contain "12.000 BTUs" with dot.
+            # Match both raw ("12000") and normalized ("12.000") formats.
+            # Separate .or_() call so it ANDs with product_types filter below.
+            parts = []
             for btu in btu_filter:
-                or_patterns.append(f"produto.ilike.%{btu}%")
+                parts.append(f"produto.ilike.%{btu}%")
                 try:
                     dotted = f"{int(btu):,}".replace(",", ".")  # "12000" → "12.000"
                     if dotted != btu:
-                        or_patterns.append(f"produto.ilike.%{dotted}%")
+                        parts.append(f"produto.ilike.%{dotted}%")
                 except ValueError:
                     pass
-        
+            q = q.or_(",".join(parts))
         if product_types:
             # Each label may map to several spelling variants — OR them together.
+            # Separate .or_() call so it ANDs with btu_filter above.
+            parts = []
             for label in product_types:
                 for pat in PRODUCT_TYPE_OPTIONS.get(label, [label]):
-                    or_patterns.append(f"produto.ilike.%{pat}%")
-        
-        # Apply all ILIKE patterns in a single OR expression
-        if or_patterns:
-            q = q.or_(",".join(or_patterns))
+                    parts.append(f"produto.ilike.%{pat}%")
+            if parts:
+                q = q.or_(",".join(parts))
 
         resp = q.execute()
         if not resp.data:
@@ -1116,6 +1118,9 @@ def page_buybox_position():
             products=sel_skus or None,
             btu_filter=sel_btu or None,
             product_types=sel_ptype or None,
+            # Server-side position cap: avoids limit=20k consuming a single date's
+            # records when all platforms are selected (would hide older dates).
+            max_position=top_n,
             limit=20000,
         )
 
@@ -1123,7 +1128,7 @@ def page_buybox_position():
         st.warning("No data found for the selected filters.")
         return
 
-    # Filter to top-N positions only (keep all dates within the selected range)
+    # Server already filtered; this is a safety net for cached/stale data
     df_top = df[df["posicao_geral"].notna() & (df["posicao_geral"] <= top_n)].copy()
 
     if df_top.empty:

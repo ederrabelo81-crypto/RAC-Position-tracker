@@ -17,111 +17,69 @@ from config import TURNO_ABERTURA_MAX_HOUR
 
 def parse_price_brazil(raw_text: Optional[str]) -> Optional[float]:
     """
-    CORREÇÃO PROBLEMA #4: Parser robusto de preço brasileiro com regex.
-    
+    Parser robusto de preço brasileiro com regex.
+
     Extrai o primeiro padrão monetário válido de uma string, lidando com:
       - Formato brasileiro: R$ 1.994,91 (ponto=milhar, vírgula=decimal)
       - Concatenação de DOM: "13% OFFR$ 1.994,91no pix"
+      - Python float notation: "R$ 1829.0" → 1829.0  (não 18290.0)
       - Múltiplos preços na mesma string (usa o primeiro)
       - Strings vazias ou inválidas
-      - VTEX split price concatenado: "182900" → 1829.00 (últimos 2 dígitos = centavos)
-    
-    Args:
-        raw_text: String bruta extraída do HTML (pode conter ruído)
-    
-    Returns:
-        float do preço ou None se não encontrar padrão válido
-    
-    Testes unitários rápidos:
+
+    Testes:
         >>> parse_price_brazil("R$ 1.994,91")
         1994.91
         >>> parse_price_brazil("13% OFFR$ 1.709,91no pix")
         1709.91
         >>> parse_price_brazil("R$ 2.309,90em 10x")
         2309.9
-        >>> parse_price_brazil("")
-        None
-        >>> parse_price_brazil("125.0")
-        125.0
-        >>> parse_price_brazil(None)
-        None
+        >>> parse_price_brazil("R$ 1829.0")
+        1829.0
         >>> parse_price_brazil("R$ 2.799,90 à vista")
         2799.9
         >>> parse_price_brazil("1.520,10")
         1520.1
-        >>> parse_price_brazil("182900")
-        1829.0
-        >>> parse_price_brazil("165900")
-        1659.0
+        >>> parse_price_brazil("125.0")
+        125.0
+        >>> parse_price_brazil("")
+        None
+        >>> parse_price_brazil(None)
+        None
     """
     if not raw_text:
         return None
-    
-    # Remove prefixo R$ e espaços para análise
-    cleaned = raw_text.strip()
-    if cleaned.upper().startswith('R$'):
-        cleaned = cleaned[2:].strip()
-    
-    # CASO ESPECIAL: Apenas dígitos (VTEX split concatenado sem separadores)
-    # Detecta antes dos outros regex para evitar extração parcial
-    # Padrão VTEX: integer + decimal_digits (sempre 2 dígitos decimais)
-    # Exemplos:
-    #   "269900" = 2699 + 00 → R$ 2.699,00 → 2699.0
-    #   "26990" = 2699 + 0 → R$ 2.699,00 → 2699.0 (decimal com zero à esquerda omitido)
-    #   "25990" = 2599 + 0 → R$ 2.599,00 → 2599.0
-    #   "9990" = 99 + 90 → R$ 99,90 → 99.9
-    if re.match(r'^\d{4,}$', cleaned):
-        digits = len(cleaned)
+
+    # Guard: Python float notation — "R$ 1829.0" or "1829.0"
+    # parse_price_brazil would strip the dot → "18290" (×10 bug).
+    # A dot followed by 1-2 digits with no comma = decimal separator, not thousands.
+    _float_match = re.search(r'(?:R\$\s*)?(\d+\.\d{1,2})$', raw_text.strip())
+    if _float_match and ',' not in raw_text:
         try:
-            # VTEX sempre usa 2 dígitos para decimais, mas pode omitir zero à esquerda
-            # Se tem 4 dígitos: últimos 2 são decimais
-            # Se tem 5 dígitos: últimos 1-2 são decimais, resto é inteiro
-            # Se tem 6+ dígitos: últimos 2 são decimais, resto é inteiro
-            if digits == 4:
-                # ex: "9990" → 99.90, "1250" → 12.50
-                val = cleaned[:-2] + '.' + cleaned[-2:]
-            elif digits == 5:
-                # Ambíguo: pode ser XXXX,X ou XXX,XX
-                # Heurística: se terminar em 0, assume XXXX,00 (omitiu zero à esq)
-                # ex: "26990" → 2699.0 (não 269.90)
-                if cleaned.endswith('0'):
-                    val = cleaned[:-1] + '.' + cleaned[-1:]
-                else:
-                    # ex: "12345" → 123.45
-                    val = cleaned[:-2] + '.' + cleaned[-2:]
-            else:
-                # 6+ dígitos: últimos 2 são centavos
-                val = cleaned[:-2] + '.' + cleaned[-2:]
-            
-            result = float(val)
-            if 0 < result <= 10_000_000:
-                return result
+            return float(_float_match.group(1))
         except ValueError:
             pass
-        return None
-    
+
     # Extrai primeiro padrão monetário: R$ 1.994,91 ou R$1994,91 ou 1.994,91
-    match = re.search(r'([\d.,]+)|([\d]+\.[\d]{3},[\d]{2})', cleaned)
+    match = re.search(r'R\$\s*([\d.,]+)|([\d]+\.[\d]{3},[\d]{2})', raw_text)
     if not match:
         # Tenta extrair número no formato brasileiro: NNNN,NN ou N.NNN,NN
-        match = re.search(r'(\d+(?:\.\d{3})*,\d{1,2})', cleaned)
+        match = re.search(r'(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)', raw_text)
         if not match:
             return None
-    
+
     val = match.group(1) if match.group(1) else match.group(2)
     if not val:
         return None
-    
+
     # Formato brasileiro: remove pontos (milhar) e converte vírgula para ponto decimal
     # ex: "1.994,91" → "1994.91", "1829,00" → "1829.00"
     val = val.replace('.', '').replace(',', '.')
-    
+
     try:
         result = float(val)
-        # Validação defensiva: preço deve ser positivo e razoável
         if result <= 0:
             return None
-        if result > 10_000_000:  # Preço acima de 10 milhões provavelmente é erro
+        if result > 10_000_000:
             return None
         return result
     except ValueError:
