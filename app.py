@@ -309,12 +309,15 @@ def get_filter_options() -> dict:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_sku_options(brands: tuple = ()) -> list:
+def get_sku_options(
+    brands: tuple = (),
+    btu_filter: tuple = (),
+    product_types: tuple = (),
+) -> list:
     """
     Fetch distinct normalized product names from the last 90 days.
-    When brands is non-empty, filters by all raw DB marca variants of those
-    canonical brands (e.g. "Midea" also queries "Springer Midea" etc.).
-    Returns a sorted list ready for st.multiselect.
+    Narrows the list when brands, btu_filter or product_types are non-empty.
+    All three act as AND conditions between each other.
     """
     client = _get_supabase()
     if client is None:
@@ -331,6 +334,25 @@ def get_sku_options(brands: tuple = ()) -> list:
         if brands:
             # Expand canonical names to all raw DB variants before filtering
             q = q.in_("marca", _expand_brands(list(brands)))
+        if btu_filter:
+            parts = []
+            for btu in btu_filter:
+                parts.append(f"produto.ilike.%{btu}%")
+                try:
+                    dotted = f"{int(btu):,}".replace(",", ".")
+                    if dotted != btu:
+                        parts.append(f"produto.ilike.%{dotted}%")
+                except ValueError:
+                    pass
+            if parts:
+                q = q.or_(",".join(parts))
+        if product_types:
+            parts = []
+            for label in product_types:
+                for pat in PRODUCT_TYPE_OPTIONS.get(label, [label]):
+                    parts.append(f"produto.ilike.%{pat}%")
+            if parts:
+                q = q.or_(",".join(parts))
         resp = q.execute()
         if not resp.data:
             return []
@@ -523,8 +545,12 @@ def page_results():
             help="Filtra por tipo de produto detectado no nome (Inverter, On/Off, Janela…)",
         )
 
-        # SKU drill-down — list refreshes when brand selection changes
-        _sku_opts = get_sku_options(tuple(sorted(sel_brands)))
+        # SKU drill-down — list narrows when brand, BTU or tipo filters change
+        _sku_opts = get_sku_options(
+            tuple(sorted(sel_brands)),
+            tuple(sorted(sel_btu)),
+            tuple(sorted(sel_ptype)),
+        )
         _sku_label = (
             f"Product / SKU  ({len(_sku_opts)} available)"
             if _sku_opts else "Product / SKU"
@@ -641,8 +667,12 @@ def page_price_evolution():
             key="evo_ptype",
         )
 
-        # SKU drill-down
-        _sku_opts = get_sku_options(tuple(sorted(sel_brands)))
+        # SKU drill-down — list narrows when brand, BTU or tipo filters change
+        _sku_opts = get_sku_options(
+            tuple(sorted(sel_brands)),
+            tuple(sorted(sel_btu)),
+            tuple(sorted(sel_ptype)),
+        )
         _sku_label = (
             f"Product / SKU  ({len(_sku_opts)} available)"
             if _sku_opts else "Product / SKU"
@@ -684,6 +714,12 @@ def page_price_evolution():
     if df.empty or "preco" not in df.columns:
         st.warning("No price data found for the selected filters.")
         return
+
+    st.caption(
+        f"{len(df):,} records loaded · "
+        f"{df['produto'].nunique() if 'produto' in df.columns else 0} unique SKUs · "
+        f"{df['marca'].nunique() if 'marca' in df.columns else 0} brands"
+    )
 
     df_price = df.dropna(subset=["preco", "data"])
     if df_price.empty:
@@ -1265,8 +1301,12 @@ def page_buybox_position():
             key="bb_ptype",
         )
 
-        # SKU drill-down
-        _sku_opts = get_sku_options(tuple(sorted(sel_brands)))
+        # SKU drill-down — list narrows when brand, BTU or tipo filters change
+        _sku_opts = get_sku_options(
+            tuple(sorted(sel_brands)),
+            tuple(sorted(sel_btu)),
+            tuple(sorted(sel_ptype)),
+        )
         _sku_label = (
             f"Product / SKU  ({len(_sku_opts)} available)"
             if _sku_opts else "Product / SKU"
