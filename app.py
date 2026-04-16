@@ -174,27 +174,31 @@ def query_coletas(
             q = q.in_("keyword", keywords)
         if products:
             q = q.in_("produto", products)
+        # Combine btu_filter and product_types into a single OR expression
+        # to avoid multiple .or_() calls which create separate query params
+        or_patterns = []
+        
         if btu_filter:
             # Match both raw ("12000") and normalized ("12.000") formats —
             # after normalization, product names contain "12.000 BTUs" with dot.
-            parts = []
             for btu in btu_filter:
-                parts.append(f"produto.ilike.%{btu}%")
+                or_patterns.append(f"produto.ilike.%{btu}%")
                 try:
                     dotted = f"{int(btu):,}".replace(",", ".")  # "12000" → "12.000"
                     if dotted != btu:
-                        parts.append(f"produto.ilike.%{dotted}%")
+                        or_patterns.append(f"produto.ilike.%{dotted}%")
                 except ValueError:
                     pass
-            q = q.or_(",".join(parts))
+        
         if product_types:
             # Each label may map to several spelling variants — OR them together.
-            parts = []
             for label in product_types:
                 for pat in PRODUCT_TYPE_OPTIONS.get(label, [label]):
-                    parts.append(f"produto.ilike.%{pat}%")
-            if parts:
-                q = q.or_(",".join(parts))
+                    or_patterns.append(f"produto.ilike.%{pat}%")
+        
+        # Apply all ILIKE patterns in a single OR expression
+        if or_patterns:
+            q = q.or_(",".join(or_patterns))
 
         resp = q.execute()
         if not resp.data:
