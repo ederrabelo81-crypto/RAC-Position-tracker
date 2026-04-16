@@ -18,6 +18,7 @@ REQUISITOS:
 
 import os
 import math
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -458,6 +459,169 @@ def normalize_all_products_in_supabase(
         "deduped":   deduped,
         "errors":    errors,
         "preview":   preview,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Price validation — detect ×10 parser errors stored in DB
+# ---------------------------------------------------------------------------
+
+# Reasonable price ceilings per BTU capacity (R$) for residential/light-commercial ACs.
+# Prices above these are almost certainly ×10 parse errors (e.g., R$ 1.899 stored as 18990).
+_BTU_PRICE_CEILINGS: Dict[int, float] = {
+    7000:  4_500,
+    9000:  5_500,
+    12000: 7_000,
+    18000: 12_000,
+    22000: 15_000,
+    24000: 16_000,
+    30000: 22_000,
+    36000: 28_000,
+    48000: 40_000,
+    60000: 55_000,
+}
+
+# Matches BTU values like "9.000 BTU", "12000 BTUs", "9,000 BTU"
+_BTU_RE = re.compile(
+    r'(\d{1,2})[.,](\d{3})\s*BTU|(\d{4,6})\s*BTU',
+    re.IGNORECASE,
+)
+
+
+def _extract_btu(produto: str) -> Optional[int]:
+    """Extract BTU capacity (int) from a product name, or None if not found."""
+    m = _BTU_RE.search(produto or "")
+    if not m:
+        return None
+    if m.group(3):          # raw: "9000 BTU"
+        return int(m.group(3))
+    return int(m.group(1)) * 1000 + int(m.group(2))   # dotted: "9.000 BTU"
+
+
+def _is_price_suspicious(produto: str, preco: float) -> bool:
+    """
+    Returns True if preco exceeds the reasonable ceiling for the BTU detected in produto.
+    When no BTU is detected, uses the global R$ 80,000 ceiling from is_valid_product().
+    """
+    if not preco or preco <= 0:
+        return False
+    btu = _extract_btu(produto)
+    if btu is None:
+        return preco > 80_000
+    closest_btu = min(_BTU_PRICE_CEILINGS, key=lambda k: abs(k - btu))
+    return preco > _BTU_PRICE_CEILINGS[closest_btu]
+
+
+def scan_fix_bad_prices_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
+    """
+    Varre a tabela `coletas` e identifica/remove registros com preço suspeito.
+
+    Um preço é suspeito quando excede o teto razoável para a capacidade BTU
+    detectada no nome do produto. Exemplo: 9.000 BTUs com preço R$ 18.990
+    (deveria ser ~R$ 1.899) — indício do bug de parser ×10.
+
+    Args:
+        dry_run: Se True, apenas conta e retorna exemplos — não deleta.
+
+    Returns:
+        dict com chaves: scanned, suspicious, deleted, errors, examples
+    """
+    client = _get_client()
+    if client is None:
+        return {"scanned": 0, "suspicious": 0, "deleted": 0, "errors": 0, "examples": []}
+
+    _FETCH_BATCH  = 1_000
+    _DELETE_BATCH = 100
+
+    suspicious_ids: List[int] = []
+    examples: List[Dict[str, Any]] = []
+    scanned = 0
+    offset  = 0
+
+    logger.info("[Supabase] Iniciando varredura de preços suspeitos...")
+
+    while True:
+        try:
+            resp = (
+                client.table("coletas")
+                .select("id,produto,preco,plataforma")
+                .not_.is_("preco", "null")
+                .range(offset, offset + _FETCH_BATCH - 1)
+                .execute()
+            )
+        except Exception as exc:
+            logger.error(f"[Supabase] Erro ao buscar registros (offset={offset}): {exc}")
+            break
+
+        batch = resp.data or []
+        if not batch:
+            break
+
+        for row in batch:
+            scanned += 1
+            produto = row.get("produto") or ""
+            preco   = row.get("preco")
+            try:
+                preco_f = float(preco) if preco is not None else None
+            except (ValueError, TypeError):
+                preco_f = None
+
+            if preco_f and _is_price_suspicious(produto, preco_f):
+                suspicious_ids.append(row["id"])
+                if len(examples) < 30:
+                    btu = _extract_btu(produto)
+                    examples.append({
+                        "id":            row["id"],
+                        "produto":       produto[:80],
+                        "preco":         preco_f,
+                        "plataforma":    row.get("plataforma", ""),
+                        "btu_detectado": btu,
+                        "teto_btu":      _BTU_PRICE_CEILINGS.get(
+                            min(_BTU_PRICE_CEILINGS, key=lambda k: abs(k - btu)) if btu else 0,
+                            80_000,
+                        ),
+                    })
+
+        if len(batch) < _FETCH_BATCH:
+            break
+        offset += _FETCH_BATCH
+
+    logger.info(
+        f"[Supabase] Varredura de preços: {scanned} registros, "
+        f"{len(suspicious_ids)} com preço suspeito."
+    )
+
+    if dry_run or not suspicious_ids:
+        return {
+            "scanned":    scanned,
+            "suspicious": len(suspicious_ids),
+            "deleted":    0,
+            "errors":     0,
+            "examples":   examples,
+        }
+
+    # Deleta em lotes
+    deleted = 0
+    errors  = 0
+    total_batches = math.ceil(len(suspicious_ids) / _DELETE_BATCH)
+
+    for i in range(total_batches):
+        batch_ids = suspicious_ids[i * _DELETE_BATCH : (i + 1) * _DELETE_BATCH]
+        try:
+            client.table("coletas").delete().in_("id", batch_ids).execute()
+            deleted += len(batch_ids)
+            logger.debug(f"[Supabase] Delete preços lote {i+1}/{total_batches}: {len(batch_ids)} IDs")
+        except Exception as exc:
+            errors += len(batch_ids)
+            logger.warning(f"[Supabase] Erro ao deletar lote de preços {i+1}: {exc}")
+
+    logger.info(f"[Supabase] Limpeza de preços: {deleted} deletados, {errors} com erro.")
+    return {
+        "scanned":    scanned,
+        "suspicious": len(suspicious_ids),
+        "deleted":    deleted,
+        "errors":     errors,
+        "examples":   examples,
     }
 
 

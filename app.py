@@ -200,7 +200,7 @@ def query_coletas(
             .limit(limit)
         )
         if platforms:
-            q = q.in_("plataforma", platforms)
+            q = q.in_("plataforma", _expand_platforms(platforms))
         if platform_types:
             # DB column is "tipo" (mapped from CSV "Tipo Plataforma" — see _COLUMN_MAP)
             q = q.in_("tipo", platform_types)
@@ -916,6 +916,95 @@ def page_data_cleanup():
             del st.session_state["cleanup_scan"]
 
     st.divider()
+    # ── Price Validation ─────────────────────────────────────────────────────
+    st.subheader("💰 Price Validation")
+    st.caption(
+        "Identifies records where the price significantly exceeds the reasonable ceiling "
+        "for the detected BTU capacity — likely caused by historical parsing errors (×10 bug). "
+        "E.g., a 9.000 BTU AC priced at R$ 18.990 instead of ~R$ 1.899."
+    )
+
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        price_scan_btn = st.button(
+            "🔍 Scan for bad prices",
+            use_container_width=True,
+            key="price_scan_btn",
+        )
+    with col_p2:
+        price_delete_btn = st.button(
+            "🗑️ Delete records with bad prices",
+            type="primary",
+            use_container_width=True,
+            key="price_delete_btn",
+            help="Permanently removes records where price exceeds the BTU-based ceiling.",
+        )
+
+    if price_scan_btn:
+        with st.spinner("Scanning for suspicious prices… this may take a moment."):
+            from utils.supabase_client import scan_fix_bad_prices_in_supabase
+            price_result = scan_fix_bad_prices_in_supabase(dry_run=True)
+        st.session_state["price_scan"] = price_result
+
+    if "price_scan" in st.session_state:
+        pr = st.session_state["price_scan"]
+        pc1, pc2 = st.columns(2)
+        pc1.metric("Records scanned", f"{pr['scanned']:,}")
+        pc2.metric(
+            "Suspicious prices",
+            f"{pr['suspicious']:,}",
+            delta=f"-{pr['suspicious']:,}" if pr["suspicious"] else None,
+            delta_color="inverse",
+        )
+
+        if pr["suspicious"] == 0:
+            st.success("✅ No price anomalies found!")
+        else:
+            pct = pr["suspicious"] / pr["scanned"] * 100 if pr["scanned"] else 0
+            st.warning(
+                f"Found **{pr['suspicious']:,}** records ({pct:.1f}%) with suspiciously high "
+                "prices. These are likely ×10 parsing errors. "
+                "Click **Delete records with bad prices** to remove them."
+            )
+            if pr.get("examples"):
+                with st.expander(f"Examples ({len(pr['examples'])} shown)", expanded=True):
+                    st.dataframe(pr["examples"], use_container_width=True, hide_index=True)
+
+    if price_delete_btn:
+        scan = st.session_state.get("price_scan")
+        if not scan or scan["suspicious"] == 0:
+            st.warning("Run a price scan first to confirm there are records to remove.")
+        else:
+            with st.spinner(f"Deleting {scan['suspicious']:,} records with bad prices…"):
+                from utils.supabase_client import scan_fix_bad_prices_in_supabase
+                price_result = scan_fix_bad_prices_in_supabase(dry_run=False)
+            if price_result["errors"] == 0:
+                st.success(
+                    f"✅ Done. **{price_result['deleted']:,}** records with bad prices deleted."
+                )
+            else:
+                st.warning(
+                    f"Partial cleanup: {price_result['deleted']:,} deleted, "
+                    f"{price_result['errors']:,} with errors. Check Supabase logs."
+                )
+            if "price_scan" in st.session_state:
+                del st.session_state["price_scan"]
+
+    st.divider()
+    st.markdown(
+        "**Price ceilings by BTU capacity** *(prices above these are flagged)*\n\n"
+        "| Capacity | Max reasonable |\n|---|---|\n"
+        "| 7.000 BTUs | R$ 4.500 |\n"
+        "| 9.000 BTUs | R$ 5.500 |\n"
+        "| 12.000 BTUs | R$ 7.000 |\n"
+        "| 18.000 BTUs | R$ 12.000 |\n"
+        "| 24.000 BTUs | R$ 16.000 |\n"
+        "| 36.000 BTUs | R$ 28.000 |\n"
+        "| 48.000 BTUs | R$ 40.000 |\n"
+        "| 60.000 BTUs | R$ 55.000 |\n"
+    )
+
+    st.divider()
     st.subheader("Filter rules reference")
 
     col_a, col_b, col_c = st.columns(3)
@@ -1068,6 +1157,7 @@ def page_buybox_position():
         sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"], key="bb_tipo")
         sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="bb_platforms")
         sel_brands    = st.multiselect("Brands",    opts["brands"],         key="bb_brands")
+        sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="bb_keywords")
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
             BTU_OPTIONS,
@@ -1115,6 +1205,7 @@ def page_buybox_position():
             platforms=sel_platforms or None,
             platform_types=sel_tipo or None,
             brands=sel_brands or None,
+            keywords=sel_keywords or None,
             products=sel_skus or None,
             btu_filter=sel_btu or None,
             product_types=sel_ptype or None,
