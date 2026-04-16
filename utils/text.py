@@ -64,11 +64,35 @@ def parse_price_brazil(raw_text: Optional[str]) -> Optional[float]:
     
     # CASO ESPECIAL: Apenas dígitos (VTEX split concatenado sem separadores)
     # Detecta antes dos outros regex para evitar extração parcial
+    # Padrão VTEX: integer + decimal_digits (sempre 2 dígitos decimais)
+    # Exemplos:
+    #   "269900" = 2699 + 00 → R$ 2.699,00 → 2699.0
+    #   "26990" = 2699 + 0 → R$ 2.699,00 → 2699.0 (decimal com zero à esquerda omitido)
+    #   "25990" = 2599 + 0 → R$ 2.599,00 → 2599.0
+    #   "9990" = 99 + 90 → R$ 99,90 → 99.9
     if re.match(r'^\d{4,}$', cleaned):
-        # Assume últimos 2 dígitos como centavos
-        # ex: "182900" → "1829.00", "165900" → "1659.00", "9990" → "99.90"
-        val = cleaned[:-2] + '.' + cleaned[-2:]
+        digits = len(cleaned)
         try:
+            # VTEX sempre usa 2 dígitos para decimais, mas pode omitir zero à esquerda
+            # Se tem 4 dígitos: últimos 2 são decimais
+            # Se tem 5 dígitos: últimos 1-2 são decimais, resto é inteiro
+            # Se tem 6+ dígitos: últimos 2 são decimais, resto é inteiro
+            if digits == 4:
+                # ex: "9990" → 99.90, "1250" → 12.50
+                val = cleaned[:-2] + '.' + cleaned[-2:]
+            elif digits == 5:
+                # Ambíguo: pode ser XXXX,X ou XXX,XX
+                # Heurística: se terminar em 0, assume XXXX,00 (omitiu zero à esq)
+                # ex: "26990" → 2699.0 (não 269.90)
+                if cleaned.endswith('0'):
+                    val = cleaned[:-1] + '.' + cleaned[-1:]
+                else:
+                    # ex: "12345" → 123.45
+                    val = cleaned[:-2] + '.' + cleaned[-2:]
+            else:
+                # 6+ dígitos: últimos 2 são centavos
+                val = cleaned[:-2] + '.' + cleaned[-2:]
+            
             result = float(val)
             if 0 < result <= 10_000_000:
                 return result

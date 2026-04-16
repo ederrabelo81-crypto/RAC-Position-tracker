@@ -12,7 +12,7 @@ venv/
 .env.local
 *.env.*
 
-# Logs and temporary files
+# Logs and temp files
 *.log
 *.tmp
 *.swp
@@ -21,8 +21,7 @@ venv/
 .vscode/
 .idea/
 
-# Build and distribution
+# Build artifacts
 dist/
 build/
-*.egg-info/
 ```
