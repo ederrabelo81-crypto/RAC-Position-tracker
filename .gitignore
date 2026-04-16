@@ -1,1 +1,2 @@
-Nothing needs to be added to .gitignore since only a source file (app.py) was modified and there are no build artifacts, dependencies, or temporary files in the changes.
+(debug_filters.py
+debug_filters2.py)
