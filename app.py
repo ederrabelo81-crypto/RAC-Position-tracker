@@ -1123,8 +1123,15 @@ def page_buybox_position():
         st.warning("No data found for the selected filters.")
         return
 
+    # Keep only the most recent record for each produto+plataforma combination
+    # This ensures we're analyzing the latest BuyBox position per product/platform
+    df["data_dt"] = pd.to_datetime(df["data"])
+    df_latest = df.loc[df.groupby(["produto", "plataforma"])["data_dt"].idxmax()].copy()
+    df.drop(columns=["data_dt"], inplace=True, errors="ignore")
+    df_latest.drop(columns=["data_dt"], inplace=True, errors="ignore")
+    
     # Filter to top-N positions only
-    df_top = df[df["posicao_geral"].notna() & (df["posicao_geral"] <= top_n)].copy()
+    df_top = df_latest[df_latest["posicao_geral"].notna() & (df_latest["posicao_geral"] <= top_n)].copy()
 
     if df_top.empty:
         st.warning(f"No records with position ≤ {top_n} in this range.")
