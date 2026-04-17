@@ -53,7 +53,17 @@ _CSS = """<style>
 /* ===========================
    GLOBAL STYLES
    =========================== */
-* {
+/* Scope to body so inheritance cascades Inter to text while preserving
+   explicit font-family on Material Symbols icon spans (if overridden with
+   * + !important those icon names render as raw text, e.g. "arrow_right"). */
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Explicitly reinforce Inter for common content elements */
+p, h1, h2, h3, h4, h5, h6,
+.stMarkdown, label, button, input, textarea,
+[data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
 }
 
@@ -66,15 +76,10 @@ _CSS = """<style>
 /* ===========================
    HEADER CUSTOMIZATION
    =========================== */
-header {
+[data-testid="stHeader"] {
     background: linear-gradient(135deg, #1a56db 0%, #1e40af 50%, #1e3a8a 100%) !important;
-    padding: 1.5rem 0 !important;
     border-bottom: 3px solid #fbbf24 !important;
     box-shadow: 0 4px 20px rgba(26, 86, 219, 0.3) !important;
-}
-
-header .stApp {
-    background: transparent !important;
 }
 
 /* Hide Streamlit branding */
@@ -296,7 +301,9 @@ section[data-testid="stSidebar"] .stMarkdown h3 {
 
 section[data-testid="stSidebar"] label,
 section[data-testid="stSidebar"] .stMarkdown,
-section[data-testid="stSidebar"] * {
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] span:not([aria-hidden]),
+section[data-testid="stSidebar"] div[data-testid] {
     color: #ffffff !important;
 }
 
