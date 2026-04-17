@@ -61,9 +61,12 @@ SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
     "dealers":        DealerScraper,
 }
 
-# Keywords map para DealerScraper: cada dealer name vira a "keyword"
+# Keywords map para DealerScraper: cada dealer name vira a "keyword".
+# Dealers marcados como "on_hold" são excluídos da coleta.
 _DEALER_KEYWORDS_MAP: Dict[str, List[str]] = {
-    "Dealers": list(DEALER_CONFIGS.keys())
+    "Dealers": [
+        name for name, cfg in DEALER_CONFIGS.items() if not cfg.get("on_hold")
+    ]
 }
 
 # Colunas na ordem exata do DataFrame de saída
