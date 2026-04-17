@@ -293,6 +293,37 @@ section[data-testid="stSidebar"] .stMarkdown {
     color: #cbd5e1 !important;
 }
 
+/* Navigation links in sidebar - HIGH CONTRAST */
+section[data-testid="stSidebar"] a,
+section[data-testid="stSidebar"] .stNavigation a,
+section[data-testid="stSidebar"] nav a,
+section[data-testid="stSidebar"] ul li a {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    text-decoration: none !important;
+    transition: all 0.2s ease !important;
+}
+
+section[data-testid="stSidebar"] a:hover,
+section[data-testid="stSidebar"] .stNavigation a:hover,
+section[data-testid="stSidebar"] nav a:hover,
+section[data-testid="stSidebar"] ul li a:hover {
+    color: #fbbf24 !important;
+    background: rgba(251, 191, 36, 0.1) !important;
+    border-radius: 6px !important;
+}
+
+/* Selected/active navigation item */
+section[data-testid="stSidebar"] a.active,
+section[data-testid="stSidebar"] .stNavigation a.active,
+section[data-testid="stSidebar"] nav a.active {
+    color: #fbbf24 !important;
+    font-weight: 700 !important;
+    background: rgba(251, 191, 36, 0.15) !important;
+    border-left: 3px solid #fbbf24 !important;
+    padding-left: 8px !important;
+}
+
 /* Sidebar radio/checkbox */
 section[data-testid="stSidebar"] .stRadio > div,
 section[data-testid="stSidebar"] .stCheckbox > div {
@@ -2660,9 +2691,16 @@ PAGES = {
 with st.sidebar:
     st.markdown("## ❄️ RAC Monitor")
     st.divider()
-    page = st.radio("", list(PAGES.keys()), label_visibility="collapsed")
+    
+    # Custom navigation with high contrast styling
+    selected_page = st.radio(
+        "Navigation", 
+        list(PAGES.keys()), 
+        label_visibility="collapsed"
+    )
+    
     st.divider()
     client_ok = _get_supabase() is not None
     st.caption(f"Supabase: {'🟢 connected' if client_ok else '🔴 not connected'}")
 
-PAGES[page]()
+PAGES[selected_page]()
