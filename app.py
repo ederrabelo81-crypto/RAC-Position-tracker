@@ -178,6 +178,7 @@ def query_coletas(
     platforms: list[str] | None = None,
     platform_types: list[str] | None = None,
     brands: list[str] | None = None,
+    sellers: list[str] | None = None,
     keywords: list[str] | None = None,
     products: list[str] | None = None,
     btu_filter: list[str] | None = None,
@@ -208,6 +209,8 @@ def query_coletas(
             # Expand canonical names to all raw DB variants
             # (e.g. "Midea" → ["Midea", "Springer Midea", "Midea Carrier", "Springer"])
             q = q.in_("marca", _expand_brands(brands))
+        if sellers:
+            q = q.in_("seller", sellers)
         if keywords:
             q = q.in_("keyword", keywords)
         if products:
@@ -265,7 +268,7 @@ def query_coletas(
 @st.cache_data(ttl=300, show_spinner=False)
 def get_filter_options() -> dict:
     """Fetch distinct values for filter dropdowns (last 90 days)."""
-    empty = {"platforms": [], "platform_types": [], "brands": [], "keywords": []}
+    empty = {"platforms": [], "platform_types": [], "brands": [], "keywords": [], "sellers": []}
     client = _get_supabase()
     if client is None:
         return empty
@@ -274,7 +277,7 @@ def get_filter_options() -> dict:
         # DB column is "tipo" (CSV "Tipo Plataforma" → DB "tipo" per _COLUMN_MAP).
         resp = (
             client.table("coletas")
-            .select("plataforma, tipo, marca, keyword")
+            .select("plataforma, tipo, marca, keyword, seller")
             .gte("data", since)
             .limit(50000)
             .execute()
@@ -290,7 +293,7 @@ def get_filter_options() -> dict:
             for b in df["marca"].dropna().unique()
         ))
 
-        # Normalize platform names to handle variations (e.g., "FerreiraCosta" 
+        # Normalize platform names to handle variations (e.g., "FerreiraCosta"
         # and "FerreiraCoasta" both appear as "Ferreira Costa")
         platforms_normalized = sorted(set(
             _normalize_platform(p)
@@ -302,6 +305,7 @@ def get_filter_options() -> dict:
             "platform_types": sorted(df["tipo"].dropna().unique().tolist()) if "tipo" in df.columns else [],
             "brands":         brands_canonical,
             "keywords":       sorted(df["keyword"].dropna().unique().tolist()),
+            "sellers":        sorted(df["seller"].dropna().unique().tolist()) if "seller" in df.columns else [],
         }
     except Exception as exc:
         st.warning(f"Filter options query failed: {exc}")
@@ -532,6 +536,7 @@ def page_results():
 
         sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"])
         sel_platforms = st.multiselect("Platforms",       opts["platforms"])
+        sel_sellers   = st.multiselect("Sellers",         opts["sellers"])
         sel_brands    = st.multiselect("Brands",          opts["brands"])
         sel_keywords  = st.multiselect("Keywords",        opts["keywords"])
         sel_btu       = st.multiselect(
@@ -578,6 +583,7 @@ def page_results():
             platforms=sel_platforms or None,
             platform_types=sel_tipo or None,
             brands=sel_brands or None,
+            sellers=sel_sellers or None,
             keywords=sel_keywords or None,
             products=sel_skus or None,
             btu_filter=sel_btu or None,
@@ -653,6 +659,7 @@ def page_price_evolution():
         sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"], key="evo_tipo")
         sel_brands    = st.multiselect("Brands",    opts["brands"],         key="evo_brands")
         sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="evo_platforms")
+        sel_sellers   = st.multiselect("Sellers",   opts["sellers"],        key="evo_sellers")
         sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="evo_keywords")
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
@@ -704,6 +711,7 @@ def page_price_evolution():
             platforms=sel_platforms or None,
             platform_types=sel_tipo or None,
             brands=sel_brands or None,
+            sellers=sel_sellers or None,
             keywords=sel_keywords or None,
             products=sel_skus or None,
             btu_filter=sel_btu or None,
@@ -1286,6 +1294,7 @@ def page_buybox_position():
 
         sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"], key="bb_tipo")
         sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="bb_platforms")
+        sel_sellers   = st.multiselect("Sellers",   opts["sellers"],        key="bb_sellers")
         sel_brands    = st.multiselect("Brands",    opts["brands"],         key="bb_brands")
         sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="bb_keywords")
         sel_btu       = st.multiselect(
@@ -1339,6 +1348,7 @@ def page_buybox_position():
             platforms=sel_platforms or None,
             platform_types=sel_tipo or None,
             brands=sel_brands or None,
+            sellers=sel_sellers or None,
             keywords=sel_keywords or None,
             products=sel_skus or None,
             btu_filter=sel_btu or None,
