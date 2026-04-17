@@ -134,6 +134,42 @@ def _apply_chart_style(fig, height: int = 440, hovermode: str = "x unified") -> 
     )
 
 
+_MIDEA_BRAND = "Midea"
+
+
+def _brand_color_map(values) -> dict:
+    """Discrete color map: Midea → primary brand blue; others rotate through palette."""
+    unique = sorted(set(str(v) for v in values if pd.notna(v)))
+    secondary = [c for c in _CHART_COLORS if c != _CHART_COLORS[0]]
+    cmap, idx = {}, 0
+    for v in unique:
+        if v == _MIDEA_BRAND:
+            cmap[v] = _CHART_COLORS[0]
+        else:
+            cmap[v] = secondary[idx % len(secondary)]
+            idx += 1
+    return cmap
+
+
+def _emphasize_midea_traces(fig) -> None:
+    """Make Midea's trace thicker and markers bigger so it stands out."""
+    for trace in fig.data:
+        if getattr(trace, "name", None) == _MIDEA_BRAND:
+            if hasattr(trace, "line") and trace.line is not None:
+                trace.line.width = 4.5
+            if hasattr(trace, "marker") and trace.marker is not None:
+                trace.marker.size = 10
+
+
+def _style_midea_df(df: pd.DataFrame, brand_col: str = "marca"):
+    """Return a Pandas Styler that visually highlights Midea rows."""
+    def _row_style(row):
+        if brand_col in row.index and row[brand_col] == _MIDEA_BRAND:
+            return ["background-color: #eff6ff; font-weight: 700; color: #1d4ed8"] * len(row)
+        return [""] * len(row)
+    return df.style.apply(_row_style, axis=1)
+
+
 st.set_page_config(
     page_title="RAC Price Monitor",
     page_icon="❄️",
@@ -776,7 +812,7 @@ def page_results():
     ]
 
     st.dataframe(
-        df[display_cols],
+        _style_midea_df(df[display_cols]),
         use_container_width=True,
         height=520,
         column_config={
@@ -925,16 +961,19 @@ def page_price_evolution():
 
     # ── Tab 1: Price Chart ───────────────────────────────────────────────────
     with tab_chart:
+        _cmap = _brand_color_map(agg[group_by]) if group_by == "Brand" else None
         fig = px.line(
             agg,
             x="data",
             y="Median Price (R$)",
             color=group_by,
+            color_discrete_map=_cmap,
             markers=True,
             title=f"Median Price Evolution by {group_by}",
             labels={"data": "Date"},
         )
         fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
+        _emphasize_midea_traces(fig)
         _apply_chart_style(fig, height=460)
         st.plotly_chart(fig, use_container_width=True)
 
@@ -956,7 +995,11 @@ def page_price_evolution():
             .rename(columns={group_col: group_by})
             .sort_values("Median", ascending=True)
         )
-        st.dataframe(summary, use_container_width=True, hide_index=True)
+        _summary_styled = (
+            _style_midea_df(summary, brand_col=group_by)
+            if group_by == "Brand" else summary
+        )
+        st.dataframe(_summary_styled, use_container_width=True, hide_index=True)
 
     # ── Tab 3: Detail ────────────────────────────────────────────────────────
     with tab_detail:
@@ -969,9 +1012,9 @@ def page_price_evolution():
             ] if c in df.columns
         ]
         st.dataframe(
-            df[display_cols].sort_values(
+            _style_midea_df(df[display_cols].sort_values(
                 ["data", "plataforma"], ascending=[False, True]
-            ),
+            )),
             use_container_width=True,
             height=500,
             column_config={
@@ -1604,24 +1647,25 @@ def page_buybox_position():
 
             col_chart, col_table = st.columns([2, 1])
             with col_chart:
+                _bb_cmap = _brand_color_map(win_counts.head(15)["marca"])
                 fig_bar = px.bar(
                     win_counts.head(15),
                     x="BuyBox wins",
                     y="marca",
                     orientation="h",
-                    color="Win rate (%)",
-                    color_continuous_scale="Blues",
+                    color="marca",
+                    color_discrete_map=_bb_cmap,
                     text="Win rate (%)",
                     labels={"marca": "Brand"},
                     title=f"Top brands in position ≤ {top_n}",
                 )
                 fig_bar.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
                 _apply_chart_style(fig_bar, height=420, hovermode="closest")
-                fig_bar.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False)
+                fig_bar.update_layout(yaxis=dict(autorange="reversed"), showlegend=False)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
             with col_table:
-                st.dataframe(win_counts, use_container_width=True, hide_index=True)
+                st.dataframe(_style_midea_df(win_counts), use_container_width=True, hide_index=True)
 
         # BuyBox win rate by platform
         if "plataforma" in df_top.columns:
@@ -1665,16 +1709,19 @@ def page_buybox_position():
             )
             timeline["data"] = pd.to_datetime(timeline["data"])
 
+            _cmap = _brand_color_map(timeline[group_choice]) if group_choice == "Brand" else None
             fig_line = px.line(
                 timeline,
                 x="data",
                 y="BuyBox wins",
                 color=group_choice,
+                color_discrete_map=_cmap,
                 markers=True,
                 title=f"Daily BuyBox wins by {group_choice}",
                 labels={"data": "Date"},
             )
             fig_line.update_traces(line=dict(width=2.5), marker=dict(size=6))
+            _emphasize_midea_traces(fig_line)
             _apply_chart_style(fig_line, height=450)
             st.plotly_chart(fig_line, use_container_width=True)
 
@@ -1691,10 +1738,10 @@ def page_buybox_position():
         ]
 
         st.dataframe(
-            df_top[display_cols].sort_values(
+            _style_midea_df(df_top[display_cols].sort_values(
                 ["data", "plataforma", "posicao_geral"],
                 ascending=[False, True, True],
-            ),
+            )),
             use_container_width=True,
             height=500,
             column_config={
@@ -1848,24 +1895,25 @@ def page_availability():
 
             col_chart, col_table = st.columns([2, 1])
             with col_chart:
+                _av_cmap = _brand_color_map(brand_counts.head(15)["marca"])
                 fig_bar = px.bar(
                     brand_counts.head(15),
                     x="Appearances",
                     y="marca",
                     orientation="h",
-                    color="Share (%)",
-                    color_continuous_scale="Blues",
+                    color="marca",
+                    color_discrete_map=_av_cmap,
                     text="Share (%)",
                     labels={"marca": "Brand"},
                     title="Top brands by total appearances (all positions)",
                 )
                 fig_bar.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
                 _apply_chart_style(fig_bar, height=420, hovermode="closest")
-                fig_bar.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False)
+                fig_bar.update_layout(yaxis=dict(autorange="reversed"), showlegend=False)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
             with col_table:
-                st.dataframe(brand_counts, use_container_width=True, hide_index=True)
+                st.dataframe(_style_midea_df(brand_counts), use_container_width=True, hide_index=True)
 
         if "plataforma" in df_all.columns:
             st.subheader("Appearance share by platform")
@@ -1908,16 +1956,19 @@ def page_availability():
             )
             timeline["data"] = pd.to_datetime(timeline["data"])
 
+            _cmap = _brand_color_map(timeline[group_choice]) if group_choice == "Brand" else None
             fig_line = px.line(
                 timeline,
                 x="data",
                 y="Appearances",
                 color=group_choice,
+                color_discrete_map=_cmap,
                 markers=True,
                 title=f"Daily appearances by {group_choice}",
                 labels={"data": "Date"},
             )
             fig_line.update_traces(line=dict(width=2.5), marker=dict(size=6))
+            _emphasize_midea_traces(fig_line)
             _apply_chart_style(fig_line, height=450)
             st.plotly_chart(fig_line, use_container_width=True)
 
@@ -1934,10 +1985,10 @@ def page_availability():
         ]
 
         st.dataframe(
-            df_all[display_cols].sort_values(
+            _style_midea_df(df_all[display_cols].sort_values(
                 ["data", "plataforma", "posicao_geral"],
                 ascending=[False, True, True],
-            ),
+            )),
             use_container_width=True,
             height=500,
             column_config={
