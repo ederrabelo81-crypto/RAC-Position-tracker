@@ -162,12 +162,16 @@ def _emphasize_midea_traces(fig) -> None:
 
 
 def _style_midea_df(df: pd.DataFrame, brand_col: str = "marca"):
-    """Return a Pandas Styler that visually highlights Midea rows."""
+    """Return a Pandas Styler that highlights Midea rows and limits float decimals."""
     def _row_style(row):
         if brand_col in row.index and row[brand_col] == _MIDEA_BRAND:
             return ["background-color: #eff6ff; font-weight: 700; color: #1d4ed8"] * len(row)
         return [""] * len(row)
-    return df.style.apply(_row_style, axis=1)
+    styler = df.style.apply(_row_style, axis=1)
+    float_cols = df.select_dtypes(include="float").columns.tolist()
+    if float_cols:
+        styler = styler.format({col: "{:.2f}" for col in float_cols})
+    return styler
 
 
 st.set_page_config(
@@ -1647,21 +1651,24 @@ def page_buybox_position():
 
             col_chart, col_table = st.columns([2, 1])
             with col_chart:
-                _bb_cmap = _brand_color_map(win_counts.head(15)["marca"])
+                _bb_top15 = win_counts.head(15)
+                _bb_order = _bb_top15.sort_values("BuyBox wins", ascending=True)["marca"].tolist()
+                _bb_cmap  = _brand_color_map(_bb_top15["marca"])
                 fig_bar = px.bar(
-                    win_counts.head(15),
+                    _bb_top15,
                     x="BuyBox wins",
                     y="marca",
                     orientation="h",
                     color="marca",
                     color_discrete_map=_bb_cmap,
+                    category_orders={"marca": _bb_order},
                     text="Win rate (%)",
                     labels={"marca": "Brand"},
                     title=f"Top brands in position ≤ {top_n}",
                 )
-                fig_bar.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                fig_bar.update_traces(texttemplate="%{text:.2f}%", textposition="outside")
                 _apply_chart_style(fig_bar, height=420, hovermode="closest")
-                fig_bar.update_layout(yaxis=dict(autorange="reversed"), showlegend=False)
+                fig_bar.update_layout(showlegend=False)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
             with col_table:
@@ -1895,21 +1902,24 @@ def page_availability():
 
             col_chart, col_table = st.columns([2, 1])
             with col_chart:
-                _av_cmap = _brand_color_map(brand_counts.head(15)["marca"])
+                _av_top15 = brand_counts.head(15)
+                _av_order = _av_top15.sort_values("Appearances", ascending=True)["marca"].tolist()
+                _av_cmap  = _brand_color_map(_av_top15["marca"])
                 fig_bar = px.bar(
-                    brand_counts.head(15),
+                    _av_top15,
                     x="Appearances",
                     y="marca",
                     orientation="h",
                     color="marca",
                     color_discrete_map=_av_cmap,
+                    category_orders={"marca": _av_order},
                     text="Share (%)",
                     labels={"marca": "Brand"},
                     title="Top brands by total appearances (all positions)",
                 )
-                fig_bar.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                fig_bar.update_traces(texttemplate="%{text:.2f}%", textposition="outside")
                 _apply_chart_style(fig_bar, height=420, hovermode="closest")
-                fig_bar.update_layout(yaxis=dict(autorange="reversed"), showlegend=False)
+                fig_bar.update_layout(showlegend=False)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
             with col_table:
