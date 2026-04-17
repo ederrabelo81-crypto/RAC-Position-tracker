@@ -39,72 +39,470 @@ _CHART_COLORS = [
 ]
 
 _CSS = """<style>
-/* Metric cards */
+/* ===========================
+   IMPORT FONT - INTER
+   =========================== */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* ===========================
+   GLOBAL STYLES
+   =========================== */
+* {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Main container */
+.main > div:first-child {
+    max-width: 1400px !important;
+    padding: 0 1rem;
+}
+
+/* ===========================
+   HEADER CUSTOMIZATION
+   =========================== */
+header {
+    background: linear-gradient(135deg, #1a56db 0%, #1e40af 50%, #1e3a8a 100%) !important;
+    padding: 1.5rem 0 !important;
+    border-bottom: 3px solid #fbbf24 !important;
+    box-shadow: 0 4px 20px rgba(26, 86, 219, 0.3) !important;
+}
+
+header .stApp {
+    background: transparent !important;
+}
+
+/* Hide Streamlit branding */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+
+/* ===========================
+   ENHANCED METRIC CARDS
+   =========================== */
 [data-testid="stMetric"] {
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    padding: 1rem 1.25rem;
-    box-shadow: 0 1px 4px rgba(0,0,0,.06);
-}
-[data-testid="stMetricLabel"] {
-    font-size: .78rem !important;
-    color: #64748b !important;
-    text-transform: uppercase;
-    letter-spacing: .05em;
-}
-[data-testid="stMetricValue"] {
-    font-size: 1.7rem !important;
-    font-weight: 700 !important;
-    color: #1e293b !important;
-}
-
-/* Tabs */
-.stTabs [data-baseweb="tab-list"] {
-    gap: 2px;
-    background: #f1f5f9;
-    border-radius: 8px;
-    padding: 4px;
-}
-.stTabs [data-baseweb="tab"] {
-    border-radius: 6px;
-    padding: .35rem .85rem;
-    font-size: .85rem;
-    font-weight: 500;
-    color: #64748b;
-    background: transparent;
-    border: none;
-}
-.stTabs [aria-selected="true"] {
-    background: #ffffff !important;
-    color: #1a56db !important;
-    box-shadow: 0 1px 3px rgba(0,0,0,.1);
-}
-
-/* Primary buttons */
-button[kind="primary"],
-[data-testid="stBaseButton-primary"] {
-    background: linear-gradient(135deg, #1a56db, #1e40af) !important;
-    border-radius: 8px !important;
-    font-weight: 600 !important;
-    border: none !important;
-    letter-spacing: .02em;
-}
-
-/* DataFrames */
-[data-testid="stDataFrame"] {
-    border-radius: 8px;
-    border: 1px solid #e2e8f0;
+    background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%) !important;
+    border: 1px solid #e2e8f0 !important;
+    border-left: 4px solid #1a56db !important;
+    border-radius: 16px !important;
+    padding: 1.5rem !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    position: relative;
     overflow: hidden;
 }
 
-/* Dividers */
-hr { border-color: #e2e8f0 !important; }
+[data-testid="stMetric"]:hover {
+    transform: translateY(-4px) !important;
+    box-shadow: 0 12px 24px rgba(26, 86, 219, 0.15), 0 8px 16px rgba(0, 0, 0, 0.08) !important;
+    border-left-color: #fbbf24 !important;
+}
 
-/* Progress bar */
+[data-testid="stMetric"]::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    right: -50%;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle, rgba(26, 86, 219, 0.05) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+[data-testid="stMetricLabel"] {
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    color: #64748b !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+    margin-bottom: 0.5rem !important;
+}
+
+[data-testid="stMetricValue"] {
+    font-size: 2.2rem !important;
+    font-weight: 800 !important;
+    background: linear-gradient(135deg, #1e293b 0%, #1a56db 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1.2 !important;
+}
+
+[data-testid="stMetricDelta"] {
+    font-size: 0.9rem !important;
+    font-weight: 600 !important;
+    padding: 0.25rem 0.5rem !important;
+    border-radius: 6px !important;
+    margin-top: 0.5rem !important;
+}
+
+[data-testid="stMetricDelta"][data-testid="stMetricDeltaPositive"] {
+    background: rgba(5, 150, 105, 0.1) !important;
+    color: #059669 !important;
+}
+
+[data-testid="stMetricDelta"][data-testid="stMetricDeltaNegative"] {
+    background: rgba(239, 68, 68, 0.1) !important;
+    color: #dc2626 !important;
+}
+
+/* ===========================
+   MODERN TABS
+   =========================== */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+    background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+    border-radius: 12px;
+    padding: 6px;
+    margin-bottom: 1.5rem;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.06);
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px !important;
+    padding: 0.75rem 1.5rem !important;
+    font-size: 0.9rem !important;
+    font-weight: 600 !important;
+    color: #64748b !important;
+    background: transparent !important;
+    border: 2px solid transparent !important;
+    transition: all 0.2s ease !important;
+    min-height: auto !important;
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+    color: #1a56db !important;
+    background: rgba(255, 255, 255, 0.5) !important;
+}
+
+.stTabs [aria-selected="true"] {
+    background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%) !important;
+    color: #1a56db !important;
+    font-weight: 700 !important;
+    box-shadow: 0 4px 12px rgba(26, 86, 219, 0.15), 0 2px 4px rgba(0, 0, 0, 0.08) !important;
+    border: 2px solid #1a56db !important;
+    transform: translateY(-2px);
+}
+
+/* ===========================
+   PRIMARY BUTTONS
+   =========================== */
+button[kind="primary"],
+[data-testid="stBaseButton-primary"] {
+    background: linear-gradient(135deg, #1a56db 0%, #1e40af 100%) !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    font-size: 0.95rem !important;
+    border: none !important;
+    letter-spacing: 0.02em !important;
+    padding: 0.5rem 1.5rem !important;
+    box-shadow: 0 4px 12px rgba(26, 86, 219, 0.3) !important;
+    transition: all 0.2s ease !important;
+}
+
+button[kind="primary"]:hover,
+[data-testid="stBaseButton-primary"]:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 6px 20px rgba(26, 86, 219, 0.4) !important;
+    background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%) !important;
+}
+
+/* Secondary buttons */
+button:not([kind="primary"]),
+[data-testid="stBaseButton-secondary"] {
+    border: 2px solid #e2e8f0 !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    color: #475569 !important;
+    background: #ffffff !important;
+    transition: all 0.2s ease !important;
+}
+
+button:not([kind="primary"]):hover,
+[data-testid="stBaseButton-secondary"]:hover {
+    border-color: #1a56db !important;
+    color: #1a56db !important;
+    background: #eff6ff !important;
+}
+
+/* ===========================
+   DATAFRAMES / TABLES
+   =========================== */
+[data-testid="stDataFrame"] {
+    border-radius: 12px !important;
+    border: 1px solid #e2e8f0 !important;
+    overflow: hidden !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04) !important;
+    background: #ffffff !important;
+}
+
+[data-testid="stDataFrame"] thead tr th {
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%) !important;
+    color: #475569 !important;
+    font-weight: 700 !important;
+    font-size: 0.85rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.05em !important;
+    border-bottom: 2px solid #cbd5e1 !important;
+    padding: 1rem !important;
+}
+
+[data-testid="stDataFrame"] tbody td {
+    padding: 0.75rem 1rem !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    font-size: 0.9rem !important;
+    color: #1e293b !important;
+}
+
+[data-testid="stDataFrame"] tbody tr:hover {
+    background: linear-gradient(90deg, #eff6ff 0%, #f8fafc 100%) !important;
+}
+
+/* ===========================
+   DIVIDERS
+   =========================== */
+hr {
+    border-color: #e2e8f0 !important;
+    border-width: 2px !important;
+    margin: 1.5rem 0 !important;
+}
+
+/* ===========================
+   PROGRESS BAR
+   =========================== */
 [data-testid="stProgressBar"] > div > div {
-    background: linear-gradient(90deg, #1a56db, #0891b2) !important;
-    border-radius: 4px;
+    background: linear-gradient(90deg, #1a56db 0%, #0891b2 50%, #059669 100%) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 2px 8px rgba(26, 86, 219, 0.3) !important;
+}
+
+/* ===========================
+   SIDEBAR STYLING
+   =========================== */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%) !important;
+    border-right: 1px solid #334155 !important;
+}
+
+section[data-testid="stSidebar"] .stMarkdown h2,
+section[data-testid="stSidebar"] .stMarkdown h3 {
+    color: #fbbf24 !important;
+    font-weight: 700 !important;
+}
+
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] .stMarkdown {
+    color: #cbd5e1 !important;
+}
+
+/* Sidebar radio/checkbox */
+section[data-testid="stSidebar"] .stRadio > div,
+section[data-testid="stSidebar"] .stCheckbox > div {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    padding: 0.5rem;
+    margin: 0.25rem 0;
+}
+
+section[data-testid="stSidebar"] .stRadio label,
+section[data-testid="stSidebar"] .stCheckbox label {
+    color: #e2e8f0 !important;
+    font-weight: 500 !important;
+    transition: color 0.2s ease;
+}
+
+section[data-testid="stSidebar"] .stRadio label:hover,
+section[data-testid="stSidebar"] .stCheckbox label:hover {
+    color: #fbbf24 !important;
+}
+
+/* Selected sidebar item */
+section[data-testid="stSidebar"] .stRadio input:checked + span {
+    color: #fbbf24 !important;
+    font-weight: 700 !important;
+}
+
+/* ===========================
+   CARDS & CONTAINERS
+   =========================== */
+div.stAlert {
+    border-radius: 12px !important;
+    border: none !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08) !important;
+}
+
+div.stSuccess {
+    background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%) !important;
+    border-left: 4px solid #059669 !important;
+}
+
+div.stWarning {
+    background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%) !important;
+    border-left: 4px solid #d97706 !important;
+}
+
+div.stError {
+    background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%) !important;
+    border-left: 4px solid #dc2626 !important;
+}
+
+div.stInfo {
+    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%) !important;
+    border-left: 4px solid #1a56db !important;
+}
+
+/* ===========================
+   EXPANDER / COLLAPSIBLE
+   =========================== */
+.streamlit-expanderHeader {
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%) !important;
+    border-radius: 10px !important;
+    border: 1px solid #e2e8f0 !important;
+    font-weight: 600 !important;
+    color: #1e293b !important;
+    padding: 1rem !important;
+    transition: all 0.2s ease !important;
+}
+
+.streamlit-expanderHeader:hover {
+    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%) !important;
+    border-color: #1a56db !important;
+}
+
+/* ===========================
+   NUMBER INPUT / TEXT INPUT
+   =========================== */
+input[type="number"],
+input[type="text"],
+.stTextInput > div > div > input {
+    border-radius: 8px !important;
+    border: 2px solid #e2e8f0 !important;
+    padding: 0.6rem 1rem !important;
+    font-size: 0.95rem !important;
+    transition: all 0.2s ease !important;
+}
+
+input[type="number"]:focus,
+input[type="text"]:focus,
+.stTextInput > div > div > input:focus {
+    border-color: #1a56db !important;
+    box-shadow: 0 0 0 3px rgba(26, 86, 219, 0.1) !important;
+}
+
+/* ===========================
+   SELECTBOX
+   =========================== */
+.stSelectbox > div > div {
+    border-radius: 8px !important;
+    border: 2px solid #e2e8f0 !important;
+    transition: all 0.2s ease !important;
+}
+
+.stSelectbox > div > div:hover {
+    border-color: #cbd5e1 !important;
+}
+
+/* ===========================
+   SLIDER
+   =========================== */
+.stSlider > div > div {
+    height: 8px !important;
+    border-radius: 4px !important;
+    background: #e2e8f0 !important;
+}
+
+.stSlider > div > div > div {
+    background: linear-gradient(135deg, #1a56db 0%, #1e40af 100%) !important;
+    border-radius: 4px !important;
+    box-shadow: 0 2px 8px rgba(26, 86, 219, 0.4) !important;
+}
+
+/* Slider thumb */
+.stSlider [role="slider"]::-webkit-slider-thumb {
+    width: 20px !important;
+    height: 20px !important;
+    background: #ffffff !important;
+    border: 3px solid #1a56db !important;
+    border-radius: 50% !important;
+    box-shadow: 0 2px 8px rgba(26, 86, 219, 0.4) !important;
+    cursor: pointer !important;
+}
+
+/* ===========================
+   CHART CONTAINERS
+   =========================== */
+.chart-container {
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 1.5rem;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    margin-bottom: 1.5rem;
+}
+
+/* ===========================
+   CUSTOM BADGES (for availability status)
+   =========================== */
+.badge-available {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+    color: #059669;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    border: 1px solid #059669;
+}
+
+.badge-unavailable {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+    color: #dc2626;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    border: 1px solid #dc2626;
+}
+
+.badge-warning {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+    color: #d97706;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    border: 1px solid #d97706;
+}
+
+/* ===========================
+   ANIMATIONS
+   =========================== */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+}
+
+.metric-card {
+    animation: fadeIn 0.5s ease-out;
+}
+
+/* ===========================
+   RESPONSIVE ADJUSTMENTS
+   =========================== */
+@media (max-width: 768px) {
+    [data-testid="stMetricValue"] {
+        font-size: 1.8rem !important;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        padding: 0.5rem 1rem !important;
+        font-size: 0.8rem !important;
+    }
 }
 </style>"""
 
@@ -798,13 +1196,45 @@ def page_results():
         st.warning("No data found for the selected filters.")
         return
 
-    # --- Summary metrics ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total records",  f"{len(df):,}")
-    c2.metric("Platforms",      df["plataforma"].nunique() if "plataforma" in df else 0)
-    c3.metric("Brands",         df["marca"].nunique() if "marca" in df else 0)
-    c4.metric("With price",     f"{df['preco'].notna().sum():,}" if "preco" in df else 0)
-
+    # --- Summary metrics with enhanced cards ---
+    st.markdown("""
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
+    """, unsafe_allow_html=True)
+    
+    cols = st.columns(4)
+    
+    with cols[0]:
+        st.metric(
+            label="📊 Total Records",
+            value=f"{len(df):,}",
+            delta=None
+        )
+    
+    with cols[1]:
+        platform_count = df["plataforma"].nunique() if "plataforma" in df else 0
+        st.metric(
+            label="🌐 Platforms",
+            value=str(platform_count),
+            delta=None
+        )
+    
+    with cols[2]:
+        brand_count = df["marca"].nunique() if "marca" in df else 0
+        st.metric(
+            label="🏷️ Brands",
+            value=str(brand_count),
+            delta=None
+        )
+    
+    with cols[3]:
+        price_count = df['preco'].notna().sum() if "preco" in df else 0
+        st.metric(
+            label="💰 With Price",
+            value=f"{price_count:,}",
+            delta=None
+        )
+    
+    st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
     # --- Display columns ---
@@ -927,13 +1357,47 @@ def page_price_evolution():
         st.warning("No price data found for the selected filters.")
         return
 
+    # --- Summary metrics with enhanced cards ---
+    st.markdown("""
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
+    """, unsafe_allow_html=True)
+    
     days = (end_date - start_date).days + 1
-    st.caption(
-        f"{len(df):,} records loaded · "
-        f"{df['produto'].nunique() if 'produto' in df.columns else 0} unique SKUs · "
-        f"{df['marca'].nunique() if 'marca' in df.columns else 0} brands · "
-        f"{days} days"
-    )
+    unique_skus = df['produto'].nunique() if 'produto' in df.columns else 0
+    unique_brands = df['marca'].nunique() if 'marca' in df.columns else 0
+    
+    cols = st.columns(4)
+    
+    with cols[0]:
+        st.metric(
+            label="📊 Total Records",
+            value=f"{len(df):,}",
+            delta=None
+        )
+    
+    with cols[1]:
+        st.metric(
+            label="📦 Unique SKUs",
+            value=f"{unique_skus:,}",
+            delta=None
+        )
+    
+    with cols[2]:
+        st.metric(
+            label="🏷️ Brands",
+            value=str(unique_brands),
+            delta=None
+        )
+    
+    with cols[3]:
+        st.metric(
+            label="📅 Time Range",
+            value=f"{days} days",
+            delta=None
+        )
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.divider()
 
     df_price = df.dropna(subset=["preco", "data"])
     if df_price.empty:
@@ -1709,13 +2173,45 @@ def page_buybox_position():
         st.warning(f"No records with position ≤ {top_n} in this range.")
         return
 
-    # --- Summary metrics ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("BuyBox records",   f"{len(df_top):,}")
-    c2.metric("Platforms",        df_top["plataforma"].nunique() if "plataforma" in df_top else 0)
-    c3.metric("Brands in top",    df_top["marca"].nunique() if "marca" in df_top else 0)
-    c4.metric("Unique products",  df_top["produto"].nunique() if "produto" in df_top else 0)
-
+    # --- Summary metrics with enhanced cards ---
+    st.markdown("""
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
+    """, unsafe_allow_html=True)
+    
+    cols = st.columns(4)
+    
+    with cols[0]:
+        st.metric(
+            label="🏅 BuyBox Records",
+            value=f"{len(df_top):,}",
+            delta=None
+        )
+    
+    with cols[1]:
+        platform_count = df_top["plataforma"].nunique() if "plataforma" in df_top else 0
+        st.metric(
+            label="🌐 Platforms",
+            value=str(platform_count),
+            delta=None
+        )
+    
+    with cols[2]:
+        brand_count = df_top["marca"].nunique() if "marca" in df_top else 0
+        st.metric(
+            label="🏷️ Brands in Top",
+            value=str(brand_count),
+            delta=None
+        )
+    
+    with cols[3]:
+        product_count = df_top["produto"].nunique() if "produto" in df_top else 0
+        st.metric(
+            label="📦 Unique Products",
+            value=f"{product_count:,}",
+            delta=None
+        )
+    
+    st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
     tab_wins, tab_timeline, tab_detail = st.tabs(
@@ -1961,13 +2457,49 @@ def page_availability():
         st.warning("No records with position data in this range.")
         return
 
-    # --- Summary metrics ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total records",    f"{len(df_all):,}")
-    c2.metric("Platforms",        df_all["plataforma"].nunique() if "plataforma" in df_all else 0)
-    c3.metric("Brands present",   df_all["marca"].nunique() if "marca" in df_all else 0)
-    c4.metric("Unique products",  df_all["produto"].nunique() if "produto" in df_all else 0)
-
+    # --- Summary metrics with enhanced cards ---
+    st.markdown("""
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
+    """, unsafe_allow_html=True)
+    
+    cols = st.columns(4)
+    
+    # Metric 1: Total Records
+    with cols[0]:
+        st.metric(
+            label="📊 Total Records",
+            value=f"{len(df_all):,}",
+            delta=None
+        )
+    
+    # Metric 2: Platforms
+    with cols[1]:
+        platform_count = df_all["plataforma"].nunique() if "plataforma" in df_all else 0
+        st.metric(
+            label="🌐 Platforms",
+            value=str(platform_count),
+            delta=None
+        )
+    
+    # Metric 3: Brands Present
+    with cols[2]:
+        brand_count = df_all["marca"].nunique() if "marca" in df_all else 0
+        st.metric(
+            label="🏷️ Brands Present",
+            value=str(brand_count),
+            delta=None
+        )
+    
+    # Metric 4: Unique Products
+    with cols[3]:
+        product_count = df_all["produto"].nunique() if "produto" in df_all else 0
+        st.metric(
+            label="📦 Unique Products",
+            value=f"{product_count:,}",
+            delta=None
+        )
+    
+    st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
     tab_share, tab_timeline, tab_detail = st.tabs(

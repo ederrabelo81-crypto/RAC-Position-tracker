@@ -1,41 +1,53 @@
 ```
-# Dependencies
-.venv/
-venv/
+# Streamlit specific
+.streamlit/secrets.toml
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
-
-# Logs
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
 *.log
+.git*
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.manifest
+*.spec
+.libs/
+.tags*
 
 # Environment
 .env
 .env.local
-*.env.*
+.env.dev
+.env.prod
+.env.*
+!.env.example
 
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
+# OS generated files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-
-# Coverage
-.coverage
-coverage/
-htmlcov/
-
-# Testing
-.pytest_cache/
-.mypy_cache/
+Icon?
 ```
