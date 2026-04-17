@@ -1652,7 +1652,7 @@ def page_buybox_position():
             col_chart, col_table = st.columns([2, 1])
             with col_chart:
                 _bb_top15 = win_counts.head(15)
-                _bb_order = _bb_top15.sort_values("BuyBox wins", ascending=True)["marca"].tolist()
+                _bb_order = _bb_top15.sort_values("BuyBox wins", ascending=False)["marca"].tolist()
                 _bb_cmap  = _brand_color_map(_bb_top15["marca"])
                 fig_bar = px.bar(
                     _bb_top15,
@@ -1903,7 +1903,7 @@ def page_availability():
             col_chart, col_table = st.columns([2, 1])
             with col_chart:
                 _av_top15 = brand_counts.head(15)
-                _av_order = _av_top15.sort_values("Appearances", ascending=True)["marca"].tolist()
+                _av_order = _av_top15.sort_values("Appearances", ascending=False)["marca"].tolist()
                 _av_cmap  = _brand_color_map(_av_top15["marca"])
                 fig_bar = px.bar(
                     _av_top15,
