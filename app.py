@@ -29,12 +29,118 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 PROJECT_ROOT = Path(__file__).parent
 
+# ---------------------------------------------------------------------------
+# Design system — colors, CSS, chart style helper
+# ---------------------------------------------------------------------------
+
+_CHART_COLORS = [
+    "#1a56db", "#f97316", "#059669", "#8b5cf6",
+    "#ef4444", "#0891b2", "#d97706", "#db2777",
+]
+
+_CSS = """<style>
+/* Metric cards */
+[data-testid="stMetric"] {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06);
+}
+[data-testid="stMetricLabel"] {
+    font-size: .78rem !important;
+    color: #64748b !important;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+}
+[data-testid="stMetricValue"] {
+    font-size: 1.7rem !important;
+    font-weight: 700 !important;
+    color: #1e293b !important;
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 2px;
+    background: #f1f5f9;
+    border-radius: 8px;
+    padding: 4px;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 6px;
+    padding: .35rem .85rem;
+    font-size: .85rem;
+    font-weight: 500;
+    color: #64748b;
+    background: transparent;
+    border: none;
+}
+.stTabs [aria-selected="true"] {
+    background: #ffffff !important;
+    color: #1a56db !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,.1);
+}
+
+/* Primary buttons */
+button[kind="primary"],
+[data-testid="stBaseButton-primary"] {
+    background: linear-gradient(135deg, #1a56db, #1e40af) !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    border: none !important;
+    letter-spacing: .02em;
+}
+
+/* DataFrames */
+[data-testid="stDataFrame"] {
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    overflow: hidden;
+}
+
+/* Dividers */
+hr { border-color: #e2e8f0 !important; }
+
+/* Progress bar */
+[data-testid="stProgressBar"] > div > div {
+    background: linear-gradient(90deg, #1a56db, #0891b2) !important;
+    border-radius: 4px;
+}
+</style>"""
+
+
+def _apply_chart_style(fig, height: int = 440, hovermode: str = "x unified") -> None:
+    """Apply consistent visual style to a Plotly figure in-place."""
+    fig.update_layout(
+        height=height,
+        hovermode=hovermode,
+        font=dict(family="Inter, -apple-system, sans-serif", size=13, color="#1e293b"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            font=dict(size=12), bgcolor="rgba(0,0,0,0)",
+        ),
+        margin=dict(l=40, r=20, t=50, b=40),
+        colorway=_CHART_COLORS,
+    )
+    fig.update_xaxes(
+        showgrid=True, gridcolor="#e2e8f0", gridwidth=1,
+        zeroline=False, showline=True, linecolor="#cbd5e1",
+    )
+    fig.update_yaxes(
+        showgrid=True, gridcolor="#e2e8f0", gridwidth=1,
+        zeroline=False, showline=False,
+    )
+
+
 st.set_page_config(
     page_title="RAC Price Monitor",
     page_icon="❄️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+st.markdown(_CSS, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Platform registry (active platforms only)
@@ -820,14 +926,9 @@ def page_price_evolution():
         markers=True,
         title=f"Median Price Evolution by {group_by}",
         labels={"data": "Date"},
-        template="plotly_white",
     )
-    fig.update_layout(
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode="x unified",
-        height=500,
-    )
-    fig.update_traces(line=dict(width=2), marker=dict(size=5))
+    fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
+    _apply_chart_style(fig, height=460)
     st.plotly_chart(fig, use_container_width=True)
 
     # --- Summary table ---
@@ -1472,14 +1573,10 @@ def page_buybox_position():
                     text="Win rate (%)",
                     labels={"marca": "Brand"},
                     title=f"Top brands in position ≤ {top_n}",
-                    template="plotly_white",
                 )
                 fig_bar.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-                fig_bar.update_layout(
-                    yaxis=dict(autorange="reversed"),
-                    coloraxis_showscale=False,
-                    height=420,
-                )
+                _apply_chart_style(fig_bar, height=420, hovermode="closest")
+                fig_bar.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
             with col_table:
@@ -1500,9 +1597,10 @@ def page_buybox_position():
                 names="plataforma",
                 values="BuyBox wins",
                 title="Records in top position by platform",
-                template="plotly_white",
+                color_discrete_sequence=_CHART_COLORS,
             )
             fig_pie.update_traces(textposition="inside", textinfo="percent+label")
+            _apply_chart_style(fig_pie, height=380, hovermode="closest")
             st.plotly_chart(fig_pie, use_container_width=True)
 
     # ── Tab 2: Timeline ─────────────────────────────────────────────────────
@@ -1534,14 +1632,9 @@ def page_buybox_position():
                 markers=True,
                 title=f"Daily BuyBox wins by {group_choice}",
                 labels={"data": "Date"},
-                template="plotly_white",
             )
-            fig_line.update_layout(
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                hovermode="x unified",
-                height=450,
-            )
-            fig_line.update_traces(line=dict(width=2), marker=dict(size=5))
+            fig_line.update_traces(line=dict(width=2.5), marker=dict(size=6))
+            _apply_chart_style(fig_line, height=450)
             st.plotly_chart(fig_line, use_container_width=True)
 
     # ── Tab 3: Detail ────────────────────────────────────────────────────────
@@ -1724,14 +1817,10 @@ def page_availability():
                     text="Share (%)",
                     labels={"marca": "Brand"},
                     title="Top brands by total appearances (all positions)",
-                    template="plotly_white",
                 )
                 fig_bar.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-                fig_bar.update_layout(
-                    yaxis=dict(autorange="reversed"),
-                    coloraxis_showscale=False,
-                    height=420,
-                )
+                _apply_chart_style(fig_bar, height=420, hovermode="closest")
+                fig_bar.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
             with col_table:
@@ -1751,9 +1840,10 @@ def page_availability():
                 names="plataforma",
                 values="Appearances",
                 title="Records by platform (all positions)",
-                template="plotly_white",
+                color_discrete_sequence=_CHART_COLORS,
             )
             fig_pie.update_traces(textposition="inside", textinfo="percent+label")
+            _apply_chart_style(fig_pie, height=380, hovermode="closest")
             st.plotly_chart(fig_pie, use_container_width=True)
 
     # ── Tab 2: Timeline ──────────────────────────────────────────────────────
@@ -1785,14 +1875,9 @@ def page_availability():
                 markers=True,
                 title=f"Daily appearances by {group_choice}",
                 labels={"data": "Date"},
-                template="plotly_white",
             )
-            fig_line.update_layout(
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                hovermode="x unified",
-                height=450,
-            )
-            fig_line.update_traces(line=dict(width=2), marker=dict(size=5))
+            fig_line.update_traces(line=dict(width=2.5), marker=dict(size=6))
+            _apply_chart_style(fig_line, height=450)
             st.plotly_chart(fig_line, use_container_width=True)
 
     # ── Tab 3: Detail ────────────────────────────────────────────────────────
