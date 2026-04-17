@@ -467,7 +467,7 @@ Uso interno. Consulte o proprietário do projeto para termos de licenciamento.
 
 ---
 
-## 👤 Autoria
+## 👤 @ederrabelo
 
 Desenvolvido para monitoramento competitivo de preços no varejo brasileiro de climatização.
 
