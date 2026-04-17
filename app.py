@@ -1528,11 +1528,261 @@ def page_buybox_position():
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Page 8 — Availability
+# ---------------------------------------------------------------------------
+
+def page_availability():
+    st.title("📦 Availability")
+    st.caption(
+        "Presença de marcas e sellers em TODAS as posições coletadas. "
+        "Mostra quão amplamente cada marca aparece nas buscas — independente da posição."
+    )
+
+    # --- Sidebar filters ---
+    with st.sidebar:
+        st.subheader("Filters")
+
+        date_range = st.date_input(
+            "Date range",
+            value=(date.today() - timedelta(days=30), date.today()),
+            max_value=date.today(),
+            key="av_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+
+        sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"], key="av_tipo")
+        sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="av_platforms")
+        sel_sellers   = st.multiselect("Sellers",   opts["sellers"],        key="av_sellers")
+        sel_brands    = st.multiselect("Brands",    opts["brands"],         key="av_brands")
+        sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="av_keywords")
+        sel_btu       = st.multiselect(
+            "Capacity (BTU)",
+            BTU_OPTIONS,
+            format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
+            key="av_btu",
+        )
+        sel_ptype     = st.multiselect(
+            "Tipo Produto",
+            list(PRODUCT_TYPE_OPTIONS.keys()),
+            help="Filtra por tipo de produto detectado no nome (Inverter, On/Off, Janela…)",
+            key="av_ptype",
+        )
+
+        # SKU drill-down — list narrows when brand, BTU or tipo filters change
+        _sku_opts = get_sku_options(
+            tuple(sorted(sel_brands)),
+            tuple(sorted(sel_btu)),
+            tuple(sorted(sel_ptype)),
+        )
+        _sku_label = (
+            f"Product / SKU  ({len(_sku_opts)} available)"
+            if _sku_opts else "Product / SKU"
+        )
+        sel_skus = st.multiselect(
+            _sku_label,
+            _sku_opts,
+            placeholder="All SKUs" if not sel_brands else "Select SKU(s)…",
+            help="Type to search. Select a Brand first to narrow options.",
+            key="av_skus",
+        )
+
+        load_btn = st.button("🔄 Load Availability", type="primary", use_container_width=True)
+
+    if not load_btn:
+        st.info("Set your filters in the sidebar and click **Load Availability**.")
+        return
+
+    with st.spinner("Loading data..."):
+        df = query_coletas(
+            start_date,
+            end_date,
+            platforms=sel_platforms or None,
+            platform_types=sel_tipo or None,
+            brands=sel_brands or None,
+            sellers=sel_sellers or None,
+            keywords=sel_keywords or None,
+            products=sel_skus or None,
+            btu_filter=sel_btu or None,
+            product_types=sel_ptype or None,
+            limit=20000,
+        )
+
+    if df.empty or "posicao_geral" not in df.columns:
+        st.warning("No data found for the selected filters.")
+        return
+
+    df_all = df[df["posicao_geral"].notna()].copy()
+
+    if df_all.empty:
+        st.warning("No records with position data in this range.")
+        return
+
+    # --- Summary metrics ---
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total records",    f"{len(df_all):,}")
+    c2.metric("Platforms",        df_all["plataforma"].nunique() if "plataforma" in df_all else 0)
+    c3.metric("Brands present",   df_all["marca"].nunique() if "marca" in df_all else 0)
+    c4.metric("Unique products",  df_all["produto"].nunique() if "produto" in df_all else 0)
+
+    st.divider()
+
+    tab_share, tab_timeline, tab_detail = st.tabs(
+        ["📊 Share", "📅 Timeline", "📋 Detail"]
+    )
+
+    # ── Tab 1: Appearance share by Brand / Platform ─────────────────────────
+    with tab_share:
+        st.subheader("Appearance share by brand")
+
+        if "marca" not in df_all.columns:
+            st.info("Brand (marca) column not available.")
+        else:
+            brand_counts = (
+                df_all
+                .groupby("marca", as_index=False)
+                .size()
+                .rename(columns={"size": "Appearances"})
+                .sort_values("Appearances", ascending=False)
+            )
+            total = brand_counts["Appearances"].sum()
+            brand_counts["Share (%)"] = (
+                brand_counts["Appearances"] / total * 100
+            ).round(1)
+
+            col_chart, col_table = st.columns([2, 1])
+            with col_chart:
+                fig_bar = px.bar(
+                    brand_counts.head(15),
+                    x="Appearances",
+                    y="marca",
+                    orientation="h",
+                    color="Share (%)",
+                    color_continuous_scale="Blues",
+                    text="Share (%)",
+                    labels={"marca": "Brand"},
+                    title="Top brands by total appearances (all positions)",
+                    template="plotly_white",
+                )
+                fig_bar.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                fig_bar.update_layout(
+                    yaxis=dict(autorange="reversed"),
+                    coloraxis_showscale=False,
+                    height=420,
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            with col_table:
+                st.dataframe(brand_counts, use_container_width=True, hide_index=True)
+
+        if "plataforma" in df_all.columns:
+            st.subheader("Appearance share by platform")
+            plat_counts = (
+                df_all
+                .groupby("plataforma", as_index=False)
+                .size()
+                .rename(columns={"size": "Appearances"})
+                .sort_values("Appearances", ascending=False)
+            )
+            fig_pie = px.pie(
+                plat_counts,
+                names="plataforma",
+                values="Appearances",
+                title="Records by platform (all positions)",
+                template="plotly_white",
+            )
+            fig_pie.update_traces(textposition="inside", textinfo="percent+label")
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+    # ── Tab 2: Timeline ──────────────────────────────────────────────────────
+    with tab_timeline:
+        st.subheader("Appearances over time")
+
+        group_opts = ["Brand", "Platform"]
+        group_choice = st.radio(
+            "Group by", group_opts, horizontal=True, key="av_grp"
+        )
+        group_col = "marca" if group_choice == "Brand" else "plataforma"
+
+        if group_col not in df_all.columns or "data" not in df_all.columns:
+            st.info("Required columns not available.")
+        else:
+            timeline = (
+                df_all
+                .groupby(["data", group_col], as_index=False)
+                .size()
+                .rename(columns={"size": "Appearances", group_col: group_choice})
+            )
+            timeline["data"] = pd.to_datetime(timeline["data"])
+
+            fig_line = px.line(
+                timeline,
+                x="data",
+                y="Appearances",
+                color=group_choice,
+                markers=True,
+                title=f"Daily appearances by {group_choice}",
+                labels={"data": "Date"},
+                template="plotly_white",
+            )
+            fig_line.update_layout(
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                hovermode="x unified",
+                height=450,
+            )
+            fig_line.update_traces(line=dict(width=2), marker=dict(size=5))
+            st.plotly_chart(fig_line, use_container_width=True)
+
+    # ── Tab 3: Detail ────────────────────────────────────────────────────────
+    with tab_detail:
+        st.subheader("All records")
+
+        display_cols = [
+            c for c in [
+                "data", "turno", "plataforma", "marca", "produto",
+                "posicao_geral", "posicao_organica", "posicao_patrocinada",
+                "preco", "seller", "keyword", "tag",
+            ] if c in df_all.columns
+        ]
+
+        st.dataframe(
+            df_all[display_cols].sort_values(
+                ["data", "plataforma", "posicao_geral"],
+                ascending=[False, True, True],
+            ),
+            use_container_width=True,
+            height=500,
+            column_config={
+                "data":                 st.column_config.DateColumn("Date"),
+                "preco":                st.column_config.NumberColumn("Price (R$)", format="R$ %.2f"),
+                "posicao_geral":        st.column_config.NumberColumn("Position"),
+                "posicao_organica":     st.column_config.NumberColumn("Organic"),
+                "posicao_patrocinada":  st.column_config.NumberColumn("Sponsored"),
+            },
+        )
+
+        csv_bytes = df_all[display_cols].to_csv(
+            index=False, sep=";", encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv_bytes,
+            file_name=f"rac_availability_{start_date}_{end_date}.csv",
+            mime="text/csv",
+        )
+
+
 PAGES = {
     "🚀 Run Collection":  page_run_collection,
     "📊 Results":         page_results,
     "📈 Price Evolution":  page_price_evolution,
     "🏆 BuyBox Position": page_buybox_position,
+    "📦 Availability":    page_availability,
     "📂 Import History":  page_import_history,
     "🧹 Data Cleanup":    page_data_cleanup,
     "🔤 Normalize SKUs":  page_normalize_skus,
