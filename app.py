@@ -29,6 +29,12 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 PROJECT_ROOT = Path(__file__).parent
 
+# Raise Pandas Styler cell limit to cover large datasets (default is 262 144).
+# Row-level Midea highlighting is skipped above _STYLE_CELL_THRESHOLD anyway,
+# but the format() call still needs the higher limit for float columns.
+pd.set_option("styler.render.max_elements", 2_000_000)
+_STYLE_CELL_THRESHOLD = 50_000  # cells above which row highlight is skipped
+
 # ---------------------------------------------------------------------------
 # Design system — colors, CSS, chart style helper
 # ---------------------------------------------------------------------------
@@ -630,12 +636,19 @@ def _emphasize_midea_traces(fig) -> None:
 
 
 def _style_midea_df(df: pd.DataFrame, brand_col: str = "marca"):
-    """Return a Pandas Styler that highlights Midea rows and limits float decimals."""
-    def _row_style(row):
-        if brand_col in row.index and row[brand_col] == _MIDEA_BRAND:
-            return ["background-color: #eff6ff; font-weight: 700; color: #1d4ed8"] * len(row)
-        return [""] * len(row)
-    styler = df.style.apply(_row_style, axis=1)
+    """Return a Pandas Styler that highlights Midea rows and limits float decimals.
+
+    Row highlighting is skipped when the frame exceeds _STYLE_CELL_THRESHOLD
+    cells — at that scale every row would be highlighted or it's too large to
+    render efficiently.  Float formatting is always applied.
+    """
+    styler = df.style
+    if df.size <= _STYLE_CELL_THRESHOLD and brand_col in df.columns:
+        def _row_style(row):
+            if row[brand_col] == _MIDEA_BRAND:
+                return ["background-color: #eff6ff; font-weight: 700; color: #1d4ed8"] * len(row)
+            return [""] * len(row)
+        styler = styler.apply(_row_style, axis=1)
     float_cols = df.select_dtypes(include="float").columns.tolist()
     if float_cols:
         styler = styler.format({col: "{:.2f}" for col in float_cols})
