@@ -291,7 +291,7 @@ def query_coletas(
     btu_filter: list[str] | None = None,
     product_types: list[str] | None = None,
     max_position: int | None = None,
-    limit: int = 5000,
+    limit: int = 50000,
 ) -> pd.DataFrame:
     """Query the coletas table with filters. Returns empty DataFrame on error."""
     client = _get_supabase()
@@ -879,17 +879,19 @@ def page_price_evolution():
             products=sel_skus or None,
             btu_filter=sel_btu or None,
             product_types=sel_ptype or None,
-            limit=10000,
+            limit=50000,
         )
 
     if df.empty or "preco" not in df.columns:
         st.warning("No price data found for the selected filters.")
         return
 
+    days = (end_date - start_date).days + 1
     st.caption(
         f"{len(df):,} records loaded · "
         f"{df['produto'].nunique() if 'produto' in df.columns else 0} unique SKUs · "
-        f"{df['marca'].nunique() if 'marca' in df.columns else 0} brands"
+        f"{df['marca'].nunique() if 'marca' in df.columns else 0} brands · "
+        f"{days} days"
     )
 
     df_price = df.dropna(subset=["preco", "data"])
@@ -917,38 +919,77 @@ def page_price_evolution():
     )
     agg["data"] = pd.to_datetime(agg["data"])
 
-    # --- Line chart ---
-    fig = px.line(
-        agg,
-        x="data",
-        y="Median Price (R$)",
-        color=group_by,
-        markers=True,
-        title=f"Median Price Evolution by {group_by}",
-        labels={"data": "Date"},
+    tab_chart, tab_summary, tab_detail = st.tabs(
+        ["📈 Price Chart", "📊 Summary", "📋 Detail"]
     )
-    fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
-    _apply_chart_style(fig, height=460)
-    st.plotly_chart(fig, use_container_width=True)
 
-    # --- Summary table ---
-    st.subheader("Price summary")
-    summary = (
-        df_price
-        .groupby(group_col)["preco"]
-        .agg(
-            Count="count",
-            Min="min",
-            Median="median",
-            Max="max",
-            Avg="mean",
+    # ── Tab 1: Price Chart ───────────────────────────────────────────────────
+    with tab_chart:
+        fig = px.line(
+            agg,
+            x="data",
+            y="Median Price (R$)",
+            color=group_by,
+            markers=True,
+            title=f"Median Price Evolution by {group_by}",
+            labels={"data": "Date"},
         )
-        .round(2)
-        .reset_index()
-        .rename(columns={group_col: group_by})
-        .sort_values("Median", ascending=True)
-    )
-    st.dataframe(summary, use_container_width=True, hide_index=True)
+        fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
+        _apply_chart_style(fig, height=460)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Tab 2: Price Summary ─────────────────────────────────────────────────
+    with tab_summary:
+        st.subheader("Price summary")
+        summary = (
+            df_price
+            .groupby(group_col)["preco"]
+            .agg(
+                Count="count",
+                Min="min",
+                Median="median",
+                Max="max",
+                Avg="mean",
+            )
+            .round(2)
+            .reset_index()
+            .rename(columns={group_col: group_by})
+            .sort_values("Median", ascending=True)
+        )
+        st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    # ── Tab 3: Detail ────────────────────────────────────────────────────────
+    with tab_detail:
+        st.subheader("All records")
+        display_cols = [
+            c for c in [
+                "data", "turno", "plataforma", "marca", "produto",
+                "posicao_geral", "posicao_organica", "preco",
+                "seller", "keyword", "tag",
+            ] if c in df.columns
+        ]
+        st.dataframe(
+            df[display_cols].sort_values(
+                ["data", "plataforma"], ascending=[False, True]
+            ),
+            use_container_width=True,
+            height=500,
+            column_config={
+                "data":             st.column_config.DateColumn("Date"),
+                "preco":            st.column_config.NumberColumn("Price (R$)", format="R$ %.2f"),
+                "posicao_geral":    st.column_config.NumberColumn("Position"),
+                "posicao_organica": st.column_config.NumberColumn("Organic Pos."),
+            },
+        )
+        csv_bytes = df[display_cols].to_csv(
+            index=False, sep=";", encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv_bytes,
+            file_name=f"rac_price_evolution_{start_date}_{end_date}.csv",
+            mime="text/csv",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1511,10 +1552,10 @@ def page_buybox_position():
             products=sel_skus or None,
             btu_filter=sel_btu or None,
             product_types=sel_ptype or None,
-            # Server-side position cap: avoids limit=20k consuming a single date's
-            # records when all platforms are selected (would hide older dates).
+            # Server-side position cap: prevents a single date from consuming
+            # the entire limit when all platforms are selected.
             max_position=top_n,
-            limit=20000,
+            limit=50000,
         )
 
     if df.empty or "posicao_geral" not in df.columns:
@@ -1760,7 +1801,7 @@ def page_availability():
             products=sel_skus or None,
             btu_filter=sel_btu or None,
             product_types=sel_ptype or None,
-            limit=20000,
+            limit=50000,
         )
 
     if df.empty or "posicao_geral" not in df.columns:
