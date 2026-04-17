@@ -289,19 +289,29 @@ section[data-testid="stSidebar"] .stMarkdown h3 {
 }
 
 section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] .stMarkdown {
-    color: #cbd5e1 !important;
+section[data-testid="stSidebar"] .stMarkdown,
+section[data-testid="stSidebar"] * {
+    color: #ffffff !important;
 }
 
-/* Navigation links in sidebar - HIGH CONTRAST */
+/* Navigation links in sidebar - MAXIMUM CONTRAST */
 section[data-testid="stSidebar"] a,
 section[data-testid="stSidebar"] .stNavigation a,
 section[data-testid="stSidebar"] nav a,
-section[data-testid="stSidebar"] ul li a {
+section[data-testid="stSidebar"] ul li a,
+section[data-testid="stSidebar"] .stMultiSelect label,
+section[data-testid="stSidebar"] .stSelectbox label,
+section[data-testid="stSidebar"] .stRadio label,
+section[data-testid="stSidebar"] .stCheckbox label,
+section[data-testid="stSidebar"] .stSlider label,
+section[data-testid="stSidebar"] .stNumberInput label,
+section[data-testid="stSidebar"] .stTextInput label,
+section[data-testid="stSidebar"] .stDateInput label {
     color: #ffffff !important;
     font-weight: 600 !important;
     text-decoration: none !important;
     transition: all 0.2s ease !important;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) !important;
 }
 
 section[data-testid="stSidebar"] a:hover,
@@ -309,7 +319,7 @@ section[data-testid="stSidebar"] .stNavigation a:hover,
 section[data-testid="stSidebar"] nav a:hover,
 section[data-testid="stSidebar"] ul li a:hover {
     color: #fbbf24 !important;
-    background: rgba(251, 191, 36, 0.1) !important;
+    background: rgba(251, 191, 36, 0.15) !important;
     border-radius: 6px !important;
 }
 
@@ -319,23 +329,34 @@ section[data-testid="stSidebar"] .stNavigation a.active,
 section[data-testid="stSidebar"] nav a.active {
     color: #fbbf24 !important;
     font-weight: 700 !important;
-    background: rgba(251, 191, 36, 0.15) !important;
-    border-left: 3px solid #fbbf24 !important;
-    padding-left: 8px !important;
+    background: rgba(251, 191, 36, 0.2) !important;
+    border-left: 4px solid #fbbf24 !important;
+    padding-left: 10px !important;
+    box-shadow: inset 0 0 10px rgba(251, 191, 36, 0.1) !important;
+}
+
+/* Sidebar widget labels - FORCE WHITE TEXT */
+section[data-testid="stSidebar"] .stWidgetLabel,
+section[data-testid="stSidebar"] .st-emotion-cache label,
+section[data-testid="stSidebar"] div[data-testid="stWidgetLabel"] {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) !important;
 }
 
 /* Sidebar radio/checkbox */
 section[data-testid="stSidebar"] .stRadio > div,
 section[data-testid="stSidebar"] .stCheckbox > div {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.08);
     border-radius: 8px;
     padding: 0.5rem;
     margin: 0.25rem 0;
+    border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 section[data-testid="stSidebar"] .stRadio label,
 section[data-testid="stSidebar"] .stCheckbox label {
-    color: #e2e8f0 !important;
+    color: #ffffff !important;
     font-weight: 500 !important;
     transition: color 0.2s ease;
 }
@@ -349,6 +370,24 @@ section[data-testid="stSidebar"] .stCheckbox label:hover {
 section[data-testid="stSidebar"] .stRadio input:checked + span {
     color: #fbbf24 !important;
     font-weight: 700 !important;
+}
+
+/* Page link specific styling */
+section[data-testid="stSidebar"] nav a[href],
+section[data-testid="stSidebar"] [data-testid="stSidebarNavLink"] {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    padding: 0.5rem 1rem !important;
+    margin: 0.25rem 0 !important;
+    border-radius: 6px !important;
+    display: block !important;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) !important;
+}
+
+section[data-testid="stSidebar"] nav a[href]:hover,
+section[data-testid="stSidebar"] [data-testid="stSidebarNavLink"]:hover {
+    background: rgba(251, 191, 36, 0.15) !important;
+    color: #fbbf24 !important;
 }
 
 /* ===========================
