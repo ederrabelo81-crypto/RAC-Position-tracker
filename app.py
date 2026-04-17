@@ -204,8 +204,9 @@ PLATFORMS = {
 # ---------------------------------------------------------------------------
 
 _PLATFORM_ALIASES = {
-    # Canonical name -> list of known variations in DB
+    # Canonical display name -> all raw DB values that map to it
     "Ferreira Costa": ["FerreiraCosta", "FerreiraCoasta"],
+    "WebContinental":  ["WebContinental", "Webcontinental"],
 }
 
 # Build reverse map: variation -> canonical
@@ -1494,6 +1495,98 @@ def page_normalize_skus():
             if "brand_scan" in st.session_state:
                 del st.session_state["brand_scan"]
             # Clear cached filter options so the brand dropdown refreshes
+            get_filter_options.clear()
+
+    st.divider()
+
+    # ── Platform / Seller Normalization ──────────────────────────────────────
+    st.subheader("🏪 Platform / Seller Normalization")
+    st.caption(
+        "Corrige typos e capitalização nos campos `plataforma` e `seller`. "
+        "Aplica em ambas as colunas simultaneamente."
+    )
+    st.info(
+        "| Variant in DB | → Canonical |\n|---|---|\n"
+        "| FerreiraCoasta | **FerreiraCosta** |\n"
+        "| Webcontinental | **WebContinental** |"
+    )
+
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        plat_scan_btn = st.button(
+            "🔍 Scan platform/seller variants",
+            use_container_width=True,
+            key="plat_scan_btn",
+        )
+    with col_p2:
+        plat_apply_btn = st.button(
+            "✏️ Apply platform/seller normalization",
+            type="primary",
+            use_container_width=True,
+            key="plat_apply_btn",
+            help="Updates plataforma and seller columns for all variant rows.",
+        )
+
+    if plat_scan_btn:
+        with st.spinner("Scanning platform/seller variants…"):
+            from utils.supabase_client import normalize_platforms_sellers_in_supabase
+            plat_result = normalize_platforms_sellers_in_supabase(dry_run=True)
+        st.session_state["plat_scan"] = plat_result
+
+    if "plat_scan" in st.session_state:
+        pr = st.session_state["plat_scan"]
+        total_variants = sum(
+            (v.get("plataforma") or 0) + (v.get("seller") or 0)
+            for v in pr["by_mapping"].values()
+            if isinstance(v.get("plataforma"), int) and isinstance(v.get("seller"), int)
+        )
+        rows = [
+            {
+                "Variant (DB)": src,
+                "→ Canonical":   info["target"],
+                "plataforma":    info.get("plataforma", "?"),
+                "seller":        info.get("seller", "?"),
+            }
+            for src, info in pr["by_mapping"].items()
+        ]
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+
+        if total_variants == 0:
+            st.success("✅ All platform/seller names are already correct!")
+        else:
+            st.warning(
+                f"Found **{total_variants:,}** records with non-canonical "
+                "platform/seller names. Click **Apply** to fix them."
+            )
+
+    if plat_apply_btn:
+        scan = st.session_state.get("plat_scan")
+        total_to_fix = 0
+        if scan:
+            for v in scan["by_mapping"].values():
+                p = v.get("plataforma") or 0
+                s = v.get("seller") or 0
+                if isinstance(p, int):
+                    total_to_fix += p
+                if isinstance(s, int):
+                    total_to_fix += s
+        if not scan or total_to_fix == 0:
+            st.warning("Run a scan first to confirm there are records to update.")
+        else:
+            with st.spinner(f"Normalizing {total_to_fix:,} records…"):
+                from utils.supabase_client import normalize_platforms_sellers_in_supabase
+                plat_result = normalize_platforms_sellers_in_supabase(dry_run=False)
+            if plat_result["errors"] == 0:
+                st.success(
+                    f"✅ Done. **{plat_result['total_updated']:,}** records updated."
+                )
+            else:
+                st.warning(
+                    f"Partial run: {plat_result['total_updated']:,} updated, "
+                    f"{plat_result['errors']:,} with errors."
+                )
+            if "plat_scan" in st.session_state:
+                del st.session_state["plat_scan"]
             get_filter_options.clear()
 
     st.divider()
