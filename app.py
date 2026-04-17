@@ -788,6 +788,9 @@ def _expand_brands(brands: list) -> list:
     return sorted(expanded)
 
 
+_SUPABASE_PAGE = 1000  # PostgREST default server-side max_rows cap
+
+
 def query_coletas(
     start_date: date,
     end_date: date,
@@ -802,28 +805,31 @@ def query_coletas(
     max_position: int | None = None,
     limit: int = 50000,
 ) -> pd.DataFrame:
-    """Query the coletas table with filters. Returns empty DataFrame on error."""
+    """Query the coletas table with filters, paginating past the 1000-row cap.
+
+    PostgREST enforces a server-side max_rows of 1000 regardless of what
+    .limit() requests.  We use .range() in a loop to collect up to `limit`
+    rows transparently.
+    """
     client = _get_supabase()
     if client is None:
-        st.error("Supabase not connected. Check your .env file.")
+        st.error("Supabase não conectado. Verifique o arquivo .env.")
         return pd.DataFrame()
-    try:
+
+    def _build_q():
+        """Fresh filtered query (no range yet — added per-page in the loop)."""
         q = (
             client.table("coletas")
             .select("*")
             .gte("data", str(start_date))
             .lte("data", str(end_date))
             .order("data", desc=True)
-            .limit(limit)
         )
         if platforms:
             q = q.in_("plataforma", _expand_platforms(platforms))
         if platform_types:
-            # DB column is "tipo" (mapped from CSV "Tipo Plataforma" — see _COLUMN_MAP)
             q = q.in_("tipo", platform_types)
         if brands:
-            # Expand canonical names to all raw DB variants
-            # (e.g. "Midea" → ["Midea", "Springer Midea", "Midea Carrier", "Springer"])
             q = q.in_("marca", _expand_brands(brands))
         if sellers:
             q = q.in_("seller", sellers)
@@ -832,36 +838,44 @@ def query_coletas(
         if products:
             q = q.in_("produto", products)
         if max_position is not None:
-            # Server-side position cap — prevents LIMIT being consumed by one
-            # date when all platforms are selected (BuyBox use-case).
             q = q.lte("posicao_geral", max_position)
         if btu_filter:
-            # Match both raw ("12000") and normalized ("12.000") formats.
-            # Separate .or_() call so it ANDs with product_types filter below.
             parts = []
             for btu in btu_filter:
                 parts.append(f"produto.ilike.%{btu}%")
                 try:
-                    dotted = f"{int(btu):,}".replace(",", ".")  # "12000" → "12.000"
+                    dotted = f"{int(btu):,}".replace(",", ".")
                     if dotted != btu:
                         parts.append(f"produto.ilike.%{dotted}%")
                 except ValueError:
                     pass
             q = q.or_(",".join(parts))
         if product_types:
-            # Each label may map to several spelling variants — OR them together.
-            # Separate .or_() call so it ANDs with btu_filter above.
             parts = []
             for label in product_types:
                 for pat in PRODUCT_TYPE_OPTIONS.get(label, [label]):
                     parts.append(f"produto.ilike.%{pat}%")
             if parts:
                 q = q.or_(",".join(parts))
+        return q
 
-        resp = q.execute()
-        if not resp.data:
+    try:
+        all_data: list = []
+        offset = 0
+        while len(all_data) < limit:
+            fetch = min(_SUPABASE_PAGE, limit - len(all_data))
+            resp = _build_q().range(offset, offset + fetch - 1).execute()
+            if not resp.data:
+                break
+            all_data.extend(resp.data)
+            if len(resp.data) < fetch:
+                break  # server returned fewer rows than requested → last page
+            offset += fetch
+
+        if not all_data:
             return pd.DataFrame()
-        df = pd.DataFrame(resp.data)
+
+        df = pd.DataFrame(all_data)
         df["data"] = pd.to_datetime(df["data"]).dt.date
         for col in ["posicao_organica", "posicao_patrocinada", "posicao_geral", "qtd_avaliacoes"]:
             if col in df.columns:
@@ -869,36 +883,42 @@ def query_coletas(
         for col in ["preco", "avaliacao"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-        # Normalize brand variants to canonical names so all analysis pages
-        # aggregate correctly (e.g. "Springer Midea" + "Midea" → "Midea").
         if "marca" in df.columns and _MARCA_TO_CANONICAL:
             df["marca"] = df["marca"].map(
                 lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
             )
         return df
     except Exception as exc:
-        st.error(f"Query error: {exc}")
+        st.error(f"Erro na consulta: {exc}")
         return pd.DataFrame()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_filter_options() -> dict:
-    """Fetch distinct values for filter dropdowns (last 90 days)."""
+    """Fetch distinct values for filter dropdowns (last 90 days), paginated."""
     empty = {"platforms": [], "platform_types": [], "brands": [], "keywords": [], "sellers": []}
     client = _get_supabase()
     if client is None:
         return empty
     try:
         since = str(date.today() - timedelta(days=90))
-        # DB column is "tipo" (CSV "Tipo Plataforma" → DB "tipo" per _COLUMN_MAP).
-        resp = (
-            client.table("coletas")
-            .select("plataforma, tipo, marca, keyword, seller")
-            .gte("data", since)
-            .limit(50000)
-            .execute()
-        )
-        df = pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+        all_rows: list = []
+        offset = 0
+        while True:
+            resp = (
+                client.table("coletas")
+                .select("plataforma, tipo, marca, keyword, seller")
+                .gte("data", since)
+                .range(offset, offset + _SUPABASE_PAGE - 1)
+                .execute()
+            )
+            if not resp.data:
+                break
+            all_rows.extend(resp.data)
+            if len(resp.data) < _SUPABASE_PAGE:
+                break
+            offset += _SUPABASE_PAGE
+        df = pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
         if df.empty:
             return empty
 
@@ -934,49 +954,54 @@ def get_sku_options(
     btu_filter: tuple = (),
     product_types: tuple = (),
 ) -> list:
-    """
-    Fetch distinct normalized product names from the last 90 days.
-    Narrows the list when brands, btu_filter or product_types are non-empty.
-    All three act as AND conditions between each other.
-    """
+    """Fetch distinct product names (last 90 days), paginated past the 1000-row cap."""
     client = _get_supabase()
     if client is None:
         return []
     try:
         since = str(date.today() - timedelta(days=90))
-        q = (
-            client.table("coletas")
-            .select("produto")
-            .gte("data", since)
-            .not_.is_("produto", "null")
-            .limit(10000)
-        )
-        if brands:
-            # Expand canonical names to all raw DB variants before filtering
-            q = q.in_("marca", _expand_brands(list(brands)))
-        if btu_filter:
-            parts = []
-            for btu in btu_filter:
-                parts.append(f"produto.ilike.%{btu}%")
-                try:
-                    dotted = f"{int(btu):,}".replace(",", ".")
-                    if dotted != btu:
-                        parts.append(f"produto.ilike.%{dotted}%")
-                except ValueError:
-                    pass
-            if parts:
-                q = q.or_(",".join(parts))
-        if product_types:
-            parts = []
-            for label in product_types:
-                for pat in PRODUCT_TYPE_OPTIONS.get(label, [label]):
-                    parts.append(f"produto.ilike.%{pat}%")
-            if parts:
-                q = q.or_(",".join(parts))
-        resp = q.execute()
-        if not resp.data:
-            return []
-        return sorted({r["produto"] for r in resp.data if r.get("produto")})
+
+        def _base_q():
+            q = (
+                client.table("coletas")
+                .select("produto")
+                .gte("data", since)
+                .not_.is_("produto", "null")
+            )
+            if brands:
+                q = q.in_("marca", _expand_brands(list(brands)))
+            if btu_filter:
+                parts = []
+                for btu in btu_filter:
+                    parts.append(f"produto.ilike.%{btu}%")
+                    try:
+                        dotted = f"{int(btu):,}".replace(",", ".")
+                        if dotted != btu:
+                            parts.append(f"produto.ilike.%{dotted}%")
+                    except ValueError:
+                        pass
+                if parts:
+                    q = q.or_(",".join(parts))
+            if product_types:
+                parts = []
+                for label in product_types:
+                    for pat in PRODUCT_TYPE_OPTIONS.get(label, [label]):
+                        parts.append(f"produto.ilike.%{pat}%")
+                if parts:
+                    q = q.or_(",".join(parts))
+            return q
+
+        all_rows: list = []
+        offset = 0
+        while True:
+            resp = _base_q().range(offset, offset + _SUPABASE_PAGE - 1).execute()
+            if not resp.data:
+                break
+            all_rows.extend(resp.data)
+            if len(resp.data) < _SUPABASE_PAGE:
+                break
+            offset += _SUPABASE_PAGE
+        return sorted({r["produto"] for r in all_rows if r.get("produto")})
     except Exception:
         return []
 
@@ -1260,6 +1285,7 @@ def page_results():
             products=sel_skus or None,
             btu_filter=sel_btu or None,
             product_types=sel_ptype or None,
+            limit=50000,
         )
 
     if df.empty:
