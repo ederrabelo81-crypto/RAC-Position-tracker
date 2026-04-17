@@ -10,6 +10,7 @@ Usage (remote access):
 """
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -371,10 +372,15 @@ def get_sku_options(
 
 def _init_state():
     defaults = {
-        "process":  None,
-        "running":  False,
-        "log":      "",
-        "run_done": False,
+        "process":          None,
+        "running":          False,
+        "log":              "",
+        "run_done":         False,
+        "tasks_done":       0,
+        "total_tasks":      1,
+        "start_time":       None,
+        "current_platform": "",
+        "current_keyword":  "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -445,7 +451,25 @@ def page_run_collection():
 
     with col_status:
         if st.session_state.running:
-            st.info("⏳ Collection in progress...")
+            _done  = st.session_state.get("tasks_done", 0)
+            _total = st.session_state.get("total_tasks", 1)
+            _pct   = min(_done / _total, 1.0) if _total > 0 else 0.0
+            _elapsed = time.time() - (st.session_state.get("start_time") or time.time())
+            if _pct > 0.01:
+                _eta = (_elapsed / _pct) * (1 - _pct)
+                _h, _rem = divmod(int(_eta), 3600)
+                _m, _s   = divmod(_rem, 60)
+                _eta_str = (f"~{_h}h {_m}m" if _h else f"~{_m}m {_s}s") + " remaining"
+            else:
+                _eta_str = "estimating…"
+            _plat = st.session_state.get("current_platform", "")
+            _kw   = st.session_state.get("current_keyword", "")
+            _label = f"⏳ {int(_pct * 100)}%  ·  {_done}/{_total} tasks  ·  {_eta_str}"
+            if _plat:
+                _label += f"  ·  {_plat}"
+            if _kw:
+                _label += f"  →  {_kw[:50]}"
+            st.progress(_pct, text=_label)
         elif st.session_state.run_done:
             st.success("✅ Collection completed.")
 
@@ -459,7 +483,17 @@ def page_run_collection():
         if not headless:
             cmd += ["--no-headless"]
 
-        st.session_state.process = subprocess.Popen(
+        # Compute total tasks for progress tracking:
+        # dealers use their own site list; other platforms use keyword list.
+        try:
+            from scrapers.dealers import DEALER_CONFIGS as _DC
+            _n_dealers = len(_DC)
+        except Exception:
+            _n_dealers = 13
+        _n_kw = len(selected_keywords) if selected_keywords else sum(len(v) for v in kw_by_cat.values())
+        _total = sum(_n_dealers if p == "dealers" else _n_kw for p in selected_platforms)
+
+        st.session_state.process          = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -469,9 +503,14 @@ def page_run_collection():
             cwd=str(PROJECT_ROOT),
             bufsize=1,
         )
-        st.session_state.running  = True
-        st.session_state.run_done = False
-        st.session_state.log      = ""
+        st.session_state.running          = True
+        st.session_state.run_done         = False
+        st.session_state.log              = ""
+        st.session_state.tasks_done       = 0
+        st.session_state.total_tasks      = max(_total, 1)
+        st.session_state.start_time       = time.time()
+        st.session_state.current_platform = ""
+        st.session_state.current_keyword  = ""
         st.rerun()
 
     # --- Handle stop ---
@@ -488,20 +527,38 @@ def page_run_collection():
 
     if st.session_state.running and st.session_state.process:
         proc = st.session_state.process
-        # Read up to 50 lines per rerun cycle
+        # Read up to 50 lines per rerun cycle and parse progress markers
+        new_lines = []
         for _ in range(50):
             line = proc.stdout.readline()
             if not line:
                 break
+            new_lines.append(line)
             st.session_state.log += line
+
+        for line in new_lines:
+            if "Iniciando scraper:" in line:
+                m = re.search(r"Iniciando scraper:\s*(.+)$", line.strip())
+                if m:
+                    st.session_state.current_platform = m.group(1).strip()
+            elif "Iniciando keyword:" in line:
+                st.session_state.tasks_done += 1
+                m = re.search(r"Iniciando keyword:\s*'([^']+)'", line)
+                if m:
+                    st.session_state.current_keyword = m.group(1)
+            elif "Coleta finalizada!" in line:
+                st.session_state.tasks_done = st.session_state.total_tasks
 
         if proc.poll() is not None:
             remaining = proc.stdout.read()
             if remaining:
                 st.session_state.log += remaining
-            st.session_state.running  = False
-            st.session_state.run_done = True
-            st.session_state.process  = None
+            st.session_state.running          = False
+            st.session_state.run_done         = True
+            st.session_state.process          = None
+            st.session_state.tasks_done       = st.session_state.total_tasks
+            st.session_state.current_platform = ""
+            st.session_state.current_keyword  = ""
         else:
             time.sleep(0.3)
             st.rerun()
