@@ -1,24 +1,45 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
+```gitignore
+# Logs and temp files
+*.log
+*.tmp
+*.swp
 
 # Environment
 .env
+.env.local
 .env.*
-*.env
-venv/
-.venv/
-env/
 
-# Outputs / logs
-output/
-logs/
-diagnostico/
-
-# IDE / OS
-.idea/
+# Editors
 .vscode/
+.idea/
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+
+# Build artifacts
+dist/
+build/
+target/
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+
+# OS generated files
 .DS_Store
 Thumbs.db
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Original rules preserved
+*.log
+```
