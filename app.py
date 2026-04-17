@@ -57,14 +57,14 @@ _CSS = """<style>
    explicit font-family on Material Symbols icon spans (if overridden with
    * + !important those icon names render as raw text, e.g. "arrow_right"). */
 body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif !important;
 }
 
 /* Explicitly reinforce Inter for common content elements */
 p, h1, h2, h3, h4, h5, h6,
 .stMarkdown, label, button, input, textarea,
 [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif !important;
 }
 
 /* Main container */
@@ -216,8 +216,10 @@ button[kind="primary"]:hover,
     background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%) !important;
 }
 
-/* Secondary buttons */
-button:not([kind="primary"]),
+/* Secondary buttons — scoped to Streamlit buttons only to avoid deforming
+   Plotly modebar, slider handles, and other embedded <button> elements */
+.stButton > button:not([kind="primary"]),
+.stDownloadButton > button:not([kind="primary"]),
 [data-testid="stBaseButton-secondary"] {
     border: 2px solid #e2e8f0 !important;
     border-radius: 10px !important;
@@ -227,7 +229,8 @@ button:not([kind="primary"]),
     transition: all 0.2s ease !important;
 }
 
-button:not([kind="primary"]):hover,
+.stButton > button:not([kind="primary"]):hover,
+.stDownloadButton > button:not([kind="primary"]):hover,
 [data-testid="stBaseButton-secondary"]:hover {
     border-color: #1a56db !important;
     color: #1a56db !important;
@@ -486,27 +489,16 @@ input[type="text"]:focus,
 /* ===========================
    SLIDER
    =========================== */
-.stSlider > div > div {
-    height: 8px !important;
-    border-radius: 4px !important;
+/* Target only the track bar (BaseWeb slider track), not label/tick rows */
+.stSlider [data-baseweb="slider"] > div:nth-child(2) {
     background: #e2e8f0 !important;
 }
 
-.stSlider > div > div > div {
-    background: linear-gradient(135deg, #1a56db 0%, #1e40af 100%) !important;
-    border-radius: 4px !important;
-    box-shadow: 0 2px 8px rgba(26, 86, 219, 0.4) !important;
-}
-
-/* Slider thumb */
-.stSlider [role="slider"]::-webkit-slider-thumb {
-    width: 20px !important;
-    height: 20px !important;
+/* Slider thumb (native + BaseWeb) */
+.stSlider [role="slider"] {
     background: #ffffff !important;
     border: 3px solid #1a56db !important;
-    border-radius: 50% !important;
     box-shadow: 0 2px 8px rgba(26, 86, 219, 0.4) !important;
-    cursor: pointer !important;
 }
 
 /* ===========================
