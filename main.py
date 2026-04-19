@@ -61,9 +61,12 @@ SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
     "dealers":        DealerScraper,
 }
 
-# Keywords map para DealerScraper: cada dealer name vira a "keyword"
+# Keywords map para DealerScraper: cada dealer name vira a "keyword".
+# Dealers marcados como "on_hold" são excluídos da coleta.
 _DEALER_KEYWORDS_MAP: Dict[str, List[str]] = {
-    "Dealers": list(DEALER_CONFIGS.keys())
+    "Dealers": [
+        name for name, cfg in DEALER_CONFIGS.items() if not cfg.get("on_hold")
+    ]
 }
 
 # Colunas na ordem exata do DataFrame de saída
@@ -167,6 +170,7 @@ def _run_scraper(
     keywords_map: Dict[str, List[str]],
     page_limit: int,
     headless: bool,
+    priority_filter: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Instancia o scraper (como context manager) e itera por todas as keywords.
@@ -185,21 +189,22 @@ def _run_scraper(
     """
     records: List[Dict[str, Any]] = []
 
-    # Filtra keywords por prioridade se configurado
+    # CLI --priority sobrepõe PRIORITY_FILTER do config.py
+    effective_filter = priority_filter if priority_filter is not None else PRIORITY_FILTER
+
     active_keywords = KEYWORDS_LIST
-    if PRIORITY_FILTER:
-        active_keywords = [k for k in KEYWORDS_LIST if k.priority in PRIORITY_FILTER]
+    if effective_filter:
+        active_keywords = [k for k in KEYWORDS_LIST if k.priority in effective_filter]
 
     with scraper_cls(headless=headless) as scraper:
         for category, kws in keywords_map.items():
-            # Mantém só keywords que passaram no filtro de prioridade
             filtered_kws = [
                 kw for kw in kws
-                if not PRIORITY_FILTER or any(
-                    ak.term == kw and ak.priority in PRIORITY_FILTER
+                if not effective_filter or any(
+                    ak.term == kw and ak.priority in effective_filter
                     for ak in active_keywords
                 )
-            ] if PRIORITY_FILTER else kws
+            ] if effective_filter else kws
 
             for keyword in filtered_kws:
                 logger.info(
@@ -280,6 +285,19 @@ def _parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--priority",
+        nargs="+",
+        choices=["alta", "media", "baixa"],
+        default=None,
+        metavar="PRIORITY",
+        help=(
+            "Filtrar keywords por prioridade (sobrepõe PRIORITY_FILTER do config.py).\n"
+            "Opções: alta, media, baixa. Ex: --priority alta media\n"
+            "Padrão: todas as prioridades"
+        ),
+    )
+
+    parser.add_argument(
         "--output-dir",
         default=OUTPUT_DIR,
         metavar="DIR",
@@ -349,6 +367,7 @@ def main() -> None:
                 keywords_map=effective_map,
                 page_limit=args.pages,
                 headless=args.headless,
+                priority_filter=args.priority,
             )
             all_records.extend(records)
             logger.info(

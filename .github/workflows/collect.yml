@@ -1,0 +1,125 @@
+name: RAC Price Collection
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Coleta automática de preços de ar condicionado em marketplaces e dealers.
+#
+# Schedules (horário de Brasília = UTC-3):
+#   • 08:00 BRT (11:00 UTC) seg-sex  →  coleta manhã  — alta + media, 2 páginas
+#   • 18:00 BRT (21:00 UTC) seg-sex  →  coleta tarde  — apenas alta,  1 página
+#
+# Variáveis obrigatórias (Settings → Secrets and variables → Actions):
+#   SUPABASE_URL   —  URL do projeto Supabase
+#   SUPABASE_KEY   —  chave de serviço (service_role) ou anon key com insert
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '0 11 * * 1-5'   # 08:00 BRT  —  coleta manhã (seg-sex)
+    - cron: '0 21 * * 1-5'   # 18:00 BRT  —  coleta tarde (seg-sex)
+
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Plataformas separadas por espaço'
+        required: false
+        default: 'ml magalu amazon google_shopping leroy dealers'
+      pages:
+        description: 'Páginas por keyword (1–5)'
+        required: false
+        default: '2'
+      priority:
+        description: 'Prioridade das keywords (alta, media, baixa ou vazio = todas)'
+        required: false
+        default: ''
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  collect:
+    name: Coleta de Preços RAC
+    runs-on: ubuntu-latest
+    timeout-minutes: 300   # 5 h — suficiente para varredura completa
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # ── 2. Python ──────────────────────────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      # ── 3. Dependências Python ─────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: pip install --upgrade pip && pip install -r requirements.txt
+
+      # ── 4. Playwright — instala Chromium + libs do sistema ─────────────────
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      # ── 5. Determina parâmetros de execução ────────────────────────────────
+      # Coleta manhã  (cron 11h UTC): alta + media, 2 páginas
+      # Coleta tarde  (cron 21h UTC): apenas alta,  1 página
+      # Dispatch manual:              usa os inputs fornecidos
+      - name: Resolve run parameters
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "platforms=${{ github.event.inputs.platforms }}" >> "$GITHUB_OUTPUT"
+            echo "pages=${{ github.event.inputs.pages }}"         >> "$GITHUB_OUTPUT"
+            PRIO="${{ github.event.inputs.priority }}"
+            echo "priority=${PRIO}"                               >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 11 * * 1-5" ]; then
+            echo "platforms=ml magalu amazon google_shopping leroy dealers" >> "$GITHUB_OUTPUT"
+            echo "pages=2"        >> "$GITHUB_OUTPUT"
+            echo "priority=alta media" >> "$GITHUB_OUTPUT"
+          else
+            # cron 21h UTC — varredura rápida de tarde
+            echo "platforms=ml magalu amazon google_shopping leroy dealers" >> "$GITHUB_OUTPUT"
+            echo "pages=1"        >> "$GITHUB_OUTPUT"
+            echo "priority=alta"  >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 6. Executa coleta ──────────────────────────────────────────────────
+      - name: Run collector
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          PLATFORMS="${{ steps.params.outputs.platforms }}"
+          PAGES="${{ steps.params.outputs.pages }}"
+          PRIORITY="${{ steps.params.outputs.priority }}"
+
+          CMD="python main.py --platforms $PLATFORMS --pages $PAGES"
+          if [ -n "$PRIORITY" ]; then
+            CMD="$CMD --priority $PRIORITY"
+          fi
+
+          echo "Executando: $CMD"
+          eval "$CMD"
+
+      # ── 7. Salva CSV como artefato ─────────────────────────────────────────
+      - name: Upload CSV artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rac-coleta-${{ github.run_id }}
+          path: output/*.csv
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── 8. Salva logs para diagnóstico em caso de falha ────────────────────
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rac-logs-${{ github.run_id }}
+          path: |
+            logs/*.log
+            logs/dealer_debug_*.html
+          retention-days: 7
+          if-no-files-found: ignore

@@ -1,24 +1,3 @@
-# Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
-*.pyd
-
-# Environment
-.env
-.env.*
-*.env
-venv/
-.venv/
-env/
-
-# Outputs / logs
-output/
-logs/
-diagnostico/
-
-# IDE / OS
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db

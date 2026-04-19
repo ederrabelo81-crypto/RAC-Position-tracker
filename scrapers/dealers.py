@@ -320,25 +320,33 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  5,
     },
     "Edimil": {
-        # Nordeste — VTEX IO
-        "url": "https://www.edimil.com.br/ar-condicionado/split-inverter/c",
+        # ON HOLD — domínio edimil.com.br não resolve (ERR_NAME_NOT_RESOLVED).
+        # Candidato: lojasedmil.com.br (Lojas Edmil, MG). Caminho da categoria
+        # de AC ainda não validado — reativar após confirmar URL definitiva.
+        "url": "https://www.lojasedmil.com.br/ar-e-ventilacao/arcondicionado/",
         "pagination": "vtex",
         "max_pages":  5,
+        "on_hold": True,
     },
     "UnicaAR": {
-        # Especializado AC — VTEX IO
-        "url": "https://www.unicaar.com.br/ar-condicionado/split-inverter/c",
+        # ON HOLD — domínio unicaar.com.br não resolve (ERR_NAME_NOT_RESOLVED).
+        # Candidato: unicaarcondicionado.com.br (Única Ar Condicionado, RJ).
+        # Caminho da categoria de AC ainda não validado — reativar após
+        # confirmar URL definitiva.
+        "url": "https://www.unicaarcondicionado.com.br/ar-condicionado",
         "pagination": "vtex",
         "max_pages":  5,
+        "on_hold": True,
     },
     "TopMoveis": {
-        # Norte/Centro-Oeste — VTEX IO
-        "url": (
-            "https://www.topmoveiseletro.com.br/ar-condicionado/split"
-            "?order=OrderByTopSaleDESC"
-        ),
+        # ON HOLD — domínio topmoveiseletro.com.br não resolve
+        # (ERR_NAME_NOT_RESOLVED). Candidato: lojastopmoveis.com.br (Lojas
+        # Top Móveis e Eletros). Caminho da categoria de AC ainda não
+        # validado — reativar após confirmar URL definitiva.
+        "url": "https://www.lojastopmoveis.com.br/ar-condicionado",
         "pagination": "vtex",
         "max_pages":  5,
+        "on_hold": True,
     },
 }
 
@@ -1892,6 +1900,12 @@ class DealerScraper(BaseScraper):
         if not config:
             logger.error(
                 f"[DealerScraper] Dealer '{dealer}' não encontrado em DEALER_CONFIGS"
+            )
+            return []
+
+        if config.get("on_hold"):
+            logger.warning(
+                f"[DealerScraper] Dealer '{dealer}' está on hold — pulado na coleta"
             )
             return []
 
