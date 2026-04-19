@@ -57,24 +57,15 @@ jobs:
       - name: Install Python dependencies
         run: pip install --upgrade pip && pip install -r requirements.txt
 
-      # ── 4. Google Chrome + Playwright ─────────────────────────────────────
-      # Instala Google Chrome real (menos detectável que Chromium headless).
-      # O BaseScraper tenta: chrome → msedge → chromium (fallback).
-      # Sites com anti-bot agressivo (ML, Google Shopping, Dealers) detectam
-      # Chromium headless pela TLS fingerprint; Chrome real melhora a taxa de sucesso.
-      - name: Install Google Chrome
-        run: |
-          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub \
-            | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] \
-            http://dl.google.com/linux/chrome/deb/ stable main" \
-            | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update -q
-          sudo apt-get install -y google-chrome-stable
-          google-chrome --version
-
+      # ── 4. Playwright system dependencies ────────────────────────────────
+      # ubuntu-latest já inclui google-chrome-stable pré-instalado.
+      # Só precisamos das libs de sistema para o Playwright funcionar.
+      # O BaseScraper tenta channel="chrome" primeiro (menos detectável),
+      # caindo para chromium como fallback.
       - name: Install Playwright system dependencies
-        run: playwright install-deps chromium
+        run: |
+          google-chrome --version   # confirma Chrome pré-instalado
+          playwright install-deps chromium
 
       # ── 5. Determina parâmetros de execução ────────────────────────────────
       # Coleta manhã  (cron 11h UTC): alta + media, 2 páginas
