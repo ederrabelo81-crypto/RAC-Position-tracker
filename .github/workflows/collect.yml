@@ -14,8 +14,8 @@ name: RAC Price Collection
 
 on:
   schedule:
-    - cron: '0 11 * * 1-5'   # 08:00 BRT  —  coleta manhã (seg-sex)
-    - cron: '0 21 * * 1-5'   # 18:00 BRT  —  coleta tarde (seg-sex)
+    - cron: '0 11 * * *'   # 08:00 BRT  —  coleta manhã (todos os dias)
+    - cron: '0 21 * * *'   # 18:00 BRT  —  coleta tarde (todos os dias)
 
   workflow_dispatch:
     inputs:
@@ -73,7 +73,7 @@ jobs:
             echo "pages=${{ github.event.inputs.pages }}"         >> "$GITHUB_OUTPUT"
             PRIO="${{ github.event.inputs.priority }}"
             echo "priority=${PRIO}"                               >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "0 11 * * 1-5" ]; then
+          elif [ "${{ github.event.schedule }}" = "0 11 * * *" ]; then
             echo "platforms=ml magalu amazon google_shopping leroy dealers" >> "$GITHUB_OUTPUT"
             echo "pages=2"        >> "$GITHUB_OUTPUT"
             echo "priority=alta media" >> "$GITHUB_OUTPUT"
