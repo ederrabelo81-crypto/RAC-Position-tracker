@@ -590,11 +590,27 @@ def _apply_chart_style(fig, height: int = 440, hovermode: str = "x unified") -> 
         font=dict(family="Inter, -apple-system, sans-serif", size=13, color="#1e293b"),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-            font=dict(size=12), bgcolor="rgba(0,0,0,0)",
+        title=dict(
+            font=dict(size=15, color="#1e293b", family="Inter, sans-serif"),
+            x=0,
+            xanchor="left",
+            pad=dict(t=4, b=4),
         ),
-        margin=dict(l=40, r=20, t=50, b=40),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.18,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=11, color="#475569"),
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="#e2e8f0",
+            borderwidth=1,
+            title_text="",        # remove o label "Platform" / "Brand" acima da legenda
+            itemsizing="constant",
+            tracegroupgap=4,
+        ),
+        margin=dict(l=50, r=20, t=48, b=140),
         colorway=_CHART_COLORS,
     )
     fig.update_xaxes(
