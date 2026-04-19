@@ -4,8 +4,8 @@ name: RAC Price Collection
 # Coleta automática de preços de ar condicionado em marketplaces e dealers.
 #
 # Schedules (horário de Brasília = UTC-3):
-#   • 08:00 BRT (11:00 UTC) seg-sex  →  coleta manhã  — alta + media, 2 páginas
-#   • 18:00 BRT (21:00 UTC) seg-sex  →  coleta tarde  — apenas alta,  1 página
+#   • 08:00 BRT (11:00 UTC) todos os dias  →  coleta manhã  — alta + media, 2 páginas
+#   • 18:00 BRT (21:00 UTC) todos os dias  →  coleta tarde  — apenas alta,  1 página
 #
 # Variáveis obrigatórias (Settings → Secrets and variables → Actions):
 #   SUPABASE_URL   —  URL do projeto Supabase
@@ -57,9 +57,24 @@ jobs:
       - name: Install Python dependencies
         run: pip install --upgrade pip && pip install -r requirements.txt
 
-      # ── 4. Playwright — instala Chromium + libs do sistema ─────────────────
-      - name: Install Playwright browsers
-        run: playwright install chromium --with-deps
+      # ── 4. Google Chrome + Playwright ─────────────────────────────────────
+      # Instala Google Chrome real (menos detectável que Chromium headless).
+      # O BaseScraper tenta: chrome → msedge → chromium (fallback).
+      # Sites com anti-bot agressivo (ML, Google Shopping, Dealers) detectam
+      # Chromium headless pela TLS fingerprint; Chrome real melhora a taxa de sucesso.
+      - name: Install Google Chrome
+        run: |
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub \
+            | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] \
+            http://dl.google.com/linux/chrome/deb/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update -q
+          sudo apt-get install -y google-chrome-stable
+          google-chrome --version
+
+      - name: Install Playwright system dependencies
+        run: playwright install-deps chromium
 
       # ── 5. Determina parâmetros de execução ────────────────────────────────
       # Coleta manhã  (cron 11h UTC): alta + media, 2 páginas
@@ -89,6 +104,9 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # Indica ao scraper que está rodando em CI (sem display, sandbox desabilitado)
+          CI: 'true'
+          DISPLAY: ':99'
         run: |
           PLATFORMS="${{ steps.params.outputs.platforms }}"
           PAGES="${{ steps.params.outputs.pages }}"
@@ -112,9 +130,9 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      # ── 8. Salva logs para diagnóstico em caso de falha ────────────────────
-      - name: Upload logs on failure
-        if: failure()
+      # ── 8. Salva logs sempre (não só em falha) — útil para diagnóstico ─────
+      - name: Upload logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rac-logs-${{ github.run_id }}
