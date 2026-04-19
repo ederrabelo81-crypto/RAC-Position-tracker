@@ -717,10 +717,21 @@ def _expand_platforms(platforms: list[str]) -> list[str]:
 # Supabase client (cached — one connection per session)
 # ---------------------------------------------------------------------------
 
+def _resolve_secret(name: str) -> str:
+    """st.secrets (Streamlit Cloud) → os.getenv (.env local) → ''."""
+    try:
+        v = st.secrets.get(name, "")
+        if v:
+            return str(v).strip()
+    except Exception:
+        pass
+    return os.getenv(name, "").strip()
+
+
 @st.cache_resource(show_spinner=False)
 def _get_supabase():
-    url = os.getenv("SUPABASE_URL", "").strip()
-    key = os.getenv("SUPABASE_KEY", "").strip()
+    url = _resolve_secret("SUPABASE_URL")
+    key = _resolve_secret("SUPABASE_KEY")
     if not url or not key:
         return None
     try:

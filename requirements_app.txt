@@ -1,0 +1,13 @@
+# Dependências apenas para o dashboard Streamlit (app.py)
+# Use este arquivo ao fazer deploy no Streamlit Community Cloud:
+#   Advanced settings → "requirements file" → requirements_app.txt
+#
+# NÃO inclui playwright, curl-cffi, fake-useragent nem tenacity
+# pois esses são usados somente pelo coletor (main.py).
+
+streamlit>=1.35.0
+plotly>=5.20.0
+pandas>=2.2.2
+supabase>=2.3.0
+python-dotenv==1.0.1
+loguru==0.7.2
