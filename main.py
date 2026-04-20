@@ -189,8 +189,13 @@ def _run_scraper(
     """
     records: List[Dict[str, Any]] = []
 
-    # CLI --priority sobrepõe PRIORITY_FILTER do config.py
-    effective_filter = priority_filter if priority_filter is not None else PRIORITY_FILTER
+    # Priority filter aplica só a scrapers de marketplace.
+    # DealerScraper usa nomes de sites como "keywords" — nunca estão em
+    # KEYWORDS_LIST, então o filtro zeraria a coleta de dealers.
+    effective_filter = (
+        None if scraper_cls is DealerScraper
+        else (priority_filter if priority_filter is not None else PRIORITY_FILTER)
+    )
 
     active_keywords = KEYWORDS_LIST
     if effective_filter:
