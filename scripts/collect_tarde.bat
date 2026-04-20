@@ -1,5 +1,5 @@
 @echo off
-:: RAC Price Collector — Coleta Tarde (18:00)
+:: RAC Price Collector — Coleta Noite (21:00)
 :: Plataformas: ML + Google Shopping + Dealers
 :: Prioridade: alta | Páginas: 1
 ::
