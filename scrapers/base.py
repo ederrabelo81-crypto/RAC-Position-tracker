@@ -120,7 +120,18 @@ class BaseScraper(ABC):
                 continue
 
         if self._browser is None:
-            raise RuntimeError("Não foi possível iniciar nenhum browser (chrome/msedge/chromium)")
+            # Para o Playwright antes de lançar a exceção — sem isso o event
+            # loop interno fica aberto e o próximo scraper recebe
+            # "Sync API inside asyncio loop".
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+            raise RuntimeError(
+                "Não foi possível iniciar nenhum browser (chrome/msedge/chromium). "
+                "Execute: python -m playwright install chromium"
+            )
 
         self._context = self._browser.new_context(
             user_agent=self._user_agent,
