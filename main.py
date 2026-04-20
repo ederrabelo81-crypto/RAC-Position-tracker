@@ -393,11 +393,24 @@ def main() -> None:
         )
 
         # --- Upload para Supabase (não bloqueia — CSV já está salvo) ---
-        try:
-            from utils.supabase_client import upload_to_supabase
-            upload_to_supabase(all_records)
-        except Exception as exc:
-            logger.warning(f"Supabase upload falhou (dados no CSV normalmente): {exc}")
+        import os
+        _supabase_url = os.getenv("SUPABASE_URL", "").strip()
+        _supabase_key = os.getenv("SUPABASE_KEY", "").strip()
+        if not _supabase_url or not _supabase_key:
+            logger.warning(
+                "Supabase upload IGNORADO — SUPABASE_URL ou SUPABASE_KEY não configuradas. "
+                "Defina as variáveis de ambiente (ou secrets no GitHub Actions)."
+            )
+        else:
+            try:
+                from utils.supabase_client import upload_to_supabase
+                ok = upload_to_supabase(all_records)
+                if not ok:
+                    logger.error(
+                        "Supabase upload retornou falha — verifique os logs acima para detalhes."
+                    )
+            except Exception as exc:
+                logger.error(f"Supabase upload lançou exceção: {exc}")
 
     else:
         logger.warning(
