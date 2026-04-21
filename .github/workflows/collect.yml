@@ -69,9 +69,13 @@ jobs:
           playwright install-deps chromium
 
       # ── 5. Determina parâmetros de execução ────────────────────────────────
-      # Coleta manhã  (cron 11h UTC): alta + media, 2 páginas
-      # Coleta tarde  (cron 21h UTC): apenas alta,  1 página
-      # Dispatch manual:              usa os inputs fornecidos
+      # Arquitetura de coleta:
+      #   GitHub Actions → magalu amazon leroy  (APIs/Algolia, IPs de datacenter OK)
+      #   Windows Task Scheduler → ml google_shopping dealers  (IPs residenciais)
+      #
+      # Coleta manhã (13:00 UTC = 10:00 BRT): alta + media, 2 páginas
+      # Coleta noite (00:00 UTC = 21:00 BRT):  apenas alta,  1 página
+      # Dispatch manual: usa os inputs fornecidos
       - name: Resolve run parameters
         id: params
         run: |
@@ -81,14 +85,14 @@ jobs:
             PRIO="${{ github.event.inputs.priority }}"
             echo "priority=${PRIO}"                               >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.schedule }}" = "0 13 * * *" ]; then
-            echo "platforms=ml magalu amazon google_shopping leroy dealers" >> "$GITHUB_OUTPUT"
-            echo "pages=2"        >> "$GITHUB_OUTPUT"
-            echo "priority=alta media" >> "$GITHUB_OUTPUT"
+            echo "platforms=magalu amazon leroy" >> "$GITHUB_OUTPUT"
+            echo "pages=2"                       >> "$GITHUB_OUTPUT"
+            echo "priority=alta media"           >> "$GITHUB_OUTPUT"
           else
-            # cron 21h UTC — varredura rápida de tarde
-            echo "platforms=ml magalu amazon google_shopping leroy dealers" >> "$GITHUB_OUTPUT"
-            echo "pages=1"        >> "$GITHUB_OUTPUT"
-            echo "priority=alta"  >> "$GITHUB_OUTPUT"
+            # cron 00:00 UTC = 21:00 BRT — varredura rápida de noite
+            echo "platforms=magalu amazon leroy" >> "$GITHUB_OUTPUT"
+            echo "pages=1"                       >> "$GITHUB_OUTPUT"
+            echo "priority=alta"                 >> "$GITHUB_OUTPUT"
           fi
 
       # ── 6. Executa coleta ──────────────────────────────────────────────────

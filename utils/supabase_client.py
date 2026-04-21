@@ -840,3 +840,111 @@ def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
     else:
         logger.error(f"[Supabase] Upload falhou para todos os {total} registros.")
         return False
+
+
+def fix_inverted_turno_in_supabase(dry_run: bool = True) -> Dict[str, Any]:
+    """
+    Remove registros com turno invertido gravados antes do fix de timezone (TZ=UTC).
+
+    Antes do fix, o GitHub Actions usava UTC:
+      - Coleta manhã (13:00 UTC) → turno="Fechamento" ❌  (horario entre 12:30-14:59)
+      - Coleta noite  (00:00 UTC) → turno="Abertura"  ❌  (horario entre 00:00-01:30)
+
+    Esses registros coexistem com os novos corretos (mesma data/plataforma/produto,
+    turno diferente → constraint UNIQUE não deduplica), causando duplicatas no dashboard.
+
+    Estratégia: identificar pelos horarios fora do contexto e deletar.
+      - turno="Fechamento" AND horario BETWEEN '12:30' AND '14:59' → eram coletas manhã UTC
+      - turno="Abertura"  AND horario BETWEEN '00:00' AND '01:30' → eram coletas noite UTC
+
+    Args:
+        dry_run: Se True (padrão), apenas conta — não deleta. Passe False para deletar.
+
+    Returns:
+        dict com: dry_run, fechamento_wrong, abertura_wrong, deleted, errors
+    """
+    client = _get_client()
+    if client is None:
+        return {"dry_run": dry_run, "fechamento_wrong": 0, "abertura_wrong": 0,
+                "deleted": 0, "errors": 1}
+
+    results: Dict[str, Any] = {"dry_run": dry_run, "deleted": 0, "errors": 0}
+
+    # Caso 1: turno="Fechamento" mas horario indica coleta de manhã (UTC 13h)
+    try:
+        r = (client.table("coletas")
+             .select("id", count="exact")
+             .eq("turno", "Fechamento")
+             .gte("horario", "12:30")
+             .lte("horario", "14:59")
+             .execute())
+        results["fechamento_wrong"] = r.count or 0
+        logger.info(
+            f"[Supabase] Turno invertido — Fechamento com horario 12:30-14:59: "
+            f"{results['fechamento_wrong']} registros"
+        )
+    except Exception as exc:
+        logger.warning(f"[Supabase] Erro ao contar Fechamento errados: {exc}")
+        results["fechamento_wrong"] = -1
+
+    # Caso 2: turno="Abertura" mas horario indica coleta noturna (UTC 00h)
+    try:
+        r = (client.table("coletas")
+             .select("id", count="exact")
+             .eq("turno", "Abertura")
+             .gte("horario", "00:00")
+             .lte("horario", "01:30")
+             .execute())
+        results["abertura_wrong"] = r.count or 0
+        logger.info(
+            f"[Supabase] Turno invertido — Abertura com horario 00:00-01:30: "
+            f"{results['abertura_wrong']} registros"
+        )
+    except Exception as exc:
+        logger.warning(f"[Supabase] Erro ao contar Abertura erradas: {exc}")
+        results["abertura_wrong"] = -1
+
+    if dry_run:
+        logger.info(
+            f"[Supabase] DRY-RUN — nenhum registro deletado. "
+            f"Execute com dry_run=False para deletar."
+        )
+        return results
+
+    # Deleta turno="Fechamento" com horario de manhã
+    try:
+        client.table("coletas").delete() \
+            .eq("turno", "Fechamento") \
+            .gte("horario", "12:30") \
+            .lte("horario", "14:59") \
+            .execute()
+        results["deleted"] += results.get("fechamento_wrong", 0)
+        logger.info(
+            f"[Supabase] Deletados {results.get('fechamento_wrong', 0)} registros "
+            "Fechamento com horario de manhã."
+        )
+    except Exception as exc:
+        results["errors"] += 1
+        logger.error(f"[Supabase] Erro ao deletar Fechamento errados: {exc}")
+
+    # Deleta turno="Abertura" com horario de madrugada
+    try:
+        client.table("coletas").delete() \
+            .eq("turno", "Abertura") \
+            .gte("horario", "00:00") \
+            .lte("horario", "01:30") \
+            .execute()
+        results["deleted"] += results.get("abertura_wrong", 0)
+        logger.info(
+            f"[Supabase] Deletados {results.get('abertura_wrong', 0)} registros "
+            "Abertura com horario de madrugada."
+        )
+    except Exception as exc:
+        results["errors"] += 1
+        logger.error(f"[Supabase] Erro ao deletar Abertura erradas: {exc}")
+
+    logger.success(
+        f"[Supabase] Limpeza de turno invertido concluída: "
+        f"{results['deleted']} registros removidos, {results['errors']} erros."
+    )
+    return results
