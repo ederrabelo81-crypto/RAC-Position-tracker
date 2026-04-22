@@ -393,24 +393,26 @@ def main() -> None:
         )
 
         # --- Upload para Supabase (não bloqueia — CSV já está salvo) ---
-        import os
-        _supabase_url = os.getenv("SUPABASE_URL", "").strip()
-        _supabase_key = os.getenv("SUPABASE_KEY", "").strip()
-        if not _supabase_url or not _supabase_key:
-            logger.warning(
-                "Supabase upload IGNORADO — SUPABASE_URL ou SUPABASE_KEY não configuradas. "
-                "Defina as variáveis de ambiente (ou secrets no GitHub Actions)."
-            )
-        else:
-            try:
-                from utils.supabase_client import upload_to_supabase
+        # Importa primeiro para que load_dotenv() do supabase_client carregue o .env,
+        # depois verifica se as credenciais estão disponíveis.
+        try:
+            from utils.supabase_client import upload_to_supabase
+            import os
+            _supabase_url = os.getenv("SUPABASE_URL", "").strip()
+            _supabase_key = os.getenv("SUPABASE_KEY", "").strip()
+            if not _supabase_url or not _supabase_key:
+                logger.warning(
+                    "Supabase upload IGNORADO — SUPABASE_URL ou SUPABASE_KEY não configuradas. "
+                    "Adicione ao arquivo .env na raiz do projeto ou configure como secrets."
+                )
+            else:
                 ok = upload_to_supabase(all_records)
                 if not ok:
                     logger.error(
                         "Supabase upload retornou falha — verifique os logs acima para detalhes."
                     )
-            except Exception as exc:
-                logger.error(f"Supabase upload lançou exceção: {exc}")
+        except Exception as exc:
+            logger.error(f"Supabase upload lançou exceção: {exc}")
 
     else:
         logger.warning(
