@@ -13,10 +13,8 @@ name: RAC Price Collection
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
-  schedule:
-    - cron: '0 13 * * *'   # 10:00 BRT  —  coleta manhã (todos os dias)
-    - cron: '0 0 * * *'    # 21:00 BRT  —  coleta noite (todos os dias)
-
+  # Coleta automática centralizada na Oracle Cloud VM (cron via SSH).
+  # GitHub Actions mantido apenas para execução manual (backup/teste).
   workflow_dispatch:
     inputs:
       platforms:
