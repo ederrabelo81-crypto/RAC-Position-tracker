@@ -72,6 +72,25 @@ fi
 PYTHON_VERSION=$(python3 --version | awk '{print $2}')
 info "Python: $PYTHON_VERSION"
 
+# ─── 2b. Configura swap de 2 GB (essencial para VMs com 1 GB RAM) ────────────
+TOTAL_RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+info "RAM disponível: ${TOTAL_RAM_MB} MB"
+if [[ $TOTAL_RAM_MB -le 1200 && ! -f /swapfile ]]; then
+    info "RAM ≤ 1.2 GB detectado — criando swapfile de 2 GB..."
+    sudo fallocate -l 2G /swapfile
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    # Persiste o swap após reboot
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+    # Reduz swappiness para não usar swap desnecessariamente
+    echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
+    sudo sysctl vm.swappiness=10
+    info "Swap de 2 GB ativado."
+elif [[ -f /swapfile ]]; then
+    info "Swapfile já existe — pulando."
+fi
+
 # ─── 3. Clona / atualiza repositório ────────────────────────────────────────
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     info "Repositório já existe — atualizando..."
