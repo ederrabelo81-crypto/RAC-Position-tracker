@@ -1,0 +1,56 @@
+{
+  "name": "RAC Coleta Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "coleta",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "d5a1f2b3-c4e5-4678-9012-abcdef012345",
+      "name": "Webhook Coleta",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.body.chat_id }}",
+        "text": "={{ $json.body.message }}",
+        "additionalFields": {
+          "parse_mode": "MarkdownV2"
+        }
+      },
+      "id": "e6b2a3c4-d5f6-7890-1234-bcdef0123456",
+      "name": "Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "1",
+          "name": "RAC Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Coleta": {
+      "main": [
+        [
+          {
+            "node": "Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": ["RAC", "monitoramento"]
+}

@@ -21,6 +21,7 @@ Uso específico:
 import argparse
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
@@ -343,6 +344,18 @@ def main() -> None:
         f"Headless: {args.headless}"
     )
 
+    # --- N8N: dados de contexto para notificações ---
+    from utils.text import get_turno
+    _turno    = get_turno()
+    _data_str = datetime.now().strftime("%Y-%m-%d")
+    _start_time = time.time()
+
+    try:
+        from utils.n8n_notify import notify_start, notify_end as _notify_end
+        notify_start(platform_names, _turno, _data_str)
+    except Exception:
+        _notify_end = None  # type: ignore
+
     # --- Resolve keywords ---
     if args.keywords:
         # keywords passadas via CLI → agrupa como categoria "CLI"
@@ -413,6 +426,13 @@ def main() -> None:
                     )
         except Exception as exc:
             logger.error(f"Supabase upload lançou exceção: {exc}")
+
+        # --- N8N: notificação de fim com resumo e comparação ---
+        try:
+            if _notify_end:
+                _notify_end(all_records, platform_names, _turno, _data_str, _start_time)
+        except Exception:
+            pass
 
     else:
         logger.warning(
