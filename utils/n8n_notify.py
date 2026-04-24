@@ -2,11 +2,12 @@
 utils/n8n_notify.py — Notificações executivas de coleta para N8N via webhook.
 
 Gera um resumo executivo com:
-  • Indicadores da coleta (volume, duração, preço médio Midea)
+  • Indicadores da coleta (volume, duração)
+  • Matriz de preço médio Midea (Linha × Capacidade) — High Wall Inverter
+  • Ranking top 5 por keyword estratégica (9k/12k High Wall Inverter)
   • Top 5 quedas e altas de preço (deduplicado por produto, com keyword)
-  • Ganhos de buybox da Midea (quem foi deslocado)
-  • Perdas de buybox da Midea (quem assumiu)
-  • Filtro de variações suspeitas (×10 parser errors)
+  • Ganhos/perdas de buybox Midea com contexto de concorrência
+  • Filtro de variações suspeitas (parser errors)
 
 Configure no .env:
     N8N_WEBHOOK_URL=http://localhost:5678/webhook/coleta
@@ -17,6 +18,7 @@ No N8N, Parse Mode do nó Telegram deve ser: HTML
 
 import html
 import os
+import re
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -38,6 +40,36 @@ _PRICE_MIN_DELTA_PCT   = 3.0    # variação mínima para aparecer
 _PRICE_MIN_DELTA_REAIS = 50.0   # mínimo em R$ para aparecer
 _PRICE_SUSPICIOUS_PCT  = 50.0   # acima disso é sinalizado com ⚠️
 _PRICE_IGNORE_PCT      = 150.0  # acima disso é descartado (certamente erro)
+
+# Matriz Midea — High Wall Inverter
+_MIDEA_LINES = ["AI Ecomaster", "AI Airvolution", "Lite"]
+_MIDEA_BTUS  = [9000, 12000, 18000]
+
+# Keywords estratégicas para o ranking top 5
+_RANKING_KEYWORDS = [
+    "ar condicionado",
+    "ar condicionado inverter",
+    "ar condicionado split inverter",
+]
+_RANKING_BTUS = [9000, 12000]
+
+# Padrões para rejeitar produtos que NÃO são High Wall (para matriz/ranking)
+_NON_HIGHWALL = [
+    "portátil", "portatil", "portable",
+    "cassete", "cassette", "casset",
+    "piso teto", "piso-teto", "piso/teto",
+    "bi split", "bi-split", "bisplit",
+    "multi split", "multi-split", "multisplit",
+    "janela", "window",
+    "vrf", "vrv",
+    "duto",
+]
+
+# Regex de BTU (mesma lógica do supabase_client)
+_BTU_RE = re.compile(
+    r'(\d{1,2})[.,](\d{3})\s*btu|(\d{4,6})\s*btu',
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +225,167 @@ def _get_previous_collection(turno: str, data_str: str) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Detecção de linha, capacidade e tipo
+# ---------------------------------------------------------------------------
+
+def _detect_midea_line(produto: str) -> Optional[str]:
+    """Detecta linha Midea: AI Ecomaster / AI Airvolution / Lite."""
+    p = (produto or "").lower()
+    if "ecomaster" in p:
+        return "AI Ecomaster"
+    if "airvolution" in p or "air volution" in p:
+        return "AI Airvolution"
+    # "Lite" é genérico — exige que seja Midea sem outra linha identificada
+    if "lite" in p and "ecomaster" not in p and "airvolution" not in p:
+        return "Lite"
+    return None
+
+
+def _detect_btu(produto: str) -> Optional[int]:
+    """Extrai BTU do nome do produto. Retorna int ou None."""
+    m = _BTU_RE.search(produto or "")
+    if not m:
+        return None
+    if m.group(3):
+        return int(m.group(3))
+    return int(m.group(1)) * 1000 + int(m.group(2))
+
+
+def _is_highwall(produto: str) -> bool:
+    """True se o produto parece ser High Wall (split de parede tradicional)."""
+    p = (produto or "").lower()
+    return not any(excl in p for excl in _NON_HIGHWALL)
+
+
+# ---------------------------------------------------------------------------
+# Matriz de preços Midea (Linha × Capacidade)
+# ---------------------------------------------------------------------------
+
+def _compute_midea_matrix(
+    curr_by_product: Dict[Tuple[str, str], Dict],
+    prev_by_product: Dict[Tuple[str, str], Dict],
+) -> Dict[Tuple[str, int], Dict]:
+    """
+    Agrupa produtos Midea por (Linha, BTU) e calcula preço médio atual e anterior.
+    Só considera High Wall Inverter.
+    """
+    def _bucket(records: Dict[Tuple[str, str], Dict]) -> Dict[Tuple[str, int], List[float]]:
+        acc: Dict[Tuple[str, int], List[float]] = defaultdict(list)
+        for rec in records.values():
+            marca = (rec.get("marca") or "").lower()
+            if "midea" not in marca:
+                continue
+            produto = rec.get("produto") or ""
+            if not _is_highwall(produto):
+                continue
+            linha = _detect_midea_line(produto)
+            btu   = _detect_btu(produto)
+            if not linha or btu not in _MIDEA_BTUS:
+                continue
+            if linha not in _MIDEA_LINES:
+                continue
+            try:
+                preco = float(rec.get("preco"))
+                if preco > 0:
+                    acc[(linha, btu)].append(preco)
+            except (ValueError, TypeError):
+                pass
+        return acc
+
+    curr_buckets = _bucket(curr_by_product)
+    prev_buckets = _bucket(prev_by_product)
+
+    matrix: Dict[Tuple[str, int], Dict] = {}
+    for linha in _MIDEA_LINES:
+        for btu in _MIDEA_BTUS:
+            key = (linha, btu)
+            curr_prices = curr_buckets.get(key, [])
+            prev_prices = prev_buckets.get(key, [])
+            avg_curr = sum(curr_prices) / len(curr_prices) if curr_prices else None
+            avg_prev = sum(prev_prices) / len(prev_prices) if prev_prices else None
+            delta_pct = None
+            if avg_curr and avg_prev and avg_prev > 0:
+                delta_pct = (avg_curr - avg_prev) / avg_prev * 100
+            matrix[key] = {
+                "avg_curr":  round(avg_curr, 2) if avg_curr else None,
+                "avg_prev":  round(avg_prev, 2) if avg_prev else None,
+                "delta_pct": round(delta_pct, 1) if delta_pct is not None else None,
+                "n_curr":    len(curr_prices),
+            }
+    return matrix
+
+
+# ---------------------------------------------------------------------------
+# Ranking top 5 por keyword (High Wall Inverter 9k/12k)
+# ---------------------------------------------------------------------------
+
+def _match_target_keyword(keyword_value: str) -> Optional[str]:
+    """
+    Retorna a target keyword que melhor bate com o valor coletado,
+    ou None se não bater com nenhuma. Prioriza match mais específico.
+    """
+    kw = (keyword_value or "").lower().strip()
+    if not kw:
+        return None
+    # Ordena do mais específico pro mais genérico para match em ordem
+    for target in sorted(_RANKING_KEYWORDS, key=len, reverse=True):
+        if kw == target or kw.startswith(target + " ") or kw == target:
+            return target
+    # Match exato simples
+    if kw in _RANKING_KEYWORDS:
+        return kw
+    return None
+
+
+def _compute_keyword_ranking(current_records: List[Dict]) -> Dict[Tuple[str, str], List[Dict]]:
+    """
+    Para cada (plataforma, target_keyword), retorna até 5 produtos ordenados
+    por posição geral. Filtra apenas High Wall 9k/12k.
+    """
+    # Agrupa por (plataforma, target_keyword) mantendo menor posição por produto
+    grouped: Dict[Tuple[str, str], Dict[str, Dict]] = defaultdict(dict)
+
+    for rec in current_records:
+        plat    = rec.get("plataforma") or ""
+        kw_raw  = rec.get("keyword") or ""
+        produto = rec.get("produto") or ""
+        pos_raw = rec.get("posicao_geral")
+
+        if not plat or not produto or pos_raw is None:
+            continue
+
+        target_kw = _match_target_keyword(kw_raw)
+        if not target_kw:
+            continue
+
+        btu = _detect_btu(produto)
+        if btu not in _RANKING_BTUS:
+            continue
+        if not _is_highwall(produto):
+            continue
+
+        try:
+            pos = int(pos_raw)
+        except (ValueError, TypeError):
+            continue
+
+        group_key = (plat, target_kw)
+        existing = grouped[group_key].get(produto)
+        if not existing or pos < (existing.get("posicao_geral") or 999):
+            grouped[group_key][produto] = rec
+
+    # Ordena cada grupo por posição e corta top 5
+    result: Dict[Tuple[str, str], List[Dict]] = {}
+    for key, prod_dict in grouped.items():
+        items = sorted(
+            prod_dict.values(),
+            key=lambda r: int(r.get("posicao_geral") or 999),
+        )
+        result[key] = items[:5]
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Análise de mudanças
 # ---------------------------------------------------------------------------
 
@@ -293,37 +486,32 @@ def _compute_changes(
                 "assumiu_produto":   (curr_first.get("produto") or "")[:50],
             })
 
+    # ── Matriz Midea (Linha × Capacidade) ──────────────────────────────────
+    midea_matrix = _compute_midea_matrix(curr_by_product, prev_by_product)
+
+    # ── Ranking top 5 por keyword estratégica ──────────────────────────────
+    keyword_ranking = _compute_keyword_ranking(current)
+
     # ── Indicadores agregados ───────────────────────────────────────────────
-    midea_precos_atuais = [
-        float(r["preco"]) for r in curr_by_product.values()
+    total_midea_skus = sum(
+        1 for r in curr_by_product.values()
         if r.get("preco") and "midea" in (r.get("marca") or "").lower()
-    ]
-    midea_precos_antes = [
-        float(r["preco"]) for r in prev_by_product.values()
-        if r.get("preco") and "midea" in (r.get("marca") or "").lower()
-    ]
-    avg_midea_atual = sum(midea_precos_atuais) / len(midea_precos_atuais) if midea_precos_atuais else 0
-    avg_midea_antes = sum(midea_precos_antes) / len(midea_precos_antes) if midea_precos_antes else 0
-    avg_delta_pct = (
-        (avg_midea_atual - avg_midea_antes) / avg_midea_antes * 100
-        if avg_midea_antes > 0 else 0
     )
 
     # Ordena variações por magnitude
     price_changes.sort(key=lambda x: abs(x["pct"]), reverse=True)
 
     return {
-        "price_changes":   price_changes,
-        "buybox_gains":    buybox_gains,
-        "buybox_losses":   buybox_losses,
+        "price_changes":    price_changes,
+        "buybox_gains":     buybox_gains,
+        "buybox_losses":    buybox_losses,
+        "midea_matrix":     midea_matrix,
+        "keyword_ranking":  keyword_ranking,
         "summary": {
-            "avg_midea_atual":  round(avg_midea_atual, 2),
-            "avg_midea_antes":  round(avg_midea_antes, 2),
-            "avg_delta_pct":    round(avg_delta_pct, 1),
             "total_movimentos": len(price_changes),
             "buybox_gains":     len(buybox_gains),
             "buybox_losses":    len(buybox_losses),
-            "midea_skus":       len(midea_precos_atuais),
+            "midea_skus":       total_midea_skus,
             "has_previous":     bool(previous),
         },
     }
@@ -352,10 +540,12 @@ def _fmt_end(
     duration_min: float,
     changes: Dict[str, Any],
 ) -> str:
-    summary = changes.get("summary", {})
-    price_ch = changes.get("price_changes", [])
-    gains    = changes.get("buybox_gains", [])
-    losses   = changes.get("buybox_losses", [])
+    summary         = changes.get("summary", {})
+    price_ch        = changes.get("price_changes", [])
+    gains           = changes.get("buybox_gains", [])
+    losses          = changes.get("buybox_losses", [])
+    midea_matrix    = changes.get("midea_matrix", {})
+    keyword_ranking = changes.get("keyword_ranking", {})
 
     divider = "━━━━━━━━━━━━━━━━━━"
     lines: List[str] = []
@@ -369,25 +559,81 @@ def _fmt_end(
     for plat, count in sorted(per_platform.items(), key=lambda x: -x[1]):
         lines.append(f"   └ {_esc(plat)}: {count:,}".replace(",", "."))
 
-    # Indicadores
+    # Matriz Midea High Wall Inverter (Linha × Capacidade)
+    has_matrix_data = any(
+        v.get("avg_curr") is not None for v in midea_matrix.values()
+    )
+    if has_matrix_data:
+        lines.append("")
+        lines.append(divider)
+        lines.append("💰 <b>PREÇO MÉDIO MIDEA — HIGH WALL INVERTER</b>")
+        # Tabela em <pre> (fonte monoespaçada)
+        table = []
+        table.append(f"{'Linha':<15}{'9k':>11}{'12k':>11}{'18k':>11}")
+        for linha in _MIDEA_LINES:
+            row_cells = [f"{linha:<15}"]
+            for btu in _MIDEA_BTUS:
+                cell = midea_matrix.get((linha, btu), {})
+                avg = cell.get("avg_curr")
+                delta = cell.get("delta_pct")
+                if avg is None:
+                    row_cells.append(f"{'—':>11}")
+                else:
+                    val = f"{int(avg):,}".replace(",", ".")
+                    if delta is not None and abs(delta) >= 1:
+                        arrow = "▲" if delta > 0 else "▼"
+                        row_cells.append(f"{val}{arrow}".rjust(11))
+                    else:
+                        row_cells.append(val.rjust(11))
+            table.append("".join(row_cells))
+        lines.append(f"<pre>{_esc(chr(10).join(table))}</pre>")
+
+    # Indicadores resumo
     if summary.get("has_previous"):
         lines.append("")
         lines.append(divider)
         lines.append("📈 <b>INDICADORES</b>")
-        if summary["midea_skus"] > 0:
-            arrow = "▲" if summary["avg_delta_pct"] > 0 else "▼" if summary["avg_delta_pct"] < 0 else "—"
-            lines.append(
-                f"• Preço médio Midea: {_fmt_brl(summary['avg_midea_atual'])} "
-                f"({arrow} {abs(summary['avg_delta_pct'])}%)"
-            )
         lines.append(f"• Movimentos de preço: {summary['total_movimentos']}")
         lines.append(
             f"• Buybox Midea: <b>+{summary['buybox_gains']}</b> ganhos"
             f"  •  <b>-{summary['buybox_losses']}</b> perdas"
         )
+        lines.append(f"• SKUs Midea coletados: {summary['midea_skus']}")
+
+    # Ranking Top 5 por keyword estratégica (High Wall Inverter 9k/12k)
+    if keyword_ranking:
+        # Ordena: por keyword (mais específica primeiro) e depois plataforma
+        sorted_keys = sorted(
+            keyword_ranking.keys(),
+            key=lambda k: (-len(k[1]), k[0], k[1]),
+        )
+        lines.append("")
+        lines.append(divider)
+        lines.append("📊 <b>RANKING TOP 5 — HIGH WALL INVERTER 9k/12k</b>")
+        for (plat, kw) in sorted_keys[:6]:  # máx 6 combinações para caber
+            products = keyword_ranking.get((plat, kw), [])
+            if not products:
+                continue
+            lines.append("")
+            lines.append(f"🔎 <b>{_esc(plat)}</b> — <i>\"{_esc(kw)}\"</i>")
+            for prod in products:
+                pos = prod.get("posicao_geral") or "?"
+                marca = (prod.get("marca") or "?")[:10]
+                produto_nome = (prod.get("produto") or "")[:40]
+                preco = prod.get("preco")
+                try:
+                    preco_str = _fmt_brl(float(preco)) if preco else "—"
+                except (ValueError, TypeError):
+                    preco_str = "—"
+                is_midea = "midea" in (prod.get("marca") or "").lower()
+                icon = "🟢" if is_midea else "⚪"
+                lines.append(
+                    f"  {icon} #{pos} <b>{_esc(marca)}</b> "
+                    f"{_esc(produto_nome)} — {preco_str}"
+                )
 
     # Preços — quedas
-    quedas = [c for c in price_ch if c["delta"] < 0][:5]
+    quedas = [c for c in price_ch if c["delta"] < 0][:3]
     if quedas:
         lines.append("")
         lines.append(divider)
@@ -407,7 +653,7 @@ def _fmt_end(
             lines.append(f"   🔎 <i>{_esc(ch['keyword'])}</i>")
 
     # Preços — altas
-    altas = [c for c in price_ch if c["delta"] > 0][:5]
+    altas = [c for c in price_ch if c["delta"] > 0][:3]
     if altas:
         lines.append("")
         lines.append(divider)
