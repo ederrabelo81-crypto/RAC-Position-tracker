@@ -552,8 +552,9 @@ def _compute_changes(
 # ---------------------------------------------------------------------------
 
 def _fmt_start(platforms: List[str], turno: str, data_str: str) -> str:
+    from utils.text import now_brt
     plat_str = ", ".join(p.upper() for p in platforms)
-    hora = datetime.now().strftime("%H:%M")
+    hora = now_brt().strftime("%H:%M")
     return (
         f"🚀 <b>Coleta iniciada</b>\n"
         f"📅 {_esc(data_str)} — {_esc(turno)} ({hora})\n"

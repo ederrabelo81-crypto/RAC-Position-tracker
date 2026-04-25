@@ -11,8 +11,22 @@ Responsabilidades:
 import re
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from config import TURNO_ABERTURA_MAX_HOUR
+
+BRT = ZoneInfo("America/Sao_Paulo")
+
+
+def now_brt() -> datetime:
+    """
+    Retorna datetime atual em horário de Brasília (America/Sao_Paulo),
+    independente da timezone do sistema operacional.
+
+    Crítico para servidores em UTC: garante que turno, data e horário
+    refletem o horário comercial brasileiro, não o do datacenter.
+    """
+    return datetime.now(BRT).replace(tzinfo=None)
 
 
 def parse_price_brazil(raw_text: Optional[str]) -> Optional[float]:
@@ -291,9 +305,9 @@ def parse_review_count(raw: Optional[str]) -> Optional[int]:
 def get_turno(hora: Optional[datetime] = None) -> str:
     """
     Retorna 'Abertura' se hora <= TURNO_ABERTURA_MAX_HOUR, senão 'Fechamento'.
-    Se hora não fornecida, usa horário atual.
+    Se hora não fornecida, usa horário atual em Brasília (independente do SO).
     """
-    h = hora if hora else datetime.now()
+    h = hora if hora else now_brt()
     return "Abertura" if h.hour <= TURNO_ABERTURA_MAX_HOUR else "Fechamento"
 
 

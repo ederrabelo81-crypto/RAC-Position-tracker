@@ -100,7 +100,8 @@ COLUMN_ORDER = [
 
 def _setup_logging(log_dir: str) -> None:
     Path(log_dir).mkdir(parents=True, exist_ok=True)
-    log_file = Path(log_dir) / f"bot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    from utils.text import now_brt as _now_brt
+    log_file = Path(log_dir) / f"bot_{_now_brt().strftime('%Y%m%d_%H%M%S')}.log"
 
     logger.remove()  # remove handler padrão do stderr
     logger.add(
@@ -137,7 +138,8 @@ def _export_csv(records: List[Dict[str, Any]], output_dir: str) -> Path:
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    from utils.text import now_brt as _now_brt
+    timestamp = _now_brt().strftime("%Y%m%d_%H%M")
     filename  = f"rac_monitoramento_{timestamp}.csv"
     filepath  = Path(output_dir) / filename
 
@@ -345,9 +347,9 @@ def main() -> None:
     )
 
     # --- N8N: dados de contexto para notificações ---
-    from utils.text import get_turno
+    from utils.text import get_turno, now_brt
     _turno    = get_turno()
-    _data_str = datetime.now().strftime("%Y-%m-%d")
+    _data_str = now_brt().strftime("%Y-%m-%d")
     _start_time = time.time()
 
     try:

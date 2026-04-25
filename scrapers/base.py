@@ -28,7 +28,7 @@ from config import (
     USER_AGENTS,
 )
 from utils.brands import extract_brand
-from utils.text import get_turno, infer_keyword_category, normalize_text
+from utils.text import get_turno, infer_keyword_category, normalize_text, now_brt
 from utils.normalize_product import normalize_product_name
 
 
@@ -258,7 +258,7 @@ class BaseScraper(ABC):
         """
         from utils.text import parse_price
 
-        now = datetime.now()
+        now = now_brt()
         title_clean = normalize_text(title)
 
         # preço: prioriza float já parseado; fallback para parse da string
