@@ -10,10 +10,12 @@ Gera um resumo executivo com:
   • Filtro de variações suspeitas (parser errors)
 
 Configure no .env:
-    N8N_WEBHOOK_URL=http://localhost:5678/webhook/coleta
+    N8N_WEBHOOK_URL=http://localhost:5678/webhook/coleta   (opcional)
     N8N_TELEGRAM_CHAT_ID=123456789
+    TELEGRAM_BOT_TOKEN=7730291785:AAF...                   (fallback direto)
 
-No N8N, Parse Mode do nó Telegram deve ser: HTML
+Se N8N_WEBHOOK_URL não estiver configurado ou o webhook falhar, envia
+diretamente pela API do Telegram usando TELEGRAM_BOT_TOKEN.
 """
 
 import html
@@ -84,17 +86,45 @@ def _chat_id() -> str:
     return os.getenv("N8N_TELEGRAM_CHAT_ID", "").strip()
 
 
-def _send(payload: Dict[str, Any]) -> bool:
-    url = _webhook_url()
-    if not url:
+def _bot_token() -> Optional[str]:
+    return os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or None
+
+
+def _send_direct_telegram(message: str) -> bool:
+    """Envia diretamente pela API do Telegram, sem passar pelo N8N."""
+    token = _bot_token()
+    chat_id = _chat_id()
+    if not token or not chat_id:
         return False
     try:
-        resp = requests.post(url, json=payload, timeout=10)
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        resp = requests.post(url, json={
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+        }, timeout=15)
         resp.raise_for_status()
+        logger.info("[Telegram] Mensagem enviada diretamente via Bot API")
         return True
     except Exception as exc:
-        logger.warning(f"[N8N] Falha ao notificar: {exc}")
+        logger.warning(f"[Telegram] Falha no envio direto: {exc}")
         return False
+
+
+def _send(payload: Dict[str, Any]) -> bool:
+    """Tenta N8N webhook; se falhar, envia direto pela API do Telegram."""
+    url = _webhook_url()
+    if url:
+        try:
+            resp = requests.post(url, json=payload, timeout=10)
+            resp.raise_for_status()
+            logger.info("[N8N] Notificação enviada via webhook")
+            return True
+        except Exception as exc:
+            logger.warning(f"[N8N] Webhook falhou ({exc}), tentando Telegram direto...")
+
+    # Fallback: envio direto ao Telegram
+    return _send_direct_telegram(payload.get("message", ""))
 
 
 def _esc(text: str) -> str:
