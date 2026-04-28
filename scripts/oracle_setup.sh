@@ -136,16 +136,18 @@ mkdir -p "$INSTALL_DIR/output" "$INSTALL_DIR/logs"
 info "Criando scripts de coleta..."
 
 # Script de coleta manhã (10:00 BRT = 13:00 UTC)
+# Oracle VM: IP de datacenter → Magalu, Amazon, Leroy, Dealers (não ML/Google)
 cat > "$INSTALL_DIR/scripts/collect_manha_linux.sh" <<'SCRIPT'
 #!/usr/bin/env bash
-# Coleta manhã — 10:00 BRT (13:00 UTC)
-# Plataformas: ML + Google Shopping + Dealers | Prioridade: alta + media | Páginas: 2
+# Coleta manhã Oracle VM — 10:00 BRT (13:00 UTC)
+# Plataformas: Magalu + Amazon + Leroy + Dealers | Prioridade: alta + media | Páginas: 2
+# (ML e Google Shopping rodam no PC residencial — IP datacenter é bloqueado)
 cd "$(dirname "$(realpath "$0")")/.."
 source .venv/bin/activate
 set -a; source .env; set +a
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Iniciando coleta manha..." >> logs/cron.log
 python main.py \
-    --platforms ml google_shopping dealers \
+    --platforms magalu amazon leroy dealers \
     --pages 2 \
     --priority alta media \
     >> logs/cron.log 2>&1
@@ -155,14 +157,15 @@ SCRIPT
 # Script de coleta noite (21:00 BRT = 00:00 UTC)
 cat > "$INSTALL_DIR/scripts/collect_noite_linux.sh" <<'SCRIPT'
 #!/usr/bin/env bash
-# Coleta noite — 21:00 BRT (00:00 UTC)
-# Plataformas: ML + Google Shopping + Dealers | Prioridade: alta | Páginas: 1
+# Coleta noite Oracle VM — 21:00 BRT (00:00 UTC)
+# Plataformas: Magalu + Amazon + Leroy + Dealers | Prioridade: alta | Páginas: 1
+# (ML e Google Shopping rodam no PC residencial — IP datacenter é bloqueado)
 cd "$(dirname "$(realpath "$0")")/.."
 source .venv/bin/activate
 set -a; source .env; set +a
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Iniciando coleta noite..." >> logs/cron.log
 python main.py \
-    --platforms ml google_shopping dealers \
+    --platforms magalu amazon leroy dealers \
     --pages 1 \
     --priority alta \
     >> logs/cron.log 2>&1
