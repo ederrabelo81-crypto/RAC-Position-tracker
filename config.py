@@ -207,6 +207,18 @@ BRANDS: List[str] = [
     "Trane",
     "Rheem",
     "Lennox",
+    # Marcas adicionadas — presença em e-commerces BR
+    "AIWA",
+    "American Range",
+    "Geminis",
+    "Fontaine",
+    "Luxor",
+    "Turbro",
+    "Velleman",
+    "Whynter",
+    "DeLonghi",
+    "Kian",
+    "Equation",
 ]
 
 # ---------------------------------------------------------------------------
