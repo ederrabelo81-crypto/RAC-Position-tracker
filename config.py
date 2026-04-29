@@ -207,6 +207,18 @@ BRANDS: List[str] = [
     "Trane",
     "Rheem",
     "Lennox",
+    # Novas marcas adicionadas Abril 2026
+    "AIWA",
+    "American Range",
+    "Geminis",
+    "Fontaine",
+    "Luxor",
+    "Turbro",
+    "Velleman",
+    "Whynter",
+    "DeLonghi",
+    "Kian",
+    "Equation",
 ]
 
 # ---------------------------------------------------------------------------
