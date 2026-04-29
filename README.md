@@ -2,7 +2,7 @@
 
 Bot de monitoramento de preços e posicionamento de produtos de ar condicionado em marketplaces brasileiros e varejistas especializados.
 
-**Status:** ✅ Produção | **Última atualização:** Abril 2026
+**Status:** ✅ Produção | **Última atualização:** Abril 2026 (v3.1)
 
 ---
 
@@ -15,7 +15,7 @@ Este projeto realiza scraping automatizado de múltiplas plataformas de e-commer
 - **Avaliações** e ratings de produtos
 - **Análise competitiva via IA** (Claude API)
 
-Os dados são exportados em CSV e enviados para Supabase para visualização em dashboard Streamlit com inteligência competitiva.
+Os dados são exportados em CSV e enviados para Supabase para visualização em dashboard Streamlit com inteligência competitiva. Notificações executivas automáticas são enviadas via Telegram (N8N ou API direta) após cada coleta.
 
 ---
 
@@ -26,6 +26,7 @@ Oracle Cloud VM (Brazil East — São Paulo)
   └─ Cron 10:00 BRT → todas as plataformas, prioridade alta+media, 2 páginas
   └─ Cron 21:00 BRT → todas as plataformas, prioridade alta, 1 página
   └─ Supabase upload automático após cada coleta
+  └─ Notificação Telegram automática (N8N ou API direta) após cada coleta
 
 GitHub Actions
   └─ Manual (workflow_dispatch) apenas — backup e testes pontuais
@@ -100,9 +101,17 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 # Nome do analista nos relatórios
 ANALYST_NAME="Bot Automático Python"
+
+# Notificações Telegram — N8N (opcional)
+N8N_WEBHOOK_URL=http://localhost:5678/webhook/coleta
+N8N_TELEGRAM_CHAT_ID=123456789
+
+# Notificações Telegram — API direta (fallback sem N8N)
+TELEGRAM_BOT_TOKEN=7730291785:AAF...
 ```
 
 > **Atenção:** use a **service_role key** do Supabase (não a anon key). Encontre em: Supabase → Project Settings → API → service_role.
+> Para notificações Telegram sem N8N, basta configurar `TELEGRAM_BOT_TOKEN` e `N8N_TELEGRAM_CHAT_ID`.
 
 ---
 
@@ -206,6 +215,41 @@ streamlit run app.py
 
 ---
 
+## 📲 Notificações Telegram
+
+Após cada coleta o bot envia automaticamente um **resumo executivo** para um chat Telegram com:
+
+- **Indicadores gerais** — volume de registros, duração, plataformas coletadas
+- **Matriz de preço Midea** — High Wall Inverter por linha (AI Ecomaster / AI Airvolution / Lite) × capacidade (9k / 12k / 18k BTU), com delta em relação à coleta anterior
+- **Ranking top 5 por keyword estratégica** — "ar condicionado", "ar condicionado inverter", "ar condicionado split inverter" (High Wall 9k/12k), posições Midea destacadas
+- **Maiores quedas e altas de preço** — top 3 cada, com keyword, plataforma e categoria; variações suspeitas sinalizadas (⚠️ >50%) ou descartadas (>150%)
+- **Ganhos/perdas de buybox Midea** — mostra qual marca foi deslocada (ganho) ou assumiu o 1º lugar (perda)
+
+### Configuração
+
+Adicione ao `.env`:
+
+```env
+# N8N (opcional — se configurado, o webhook é chamado primeiro)
+N8N_WEBHOOK_URL=http://localhost:5678/webhook/coleta
+N8N_TELEGRAM_CHAT_ID=123456789
+
+# Telegram direto (fallback quando N8N não está disponível)
+TELEGRAM_BOT_TOKEN=7730291785:AAF...
+```
+
+> Se `N8N_WEBHOOK_URL` não estiver configurado ou o webhook falhar, a notificação é enviada diretamente pela Telegram Bot API usando `TELEGRAM_BOT_TOKEN`. Basta configurar o token para funcionar sem N8N.
+
+### Workflow N8N
+
+O arquivo `n8n/rac_coleta_monitor.json` é um workflow importável (Webhook → Telegram) pronto para uso.
+
+```bash
+# Importe no N8N via: Settings → Import → colar o JSON
+```
+
+---
+
 ## ☁️ Infraestrutura — Oracle Cloud Free Tier
 
 A coleta automática roda em uma VM Oracle Cloud (Brazil East, São Paulo).
@@ -285,7 +329,7 @@ KEYWORDS_LIST: List[Keyword] = [
 TURNO_ABERTURA_MAX_HOUR: int = 12  # ≤ 12h → "Abertura" | > 12h → "Fechamento"
 ```
 
-> **Importante:** os timestamps usam sempre BRT (America/Sao_Paulo). A VM Oracle e o GitHub Actions têm `TZ=America/Sao_Paulo` configurado explicitamente.
+> **Importante:** os timestamps usam sempre BRT (America/Sao_Paulo) via `now_brt()` (`utils/text.py`), que força o fuso usando `zoneinfo` independente do relógio do SO. Isso garante que coletas na VM Oracle (UTC) registrem data e turno corretos no Brasil.
 
 ---
 
@@ -312,10 +356,14 @@ rac-position-tracker/
 │   └── fast_shop.py             # ⏸️ Stand by
 │
 ├── utils/
-│   ├── text.py                  # parse_price, get_turno, normalize_text
+│   ├── text.py                  # parse_price, get_turno, now_brt(), normalize_text
 │   ├── brands.py                # extract_brand() regex word boundary
 │   ├── normalize_product.py     # normalize_product_name()
-│   └── supabase_client.py       # Upload, limpeza e manutenção do banco
+│   ├── supabase_client.py       # Upload, limpeza e manutenção do banco
+│   └── n8n_notify.py            # Notificações Telegram (N8N webhook + fallback direto)
+│
+├── n8n/
+│   └── rac_coleta_monitor.json  # Workflow N8N importável (Webhook → Telegram)
 │
 ├── scripts/
 │   ├── oracle_setup.sh          # Setup completo da VM Oracle Cloud
@@ -394,6 +442,12 @@ sudo systemctl start cron
 crontab -l
 ```
 
+### Notificação Telegram não chega
+1. Confirme que `TELEGRAM_BOT_TOKEN` e `N8N_TELEGRAM_CHAT_ID` estão no `.env`
+2. Teste o token: `curl https://api.telegram.org/bot<TOKEN>/getMe`
+3. Se usar N8N, verifique se o webhook está ativo e acessível pela VM
+4. Logs de notificação aparecem no arquivo de log da coleta com prefixo `[n8n_notify]`
+
 ---
 
 ## 📝 Dependências Principais
@@ -433,4 +487,4 @@ Desenvolvido para monitoramento competitivo de preços no varejo brasileiro de c
 
 ---
 
-**Versão:** 3.0 | **Última atualização:** Abril 2026
+**Versão:** 3.1 | **Última atualização:** Abril 2026
