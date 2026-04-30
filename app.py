@@ -120,22 +120,28 @@ footer {visibility: hidden;}
 }
 
 [data-testid="stMetricLabel"] {
-    font-size: 0.75rem !important;
+    font-size: 0.72rem !important;
     font-weight: 600 !important;
     color: #64748b !important;
     text-transform: uppercase !important;
-    letter-spacing: 0.08em !important;
-    margin-bottom: 0.5rem !important;
+    letter-spacing: 0.06em !important;
+    margin-bottom: 0.4rem !important;
+    white-space: normal !important;
+    overflow-wrap: break-word !important;
+    word-break: break-word !important;
 }
 
 [data-testid="stMetricValue"] {
-    font-size: 2.2rem !important;
+    font-size: 1.6rem !important;
     font-weight: 800 !important;
     background: linear-gradient(135deg, #1e293b 0%, #1a56db 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
     line-height: 1.2 !important;
+    white-space: normal !important;
+    overflow-wrap: break-word !important;
+    word-break: break-word !important;
 }
 
 [data-testid="stMetricDelta"] {
@@ -387,6 +393,18 @@ section[data-testid="stSidebar"] .stCheckbox label:hover {
 section[data-testid="stSidebar"] .stRadio input:checked + span {
     color: #fbbf24 !important;
     font-weight: 700 !important;
+}
+
+/* Navigation buttons — full text, left-aligned */
+section[data-testid="stSidebar"] .stButton > button {
+    text-align: left !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    height: auto !important;
+    min-height: 2.2rem !important;
+    padding: 0.35rem 0.75rem !important;
+    line-height: 1.4 !important;
+    font-size: 0.88rem !important;
 }
 
 /* Page link specific styling */
@@ -1104,10 +1122,19 @@ def _render_global_filters() -> None:
             "Período",
             value=(date.today() - timedelta(days=7), date.today()),
             max_value=date.today(),
+            format="DD/MM/YYYY",
             key="gf_dates",
         )
-        st.multiselect("Plataformas", opts["platforms"], key="gf_platforms")
-        st.multiselect("Marcas", opts["brands"], key="gf_brands")
+        st.multiselect(
+            "Plataformas", opts["platforms"],
+            placeholder="Selecione plataformas…",
+            key="gf_platforms",
+        )
+        st.multiselect(
+            "Marcas", opts["brands"],
+            placeholder="Selecione marcas…",
+            key="gf_brands",
+        )
         st.checkbox("Comparar período anterior", key="gf_compare")
 
         if st.session_state.get("gf_compare"):
@@ -1115,20 +1142,21 @@ def _render_global_filters() -> None:
                 "Período de comparação",
                 value=(date.today() - timedelta(days=14), date.today() - timedelta(days=8)),
                 max_value=date.today(),
+                format="DD/MM/YYYY",
                 key="gf_cmp_dates",
             )
 
         # Preset save / load
         st.caption("Presets")
         presets = _load_presets()
-        col1, col2 = st.columns(2)
-        preset_name = col1.text_input(
-            "Nome",
-            placeholder="Meu preset",
+        preset_name = st.text_input(
+            "Nome do preset",
+            placeholder="Ex: Midea - 7 dias",
             key="gf_preset_name",
             label_visibility="collapsed",
         )
-        if col1.button("💾 Salvar", key="gf_save_preset", use_container_width=True):
+        if st.button("💾 Salvar preset", key="gf_save_preset",
+                     use_container_width=True, help="Salvar filtros atuais como preset"):
             if preset_name:
                 gf = st.session_state.get("gf_dates", ())
                 presets[preset_name] = {
@@ -1139,15 +1167,17 @@ def _render_global_filters() -> None:
                 }
                 _save_presets(presets)
                 st.success(f"Salvo: '{preset_name}'")
+            else:
+                st.warning("Digite um nome para o preset.")
 
         if presets:
-            sel = col2.selectbox(
-                "Carregar",
-                [""] + list(presets.keys()),
+            sel = st.selectbox(
+                "Carregar preset",
+                ["— selecione —"] + list(presets.keys()),
                 key="gf_load_preset",
                 label_visibility="collapsed",
             )
-            if sel and sel != st.session_state.get("_last_loaded_preset"):
+            if sel and sel != "— selecione —" and sel != st.session_state.get("_last_loaded_preset"):
                 st.session_state["_last_loaded_preset"] = sel
                 p = presets[sel]
                 try:
@@ -1472,6 +1502,7 @@ def page_results():
             "Date range",
             value=(date.today() - timedelta(days=7), date.today()),
             max_value=date.today(),
+            format="DD/MM/YYYY",
         )
         start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=7)
         end_date   = date_range[1] if len(date_range) > 1 else date.today()
@@ -1626,6 +1657,7 @@ def page_price_evolution():
             "Date range",
             value=(date.today() - timedelta(days=30), date.today()),
             max_value=date.today(),
+            format="DD/MM/YYYY",
             key="evo_dates",
         )
         start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
@@ -2431,6 +2463,7 @@ def page_buybox_position():
             "Date range",
             value=(date.today() - timedelta(days=30), date.today()),
             max_value=date.today(),
+            format="DD/MM/YYYY",
             key="bb_dates",
         )
         start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
@@ -2726,6 +2759,7 @@ def page_availability():
             "Date range",
             value=(date.today() - timedelta(days=30), date.today()),
             max_value=date.today(),
+            format="DD/MM/YYYY",
             key="av_dates",
         )
         start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
@@ -3201,6 +3235,7 @@ def page_ci_analysis() -> None:
             "Período de Análise",
             value=(date.today() - timedelta(days=1), date.today()),
             max_value=date.today(),
+            format="DD/MM/YYYY",
             key="ci_dates",
         )
         start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=1)
@@ -3441,12 +3476,13 @@ def page_overview() -> None:
         if avg_midea and avg_cmp and avg_cmp > 0:
             delta_price = f"{(avg_midea - avg_cmp) / avg_cmp * 100:+.1f}%"
 
+    n_days = (end_date - start_date).days + 1
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("📅 Última Coleta",   last_date.strftime("%d/%m/%Y") if last_date else "—")
-    c2.metric(f"📊 Registros ({(end_date - start_date).days + 1}d)", f"{n_records:,}", delta=delta_records)
-    c3.metric("🌐 Plataformas Ativas", str(n_platforms))
-    c4.metric("🏷️ Marcas Monitoradas", str(n_brands), help=f"{n_skus:,} SKUs únicos")
-    c5.metric("💰 Preço Médio Midea", _fmt_brl(avg_midea) if avg_midea else "—",
+    c1.metric("Última Coleta",    last_date.strftime("%d/%m/%Y") if last_date else "—")
+    c2.metric(f"Registros ({n_days}d)", f"{n_records:,}", delta=delta_records)
+    c3.metric("Plataformas",      str(n_platforms))
+    c4.metric("Marcas",           str(n_brands), help=f"{n_skus:,} SKUs únicos")
+    c5.metric("Preço Médio Midea", _fmt_brl(avg_midea) if avg_midea else "—",
               delta=delta_price, delta_color="inverse")
 
     # ── Comparison strip ─────────────────────────────────────────────────────
@@ -3468,25 +3504,30 @@ def page_overview() -> None:
         st.subheader("Tendência de Preço por Marca")
         df_price = df.dropna(subset=["preco", "data", "marca"]) if all(c in df.columns for c in ["preco", "data", "marca"]) else pd.DataFrame()
         if not df_price.empty:
-            top_brands = df_price["marca"].value_counts().head(6).index.tolist()
-            trend = (
-                df_price[df_price["marca"].isin(top_brands)]
-                .groupby(["data", "marca"], as_index=False)["preco"]
-                .median()
-                .rename(columns={"preco": "Preço Mediano (R$)", "marca": "Marca"})
-            )
-            trend["data"] = pd.to_datetime(trend["data"])
-            fig1 = px.line(
-                trend, x="data", y="Preço Mediano (R$)", color="Marca",
-                color_discrete_map=_brand_color_map(trend["Marca"]),
-                markers=True,
-                title={"text": "Preço Mediano por Marca"},
-                labels={"data": "Data"},
-            )
-            fig1.update_traces(line=dict(width=2), marker=dict(size=5))
-            _emphasize_midea_traces(fig1)
-            _apply_chart_style(fig1, height=320)
-            st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
+            try:
+                top_brands = df_price["marca"].value_counts().head(6).index.tolist()
+                trend = (
+                    df_price[df_price["marca"].isin(top_brands)]
+                    .groupby(["data", "marca"], as_index=False)["preco"]
+                    .median()
+                    .rename(columns={"preco": "Preço Mediano (R$)", "marca": "Marca"})
+                )
+                trend["data"] = pd.to_datetime(trend["data"])
+                if trend.empty or trend["Preço Mediano (R$)"].isna().all():
+                    raise ValueError("sem dados válidos após agrupamento")
+                fig1 = px.line(
+                    trend, x="data", y="Preço Mediano (R$)", color="Marca",
+                    color_discrete_map=_brand_color_map(trend["Marca"]),
+                    markers=True,
+                    title={"text": "Preço Mediano por Marca"},
+                    labels={"data": "Data"},
+                )
+                fig1.update_traces(line=dict(width=2), marker=dict(size=5))
+                _emphasize_midea_traces(fig1)
+                _apply_chart_style(fig1, height=320)
+                st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
+            except Exception:
+                st.info("Sem dados suficientes para exibir o gráfico de tendência.")
         else:
             st.info("Sem dados de preço no período.")
         if st.button("→ Evolução de Preços", key="ov_goto_price", use_container_width=True):
@@ -3598,12 +3639,12 @@ def page_top_movers() -> None:
     with st.sidebar:
         st.subheader("Configuração")
         dr = st.date_input("Janela atual", value=(start_date, end_date),
-                           max_value=date.today(), key="tm_dates")
+                           max_value=date.today(), format="DD/MM/YYYY", key="tm_dates")
         start_date = dr[0] if len(dr) > 0 else start_date
         end_date   = dr[1] if len(dr) > 1 else end_date
 
         cr = st.date_input("Janela de comparação", value=(cmp_start, cmp_end),
-                           max_value=date.today(), key="tm_cmp_dates")
+                           max_value=date.today(), format="DD/MM/YYYY", key="tm_cmp_dates")
         cmp_start = cr[0] if len(cr) > 0 else cmp_start
         cmp_end   = cr[1] if len(cr) > 1 else cmp_end
 
