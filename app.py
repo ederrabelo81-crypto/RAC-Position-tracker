@@ -2357,6 +2357,96 @@ def page_normalize_skus():
 
     st.divider()
 
+    # ── Re-extrair marcas Desconhecidas ───────────────────────────────────────
+    st.subheader("🔄 Recalcular Marcas Desconhecidas")
+    st.caption(
+        "Varre registros com `marca = 'Desconhecida'` e re-aplica `extract_brand()` "
+        "usando a lista atual de marcas em `config.BRANDS`. "
+        "Use após adicionar novas marcas para recuperar registros históricos."
+    )
+    new_brands_list = [
+        "AIWA", "American Range", "Geminis", "Fontaine", "Luxor",
+        "Turbro", "Velleman", "Whynter", "DeLonghi", "Kian", "Equation",
+    ]
+    st.info(
+        "Marcas recém-adicionadas (Abril 2026): "
+        + ", ".join(f"**{b}**" for b in new_brands_list)
+    )
+
+    col_rb1, col_rb2 = st.columns(2)
+    with col_rb1:
+        rebrand_scan_btn = st.button(
+            "🔍 Scan 'Desconhecida' records",
+            use_container_width=True,
+            key="rebrand_scan_btn",
+        )
+    with col_rb2:
+        rebrand_apply_btn = st.button(
+            "✏️ Apply brand recalculation",
+            type="primary",
+            use_container_width=True,
+            key="rebrand_apply_btn",
+            help="Atualiza o campo marca para todos os registros identificados.",
+        )
+
+    if rebrand_scan_btn:
+        with st.spinner("Scanning 'Desconhecida' records…"):
+            from utils.supabase_client import recalculate_unknown_brands_in_supabase
+            rebrand_result = recalculate_unknown_brands_in_supabase(dry_run=True)
+        st.session_state["rebrand_scan"] = rebrand_result
+
+    if "rebrand_scan" in st.session_state:
+        rb = st.session_state["rebrand_scan"]
+        st.metric("Registros escaneados", f"{rb['scanned']:,}")
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("Identificados", f"{rb['scanned'] - rb['unchanged']:,}")
+        col_m2.metric("Permanecem desconhecidos", f"{rb['unchanged']:,}")
+        col_m3.metric("Erros", f"{rb.get('errors', 0):,}")
+
+        if rb["preview"]:
+            st.dataframe(
+                rb["preview"],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "produto": st.column_config.TextColumn("Produto", width="large"),
+                    "nova_marca": st.column_config.TextColumn("Nova Marca", width="medium"),
+                },
+            )
+
+        if rb["scanned"] - rb["unchanged"] == 0:
+            st.success("✅ Nenhum registro 'Desconhecida' identificado com as marcas atuais.")
+        else:
+            st.warning(
+                f"**{rb['scanned'] - rb['unchanged']:,}** registros podem ser atualizados. "
+                "Clique em **Apply brand recalculation** para gravar."
+            )
+
+    if rebrand_apply_btn:
+        scan = st.session_state.get("rebrand_scan")
+        to_fix = (scan["scanned"] - scan["unchanged"]) if scan else 0
+        if not scan or to_fix == 0:
+            st.warning("Execute o scan primeiro para confirmar os registros a atualizar.")
+        else:
+            with st.spinner(f"Atualizando {to_fix:,} registros…"):
+                from utils.supabase_client import recalculate_unknown_brands_in_supabase
+                rebrand_result = recalculate_unknown_brands_in_supabase(dry_run=False)
+            if rebrand_result["errors"] == 0:
+                st.success(
+                    f"✅ Concluído. **{rebrand_result['updated']:,}** registros atualizados."
+                )
+            else:
+                st.warning(
+                    f"Parcial: {rebrand_result['updated']:,} atualizados, "
+                    f"{rebrand_result['errors']:,} com erros."
+                )
+            if "rebrand_scan" in st.session_state:
+                del st.session_state["rebrand_scan"]
+            get_filter_options.clear()
+
+    st.divider()
+
     # ── Platform / Seller Normalization ──────────────────────────────────────
     st.subheader("🏪 Platform / Seller Normalization")
     st.caption(

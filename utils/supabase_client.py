@@ -842,6 +842,117 @@ def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
         return False
 
 
+def recalculate_unknown_brands_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
+    """
+    Varre registros com marca='Desconhecida' e re-aplica extract_brand() sobre
+    o campo `produto`. Atualiza os que agora são identificados com a lista atual
+    de config.BRANDS.
+
+    Útil após adicionar novas marcas em config.py para recuperar registros
+    históricos que foram gravados como "Desconhecida".
+
+    Args:
+        dry_run: Se True, apenas conta/lista — não grava nada.
+
+    Returns:
+        dict: scanned, updated, unchanged, errors, preview
+    """
+    from utils.brands import extract_brand  # importação local para evitar circular
+
+    client = _get_client()
+    if client is None:
+        return {"scanned": 0, "updated": 0, "unchanged": 0, "errors": 0, "preview": []}
+
+    _FETCH_BATCH = 1_000
+    _UPDATE_BATCH = 200
+
+    changes: Dict[int, str] = {}   # {id: nova_marca}
+    preview: List[Dict[str, Any]] = []
+    scanned = 0
+    unchanged = 0
+    offset = 0
+
+    logger.info("[Supabase] recalculate_unknown_brands — Fase 1: identificando…")
+
+    while True:
+        try:
+            resp = (
+                client.table("coletas")
+                .select("id,produto")
+                .eq("marca", "Desconhecida")
+                .range(offset, offset + _FETCH_BATCH - 1)
+                .execute()
+            )
+        except Exception as exc:
+            logger.error(f"[Supabase] Erro ao buscar lote (offset={offset}): {exc}")
+            break
+
+        batch = resp.data or []
+        if not batch:
+            break
+
+        for row in batch:
+            scanned += 1
+            produto = row.get("produto") or ""
+            nova_marca = extract_brand(produto)
+            if nova_marca and nova_marca != "Desconhecida":
+                changes[row["id"]] = nova_marca
+                if len(preview) < 30:
+                    preview.append({"id": row["id"], "produto": produto, "nova_marca": nova_marca})
+            else:
+                unchanged += 1
+
+        if len(batch) < _FETCH_BATCH:
+            break
+        offset += _FETCH_BATCH
+
+    logger.info(
+        f"[Supabase] Fase 1: {scanned} registros 'Desconhecida', "
+        f"{len(changes)} identificados, {unchanged} continuam desconhecidos."
+    )
+
+    if dry_run or not changes:
+        return {
+            "scanned": scanned,
+            "updated": 0,
+            "unchanged": unchanged,
+            "errors": 0,
+            "preview": preview,
+        }
+
+    # Fase 2 — atualizar em lotes por marca para eficiência
+    from collections import defaultdict
+    by_marca: Dict[str, List[int]] = defaultdict(list)
+    for rid, marca in changes.items():
+        by_marca[marca].append(rid)
+
+    updated = 0
+    errors = 0
+
+    for marca, ids in by_marca.items():
+        for i in range(0, len(ids), _UPDATE_BATCH):
+            batch_ids = ids[i : i + _UPDATE_BATCH]
+            try:
+                client.table("coletas").update({"marca": marca}).in_("id", batch_ids).execute()
+                updated += len(batch_ids)
+                logger.debug(f"[Supabase] {marca}: {len(batch_ids)} registros atualizados")
+            except Exception as exc:
+                errors += len(batch_ids)
+                logger.warning(f"[Supabase] Erro ao atualizar marca={marca!r}: {exc}")
+
+    logger.info(
+        f"[Supabase] recalculate_unknown_brands concluída: "
+        f"{updated} atualizados, {errors} erros."
+    )
+    return {
+        "scanned": scanned,
+        "updated": updated,
+        "unchanged": unchanged,
+        "errors": errors,
+        "preview": preview,
+    }
+
+
 def fix_inverted_turno_in_supabase(dry_run: bool = True) -> Dict[str, Any]:
     """
     Remove registros com turno invertido gravados antes do fix de timezone (TZ=UTC).
