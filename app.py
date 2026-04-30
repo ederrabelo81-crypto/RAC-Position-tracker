@@ -405,6 +405,25 @@ section[data-testid="stSidebar"] .stButton > button {
     padding: 0.35rem 0.75rem !important;
     line-height: 1.4 !important;
     font-size: 0.88rem !important;
+    color: #e2e8f0 !important;
+    background: rgba(255,255,255,0.07) !important;
+    border-color: rgba(255,255,255,0.15) !important;
+}
+
+section[data-testid="stSidebar"] .stButton > button:hover {
+    color: #fbbf24 !important;
+    background: rgba(251,191,36,0.15) !important;
+    border-color: #fbbf24 !important;
+}
+
+/* Force full text inside sidebar button children */
+section[data-testid="stSidebar"] .stButton > button p,
+section[data-testid="stSidebar"] .stButton > button span,
+section[data-testid="stSidebar"] .stButton > button div {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    color: inherit !important;
 }
 
 /* Page link specific styling */
@@ -3519,7 +3538,7 @@ def page_overview() -> None:
                     trend, x="data", y="Preço Mediano (R$)", color="Marca",
                     color_discrete_map=_brand_color_map(trend["Marca"]),
                     markers=True,
-                    title={"text": "Preço Mediano por Marca"},
+                    title="Preço Mediano por Marca",
                     labels={"data": "Data"},
                 )
                 fig1.update_traces(line=dict(width=2), marker=dict(size=5))
@@ -3538,18 +3557,21 @@ def page_overview() -> None:
     with col_r:
         st.subheader("Volume por Plataforma")
         if "plataforma" in df.columns:
-            vol = (
-                df.groupby("plataforma", as_index=False).size()
-                .rename(columns={"size": "Registros", "plataforma": "Plataforma"})
-                .sort_values("Registros", ascending=False).head(10)
-            )
-            fig2 = px.bar(
-                vol, x="Plataforma", y="Registros",
-                color="Plataforma", color_discrete_sequence=_CHART_COLORS,
-                title={"text": "Registros por Plataforma"},
-            )
-            _apply_chart_style(fig2, height=320)
-            st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+            try:
+                vol = (
+                    df.groupby("plataforma", as_index=False).size()
+                    .rename(columns={"size": "Registros", "plataforma": "Plataforma"})
+                    .sort_values("Registros", ascending=False).head(10)
+                )
+                fig2 = px.bar(
+                    vol, x="Plataforma", y="Registros",
+                    color="Plataforma", color_discrete_sequence=_CHART_COLORS,
+                    title="Registros por Plataforma",
+                )
+                _apply_chart_style(fig2, height=320)
+                st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+            except Exception:
+                st.info("Sem dados suficientes para exibir o gráfico de volume.")
         else:
             st.info("Coluna 'plataforma' não disponível.")
         if st.button("→ Resultados", key="ov_goto_results", use_container_width=True):
@@ -3562,21 +3584,24 @@ def page_overview() -> None:
     with col_l2:
         st.subheader("Share de Marcas")
         if "marca" in df.columns:
-            bshare = df.groupby("marca", as_index=False).size().rename(columns={"size": "Registros", "marca": "Marca"})
-            threshold = bshare["Registros"].sum() * 0.02
-            main  = bshare[bshare["Registros"] >= threshold].copy()
-            outros = bshare[bshare["Registros"] < threshold]["Registros"].sum()
-            if outros > 0:
-                main = pd.concat([main, pd.DataFrame([{"Marca": "Outras", "Registros": outros}])], ignore_index=True)
-            fig3 = px.pie(
-                main, names="Marca", values="Registros",
-                color="Marca", color_discrete_map=_brand_color_map(main["Marca"]),
-                hole=0.45,
-                title={"text": "Distribuição por Marca"},
-            )
-            fig3.update_traces(textposition="inside", textinfo="percent+label")
-            _apply_chart_style(fig3, height=320, hovermode="closest")
-            st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
+            try:
+                bshare = df.groupby("marca", as_index=False).size().rename(columns={"size": "Registros", "marca": "Marca"})
+                threshold = bshare["Registros"].sum() * 0.02
+                main  = bshare[bshare["Registros"] >= threshold].copy()
+                outros = bshare[bshare["Registros"] < threshold]["Registros"].sum()
+                if outros > 0:
+                    main = pd.concat([main, pd.DataFrame([{"Marca": "Outras", "Registros": outros}])], ignore_index=True)
+                fig3 = px.pie(
+                    main, names="Marca", values="Registros",
+                    color="Marca", color_discrete_map=_brand_color_map(main["Marca"]),
+                    hole=0.45,
+                    title="Distribuição por Marca",
+                )
+                fig3.update_traces(textposition="inside", textinfo="percent+label")
+                _apply_chart_style(fig3, height=320, hovermode="closest")
+                st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
+            except Exception:
+                st.info("Sem dados suficientes para exibir o gráfico de share.")
         else:
             st.info("Coluna 'marca' não disponível.")
         if st.button("→ BuyBox Position", key="ov_goto_buybox", use_container_width=True):
@@ -3598,17 +3623,20 @@ def page_overview() -> None:
                 mv = mv[mv["delta_pct"].abs() >= 1].sort_values("delta_pct").head(10).reset_index()
                 mv["SKU"] = mv["produto"].str[:40]
                 if not mv.empty:
-                    fig4 = px.bar(
-                        mv, x="delta_pct", y="SKU", orientation="h",
-                        color="delta_pct",
-                        color_continuous_scale=["#ef4444", "#fbbf24", "#059669"],
-                        color_continuous_midpoint=0,
-                        title={"text": "Variação de Preço (48h)"},
-                        labels={"delta_pct": "Variação %"},
-                    )
-                    fig4.update_coloraxes(showscale=False)
-                    _apply_chart_style(fig4, height=320)
-                    st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
+                    try:
+                        fig4 = px.bar(
+                            mv, x="delta_pct", y="SKU", orientation="h",
+                            color="delta_pct",
+                            color_continuous_scale=["#ef4444", "#fbbf24", "#059669"],
+                            color_continuous_midpoint=0,
+                            title="Variação de Preço (48h)",
+                            labels={"delta_pct": "Variação %"},
+                        )
+                        fig4.update_coloraxes(showscale=False)
+                        _apply_chart_style(fig4, height=320)
+                        st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
+                    except Exception:
+                        st.info("Sem dados suficientes para exibir o gráfico de movers.")
                 else:
                     st.info("Sem variações significativas nas últimas 48h.")
             else:
@@ -3739,10 +3767,10 @@ def page_top_movers() -> None:
         color="delta_pct",
         color_continuous_scale=["#ef4444", "#fbbf24", "#059669"],
         color_continuous_midpoint=0,
-        title={"text": (
+        title=(
             f"Top 20 Movers — {start_date.strftime('%d/%m')}→{end_date.strftime('%d/%m')}"
             f" vs {cmp_start.strftime('%d/%m')}→{cmp_end.strftime('%d/%m')}"
-        )},
+        ),
         labels={"delta_pct": "Variação %"},
     )
     fig.update_coloraxes(showscale=False)
