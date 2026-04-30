@@ -9,6 +9,7 @@ Usage (remote access):
     Then open: http://<your-ip>:8501
 """
 
+import json
 import os
 import re
 import subprocess
@@ -1064,6 +1065,213 @@ def _init_state():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+# ---------------------------------------------------------------------------
+# Global filter presets (persisted to filter_presets.json)
+# ---------------------------------------------------------------------------
+
+_FILTER_PRESETS_FILE = PROJECT_ROOT / "filter_presets.json"
+
+
+def _load_presets() -> dict:
+    try:
+        if _FILTER_PRESETS_FILE.exists():
+            return json.loads(_FILTER_PRESETS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_presets(presets: dict) -> None:
+    try:
+        _FILTER_PRESETS_FILE.write_text(
+            json.dumps(presets, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Global filter renderer — call inside a `with st.sidebar:` block
+# ---------------------------------------------------------------------------
+
+def _render_global_filters() -> None:
+    """Render persistent global filters in the sidebar."""
+    opts = get_filter_options()
+    with st.expander("🌐 Filtros Globais", expanded=False):
+        st.date_input(
+            "Período",
+            value=(date.today() - timedelta(days=7), date.today()),
+            max_value=date.today(),
+            key="gf_dates",
+        )
+        st.multiselect("Plataformas", opts["platforms"], key="gf_platforms")
+        st.multiselect("Marcas", opts["brands"], key="gf_brands")
+        st.checkbox("Comparar período anterior", key="gf_compare")
+
+        if st.session_state.get("gf_compare"):
+            st.date_input(
+                "Período de comparação",
+                value=(date.today() - timedelta(days=14), date.today() - timedelta(days=8)),
+                max_value=date.today(),
+                key="gf_cmp_dates",
+            )
+
+        # Preset save / load
+        st.caption("Presets")
+        presets = _load_presets()
+        col1, col2 = st.columns(2)
+        preset_name = col1.text_input(
+            "Nome",
+            placeholder="Meu preset",
+            key="gf_preset_name",
+            label_visibility="collapsed",
+        )
+        if col1.button("💾 Salvar", key="gf_save_preset", use_container_width=True):
+            if preset_name:
+                gf = st.session_state.get("gf_dates", ())
+                presets[preset_name] = {
+                    "start":     str(gf[0]) if gf else str(date.today() - timedelta(days=7)),
+                    "end":       str(gf[1]) if len(gf) > 1 else str(date.today()),
+                    "platforms": st.session_state.get("gf_platforms", []),
+                    "brands":    st.session_state.get("gf_brands", []),
+                }
+                _save_presets(presets)
+                st.success(f"Salvo: '{preset_name}'")
+
+        if presets:
+            sel = col2.selectbox(
+                "Carregar",
+                [""] + list(presets.keys()),
+                key="gf_load_preset",
+                label_visibility="collapsed",
+            )
+            if sel and sel != st.session_state.get("_last_loaded_preset"):
+                st.session_state["_last_loaded_preset"] = sel
+                p = presets[sel]
+                try:
+                    st.session_state["gf_dates"]     = (date.fromisoformat(p["start"]), date.fromisoformat(p["end"]))
+                    st.session_state["gf_platforms"] = p.get("platforms", [])
+                    st.session_state["gf_brands"]    = p.get("brands", [])
+                    st.rerun()
+                except Exception:
+                    pass
+
+
+# ---------------------------------------------------------------------------
+# Global filter accessors
+# ---------------------------------------------------------------------------
+
+def _gf_dates() -> tuple:
+    gf = st.session_state.get("gf_dates", ())
+    if len(gf) >= 2:
+        return gf[0], gf[1]
+    return date.today() - timedelta(days=7), date.today()
+
+
+def _gf_platforms() -> list:
+    return list(st.session_state.get("gf_platforms", []))
+
+
+def _gf_brands() -> list:
+    return list(st.session_state.get("gf_brands", []))
+
+
+def _gf_compare() -> bool:
+    return bool(st.session_state.get("gf_compare", False))
+
+
+def _gf_cmp_dates() -> tuple:
+    gf = st.session_state.get("gf_cmp_dates", ())
+    if len(gf) >= 2:
+        return gf[0], gf[1]
+    return date.today() - timedelta(days=14), date.today() - timedelta(days=8)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _csv_download_btn(
+    df: pd.DataFrame,
+    filename: str,
+    label: str = "⬇️ Exportar CSV",
+    key: str | None = None,
+) -> None:
+    """Render a UTF-8-BOM CSV download button for `df`."""
+    csv_bytes = df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+    kwargs = {"label": label, "data": csv_bytes, "file_name": filename, "mime": "text/csv"}
+    if key:
+        kwargs["key"] = key
+    st.download_button(**kwargs)
+
+
+def _fmt_brl(value: float) -> str:
+    """Format float as Brazilian Real string: R$ 1.234,56"""
+    try:
+        return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return "—"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _overview_data(
+    start_str: str,
+    end_str: str,
+    platforms_tuple: tuple,
+    brands_tuple: tuple,
+    limit: int = 15000,
+) -> pd.DataFrame:
+    """Cached Supabase query for overview / top-movers pages."""
+    client = _get_supabase()
+    if client is None:
+        return pd.DataFrame()
+
+    def _build_q():
+        q = (
+            client.table("coletas")
+            .select("*")
+            .gte("data", start_str)
+            .lte("data", end_str)
+            .order("data", desc=True)
+        )
+        if platforms_tuple:
+            q = q.in_("plataforma", _expand_platforms(list(platforms_tuple)))
+        if brands_tuple:
+            q = q.in_("marca", _expand_brands(list(brands_tuple)))
+        return q
+
+    try:
+        all_data: list = []
+        offset = 0
+        while len(all_data) < limit:
+            fetch = min(_SUPABASE_PAGE, limit - len(all_data))
+            resp = _build_q().range(offset, offset + fetch - 1).execute()
+            if not resp.data:
+                break
+            all_data.extend(resp.data)
+            if len(resp.data) < fetch:
+                break
+            offset += fetch
+
+        if not all_data:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(all_data)
+        df["data"] = pd.to_datetime(df["data"]).dt.date
+        for col in ["posicao_organica", "posicao_patrocinada", "posicao_geral", "qtd_avaliacoes"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+        for col in ["preco", "avaliacao"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        if "marca" in df.columns and _MARCA_TO_CANONICAL:
+            df["marca"] = df["marca"].map(lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 
 # ---------------------------------------------------------------------------
 # Page 1 — Run Collection
@@ -3168,31 +3376,449 @@ def page_ci_analysis() -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Page: Overview — Executive landing
+# ---------------------------------------------------------------------------
+
+def page_overview() -> None:
+    st.title("🏠 Overview")
+    st.caption("Visão executiva consolidada do monitoramento de preços e posicionamento.")
+
+    start_date, end_date = _gf_dates()
+    sel_platforms = _gf_platforms()
+    sel_brands    = _gf_brands()
+
+    # Context chips
+    plat_label  = ", ".join(sel_platforms[:3]) + ("…" if len(sel_platforms) > 3 else "") if sel_platforms else "Todas"
+    brand_label = ", ".join(sel_brands[:3])    + ("…" if len(sel_brands) > 3 else "")    if sel_brands    else "Todas"
+    st.markdown(
+        f"📅 **{start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}** &nbsp;·&nbsp; "
+        f"🛒 {plat_label} &nbsp;·&nbsp; 🏷️ {brand_label}",
+        unsafe_allow_html=True,
+    )
+    st.divider()
+
+    with st.spinner("Carregando dados…"):
+        df = _overview_data(
+            str(start_date), str(end_date),
+            tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+        )
+
+    if df.empty:
+        st.info(
+            "Nenhum dado encontrado. Configure os **Filtros Globais** na barra lateral "
+            "e aguarde o carregamento."
+        )
+        return
+
+    # Comparison window
+    compare_on = _gf_compare()
+    df_cmp = pd.DataFrame()
+    if compare_on:
+        cmp_start, cmp_end = _gf_cmp_dates()
+        with st.spinner("Carregando período de comparação…"):
+            df_cmp = _overview_data(
+                str(cmp_start), str(cmp_end),
+                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+            )
+
+    # ── KPI Strip ────────────────────────────────────────────────────────────
+    last_date  = df["data"].max() if "data"      in df.columns else None
+    n_records  = len(df)
+    n_platforms = df["plataforma"].nunique() if "plataforma" in df.columns else 0
+    n_brands   = df["marca"].nunique()        if "marca"      in df.columns else 0
+    n_skus     = df["produto"].nunique()      if "produto"    in df.columns else 0
+
+    midea_mask = df["marca"].str.contains("Midea", case=False, na=False) if "marca" in df.columns else pd.Series(False, index=df.index)
+    avg_midea  = df.loc[midea_mask, "preco"].mean() if "preco" in df.columns else None
+
+    delta_records = None
+    delta_price   = None
+    if compare_on and not df_cmp.empty:
+        delta_records = f"{n_records - len(df_cmp):+,}"
+        midea_cmp_mask = df_cmp["marca"].str.contains("Midea", case=False, na=False) if "marca" in df_cmp.columns else pd.Series(False, index=df_cmp.index)
+        avg_cmp = df_cmp.loc[midea_cmp_mask, "preco"].mean() if "preco" in df_cmp.columns else None
+        if avg_midea and avg_cmp and avg_cmp > 0:
+            delta_price = f"{(avg_midea - avg_cmp) / avg_cmp * 100:+.1f}%"
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("📅 Última Coleta",   last_date.strftime("%d/%m/%Y") if last_date else "—")
+    c2.metric(f"📊 Registros ({(end_date - start_date).days + 1}d)", f"{n_records:,}", delta=delta_records)
+    c3.metric("🌐 Plataformas Ativas", str(n_platforms))
+    c4.metric("🏷️ Marcas Monitoradas", str(n_brands), help=f"{n_skus:,} SKUs únicos")
+    c5.metric("💰 Preço Médio Midea", _fmt_brl(avg_midea) if avg_midea else "—",
+              delta=delta_price, delta_color="inverse")
+
+    # ── Comparison strip ─────────────────────────────────────────────────────
+    if compare_on and not df_cmp.empty:
+        cmp_start, cmp_end = _gf_cmp_dates()
+        st.info(
+            f"📊 Comparando **{start_date.strftime('%d/%m')}–{end_date.strftime('%d/%m')}** "
+            f"vs **{cmp_start.strftime('%d/%m')}–{cmp_end.strftime('%d/%m')}** "
+            f"— {n_records:,} vs {len(df_cmp):,} registros"
+        )
+
+    st.divider()
+
+    # ── Mini Charts 2 × 2 ────────────────────────────────────────────────────
+    col_l, col_r = st.columns(2)
+
+    # Chart 1 — Price trend by brand
+    with col_l:
+        st.subheader("Tendência de Preço por Marca")
+        df_price = df.dropna(subset=["preco", "data", "marca"]) if all(c in df.columns for c in ["preco", "data", "marca"]) else pd.DataFrame()
+        if not df_price.empty:
+            top_brands = df_price["marca"].value_counts().head(6).index.tolist()
+            trend = (
+                df_price[df_price["marca"].isin(top_brands)]
+                .groupby(["data", "marca"], as_index=False)["preco"]
+                .median()
+                .rename(columns={"preco": "Preço Mediano (R$)", "marca": "Marca"})
+            )
+            trend["data"] = pd.to_datetime(trend["data"])
+            fig1 = px.line(
+                trend, x="data", y="Preço Mediano (R$)", color="Marca",
+                color_discrete_map=_brand_color_map(trend["Marca"]),
+                markers=True,
+                title={"text": "Preço Mediano por Marca"},
+                labels={"data": "Data"},
+            )
+            fig1.update_traces(line=dict(width=2), marker=dict(size=5))
+            _emphasize_midea_traces(fig1)
+            _apply_chart_style(fig1, height=320)
+            st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.info("Sem dados de preço no período.")
+        if st.button("→ Evolução de Preços", key="ov_goto_price", use_container_width=True):
+            st.session_state["_nav_page"] = "📈 Price Evolution"
+            st.rerun()
+
+    # Chart 2 — Volume by platform
+    with col_r:
+        st.subheader("Volume por Plataforma")
+        if "plataforma" in df.columns:
+            vol = (
+                df.groupby("plataforma", as_index=False).size()
+                .rename(columns={"size": "Registros", "plataforma": "Plataforma"})
+                .sort_values("Registros", ascending=False).head(10)
+            )
+            fig2 = px.bar(
+                vol, x="Plataforma", y="Registros",
+                color="Plataforma", color_discrete_sequence=_CHART_COLORS,
+                title={"text": "Registros por Plataforma"},
+            )
+            _apply_chart_style(fig2, height=320)
+            st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.info("Coluna 'plataforma' não disponível.")
+        if st.button("→ Resultados", key="ov_goto_results", use_container_width=True):
+            st.session_state["_nav_page"] = "📊 Results"
+            st.rerun()
+
+    col_l2, col_r2 = st.columns(2)
+
+    # Chart 3 — Brand share (donut)
+    with col_l2:
+        st.subheader("Share de Marcas")
+        if "marca" in df.columns:
+            bshare = df.groupby("marca", as_index=False).size().rename(columns={"size": "Registros", "marca": "Marca"})
+            threshold = bshare["Registros"].sum() * 0.02
+            main  = bshare[bshare["Registros"] >= threshold].copy()
+            outros = bshare[bshare["Registros"] < threshold]["Registros"].sum()
+            if outros > 0:
+                main = pd.concat([main, pd.DataFrame([{"Marca": "Outras", "Registros": outros}])], ignore_index=True)
+            fig3 = px.pie(
+                main, names="Marca", values="Registros",
+                color="Marca", color_discrete_map=_brand_color_map(main["Marca"]),
+                hole=0.45,
+                title={"text": "Distribuição por Marca"},
+            )
+            fig3.update_traces(textposition="inside", textinfo="percent+label")
+            _apply_chart_style(fig3, height=320, hovermode="closest")
+            st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.info("Coluna 'marca' não disponível.")
+        if st.button("→ BuyBox Position", key="ov_goto_buybox", use_container_width=True):
+            st.session_state["_nav_page"] = "🏆 BuyBox Position"
+            st.rerun()
+
+    # Chart 4 — Top movers (latest 2 days)
+    with col_r2:
+        st.subheader("Top Movers (últimas 48h)")
+        req_cols = {"preco", "data", "produto"}
+        if req_cols.issubset(df.columns):
+            sorted_dates = sorted(df["data"].unique(), reverse=True)
+            if len(sorted_dates) >= 2:
+                d_new, d_old = sorted_dates[0], sorted_dates[1]
+                new_med = df[df["data"] == d_new].dropna(subset=["preco"]).groupby("produto")["preco"].median()
+                old_med = df[df["data"] == d_old].dropna(subset=["preco"]).groupby("produto")["preco"].median()
+                mv = pd.concat([new_med.rename("novo"), old_med.rename("antigo")], axis=1).dropna()
+                mv["delta_pct"] = (mv["novo"] - mv["antigo"]) / mv["antigo"] * 100
+                mv = mv[mv["delta_pct"].abs() >= 1].sort_values("delta_pct").head(10).reset_index()
+                mv["SKU"] = mv["produto"].str[:40]
+                if not mv.empty:
+                    fig4 = px.bar(
+                        mv, x="delta_pct", y="SKU", orientation="h",
+                        color="delta_pct",
+                        color_continuous_scale=["#ef4444", "#fbbf24", "#059669"],
+                        color_continuous_midpoint=0,
+                        title={"text": "Variação de Preço (48h)"},
+                        labels={"delta_pct": "Variação %"},
+                    )
+                    fig4.update_coloraxes(showscale=False)
+                    _apply_chart_style(fig4, height=320)
+                    st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
+                else:
+                    st.info("Sem variações significativas nas últimas 48h.")
+            else:
+                st.info("Necessário pelo menos 2 datas para comparar.")
+        else:
+            st.info("Dados de preço/produto não disponíveis.")
+        if st.button("→ Top Movers completo", key="ov_goto_movers", use_container_width=True):
+            st.session_state["_nav_page"] = "🚨 Top Movers"
+            st.rerun()
+
+    st.divider()
+    _csv_download_btn(df, f"rac_overview_{start_date}_{end_date}.csv", key="ov_export")
+
+
+# ---------------------------------------------------------------------------
+# Page: Top Movers — Price movement between two windows
+# ---------------------------------------------------------------------------
+
+def page_top_movers() -> None:
+    st.title("🚨 Top Movers")
+    st.caption("SKUs com maior variação de preço entre duas janelas temporais.")
+
+    start_date, end_date = _gf_dates()
+    cmp_start, cmp_end   = _gf_cmp_dates()
+    sel_platforms = _gf_platforms()
+    sel_brands    = _gf_brands()
+
+    with st.sidebar:
+        st.subheader("Configuração")
+        dr = st.date_input("Janela atual", value=(start_date, end_date),
+                           max_value=date.today(), key="tm_dates")
+        start_date = dr[0] if len(dr) > 0 else start_date
+        end_date   = dr[1] if len(dr) > 1 else end_date
+
+        cr = st.date_input("Janela de comparação", value=(cmp_start, cmp_end),
+                           max_value=date.today(), key="tm_cmp_dates")
+        cmp_start = cr[0] if len(cr) > 0 else cmp_start
+        cmp_end   = cr[1] if len(cr) > 1 else cmp_end
+
+        opts = get_filter_options()
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"],
+                                       default=sel_platforms, key="tm_platforms")
+        sel_brands    = st.multiselect("Marcas", opts["brands"],
+                                       default=sel_brands, key="tm_brands")
+
+        with st.expander("Refinar — Movers", expanded=True):
+            min_delta_pct = st.slider("Mín. |Δ preço|%", 0, 50, 5, key="tm_min_delta")
+            direction = st.radio(
+                "Direção",
+                ["Ambos ▲▼", "Apenas altas ▲", "Apenas quedas ▼"],
+                key="tm_direction",
+            )
+            min_obs = st.number_input("Mín. obs. por janela", 1, 20, 2, key="tm_min_obs")
+
+        load_btn = st.button("🔄 Calcular Movers", type="primary", use_container_width=True)
+
+    if not load_btn:
+        st.info(
+            "Configure as **janelas temporais** na barra lateral e clique em "
+            "**Calcular Movers**. Apenas SKUs com ≥ N observações em **ambas** as "
+            "janelas são incluídos para evitar falsos positivos."
+        )
+        return
+
+    with st.spinner("Carregando janela atual…"):
+        df_cur = _overview_data(str(start_date), str(end_date),
+                                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)))
+    with st.spinner("Carregando janela de comparação…"):
+        df_cmp = _overview_data(str(cmp_start), str(cmp_end),
+                                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)))
+
+    if df_cur.empty or df_cmp.empty:
+        st.warning("Uma das janelas não retornou dados. Ajuste as datas ou filtros.")
+        return
+
+    if not {"preco", "produto"}.issubset(df_cur.columns):
+        st.warning("Colunas 'preco' ou 'produto' ausentes nos dados.")
+        return
+
+    cur_agg = (df_cur.dropna(subset=["preco", "produto"])
+               .groupby("produto")["preco"]
+               .agg(preco_atual="median", obs_atual="count").reset_index())
+    cmp_agg = (df_cmp.dropna(subset=["preco", "produto"])
+               .groupby("produto")["preco"]
+               .agg(preco_anterior="median", obs_anterior="count").reset_index())
+
+    movers = cur_agg.merge(cmp_agg, on="produto", how="inner")
+    movers = movers[(movers["obs_atual"] >= min_obs) & (movers["obs_anterior"] >= min_obs)]
+
+    if movers.empty:
+        st.warning(f"Nenhum SKU com ≥ {min_obs} observações em ambas as janelas.")
+        return
+
+    movers["delta_abs"] = movers["preco_atual"] - movers["preco_anterior"]
+    movers["delta_pct"] = movers["delta_abs"] / movers["preco_anterior"] * 100
+
+    if direction == "Apenas altas ▲":
+        movers = movers[movers["delta_pct"] > 0]
+    elif direction == "Apenas quedas ▼":
+        movers = movers[movers["delta_pct"] < 0]
+    movers = movers[movers["delta_pct"].abs() >= min_delta_pct]
+
+    if movers.empty:
+        st.warning(f"Nenhum SKU com variação ≥ {min_delta_pct}% após aplicar os filtros.")
+        return
+
+    movers = movers.sort_values("delta_pct", key=abs, ascending=False).reset_index(drop=True)
+
+    # ── KPI cards ─────────────────────────────────────────────────────────────
+    n_up   = int((movers["delta_pct"] > 0).sum())
+    n_down = int((movers["delta_pct"] < 0).sum())
+    biggest = movers.iloc[0]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("SKUs em movimento", str(len(movers)))
+    c2.metric("▲ Altas",  str(n_up))
+    c3.metric("▼ Quedas", str(n_down))
+    c4.metric("Maior salto", f"{biggest['delta_pct']:+.1f}%",
+              delta=biggest["produto"][:30])
+
+    st.divider()
+
+    # ── Bar chart (top 20) ─────────────────────────────────────────────────────
+    top20 = movers.head(20).copy().sort_values("delta_pct")
+    top20["SKU"] = top20["produto"].str[:45]
+    fig = px.bar(
+        top20, x="delta_pct", y="SKU", orientation="h",
+        color="delta_pct",
+        color_continuous_scale=["#ef4444", "#fbbf24", "#059669"],
+        color_continuous_midpoint=0,
+        title={"text": (
+            f"Top 20 Movers — {start_date.strftime('%d/%m')}→{end_date.strftime('%d/%m')}"
+            f" vs {cmp_start.strftime('%d/%m')}→{cmp_end.strftime('%d/%m')}"
+        )},
+        labels={"delta_pct": "Variação %"},
+    )
+    fig.update_coloraxes(showscale=False)
+    _apply_chart_style(fig, height=max(350, len(top20) * 28 + 100))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # ── Detail table ───────────────────────────────────────────────────────────
+    st.subheader("Tabela Detalhada")
+    display = movers[["produto", "preco_anterior", "preco_atual", "delta_abs",
+                       "delta_pct", "obs_anterior", "obs_atual"]].copy()
+    display.columns = ["Produto / SKU", "Preço Anterior (R$)", "Preço Atual (R$)",
+                       "Δ R$", "Δ %", "Obs. (anterior)", "Obs. (atual)"]
+    st.dataframe(
+        display,
+        use_container_width=True,
+        height=420,
+        column_config={
+            "Preço Anterior (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
+            "Preço Atual (R$)":    st.column_config.NumberColumn(format="R$ %.2f"),
+            "Δ R$":                st.column_config.NumberColumn(format="R$ %.2f"),
+            "Δ %":                 st.column_config.NumberColumn(format="%.1f%%"),
+        },
+    )
+    _csv_download_btn(
+        display,
+        f"rac_top_movers_{start_date}_{end_date}_vs_{cmp_start}_{cmp_end}.csv",
+        "⬇️ Exportar Top Movers CSV",
+        key="tm_export",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Page registry & grouped navigation
+# ---------------------------------------------------------------------------
+
 PAGES = {
-    "🚀 Run Collection":          page_run_collection,
+    "🏠 Overview":                 page_overview,
+    "🚨 Top Movers":               page_top_movers,
     "📊 Results":                  page_results,
     "📈 Price Evolution":           page_price_evolution,
     "🏆 BuyBox Position":          page_buybox_position,
     "📦 Availability":             page_availability,
     "🧠 Competitive Intelligence": page_ci_analysis,
+    "🚀 Run Collection":           page_run_collection,
     "📂 Import History":           page_import_history,
     "🧹 Data Cleanup":             page_data_cleanup,
     "🔤 Normalize SKUs":           page_normalize_skus,
 }
 
+_NAV_GROUPS: dict[str, list[str]] = {
+    "INSIGHTS": [
+        "🏠 Overview",
+        "🚨 Top Movers",
+        "📊 Results",
+        "📈 Price Evolution",
+        "🏆 BuyBox Position",
+        "📦 Availability",
+        "🧠 Competitive Intelligence",
+    ],
+    "OPERAÇÕES": [
+        "🚀 Run Collection",
+        "📂 Import History",
+    ],
+    "ADMIN": [
+        "🧹 Data Cleanup",
+        "🔤 Normalize SKUs",
+    ],
+}
+
+# Resolve deep-link navigation from overview/movers shortcut buttons
+if "_nav_page" in st.session_state:
+    target = st.session_state.pop("_nav_page")
+    if target in PAGES:
+        st.session_state["_current_page"] = target
+    st.rerun()
+
+if "_current_page" not in st.session_state:
+    st.session_state["_current_page"] = "🏠 Overview"
+
+# Guard against stale keys after a code update
+if st.session_state["_current_page"] not in PAGES:
+    st.session_state["_current_page"] = "🏠 Overview"
+
+_SECTION_LABEL_CSS = (
+    "color:#94a3b8; font-size:0.65rem; font-weight:700; "
+    "letter-spacing:0.12em; text-transform:uppercase; "
+    "margin:0.75rem 0 0.2rem; padding:0;"
+)
+
 with st.sidebar:
     st.markdown("## ❄️ RAC Monitor")
     st.divider()
-    
-    # Custom navigation with high contrast styling
-    selected_page = st.radio(
-        "Navigation", 
-        list(PAGES.keys()), 
-        label_visibility="collapsed"
-    )
-    
-    st.divider()
-    client_ok = _get_supabase() is not None
-    st.caption(f"Supabase: {'🟢 connected' if client_ok else '🔴 not connected'}")
 
-PAGES[selected_page]()
+    # ── Global filters ────────────────────────────────────────────────────────
+    _render_global_filters()
+    st.divider()
+
+    # ── Grouped navigation ────────────────────────────────────────────────────
+    current = st.session_state["_current_page"]
+
+    for group_label, page_list in _NAV_GROUPS.items():
+        st.markdown(f"<p style='{_SECTION_LABEL_CSS}'>{group_label}</p>",
+                    unsafe_allow_html=True)
+        for page_name in page_list:
+            is_active = current == page_name
+            # Prefix active page with a bullet so users see which page is open
+            btn_label = f"▶ {page_name}" if is_active else f"  {page_name}"
+            if st.button(btn_label, key=f"nav__{page_name}",
+                         use_container_width=True, type="secondary"):
+                st.session_state["_current_page"] = page_name
+                st.rerun()
+
+    st.divider()
+
+    # ── Status footer ─────────────────────────────────────────────────────────
+    client_ok = _get_supabase() is not None
+    st.caption(f"Supabase: {'🟢 conectado' if client_ok else '🔴 desconectado'}")
+    st.caption(f"🕐 {date.today().strftime('%d/%m/%Y')}")
+
+PAGES[st.session_state["_current_page"]]()
