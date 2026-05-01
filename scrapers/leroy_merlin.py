@@ -31,6 +31,20 @@ from utils.text import parse_price, parse_rating, parse_review_count
 
 _ITEMS_PER_PAGE = 24
 
+# Campos Algolia candidatos para seller — ordem de prioridade.
+# Leroy Merlin é retailer 1P; "Leroy Merlin" é o fallback explícito.
+_SELLER_FIELD_CANDIDATES = [
+    "sellerName",
+    "seller",
+    "merchant",
+    "marketplace_seller",
+    "vendorName",
+    "storeName",
+    "sellers",              # pode ser lista de objetos
+    "installmentsBySeller", # pode ser lista de objetos
+    "brand",                # último recurso
+]
+
 # Algolia credentials exposed in the Leroy Merlin page HTML
 _ALGOLIA_APP_ID    = "1CF3ZT43ZU"
 _ALGOLIA_API_KEY   = "28e054533dcdd3d71379fc3f38e78f1e"
@@ -181,6 +195,33 @@ class LeroyMerlinScraper(BaseScraper):
             logger.warning(f"[{self.platform_name}] Algolia API erro: {e}")
             return []
 
+    @staticmethod
+    def _extract_algolia_seller(hit: dict) -> str:
+        """
+        Extrai o seller de um hit Algolia percorrendo _SELLER_FIELD_CANDIDATES.
+        Trata valores list, dict e scalar. Retorna "Leroy Merlin" como fallback
+        (retailer 1P — nunca haverá terceiros na plataforma deles).
+        """
+        for field in _SELLER_FIELD_CANDIDATES:
+            val = hit.get(field)
+            if not val:
+                continue
+            if isinstance(val, list):
+                first = val[0] if val else None
+                if isinstance(first, dict):
+                    name = first.get("sellerName") or first.get("name") or ""
+                    if name:
+                        return str(name).strip()
+                elif first:
+                    return str(first).strip()
+            elif isinstance(val, dict):
+                name = val.get("name") or val.get("sellerName") or ""
+                if name:
+                    return str(name).strip()
+            else:
+                return str(val).strip()
+        return "Leroy Merlin"
+
     def _parse_algolia_hits(
         self,
         hits: List[Dict],
@@ -223,17 +264,20 @@ class LeroyMerlinScraper(BaseScraper):
             except (ValueError, TypeError):
                 price_float = None
 
-            # Seller: cadeia de fallback nos campos Algolia conhecidos.
-            # Candidatos confirmados em plataformas VTEX/Algolia BR (mai/2026).
-            seller: Optional[str] = (
-                hit.get("sellerName")
-                or (hit.get("sellers") or [{}])[0].get("sellerName")
-                or (hit.get("installmentsBySeller") or [{}])[0].get("sellerName")
-                or hit.get("seller")
-            ) or None
-            if seller is None:
+            # Log único das chaves do hit para diagnóstico de campo seller.
+            if not hasattr(self, '_algolia_keys_logged'):
+                self._algolia_keys_logged = True
+                logger.debug(
+                    f"[{self.platform_name}] Algolia hit keys disponíveis: {list(hit.keys())}"
+                )
+                logger.debug(
+                    f"[{self.platform_name}] Algolia hit sample: "
+                    f"{json.dumps(hit, ensure_ascii=False)[:800]}"
+                )
+
+            seller = self._extract_algolia_seller(hit)
+            if seller == "Leroy Merlin":
                 no_seller_count += 1
-            seller = seller or "—"
 
             rating = (
                 hit.get("rating")
@@ -268,10 +312,11 @@ class LeroyMerlinScraper(BaseScraper):
                 tag_destaque=None,
             ))
 
-        if hits and no_seller_count / len(hits) > 0.20:
+        if hits and no_seller_count / len(hits) > 0.50:
             logger.warning(
-                f"[{self.platform_name}] {no_seller_count}/{len(hits)} hits sem seller "
-                f"({no_seller_count / len(hits):.0%}) — campos Algolia podem ter mudado."
+                f"[{self.platform_name}] {no_seller_count}/{len(hits)} hits sem seller explícito "
+                f"({no_seller_count / len(hits):.0%}) — usando fallback 'Leroy Merlin'. "
+                "Verificar campos Algolia no log DEBUG acima."
             )
 
         return records
