@@ -31,6 +31,15 @@ from utils.text import parse_price, parse_rating, parse_review_count
 
 _ITEMS_PER_PAGE = 24
 
+# Mapeamento estático de IDs VTEX/MongoDB → nomes de seller.
+# IDs são estáveis — populados à medida que aparecem nos logs de debug.
+# Para confirmar um ID novo: abrir o PDP do produto e verificar o seller.
+LEROY_SELLER_ID_MAP: dict[str, str] = {
+    "6353074400c2dc08ca5a2114": "Elgin",
+}
+
+_VTEX_SELLER_API = "https://www.leroymerlin.com.br/api/catalog_system/pub/seller/{seller_id}"
+
 # Campos Algolia candidatos para seller — ordem de prioridade.
 # Leroy Merlin é retailer 1P; "Leroy Merlin" é o fallback explícito.
 _SELLER_FIELD_CANDIDATES = [
@@ -138,6 +147,8 @@ class LeroyMerlinScraper(BaseScraper):
     def __init__(self, headless: bool = True) -> None:
         super().__init__(headless=headless)
         self._captured_products: List[Dict] = []
+        self._dynamic_seller_cache: dict[str, str] = {}
+        self._seller_unresolved: set[str] = set()
 
     # ------------------------------------------------------------------
     # URL
@@ -195,16 +206,70 @@ class LeroyMerlinScraper(BaseScraper):
             logger.warning(f"[{self.platform_name}] Algolia API erro: {e}")
             return []
 
+    def _resolve_seller_id(self, seller_id: str) -> Optional[str]:
+        """Resolve um ID de seller VTEX/MongoDB para nome legível.
+
+        Camadas: cache estático → cache dinâmico → API VTEX.
+        IDs não resolvidos são memorados em `_seller_unresolved` para evitar
+        chamadas repetidas na mesma execução.
+        """
+        if not seller_id or not isinstance(seller_id, str):
+            return None
+
+        if seller_id in LEROY_SELLER_ID_MAP:
+            return LEROY_SELLER_ID_MAP[seller_id]
+
+        if seller_id in self._dynamic_seller_cache:
+            return self._dynamic_seller_cache[seller_id]
+
+        if seller_id in self._seller_unresolved:
+            return None
+
+        try:
+            url = _VTEX_SELLER_API.format(seller_id=seller_id)
+            resp = requests.get(
+                url,
+                headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+                timeout=8,
+                allow_redirects=True,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                name = (
+                    data.get("Name")
+                    or data.get("SellerName")
+                    or data.get("name")
+                    or (data.get("Seller") or {}).get("Name")
+                )
+                if name and isinstance(name, str) and name.strip():
+                    clean = name.strip()
+                    self._dynamic_seller_cache[seller_id] = clean
+                    logger.info(
+                        f"[{self.platform_name}] Seller resolvido via API VTEX: "
+                        f"{seller_id} → {clean}"
+                    )
+                    return clean
+            else:
+                logger.debug(
+                    f"[{self.platform_name}] API seller {seller_id[:8]}… → HTTP {resp.status_code}"
+                )
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] Falha ao resolver seller {seller_id[:8]}…: {e}")
+
+        self._seller_unresolved.add(seller_id)
+        return None
+
     def _extract_algolia_seller(self, hit: dict) -> str:
         """
-        Extrai o seller de um hit Algolia.
+        Extrai o seller de um hit Algolia da Leroy Merlin.
 
-        Prioridade:
-          1. Campo `marketplaceSellers` (lista ou dict indexado por sellerId).
-          2. Campos escalares em _SELLER_FIELD_CANDIDATES.
-          3. Fallback "Leroy Merlin".
+        Estrutura real do campo (confirmada 01/mai/2026):
+          marketplaceSellers = []               → produto 1P (Leroy Merlin)
+          marketplaceSellers = ["<mongo_id>"]   → produto 3P; ID precisa de resolução
+          marketplaceSellers ausente            → produto 1P
+
+        Fallback para campos escalares legados quando `marketplaceSellers` ausente.
         """
-        # Log único da estrutura real do campo para confirmar Caso A ou B.
         if not hasattr(self, '_seller_field_logged'):
             self._seller_field_logged = True
             ms = hit.get("marketplaceSellers")
@@ -216,9 +281,14 @@ class LeroyMerlinScraper(BaseScraper):
 
         marketplace_sellers = hit.get("marketplaceSellers")
 
-        # Caso A: lista de dicts com chave sellerName / sellerId
+        # Lista vazia ou ausente → produto 1P
+        if marketplace_sellers is None or marketplace_sellers == []:
+            return "Leroy Merlin"
+
         if isinstance(marketplace_sellers, list) and marketplace_sellers:
             first = marketplace_sellers[0]
+
+            # Caso A: lista de dicts com chave sellerName / sellerId
             if isinstance(first, dict):
                 seller = (
                     first.get("sellerName")
@@ -229,7 +299,19 @@ class LeroyMerlinScraper(BaseScraper):
                 if seller:
                     return str(seller).strip()
 
-        # Caso B: dict indexado por sellerId
+            # Caso B: lista de IDs string (MongoDB ObjectId) — precisa de resolução
+            if isinstance(first, str):
+                resolved = self._resolve_seller_id(first)
+                if resolved:
+                    return resolved
+                # Retorna o ID prefixado para identificação fácil no CSV/debug
+                logger.warning(
+                    f"[{self.platform_name}] Seller ID não resolvido: {first} "
+                    f"(produto: {str(hit.get('name', '?'))[:60]})"
+                )
+                return f"3P:{first[:8]}"
+
+        # Caso C: dict indexado por sellerId
         if isinstance(marketplace_sellers, dict) and marketplace_sellers:
             first_key = next(iter(marketplace_sellers))
             entry = marketplace_sellers[first_key]
@@ -242,7 +324,7 @@ class LeroyMerlinScraper(BaseScraper):
                 if seller:
                     return str(seller).strip()
 
-        # Campos escalares legados
+        # Campos escalares legados (fallback)
         for field in _SELLER_FIELD_CANDIDATES:
             val = hit.get(field)
             if not val:
@@ -272,7 +354,6 @@ class LeroyMerlinScraper(BaseScraper):
         page_offset: int,
     ) -> List[Dict[str, Any]]:
         records = []
-        no_seller_count = 0
 
         for idx, hit in enumerate(hits):
             # Título: prioridade para nome curto (name/shortName/title).
@@ -318,8 +399,6 @@ class LeroyMerlinScraper(BaseScraper):
                 )
 
             seller = self._extract_algolia_seller(hit)
-            if seller == "Leroy Merlin":
-                no_seller_count += 1
 
             rating = (
                 hit.get("rating")
@@ -354,11 +433,17 @@ class LeroyMerlinScraper(BaseScraper):
                 tag_destaque=None,
             ))
 
-        if hits and no_seller_count / len(hits) > 0.50:
-            logger.warning(
-                f"[{self.platform_name}] {no_seller_count}/{len(hits)} hits sem seller explícito "
-                f"({no_seller_count / len(hits):.0%}) — usando fallback 'Leroy Merlin'. "
-                "Verificar campos Algolia no log DEBUG acima."
+        if hits:
+            n_1p = sum(1 for r in records if r.get("Seller / Vendedor") == "Leroy Merlin")
+            n_unresolved = sum(
+                1 for r in records
+                if isinstance(r.get("Seller / Vendedor"), str)
+                and r["Seller / Vendedor"].startswith("3P:")
+            )
+            n_3p_resolved = len(records) - n_1p - n_unresolved
+            logger.info(
+                f"[{self.platform_name}] Sellers: {n_1p} 1P (Leroy Merlin) | "
+                f"{n_3p_resolved} 3P resolvidos | {n_unresolved} 3P não resolvidos"
             )
 
         return records
