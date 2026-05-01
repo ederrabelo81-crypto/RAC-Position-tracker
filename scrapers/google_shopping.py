@@ -58,8 +58,10 @@ _SELECTORS = {
         "span[class*='price']",
         "span[class*='Price']",
     ],
-    # Vendedor / loja — fallbacks, o layout atual não usa classe estável
+    # Vendedor / loja — confirmado 01/mai/2026: div.UsGWMe (aria-label="De {seller}")
     "seller_candidates": [
+        ".UsGWMe",              # layout atual (01/mai/2026) ← PRIMÁRIO
+        ".Baoj6d",              # classe auxiliar observada junto a UsGWMe
         ".E5ocAb",
         ".aULzUe",
         ".IuHnof",
@@ -98,8 +100,9 @@ _RESULTS_PER_PAGE = 10
 
 # Delay mínimo/máximo entre keywords do Google — maior que o global para
 # reduzir probabilidade de reCAPTCHA em sequências rápidas.
-_MIN_DELAY_GOOGLE = 12.0
-_MAX_DELAY_GOOGLE = 22.0
+# Aumentado de 12–22s para 25–45s (01/mai/2026) após CAPTCHA na 13ª keyword.
+_MIN_DELAY_GOOGLE = 25.0
+_MAX_DELAY_GOOGLE = 45.0
 
 # Textos que indicam badge/promo, nunca nome de loja
 _SELLER_BLACKLIST_RE = re.compile(
@@ -258,6 +261,18 @@ class GoogleShoppingScraper(BaseScraper):
         Aplica _SELLER_BLACKLIST_RE e _RE_NOT_SELLER para descartar promo-text.
         Loga o seletor/estratégia que capturou para facilitar diagnóstico.
         """
+        # Estratégia 0: aria-label="De {seller}" — confirmado 01/mai/2026
+        # div.UsGWMe tem aria-label="De Frigelar"; extraímos removendo o prefixo.
+        aria_el = item.select_one("div[aria-label^='De ']")
+        if aria_el:
+            aria_val = (aria_el.get("aria-label") or "").strip()
+            seller = aria_val[3:].strip()  # remove "De "
+            if (seller and 2 <= len(seller) < 60
+                    and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller)
+                    and not _SELLER_BLACKLIST_RE.search(seller)):
+                logger.debug(f"[Google Shopping] seller [aria-label^='De ']: {seller}")
+                return seller
+
         # Estratégia a: seletores CSS (atualizados + legado)
         for sel in _SELECTORS["seller_candidates"]:
             el = item.select_one(sel)
