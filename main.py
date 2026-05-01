@@ -20,6 +20,7 @@ Uso específico:
 
 import argparse
 import os
+import random
 import sys
 import time
 from datetime import datetime
@@ -214,7 +215,20 @@ def _run_scraper(
                 )
             ] if effective_filter else kws
 
-            for keyword in filtered_kws:
+            # Embaralha keywords do Google para reduzir padrão detectável
+            kws_to_run = list(filtered_kws)
+            if scraper_cls is GoogleShoppingScraper:
+                random.shuffle(kws_to_run)
+
+            for keyword in kws_to_run:
+                # Para keywords restantes se reCAPTCHA foi detectado
+                if getattr(scraper, "captcha_hit", False):
+                    logger.warning(
+                        f"[{scraper.platform_name}] captcha_hit=True — "
+                        "abortando keywords restantes."
+                    )
+                    break
+
                 logger.info(
                     f"[{scraper.platform_name}] Iniciando keyword: '{keyword}' "
                     f"(categoria: {category})"

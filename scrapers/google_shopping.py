@@ -96,11 +96,27 @@ _SELECTORS = {
 
 _RESULTS_PER_PAGE = 10
 
+# Delay mínimo/máximo entre keywords do Google — maior que o global para
+# reduzir probabilidade de reCAPTCHA em sequências rápidas.
+_MIN_DELAY_GOOGLE = 12.0
+_MAX_DELAY_GOOGLE = 22.0
+
+# Textos que indicam badge/promo, nunca nome de loja
+_SELLER_BLACKLIST_RE = re.compile(
+    r"desconto|frete|cupom|acima\s+de|compras|entrega|gr[áa]tis|\boff\b|^\d+\s*%|parcel",
+    re.IGNORECASE,
+)
+
 
 class GoogleShoppingScraper(BaseScraper):
     """Scraper modular para Google Shopping Brasil."""
 
     platform_name = "Google Shopping"
+
+    def __init__(self, headless: bool = True) -> None:
+        super().__init__(headless=headless)
+        self.captcha_hit: bool = False
+        self._card_logged: bool = False
 
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
@@ -222,9 +238,11 @@ class GoogleShoppingScraper(BaseScraper):
 
     # Padrões que indicam texto de rating/avaliação (nunca são sellers)
     _RE_NOT_SELLER = re.compile(r"estrela|star|\d[\d,.]*\s*avali", re.I)
-    # Texto de atribuição de loja (português e inglês)
+    # Texto de atribuição de loja (português e inglês) — só aceita "vendido por" ou
+    # "sold by" como prefixo; "por"/"de" sozinhos eram muito genéricos e capturavam
+    # texto de badge promocional (ex: "por desconto nas compras acima de").
     _RE_SELLER_TEXT = re.compile(
-        r"(?:vendido por|por|de|by|sold by)\s+([A-ZÀ-Úa-zà-ú][^\n,|·•]{2,50}?)(?=\s*(?:R\$|·|•|\||\d|$))",
+        r"(?:vendido\s+por|sold\s+by)\s+([A-ZÀ-Úa-zà-ú][^\n,|·•]{2,50}?)(?=\s*(?:R\$|·|•|\||\d|$))",
         re.I,
     )
 
@@ -235,17 +253,20 @@ class GoogleShoppingScraper(BaseScraper):
 
         a) Seletores CSS — classes conhecidas do layout atual e legado.
         b) Regex no aria-label do container do card.
-        c) Regex no texto completo do card buscando "por/de/vendido por [Merchant]".
+        c) Regex no texto completo do card buscando "vendido por / sold by [Merchant]".
 
-        Loga qual estratégia capturou o seller para análise de cobertura.
+        Aplica _SELLER_BLACKLIST_RE e _RE_NOT_SELLER para descartar promo-text.
+        Loga o seletor/estratégia que capturou para facilitar diagnóstico.
         """
         # Estratégia a: seletores CSS (atualizados + legado)
         for sel in _SELECTORS["seller_candidates"]:
             el = item.select_one(sel)
             if el:
                 t = el.get_text(strip=True)
-                if t and 2 <= len(t) < 60 and not GoogleShoppingScraper._RE_NOT_SELLER.search(t):
-                    logger.debug(f"[Google Shopping] seller [a/CSS '{sel}']: {t}")
+                if (t and 2 <= len(t) < 60
+                        and not GoogleShoppingScraper._RE_NOT_SELLER.search(t)
+                        and not _SELLER_BLACKLIST_RE.search(t)):
+                    logger.debug(f"[Google Shopping] seller [CSS:{sel}]: {t}")
                     return t
 
         # Estratégia b: aria-label do container do card
@@ -254,8 +275,10 @@ class GoogleShoppingScraper(BaseScraper):
             m = GoogleShoppingScraper._RE_SELLER_TEXT.search(aria)
             if m:
                 seller = m.group(1).strip()
-                if 2 < len(seller) < 60 and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller):
-                    logger.debug(f"[Google Shopping] seller [b/aria-label]: {seller}")
+                if (2 < len(seller) < 60
+                        and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller)
+                        and not _SELLER_BLACKLIST_RE.search(seller)):
+                    logger.debug(f"[Google Shopping] seller [aria-label]: {seller}")
                     return seller
 
         # Estratégia c: regex no texto completo do card
@@ -263,8 +286,10 @@ class GoogleShoppingScraper(BaseScraper):
         m = GoogleShoppingScraper._RE_SELLER_TEXT.search(card_text)
         if m:
             seller = m.group(1).strip()
-            if 2 < len(seller) < 60 and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller):
-                logger.debug(f"[Google Shopping] seller [c/texto]: {seller}")
+            if (2 < len(seller) < 60
+                    and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller)
+                    and not _SELLER_BLACKLIST_RE.search(seller)):
+                logger.debug(f"[Google Shopping] seller [texto]: {seller}")
                 return seller
 
         return None
@@ -298,12 +323,13 @@ class GoogleShoppingScraper(BaseScraper):
     ) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
 
-        # Detecta CAPTCHA
+        # Detecta CAPTCHA — marca flag para abortar keywords restantes
         if soup.select_one(_SELECTORS["captcha"]):
             logger.warning(
-                f"[{self.platform_name}] reCAPTCHA detectado. "
+                f"[{self.platform_name}] reCAPTCHA detectado — abortando sessão. "
                 "Use proxy residencial para coletas em escala."
             )
+            self.captcha_hit = True
             return []
 
         items, sel_used = self._detect_items(soup)
@@ -315,6 +341,17 @@ class GoogleShoppingScraper(BaseScraper):
         if not items:
             self._dump_debug(html, page, keyword)
             return []
+
+        # Log único do HTML do primeiro card para diagnóstico de seletores
+        if not self._card_logged and items:
+            self._card_logged = True
+            try:
+                logger.debug(
+                    f"[{self.platform_name}] Primeiro card HTML (seletor: {sel_used}):\n"
+                    f"{items[0].decode_contents()[:1200]}"
+                )
+            except Exception as _e:
+                logger.debug(f"[{self.platform_name}] Erro ao logar card HTML: {_e}")
 
         records = []
         empty_title_count = 0
@@ -406,6 +443,9 @@ class GoogleShoppingScraper(BaseScraper):
         all_records: List[Dict[str, Any]] = []
 
         for page in range(1, page_limit + 1):
+            if self.captcha_hit:
+                break
+
             url = self._build_url(keyword, page)
             logger.info(f"[{self.platform_name}] Página {page}/{page_limit} → {url}")
 
@@ -413,7 +453,7 @@ class GoogleShoppingScraper(BaseScraper):
                 self._page.goto(url, wait_until="domcontentloaded")
                 self._wait_for_network_idle()
                 # Delay generoso — Google detecta padrões rápidos com alta precisão
-                self._random_delay(min_s=5.0, max_s=10.0)
+                self._random_delay(min_s=_MIN_DELAY_GOOGLE, max_s=_MAX_DELAY_GOOGLE)
                 self._human_scroll(steps=8, step_px=350)
 
                 offset  = (page - 1) * _RESULTS_PER_PAGE
@@ -426,11 +466,11 @@ class GoogleShoppingScraper(BaseScraper):
                 )
                 all_records.extend(records)
 
-                if not records:
+                if not records or self.captcha_hit:
                     break
 
                 if page < page_limit:
-                    self._random_delay()
+                    self._random_delay(min_s=_MIN_DELAY_GOOGLE, max_s=_MAX_DELAY_GOOGLE)
 
             except Exception as exc:
                 logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
