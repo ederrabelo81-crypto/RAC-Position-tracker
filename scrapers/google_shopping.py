@@ -120,6 +120,7 @@ class GoogleShoppingScraper(BaseScraper):
         super().__init__(headless=headless)
         self.captcha_hit: bool = False
         self._card_logged: bool = False
+        self._cards_sem_seller: int = 0
 
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
@@ -345,7 +346,7 @@ class GoogleShoppingScraper(BaseScraper):
                 "Use proxy residencial para coletas em escala."
             )
             self.captcha_hit = True
-            return []
+            return []  # registros já coletados anteriormente são preservados pelo caller
 
         items, sel_used = self._detect_items(soup)
         logger.info(
@@ -370,6 +371,7 @@ class GoogleShoppingScraper(BaseScraper):
 
         records = []
         empty_title_count = 0
+        empty_seller_count = 0
 
         for idx, item in enumerate(items):
             pos_general = page_offset + idx + 1
@@ -377,6 +379,8 @@ class GoogleShoppingScraper(BaseScraper):
             title     = self._extract_title(item)
             price_raw = self._extract_price(item)
             seller    = self._extract_seller(item)
+            if not seller:
+                empty_seller_count += 1
 
             # Rating
             rating = None
@@ -440,6 +444,16 @@ class GoogleShoppingScraper(BaseScraper):
                 "seletores possivelmente desatualizados. HTML salvo."
             )
             self._dump_debug(html, page, keyword)
+
+        n_total = len(records)
+        self._cards_sem_seller += empty_seller_count
+        pct_sem = empty_seller_count * 100 // max(n_total, 1)
+        log_fn = logger.warning if pct_sem > 30 else logger.info
+        log_fn(
+            f"[{self.platform_name}] '{keyword}' p{page} → {n_total} cards, "
+            f"{empty_seller_count} sem seller ({pct_sem}%)"
+            + (" — seletores podem estar desatualizados" if pct_sem > 30 else "")
+        )
 
         return records
 
