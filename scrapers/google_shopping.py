@@ -217,17 +217,56 @@ class GoogleShoppingScraper(BaseScraper):
         return None
 
     # ------------------------------------------------------------------
-    # Extração de seller
+    # Extração de seller — 3 estratégias em cascata
     # ------------------------------------------------------------------
+
+    # Padrões que indicam texto de rating/avaliação (nunca são sellers)
+    _RE_NOT_SELLER = re.compile(r"estrela|star|\d[\d,.]*\s*avali", re.I)
+    # Texto de atribuição de loja (português e inglês)
+    _RE_SELLER_TEXT = re.compile(
+        r"(?:vendido por|por|de|by|sold by)\s+([A-ZÀ-Úa-zà-ú][^\n,|·•]{2,50}?)(?=\s*(?:R\$|·|•|\||\d|$))",
+        re.I,
+    )
 
     @staticmethod
     def _extract_seller(item: Tag) -> Optional[str]:
+        """
+        Extrai o nome do merchant em 3 estratégias em cascata.
+
+        a) Seletores CSS — classes conhecidas do layout atual e legado.
+        b) Regex no aria-label do container do card.
+        c) Regex no texto completo do card buscando "por/de/vendido por [Merchant]".
+
+        Loga qual estratégia capturou o seller para análise de cobertura.
+        """
+        # Estratégia a: seletores CSS (atualizados + legado)
         for sel in _SELECTORS["seller_candidates"]:
             el = item.select_one(sel)
             if el:
                 t = el.get_text(strip=True)
-                if t and len(t) < 60:
+                if t and 2 <= len(t) < 60 and not GoogleShoppingScraper._RE_NOT_SELLER.search(t):
+                    logger.debug(f"[Google Shopping] seller [a/CSS '{sel}']: {t}")
                     return t
+
+        # Estratégia b: aria-label do container do card
+        aria = item.get("aria-label", "").strip()
+        if aria:
+            m = GoogleShoppingScraper._RE_SELLER_TEXT.search(aria)
+            if m:
+                seller = m.group(1).strip()
+                if 2 < len(seller) < 60 and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller):
+                    logger.debug(f"[Google Shopping] seller [b/aria-label]: {seller}")
+                    return seller
+
+        # Estratégia c: regex no texto completo do card
+        card_text = item.get_text(" ", strip=True).replace("\xa0", " ")
+        m = GoogleShoppingScraper._RE_SELLER_TEXT.search(card_text)
+        if m:
+            seller = m.group(1).strip()
+            if 2 < len(seller) < 60 and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller):
+                logger.debug(f"[Google Shopping] seller [c/texto]: {seller}")
+                return seller
+
         return None
 
     # ------------------------------------------------------------------
@@ -285,7 +324,7 @@ class GoogleShoppingScraper(BaseScraper):
 
             title     = self._extract_title(item)
             price_raw = self._extract_price(item)
-            seller    = self._extract_seller(item) or "Google Shopping"
+            seller    = self._extract_seller(item)
 
             # Rating
             rating = None

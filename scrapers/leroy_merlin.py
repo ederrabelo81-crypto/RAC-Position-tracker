@@ -189,6 +189,8 @@ class LeroyMerlinScraper(BaseScraper):
         page_offset: int,
     ) -> List[Dict[str, Any]]:
         records = []
+        no_seller_count = 0
+
         for idx, hit in enumerate(hits):
             # Título: prioridade para nome curto (name/shortName/title).
             # "description" em Leroy tende a conter texto de bullet points.
@@ -221,6 +223,18 @@ class LeroyMerlinScraper(BaseScraper):
             except (ValueError, TypeError):
                 price_float = None
 
+            # Seller: cadeia de fallback nos campos Algolia conhecidos.
+            # Candidatos confirmados em plataformas VTEX/Algolia BR (mai/2026).
+            seller: Optional[str] = (
+                hit.get("sellerName")
+                or (hit.get("sellers") or [{}])[0].get("sellerName")
+                or (hit.get("installmentsBySeller") or [{}])[0].get("sellerName")
+                or hit.get("seller")
+            ) or None
+            if seller is None:
+                no_seller_count += 1
+            seller = seller or "—"
+
             rating = (
                 hit.get("rating")
                 or hit.get("ratingAverage")
@@ -247,12 +261,19 @@ class LeroyMerlinScraper(BaseScraper):
                 position_organic=pos,
                 position_sponsored=None,
                 price_float=price_float,
-                seller="Leroy Merlin",
+                seller=seller,
                 is_fulfillment=False,
                 rating=float(rating) if rating else None,
                 review_count=int(review_count) if review_count else None,
                 tag_destaque=None,
             ))
+
+        if hits and no_seller_count / len(hits) > 0.20:
+            logger.warning(
+                f"[{self.platform_name}] {no_seller_count}/{len(hits)} hits sem seller "
+                f"({no_seller_count / len(hits):.0%}) — campos Algolia podem ter mudado."
+            )
+
         return records
 
     # ------------------------------------------------------------------
