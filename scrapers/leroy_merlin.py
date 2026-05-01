@@ -195,13 +195,54 @@ class LeroyMerlinScraper(BaseScraper):
             logger.warning(f"[{self.platform_name}] Algolia API erro: {e}")
             return []
 
-    @staticmethod
-    def _extract_algolia_seller(hit: dict) -> str:
+    def _extract_algolia_seller(self, hit: dict) -> str:
         """
-        Extrai o seller de um hit Algolia percorrendo _SELLER_FIELD_CANDIDATES.
-        Trata valores list, dict e scalar. Retorna "Leroy Merlin" como fallback
-        (retailer 1P — nunca haverá terceiros na plataforma deles).
+        Extrai o seller de um hit Algolia.
+
+        Prioridade:
+          1. Campo `marketplaceSellers` (lista ou dict indexado por sellerId).
+          2. Campos escalares em _SELLER_FIELD_CANDIDATES.
+          3. Fallback "Leroy Merlin".
         """
+        # Log único da estrutura real do campo para confirmar Caso A ou B.
+        if not hasattr(self, '_seller_field_logged'):
+            self._seller_field_logged = True
+            ms = hit.get("marketplaceSellers")
+            logger.debug(
+                f"[{self.platform_name}] marketplaceSellers "
+                f"type={type(ms).__name__} "
+                f"value={json.dumps(ms, ensure_ascii=False)[:300]}"
+            )
+
+        marketplace_sellers = hit.get("marketplaceSellers")
+
+        # Caso A: lista de dicts com chave sellerName / sellerId
+        if isinstance(marketplace_sellers, list) and marketplace_sellers:
+            first = marketplace_sellers[0]
+            if isinstance(first, dict):
+                seller = (
+                    first.get("sellerName")
+                    or first.get("seller_name")
+                    or first.get("sellerId")
+                    or first.get("seller_id")
+                )
+                if seller:
+                    return str(seller).strip()
+
+        # Caso B: dict indexado por sellerId
+        if isinstance(marketplace_sellers, dict) and marketplace_sellers:
+            first_key = next(iter(marketplace_sellers))
+            entry = marketplace_sellers[first_key]
+            if isinstance(entry, dict):
+                seller = (
+                    entry.get("sellerName")
+                    or entry.get("seller_name")
+                    or first_key
+                )
+                if seller:
+                    return str(seller).strip()
+
+        # Campos escalares legados
         for field in _SELLER_FIELD_CANDIDATES:
             val = hit.get(field)
             if not val:
@@ -220,6 +261,7 @@ class LeroyMerlinScraper(BaseScraper):
                     return str(name).strip()
             else:
                 return str(val).strip()
+
         return "Leroy Merlin"
 
     def _parse_algolia_hits(
