@@ -116,10 +116,13 @@ DEALER_CONFIGS: Dict[str, Dict] = {
     "Dufrio": {
         # FIX PROBLEMA DUFRIO: Preços concatenados sem separador decimal
         # Ex: 182900 em vez de 1829,00 - corrigido em _extract_vtex_split_price()
+        # FIX 2026-05-02: Seletor .product-item detectado no DOM (42 itens)
         "url":        "https://www.dufrio.com.br/ar-condicionado/ar-condicionado-split-inverter",
         "pagination": "vtex",
         "max_pages":  5,
         "vtex_split_price": True,  # Usa extração especial VTEX split price
+        "item_selector": ".product-item",  # Seletor específico para container de produto
+        "prefer_jsonld": True,  # JSON-LD tem 21 Products — fonte mais confiável
     },
     "Leveros": {
         # FIX PROBLEMA #4: Parser incompatível - 0 produtos extraídos
@@ -147,10 +150,14 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         ],
     },
     "CentralAr": {
-        # Maior dealer especializado em AC do Brasil — VTEX IO
+        # Maior dealer especializado em AC do Brasil — VTEX IO (SAP Hybris)
+        # FIX 2026-05-02: Seletor .pdc_product-item detectado no DOM (20 itens)
+        # Plataforma não é VTEX padrão — usa estrutura SAP Hybris com pdc_product-item
         "url":        "https://www.centralar.com.br/ar-condicionado/inverter/c/INVERTER",
         "pagination": "vtex",
         "max_pages":  5,
+        "item_selector": ".pdc_product-item",  # Seletor específico para container de produto SAP Hybris
+        "prefer_jsonld": False,  # JSON-LD é Organization, não Product
     },
     "Climario": {
         # FIX PROBLEMA #3: URL desatualizada - faltam filtros VTEX para Hi-Wall Inverter
