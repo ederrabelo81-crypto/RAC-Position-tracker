@@ -23,6 +23,7 @@ import os
 import random
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
@@ -337,6 +338,11 @@ def main() -> None:
     args = _parse_args()
     _setup_logging(LOGS_DIR)
 
+    # Gera 1 run_id único por execução — permite múltiplos snapshots por turno
+    RUN_ID = str(uuid.uuid4())
+    logger.info(f"[INIT] Run ID desta execução: {RUN_ID}")
+    logger.info(f"[INIT] Iniciado em: {datetime.now().isoformat()}")
+
     # --- Resolve plataformas ---
     if args.platforms is None:
         # Padrão: usa ACTIVE_PLATFORMS do config.py
@@ -425,7 +431,7 @@ def main() -> None:
         # Importa primeiro para que load_dotenv() do supabase_client carregue o .env,
         # depois verifica se as credenciais estão disponíveis.
         try:
-            from utils.supabase_client import upload_to_supabase
+            from utils.supabase_client import upload_to_supabase, log_auditoria_run
             import os
             _supabase_url = os.getenv("SUPABASE_URL", "").strip()
             _supabase_key = os.getenv("SUPABASE_KEY", "").strip()
@@ -435,11 +441,13 @@ def main() -> None:
                     "Adicione ao arquivo .env na raiz do projeto ou configure como secrets."
                 )
             else:
-                ok = upload_to_supabase(all_records)
+                ok = upload_to_supabase(all_records, run_id=RUN_ID)
                 if not ok:
                     logger.error(
                         "Supabase upload retornou falha — verifique os logs acima para detalhes."
                     )
+                else:
+                    log_auditoria_run(RUN_ID, str(csv_path))
         except Exception as exc:
             logger.error(f"Supabase upload lançou exceção: {exc}")
 
