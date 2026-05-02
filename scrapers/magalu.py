@@ -24,11 +24,17 @@ from urllib.parse import quote_plus
 
 from bs4 import BeautifulSoup, Tag
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, wait_random
 
-from config import MAX_PAGES, LOGS_DIR
+from config import MAX_PAGES, LOGS_DIR, USER_AGENTS
 from scrapers.base import BaseScraper
-from utils.text import parse_price, parse_rating, parse_review_count
+from utils.text import parse_price, parse_rating, parse_review_count, now_brt
+
+
+class MagaluSoftBlockException(Exception):
+    """Levantada quando o Magalu retorna página vazia sem mensagem de 'sem resultados' (soft-block silencioso)."""
+    pass
+
 
 # ---------------------------------------------------------------------------
 # Seletores CSS — cadeia de fallback para múltiplas versões do layout
@@ -455,12 +461,49 @@ class MagaluScraper(BaseScraper):
         return False
 
     # ------------------------------------------------------------------
+    # Detecção de soft-block silencioso
+    # ------------------------------------------------------------------
+
+    def _detect_soft_block(self, html: str, page_num: int) -> bool:
+        """
+        Distingue soft-block silencioso de busca legítima sem resultados.
+
+        Soft-block: página carregou (200 OK), 0 produtos, SEM mensagem de
+        'Nenhum resultado' — o Magalu simplesmente serve HTML vazio.
+
+        Busca vazia legítima: 0 produtos MAS com mensagem de erro/sem-resultado.
+        """
+        url = self._page.url
+        if any(s in url for s in ("captcha", "/erro", "blocked")):
+            logger.warning(
+                f"[{self.platform_name}] Soft-block detectado via URL (página {page_num}): {url[:80]}"
+            )
+            return True
+
+        soup = BeautifulSoup(html, "html.parser")
+        items, _ = self._detect_items(soup)
+        if items:
+            return False  # tem produtos — não é bloqueio
+
+        # 0 produtos — verifica se há mensagem legítima de busca sem resultados
+        no_result_el = soup.select_one(_SELECTORS["no_results"])
+        no_result_text = bool(re.search(r"Nenhum resultado", html, re.I))
+        if no_result_el or no_result_text:
+            return False  # busca legítima sem resultados — não é bloqueio
+
+        logger.warning(
+            f"[{self.platform_name}] Soft-block silencioso detectado "
+            f"(página {page_num}): 0 produtos sem mensagem 'Nenhum resultado'"
+        )
+        return True
+
+    # ------------------------------------------------------------------
     # Search principal
     # ------------------------------------------------------------------
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=6, max=25),
+        wait=wait_exponential(multiplier=1, min=15, max=120) + wait_random(0, 5),
         reraise=True,
     )
     def search(
@@ -471,6 +514,15 @@ class MagaluScraper(BaseScraper):
     ) -> List[Dict[str, Any]]:
         """Busca keyword na Magalu por até `page_limit` páginas."""
         all_records: List[Dict[str, Any]] = []
+        soft_block_detected = False
+
+        # Delay humanizado entre keywords para evitar padrão detectável pelo Radware/PerimeterX
+        if self._keywords_processed > 0:
+            _inter_delay = random.uniform(8.0, 20.0)
+            logger.debug(
+                f"[{self.platform_name}] Aguardando {_inter_delay:.1f}s antes da próxima keyword..."
+            )
+            time.sleep(_inter_delay)
 
         # Rotação proativa a cada _ROTATION_INTERVAL keywords (reseta fingerprint do Radware)
         self._keywords_processed += 1
@@ -489,10 +541,25 @@ class MagaluScraper(BaseScraper):
             logger.info(f"[{self.platform_name}] Página {page}/{page_limit} → {url}")
 
             try:
+                # Rotaciona User-Agent e injeta headers realistas a cada navegação
+                _ua = random.choice(USER_AGENTS)
+                self._page.set_extra_http_headers({
+                    "User-Agent": _ua,
+                    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Accept": (
+                        "text/html,application/xhtml+xml,application/xml;"
+                        "q=0.9,image/avif,image/webp,*/*;q=0.8"
+                    ),
+                    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                })
+
                 self._page.goto(url, wait_until="domcontentloaded")
 
                 # Detecta Radware Bot Manager (dispara após ~25 requests no mesmo contexto)
                 if self._is_radware_blocked():
+                    soft_block_detected = True
                     logger.warning(
                         f"[{self.platform_name}] Radware detectado em '{keyword}' (página {page}) "
                         "— rotacionando browser e retentando"
@@ -579,13 +646,20 @@ class MagaluScraper(BaseScraper):
                                 page_offset=0,
                             )
 
-                    all_records.extend(records)
                     if not records:
+                        _current_html = self._page.content()
+                        if self._detect_soft_block(_current_html, page):
+                            soft_block_detected = True
+                            raise MagaluSoftBlockException(
+                                f"Soft-block em '{keyword}' (página {page}) — "
+                                "retry com backoff será ativado"
+                            )
                         logger.warning(
                             f"[{self.platform_name}] Página {page} retornou 0 itens — "
-                            "possível bloqueio ou fim de resultados. Parando keyword."
+                            "fim de resultados legítimo. Parando keyword."
                         )
                         break
+                    all_records.extend(records)
 
                 if page < page_limit:
                     self._random_delay(min_s=2.0, max_s=5.0)
@@ -597,4 +671,11 @@ class MagaluScraper(BaseScraper):
         logger.success(
             f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
         )
+        logger.info(json.dumps({
+            "plataforma": self.platform_name,
+            "keyword": keyword,
+            "itens_coletados": len(all_records),
+            "soft_block_detectado": soft_block_detected,
+            "timestamp": now_brt().isoformat(),
+        }, ensure_ascii=False))
         return all_records
