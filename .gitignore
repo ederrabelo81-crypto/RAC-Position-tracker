@@ -1,10 +1,5 @@
 ```
-# Documentation
-*.md
-
+# Logs and temp files
+*.log
+logs/
 ```
-
-# Python bytecode
-__pycache__/
-*.py[cod]
-*.pyo
