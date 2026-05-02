@@ -868,6 +868,49 @@ def _expand_brands(brands: list) -> list:
 _SUPABASE_PAGE = 1000  # PostgREST default server-side max_rows cap
 
 
+def _filter_latest_run(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filtra o DataFrame para mostrar apenas o último run_id de cada
+    (data, turno, plataforma), preservando registros históricos (run_id NULL).
+
+    Registros sem run_id (histórico anterior à feature) são sempre exibidos.
+    Para dados novos (com run_id), mantém apenas o run mais recente de cada
+    combinação (data, turno, plataforma) com base em created_at.
+    """
+    if "run_id" not in df.columns:
+        return df
+
+    mask_historico = df["run_id"].isna()
+    df_hist = df[mask_historico]
+    df_novos = df[~mask_historico]
+
+    if df_novos.empty:
+        return df
+
+    # Determina o run_id mais recente por (data, turno, plataforma)
+    if "created_at" in df_novos.columns:
+        sort_col = "created_at"
+    else:
+        sort_col = "run_id"  # fallback — ordena por UUID (não ideal, mas seguro)
+
+    idx_ultimo = (
+        df_novos
+        .sort_values(sort_col, ascending=False)
+        .drop_duplicates(subset=["data", "turno", "plataforma", "run_id"], keep="first")
+        .groupby(["data", "turno", "plataforma"])["run_id"]
+        .first()
+        .reset_index()
+    )
+
+    df_filtrado = df_novos.merge(
+        idx_ultimo[["data", "turno", "plataforma", "run_id"]],
+        on=["data", "turno", "plataforma", "run_id"],
+        how="inner",
+    )
+
+    return pd.concat([df_hist, df_filtrado], ignore_index=True)
+
+
 def query_coletas(
     start_date: date,
     end_date: date,
@@ -1564,6 +1607,18 @@ def page_results():
             ),
         )
 
+        st.divider()
+        modo_results = st.radio(
+            "Modo de visualização",
+            ["Snapshot oficial (último run)", "Todos os runs (auditoria)"],
+            index=0,
+            help=(
+                "**Snapshot oficial**: mostra apenas o último run de cada "
+                "(data, turno, plataforma) — ideal para análise de mercado.\n\n"
+                "**Auditoria**: mostra todos os runs do período — útil para "
+                "comparar execuções múltiplas do scraper no mesmo turno."
+            ),
+        )
         load_btn = st.button("🔄 Load Data", type="primary", use_container_width=True)
 
     if not load_btn:
@@ -1588,6 +1643,9 @@ def page_results():
     if df.empty:
         st.warning("No data found for the selected filters.")
         return
+
+    if modo_results == "Snapshot oficial (último run)":
+        df = _filter_latest_run(df)
 
     # --- Summary metrics with enhanced cards ---
     st.markdown("""
@@ -1726,6 +1784,19 @@ def page_price_evolution():
             horizontal=True,
         )
 
+        st.divider()
+        modo_evo = st.radio(
+            "Modo de visualização",
+            ["Snapshot oficial (último run)", "Todos os runs (auditoria)"],
+            index=0,
+            key="evo_modo",
+            help=(
+                "**Snapshot oficial**: usa apenas o último run de cada "
+                "(data, turno, plataforma) para evitar duplicatas nos gráficos.\n\n"
+                "**Auditoria**: inclui todos os runs — útil para inspecionar "
+                "variações intra-turno."
+            ),
+        )
         load_btn = st.button("🔄 Load Chart", type="primary", use_container_width=True)
 
     if not load_btn:
@@ -1746,6 +1817,9 @@ def page_price_evolution():
             product_types=sel_ptype or None,
             limit=50000,
         )
+
+    if modo_evo == "Snapshot oficial (último run)":
+        df = _filter_latest_run(df)
 
     if df.empty or "preco" not in df.columns:
         st.warning("No price data found for the selected filters.")

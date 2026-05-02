@@ -63,6 +63,7 @@ _COLUMN_MAP = {
     "Avaliação":            "avaliacao",
     "Qtd Avaliações":       "qtd_avaliacoes",
     "Tag Destaque":         "tag",
+    # run_id é injetado diretamente no upload — não vem do CSV/dict interno
 }
 
 # Colunas numéricas — None em vez de NaN para o Postgres
@@ -773,15 +774,24 @@ def scan_fix_bad_prices_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
     }
 
 
-def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
+def upload_to_supabase(
+    records: List[Dict[str, Any]],
+    run_id: Optional[str] = None,
+) -> bool:
     """
     Faz upload de uma lista de registros para a tabela `coletas` no Supabase.
 
-    Usa upsert com ignore_duplicates=True para evitar erros em reexecuções.
-    A deduplicação usa a constraint UNIQUE (data, turno, plataforma, produto).
+    Cada execução do scraper deve passar um `run_id` único (UUID) gerado no
+    início da sessão. Isso permite múltiplos snapshots por turno sem colapso
+    silencioso — a constraint UNIQUE agora inclui run_id.
+
+    Registros históricos (importados sem run_id) continuam com NULL e são
+    tratados como snapshot consolidado pelo dashboard.
 
     Args:
         records: lista de dicts no formato interno do bot (mesmo formato do CSV)
+        run_id:  UUID string gerado pelo main.py para esta execução.
+                 None é aceito para compatibilidade com imports manuais.
 
     Returns:
         True se upload bem-sucedido, False se falhou (CSV já foi salvo antes).
@@ -790,7 +800,10 @@ def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
         logger.info("[Supabase] Nenhum registro para enviar.")
         return True
 
-    logger.info(f"[Supabase] Iniciando upload de {len(records)} registros...")
+    logger.info(
+        f"[Supabase] Iniciando upload de {len(records)} registros "
+        f"(run_id={run_id or 'NULL'})..."
+    )
     client = _get_client()
     if client is None:
         return False
@@ -810,6 +823,10 @@ def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
             f"(não relacionados a ar-condicionado)."
         )
 
+    # Injeta run_id em todas as linhas do batch
+    for row in rows:
+        row["run_id"] = run_id  # None para imports históricos
+
     total   = len(rows)
     batches = math.ceil(total / _BATCH_SIZE)
     sent    = 0
@@ -819,17 +836,32 @@ def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
 
     for i in range(batches):
         batch = rows[i * _BATCH_SIZE : (i + 1) * _BATCH_SIZE]
+        plataforma = batch[0].get("plataforma", "?") if batch else "?"
         try:
-            client.table("coletas").upsert(
-                batch,
-                on_conflict="data,turno,plataforma,produto",
-                ignore_duplicates=True,
-            ).execute()
-            sent += len(batch)
-            logger.debug(f"[Supabase] Lote {i+1}/{batches}: {len(batch)} linhas OK")
+            result = client.table("coletas").insert(batch).execute()
+            inseridas = len(result.data) if result.data else 0
+            sent += inseridas
+            if inseridas != len(batch):
+                logger.warning(
+                    f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} | "
+                    f"Tentadas={len(batch)} | Inseridas={inseridas} | "
+                    f"Diff={len(batch) - inseridas}"
+                )
+            else:
+                logger.debug(
+                    f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches}: "
+                    f"{inseridas} linhas OK"
+                )
         except Exception as exc:
             errors += len(batch)
-            logger.warning(f"[Supabase] Lote {i+1}/{batches} falhou: {exc}")
+            logger.warning(
+                f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} falhou: {exc}"
+            )
+
+    logger.info(
+        f"[INSERT] Run={run_id or 'NULL'} | "
+        f"Tentadas={total} | Inseridas={sent} | Erros={errors}"
+    )
 
     if errors == 0:
         logger.success(f"[Supabase] {sent} registros enviados com sucesso.")
@@ -840,6 +872,64 @@ def upload_to_supabase(records: List[Dict[str, Any]]) -> bool:
     else:
         logger.error(f"[Supabase] Upload falhou para todos os {total} registros.")
         return False
+
+
+def log_auditoria_run(
+    run_id: str,
+    csv_path: str,
+    client: Optional["Client"] = None,
+) -> None:
+    """
+    Compara contagem do CSV com o que foi gravado no Supabase para este run_id.
+
+    Args:
+        run_id:   UUID da execução atual
+        csv_path: caminho para o CSV gerado nesta execução
+        client:   client Supabase já instanciado (opcional — cria novo se None)
+    """
+    import pandas as pd
+
+    try:
+        df = pd.read_csv(csv_path, sep=";", encoding="utf-8-sig")
+        csv_total = len(df)
+        csv_por_plataforma = df.get("Plataforma", df.get("plataforma", pd.Series())).value_counts().to_dict()
+    except Exception as exc:
+        logger.warning(f"[Auditoria] Não foi possível ler o CSV: {exc}")
+        return
+
+    if client is None:
+        client = _get_client()
+    if client is None:
+        logger.warning("[Auditoria] Client Supabase indisponível — pulando auditoria.")
+        return
+
+    try:
+        sb_result = (
+            client.table("coletas")
+            .select("plataforma", count="exact")
+            .eq("run_id", run_id)
+            .execute()
+        )
+        sb_total = sb_result.count or 0
+    except Exception as exc:
+        logger.warning(f"[Auditoria] Erro ao consultar Supabase: {exc}")
+        return
+
+    sep = "=" * 60
+    logger.info(f"\n{sep}")
+    logger.info(f"AUDITORIA RUN {run_id}")
+    logger.info(sep)
+    logger.info(f"CSV total:      {csv_total}")
+    logger.info(f"Supabase total: {sb_total}")
+    logger.info(f"Diff:           {csv_total - sb_total}")
+    if csv_total != sb_total:
+        logger.warning(
+            "[Auditoria] DISCREPÂNCIA detectada! "
+            f"{csv_total - sb_total} linha(s) no CSV não foram gravadas no Supabase."
+        )
+    else:
+        logger.success("[Auditoria] CSV e Supabase em sincronia.")
+    logger.info(f"{sep}\n")
 
 
 def recalculate_unknown_brands_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
