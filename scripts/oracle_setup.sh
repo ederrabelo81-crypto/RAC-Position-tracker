@@ -41,9 +41,11 @@ while [[ $# -gt 0 ]]; do
         --repo-url)      REPO_URL="$2";      shift 2 ;;
         --branch)        REPO_BRANCH="$2";   shift 2 ;;
         --install-dir)   INSTALL_DIR="$2";   shift 2 ;;
+        --skip-cron)     SKIP_CRON=1;        shift   ;;
         *) error "Argumento desconhecido: $1" ;;
     esac
 done
+SKIP_CRON="${SKIP_CRON:-0}"
 
 [[ -z "$SUPABASE_URL" ]] && error "Forneça --supabase-url"
 [[ -z "$SUPABASE_KEY" ]] && error "Forneça --supabase-key"
@@ -139,47 +141,88 @@ info "Criando scripts de coleta..."
 cat > "$INSTALL_DIR/scripts/collect_manha_linux.sh" <<'SCRIPT'
 #!/usr/bin/env bash
 # Coleta manhã — 10:00 BRT (13:00 UTC)
-# Plataformas: ML + Google Shopping + Dealers | Prioridade: alta + media | Páginas: 2
+# Plataformas: TODAS ativas | Prioridade: alta + media | Páginas: 2
+
+set -u  # erro em variável não definida (sem set -e — git pull não-fatal)
+
 cd "$(dirname "$(realpath "$0")")/.."
 source .venv/bin/activate
 set -a; source .env; set +a
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Iniciando coleta manha..." >> logs/cron.log
+
+LOG=logs/cron.log
+mkdir -p logs
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Iniciando coleta manhã ===" >> "$LOG"
+
+# 1. Atualiza o repo (não-fatal — se falhar, segue com código local)
+if git pull --ff-only origin main >> "$LOG" 2>&1; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] git pull OK — commit: $(git rev-parse --short HEAD)" >> "$LOG"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: git pull falhou — usando código local: $(git rev-parse --short HEAD)" >> "$LOG"
+fi
+
+# 2. Executa coleta
 python main.py \
-    --platforms ml google_shopping dealers \
+    --platforms ml magalu amazon google_shopping leroy dealers \
     --pages 2 \
     --priority alta media \
-    >> logs/cron.log 2>&1
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Coleta manha concluida." >> logs/cron.log
+    >> "$LOG" 2>&1
+EXIT_CODE=$?
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Coleta manhã concluída (exit=$EXIT_CODE) ===" >> "$LOG"
+exit $EXIT_CODE
 SCRIPT
 
 # Script de coleta noite (21:00 BRT = 00:00 UTC)
 cat > "$INSTALL_DIR/scripts/collect_noite_linux.sh" <<'SCRIPT'
 #!/usr/bin/env bash
 # Coleta noite — 21:00 BRT (00:00 UTC)
-# Plataformas: ML + Google Shopping + Dealers | Prioridade: alta | Páginas: 1
+# Plataformas: TODAS ativas | Prioridade: alta | Páginas: 1
+
+set -u  # erro em variável não definida (sem set -e — git pull não-fatal)
+
 cd "$(dirname "$(realpath "$0")")/.."
 source .venv/bin/activate
 set -a; source .env; set +a
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Iniciando coleta noite..." >> logs/cron.log
+
+LOG=logs/cron.log
+mkdir -p logs
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Iniciando coleta noite ===" >> "$LOG"
+
+# 1. Atualiza o repo (não-fatal — se falhar, segue com código local)
+if git pull --ff-only origin main >> "$LOG" 2>&1; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] git pull OK — commit: $(git rev-parse --short HEAD)" >> "$LOG"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: git pull falhou — usando código local: $(git rev-parse --short HEAD)" >> "$LOG"
+fi
+
+# 2. Executa coleta
 python main.py \
-    --platforms ml google_shopping dealers \
+    --platforms ml magalu amazon google_shopping leroy dealers \
     --pages 1 \
     --priority alta \
-    >> logs/cron.log 2>&1
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Coleta noite concluida." >> logs/cron.log
+    >> "$LOG" 2>&1
+EXIT_CODE=$?
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Coleta noite concluída (exit=$EXIT_CODE) ===" >> "$LOG"
+exit $EXIT_CODE
 SCRIPT
 
 chmod +x "$INSTALL_DIR/scripts/collect_manha_linux.sh"
 chmod +x "$INSTALL_DIR/scripts/collect_noite_linux.sh"
 
 # ─── 10. Instala cron jobs ───────────────────────────────────────────────────
-info "Configurando cron jobs (horário UTC)..."
+if [[ "$SKIP_CRON" -eq 1 ]]; then
+    info "Pulando instalação de cron jobs (--skip-cron)."
+else
+    info "Configurando cron jobs (horário UTC)..."
 
-# Remove entradas antigas do RAC caso existam
-crontab -l 2>/dev/null | grep -v "rac-position-tracker" > /tmp/crontab_clean || true
+    # Remove entradas antigas do RAC caso existam
+    crontab -l 2>/dev/null | grep -v "rac-position-tracker" > /tmp/crontab_clean || true
 
-# Adiciona as duas coletas
-cat >> /tmp/crontab_clean <<EOF
+    # Adiciona as duas coletas
+    cat >> /tmp/crontab_clean <<EOF
 
 # RAC Price Tracker — coleta manhã  (10:00 BRT = 13:00 UTC)
 0 13 * * * $INSTALL_DIR/scripts/collect_manha_linux.sh
@@ -188,11 +231,12 @@ cat >> /tmp/crontab_clean <<EOF
 0 0  * * * $INSTALL_DIR/scripts/collect_noite_linux.sh
 EOF
 
-crontab /tmp/crontab_clean
-rm -f /tmp/crontab_clean
+    crontab /tmp/crontab_clean
+    rm -f /tmp/crontab_clean
 
-info "Cron jobs instalados:"
-crontab -l | grep "rac-position-tracker"
+    info "Cron jobs instalados:"
+    crontab -l | grep "rac-position-tracker"
+fi
 
 # ─── 11. Script de monitoramento ────────────────────────────────────────────
 cat > "$INSTALL_DIR/scripts/monitor.sh" <<'SCRIPT'
