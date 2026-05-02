@@ -838,20 +838,17 @@ def upload_to_supabase(
         batch = rows[i * _BATCH_SIZE : (i + 1) * _BATCH_SIZE]
         plataforma = batch[0].get("plataforma", "?") if batch else "?"
         try:
-            result = client.table("coletas").insert(batch).execute()
+            result = client.table("coletas").upsert(
+                batch,
+                ignore_duplicates=True,  # → INSERT ON CONFLICT DO NOTHING
+            ).execute()
             inseridas = len(result.data) if result.data else 0
+            ignoradas = len(batch) - inseridas
             sent += inseridas
-            if inseridas != len(batch):
-                logger.warning(
-                    f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} | "
-                    f"Tentadas={len(batch)} | Inseridas={inseridas} | "
-                    f"Diff={len(batch) - inseridas}"
-                )
-            else:
-                logger.debug(
-                    f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches}: "
-                    f"{inseridas} linhas OK"
-                )
+            logger.info(
+                f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} | "
+                f"Tentadas={len(batch)} | Inseridas={inseridas} | Ignoradas={ignoradas}"
+            )
         except Exception as exc:
             errors += len(batch)
             logger.warning(
