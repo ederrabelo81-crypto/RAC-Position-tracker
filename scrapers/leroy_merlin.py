@@ -246,9 +246,8 @@ class LeroyMerlinScraper(BaseScraper):
         self._seller_unresolved.add(seller_id)
         return None
 
-    # Scalar fields in the Algolia hit that may carry the seller name directly,
-    # ordered by reliability. Checked only after marketplaceSellers ID resolution fails.
-    # NOTE: "brand" is intentionally excluded — it is a product attribute, not a seller.
+    # Scalar fields in the Algolia hit that may carry the seller name directly.
+    # NOTE: "brand" intentionally excluded — product attribute, not a seller.
     _SELLER_NAME_FIELDS = (
         "sellerName",
         "seller",
@@ -258,20 +257,87 @@ class LeroyMerlinScraper(BaseScraper):
         "storeName",
     )
 
+    # Normalized names that identify Leroy Merlin's own 1P seller entry,
+    # used to skip the self-entry when scanning `sellers` / `installmentsBySeller`.
+    _LEROY_SELF_NAMES: frozenset[str] = frozenset({
+        "leroymerlin", "leroy merlin", "leroy_merlin", "leroy", "1",
+    })
+
+    def _find_seller_in_hit(self, hit: dict, target_id: str) -> Optional[str]:
+        """
+        Looks for the seller name **inline** in the Algolia hit, without any
+        network call.  Checks two VTEX-standard fields in priority order:
+
+        1. ``sellers`` — list of dicts: [{sellerId, sellerName, ...}, ...]
+           VTEX Algolia integrations always expose this when products have
+           marketplace offers.  We first try to match by sellerId == target_id;
+           if no ID match, we return the single non-Leroy entry (unambiguous).
+
+        2. ``installmentsBySeller`` — dict keyed by sellerId, each value is a
+           dict that may carry sellerName/storeName.
+
+        Returns the clean seller name string, or None if not found.
+        """
+        leroy = self._LEROY_SELF_NAMES
+
+        # --- 1. `sellers` array ---
+        sellers_arr = hit.get("sellers")
+        if isinstance(sellers_arr, list) and sellers_arr:
+            non_leroy: list[str] = []
+            for s in sellers_arr:
+                if not isinstance(s, dict):
+                    continue
+                name = (
+                    s.get("sellerName")
+                    or s.get("seller_name")
+                    or s.get("storeName")
+                    or s.get("name")
+                )
+                if not name or not isinstance(name, str):
+                    continue
+                clean = name.strip()
+                if clean.lower() in leroy:
+                    continue
+                sid = s.get("sellerId") or s.get("seller_id") or s.get("id")
+                if sid and str(sid) == target_id:
+                    return clean          # exact ID match — highest confidence
+                non_leroy.append(clean)
+            if len(non_leroy) == 1:
+                return non_leroy[0]      # only one 3P seller — unambiguous
+
+        # --- 2. `installmentsBySeller` dict ---
+        ibs = hit.get("installmentsBySeller")
+        if isinstance(ibs, dict):
+            for seller_key, seller_data in ibs.items():
+                if not isinstance(seller_data, dict):
+                    continue
+                name = seller_data.get("sellerName") or seller_data.get("storeName")
+                if not name or not isinstance(name, str):
+                    continue
+                clean = name.strip()
+                if clean.lower() in leroy:
+                    continue
+                if seller_key == target_id:
+                    return clean
+
+        return None
+
     def _extract_algolia_seller(self, hit: dict) -> str:
         """
         Extrai o seller de um hit Algolia da Leroy Merlin.
 
-        Priority order (confirmed 01/mai/2026):
-          1. hit["marketplaceSellers"] is absent or []  → 1P "Leroy Merlin"
-          2. hit["marketplaceSellers"] = [{"sellerName": ...}]  → use name directly
-          3. hit["marketplaceSellers"] = ["<mongo_id>"]  → resolve via static map /
-             dynamic cache / VTEX API; on failure check scalar name fields in hit;
-             final fallback "3P (não identificado)"
-          4. hit["marketplaceSellers"] = {id: {...}}  → extract from dict
+        Resolution order for 3P products (marketplaceSellers = ["<mongo_id>"]):
+          1. Static map (LEROY_SELLER_ID_MAP) — instant, no I/O
+          2. Dynamic in-memory cache — instant, no I/O
+          3. Inline hit fields: `sellers` array + `installmentsBySeller` dict
+             (VTEX standard, zero network cost, populated by Algolia indexer)
+          4. VTEX catalog seller API — last resort; many MongoDB-style IDs
+             return HTTP 404 because the endpoint only accepts VTEX numeric IDs
+          5. Scalar hit fields (sellerName, seller, merchant, …)
+          6. Sentinel "3P (não identificado)" — WARNING logged once per unique ID
 
-        Never reads seller IDs from regionalAttributes, boitataFacets, or any
-        other field — those IDs are invalid for the VTEX seller API (HTTP 404).
+        NEVER reads seller IDs from regionalAttributes, boitataFacets, or any
+        other field — those IDs are invalid for the VTEX seller API.
         """
         if not hasattr(self, '_seller_field_logged'):
             self._seller_field_logged = True
@@ -302,22 +368,32 @@ class LeroyMerlinScraper(BaseScraper):
                 if seller:
                     return str(seller).strip()
 
-            # Case B: list of MongoDB ObjectId strings — resolve to human name
+            # Case B: list of MongoDB ObjectId strings — multi-layer resolution
             if isinstance(first, str):
+                # Layers 1-2: static map + dynamic cache (inside _resolve_seller_id)
+                # Layer 3: inline `sellers` / `installmentsBySeller` — zero network cost
+                inline = self._find_seller_in_hit(hit, first)
+                if inline:
+                    self._dynamic_seller_cache[first] = inline
+                    logger.debug(
+                        f"[{self.platform_name}] Seller resolvido inline: {first[:8]}… → {inline}"
+                    )
+                    return inline
+
+                # Layer 4: VTEX catalog API (may 404 for MongoDB-style IDs)
                 resolved = self._resolve_seller_id(first)
                 if resolved:
                     return resolved
 
-                # API returned 404 — try scalar name fields present in the same hit
+                # Layer 5: scalar name fields
                 for field in self._SELLER_NAME_FIELDS:
                     val = hit.get(field)
                     if val and isinstance(val, str) and val.strip():
                         name = val.strip()
-                        # Cache so subsequent hits with same ID benefit from this
                         self._dynamic_seller_cache[first] = name
                         return name
 
-                # Warn once per unique unresolved ID to keep logs clean
+                # Layer 6: sentinel — warn once per unique ID
                 if first not in self._seller_warned:
                     self._seller_warned.add(first)
                     logger.warning(
