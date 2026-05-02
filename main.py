@@ -327,6 +327,17 @@ def _parse_args() -> argparse.Namespace:
         help=f"Diretório de saída dos CSVs (padrão: {OUTPUT_DIR}/)",
     )
 
+    parser.add_argument(
+        "--debug-hits",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Salva os primeiros N hits Algolia brutos em logs/leroy_hits_*.json "
+            "(diagnóstico Leroy Merlin). Define LEROY_DEBUG_HITS=N."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -337,6 +348,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     _setup_logging(LOGS_DIR)
+
+    if args.debug_hits:
+        os.environ["LEROY_DEBUG_HITS"] = str(args.debug_hits)
 
     # Gera 1 run_id único por execução — permite múltiplos snapshots por turno
     RUN_ID = str(uuid.uuid4())

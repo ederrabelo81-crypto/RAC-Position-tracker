@@ -14,6 +14,7 @@ Paginação: page param 0-indexed na Algolia API.
 """
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -27,7 +28,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
-from utils.text import parse_price, parse_rating, parse_review_count
+from utils.text import parse_price, parse_rating, parse_review_count, now_brt
 
 _ITEMS_PER_PAGE = 24
 
@@ -136,6 +137,20 @@ class LeroyMerlinScraper(BaseScraper):
         self._dynamic_seller_cache: dict[str, str] = {}
         self._seller_unresolved: set[str] = set()
         self._seller_warned: set[str] = set()  # IDs already warned — suppresses repeat WARNINGs
+        self._seller_metrics: dict[str, int] = {
+            "total_hits": 0,
+            "marketplace_sellers_absent": 0,    # 1P puro
+            "marketplace_sellers_list_dict": 0,  # Caso A — dict inline
+            "marketplace_sellers_list_str": 0,   # Caso B — MongoDB ID
+            "marketplace_sellers_dict": 0,       # Caso C
+            "resolved_via_static_map": 0,
+            "resolved_via_dynamic_cache": 0,
+            "resolved_via_inline_hit": 0,
+            "resolved_via_vtex_api": 0,
+            "resolved_via_scalar_fields": 0,
+            "fallback_3p_unidentified": 0,
+            "fallback_leroy_default": 0,
+        }
 
     # ------------------------------------------------------------------
     # URL
@@ -186,6 +201,19 @@ class LeroyMerlinScraper(BaseScraper):
                     f"[{self.platform_name}] Algolia: {len(hits)} hits "
                     f"(página {page}/{nb_pages})"
                 )
+                debug_env = os.environ.get("LEROY_DEBUG_HITS")
+                if debug_env:
+                    try:
+                        n = int(debug_env)
+                    except ValueError:
+                        n = 10
+                    log_dir = Path(LOGS_DIR)
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    safe_kw = keyword[:30].replace(" ", "_").replace("/", "-")
+                    debug_path = log_dir / f"leroy_hits_{safe_kw}_{int(time.time())}.json"
+                    with open(debug_path, "w", encoding="utf-8") as fh:
+                        json.dump(hits[:n], fh, ensure_ascii=False, indent=2)
+                    logger.debug(f"[{self.platform_name}] Hits raw salvos: {debug_path}")
                 return self._parse_algolia_hits(hits, keyword, keyword_category_map, page_offset)
             logger.debug(f"[{self.platform_name}] Algolia: 0 hits para '{keyword}' página {page}")
             return []
@@ -339,6 +367,8 @@ class LeroyMerlinScraper(BaseScraper):
         NEVER reads seller IDs from regionalAttributes, boitataFacets, or any
         other field — those IDs are invalid for the VTEX seller API.
         """
+        self._seller_metrics["total_hits"] += 1
+
         if not hasattr(self, '_seller_field_logged'):
             self._seller_field_logged = True
             ms = hit.get("marketplaceSellers")
@@ -352,6 +382,8 @@ class LeroyMerlinScraper(BaseScraper):
 
         # Absent or empty list → 1P product sold directly by Leroy Merlin
         if not marketplace_sellers:
+            self._seller_metrics["marketplace_sellers_absent"] += 1
+            self._seller_metrics["fallback_leroy_default"] += 1
             return "Leroy Merlin"
 
         if isinstance(marketplace_sellers, list) and marketplace_sellers:
@@ -359,6 +391,7 @@ class LeroyMerlinScraper(BaseScraper):
 
             # Case A: list of dicts carrying the name inline
             if isinstance(first, dict):
+                self._seller_metrics["marketplace_sellers_list_dict"] += 1
                 seller = (
                     first.get("sellerName")
                     or first.get("seller_name")
@@ -366,15 +399,31 @@ class LeroyMerlinScraper(BaseScraper):
                     or first.get("seller_id")
                 )
                 if seller:
+                    self._seller_metrics["resolved_via_inline_hit"] += 1
                     return str(seller).strip()
+                # dict with no usable seller field
+                self._seller_metrics["fallback_leroy_default"] += 1
+                return "Leroy Merlin"
 
             # Case B: list of MongoDB ObjectId strings — multi-layer resolution
             if isinstance(first, str):
-                # Layers 1-2: static map + dynamic cache (inside _resolve_seller_id)
+                self._seller_metrics["marketplace_sellers_list_str"] += 1
+
+                # Layer 1: static map
+                if first in LEROY_SELLER_ID_MAP:
+                    self._seller_metrics["resolved_via_static_map"] += 1
+                    return LEROY_SELLER_ID_MAP[first]
+
+                # Layer 2: dynamic in-memory cache
+                if first in self._dynamic_seller_cache:
+                    self._seller_metrics["resolved_via_dynamic_cache"] += 1
+                    return self._dynamic_seller_cache[first]
+
                 # Layer 3: inline `sellers` / `installmentsBySeller` — zero network cost
                 inline = self._find_seller_in_hit(hit, first)
                 if inline:
                     self._dynamic_seller_cache[first] = inline
+                    self._seller_metrics["resolved_via_inline_hit"] += 1
                     logger.debug(
                         f"[{self.platform_name}] Seller resolvido inline: {first[:8]}… → {inline}"
                     )
@@ -383,6 +432,7 @@ class LeroyMerlinScraper(BaseScraper):
                 # Layer 4: VTEX catalog API (may 404 for MongoDB-style IDs)
                 resolved = self._resolve_seller_id(first)
                 if resolved:
+                    self._seller_metrics["resolved_via_vtex_api"] += 1
                     return resolved
 
                 # Layer 5: scalar name fields
@@ -391,6 +441,7 @@ class LeroyMerlinScraper(BaseScraper):
                     if val and isinstance(val, str) and val.strip():
                         name = val.strip()
                         self._dynamic_seller_cache[first] = name
+                        self._seller_metrics["resolved_via_scalar_fields"] += 1
                         return name
 
                 # Layer 6: sentinel — warn once per unique ID
@@ -400,10 +451,12 @@ class LeroyMerlinScraper(BaseScraper):
                         f"[{self.platform_name}] Seller ID não resolvido: {first} "
                         f"(produto: {str(hit.get('name', '?'))[:60]})"
                     )
+                self._seller_metrics["fallback_3p_unidentified"] += 1
                 return "3P (não identificado)"
 
         # Case C: dict keyed by sellerId
         if isinstance(marketplace_sellers, dict) and marketplace_sellers:
+            self._seller_metrics["marketplace_sellers_dict"] += 1
             first_key = next(iter(marketplace_sellers))
             entry = marketplace_sellers[first_key]
             if isinstance(entry, dict):
@@ -413,8 +466,10 @@ class LeroyMerlinScraper(BaseScraper):
                     or first_key
                 )
                 if seller:
+                    self._seller_metrics["resolved_via_inline_hit"] += 1
                     return str(seller).strip()
 
+        self._seller_metrics["fallback_leroy_default"] += 1
         return "Leroy Merlin"
 
     def _parse_algolia_hits(
@@ -760,4 +815,11 @@ class LeroyMerlinScraper(BaseScraper):
         logger.success(
             f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
         )
+        logger.info(json.dumps({
+            "plataforma": "Leroy Merlin",
+            "keyword": keyword,
+            "seller_metrics": self._seller_metrics,
+            "timestamp": now_brt().isoformat(),
+        }, ensure_ascii=False))
+        self._seller_metrics = {k: 0 for k in self._seller_metrics}
         return all_records
