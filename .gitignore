@@ -1,5 +1,22 @@
-```
 # Logs and temp files
 *.log
 logs/
-```
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# Output files
+output/
+
+# OS
+.DS_Store
