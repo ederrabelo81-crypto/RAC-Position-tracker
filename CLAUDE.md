@@ -684,16 +684,20 @@ python scripts/fix_turno.py --confirm             # Fix inverted turno
 python utils/supabase_client.py                   # Run cleanup functions
 ```
 
-### Platform Status (April 2026)
+### Platform Status (Mai 2026 — smoke test 03/05/2026)
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Mercado Livre | ✅ | CEP popup handled |
-| Amazon | ✅ | Seller via "Vendido por" |
-| Magalu | ✅ | nm-* selectors + Radware rotation |
-| Google Shopping | ✅ | Leaf-div title strategy |
-| Leroy Merlin | ✅ | Algolia API direct |
-| Dealers (13+) | ✅ | JSON-LD + VTEX + DOM fallback |
+| Mercado Livre | ✅ | 16-22 sellers/keyword; 22-42s/keyword |
+| Amazon | ✅ | Seller via "Vendido por"; 26-31s/keyword |
+| Leroy Merlin | ✅ | Algolia API; 10-11s/keyword; 15 3P seller IDs não resolvidos (404 VTEX) |
+| Dealers (Frigelar) | ✅ | JSON-LD + VTEX + DOM fallback; 30 itens / 108s |
+| Google Shopping | ⚠️ | reCAPTCHA em headless; funciona com delays 25-45s em coletas reais |
+| Magalu | ❌ | Akamai Bot Manager — proxy residencial BR necessário (~$500/mês) |
+| Dealers (CentralAr) | ❌ | Parado desde 26/04 — diagnóstico pendente (Sprint 1) |
+| Dealers (Eletrozema) | ❌ | Parado desde 26/04 — causa comum com CentralAr (VTEX IO) |
+| Dealers (Dufrio) | ❌ | Parado desde 29/04 — diagnóstico pendente (Sprint 1) |
+| Dealers (PoloAr, Climario, FrioPecas, Leveros, WebContinental) | ❌ | Parados 20-31 dias — Sprint 2 |
 | Shopee | ⏸️ | Needs authenticated session |
 | Casas Bahia | ⏸️ | Akamai WAF |
 | Fast Shop | ⏸️ | PerimeterX total block |

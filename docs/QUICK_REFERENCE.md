@@ -55,7 +55,8 @@ search(dealer_name) → DEALER_CONFIGS[name] → goto(url) → scroll → wait_f
 
 | Threat | Detector | Response |
 |--------|----------|----------|
-| Radware (Magalu) | `<title>Radware Bot Manager Captcha</title>` | `_rotate_browser()` + retry |
+| Akamai Bot Manager (Magalu) | `"Não é possível acessar a página"` no HTML | Abortar imediatamente, log 🚫, sem retry |
+| Radware (Magalu — histórico) | `<title>Radware Bot Manager Captcha</title>` | `_rotate_browser()` + retry |
 | reCAPTCHA | `grecaptcha.render` in HTML | Break, dump debug HTML |
 | Cloudflare | Title "Um momento" / "Just a moment" | Break, dump debug HTML |
 | PerimeterX (Magalu) | `#px-captcha` selector | Log warning, return empty |
