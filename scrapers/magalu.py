@@ -24,7 +24,7 @@ from urllib.parse import quote_plus
 
 from bs4 import BeautifulSoup, Tag
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential, wait_random
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_random
 
 from config import MAX_PAGES, LOGS_DIR, USER_AGENTS
 from scrapers.base import BaseScraper
@@ -33,6 +33,16 @@ from utils.text import parse_price, parse_rating, parse_review_count, now_brt
 
 class MagaluSoftBlockException(Exception):
     """Levantada quando o Magalu retorna página vazia sem mensagem de 'sem resultados' (soft-block silencioso)."""
+    pass
+
+
+class MagaluAkamaiBlockException(Exception):
+    """
+    Levantada quando o Akamai Bot Manager bloqueia o scraper.
+
+    Diferente de MagaluSoftBlockException — Akamai é bloqueio hard que não
+    responde a retry com backoff. Requer proxy residencial brasileiro.
+    """
     pass
 
 
@@ -472,8 +482,30 @@ class MagaluScraper(BaseScraper):
         'Nenhum resultado' — o Magalu simplesmente serve HTML vazio.
 
         Busca vazia legítima: 0 produtos MAS com mensagem de erro/sem-resultado.
+
+        Akamai hard-block: retorna HTML de erro com título específico — levanta
+        MagaluAkamaiBlockException para abortar imediatamente sem retry.
         """
         url = self._page.url
+
+        # 1. Detecta Akamai Bot Manager (bloqueio hard — não adianta retry)
+        akamai_signals = [
+            "Não é possível acessar a página",
+            "(Erro 403)",
+            "akamai-bot/css/styles",
+            "wx.mlcdn.com.br/akamai-bot",
+        ]
+        if any(signal in html for signal in akamai_signals):
+            logger.error(
+                f"[{self.platform_name}] 🚫 Akamai Bot Manager detectado (página {page_num}) — "
+                "bloqueio hard. Proxy residencial brasileiro é necessário para bypass."
+            )
+            raise MagaluAkamaiBlockException(
+                f"Akamai bloqueou scraper na página {page_num}. "
+                "Proxy residencial BR necessário."
+            )
+
+        # 2. Verifica URL patterns de bloqueio
         if any(s in url for s in ("captcha", "/erro", "blocked")):
             logger.warning(
                 f"[{self.platform_name}] Soft-block detectado via URL (página {page_num}): {url[:80]}"
@@ -485,12 +517,13 @@ class MagaluScraper(BaseScraper):
         if items:
             return False  # tem produtos — não é bloqueio
 
-        # 0 produtos — verifica se há mensagem legítima de busca sem resultados
+        # 3. Busca legítima sem resultados (tem mensagem de erro)
         no_result_el = soup.select_one(_SELECTORS["no_results"])
         no_result_text = bool(re.search(r"Nenhum resultado", html, re.I))
         if no_result_el or no_result_text:
             return False  # busca legítima sem resultados — não é bloqueio
 
+        # 4. Soft-block silencioso (0 produtos SEM mensagem de erro)
         logger.warning(
             f"[{self.platform_name}] Soft-block silencioso detectado "
             f"(página {page_num}): 0 produtos sem mensagem 'Nenhum resultado'"
@@ -504,6 +537,7 @@ class MagaluScraper(BaseScraper):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=15, max=120) + wait_random(0, 5),
+        retry=retry_if_exception_type(MagaluSoftBlockException),
         reraise=True,
     )
     def search(
@@ -664,6 +698,13 @@ class MagaluScraper(BaseScraper):
                 if page < page_limit:
                     self._random_delay(min_s=2.0, max_s=5.0)
 
+            except MagaluAkamaiBlockException:
+                # Akamai hard block — aborta toda a keyword imediatamente
+                logger.error(
+                    f"[{self.platform_name}] Akamai bloqueou scraper — "
+                    f"abortando keyword '{keyword}'"
+                )
+                break  # sai do loop de páginas, retorna o que coletou até agora
             except Exception as exc:
                 logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
                 raise
