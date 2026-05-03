@@ -2,7 +2,7 @@
 
 Bot de monitoramento de preços e posicionamento de produtos de ar condicionado em marketplaces brasileiros e varejistas especializados.
 
-**Status:** ✅ Produção | **Última atualização:** Abril 2026 (v3.1)
+**Status:** ✅ Produção | **Última atualização:** Maio 2026 (v3.2)
 
 ---
 
@@ -36,17 +36,40 @@ GitHub Actions
 
 ## 🌐 Plataformas Suportadas
 
-| Plataforma | Status | Tipo | Observações |
-|------------|--------|------|-------------|
-| Mercado Livre | ✅ Funcional | Nacional Retail | Popup CEP tratado automaticamente |
-| Amazon | ✅ Funcional | Nacional Retail | Extração de seller via "Vendido por" |
-| Magazine Luiza | ✅ Funcional | Nacional Retail | Seletores nm-*, rotação anti-Radware |
-| Google Shopping | ✅ Funcional | Comparador de Preços | div.rwVHAc + leaf-div title |
-| Leroy Merlin | ✅ Funcional | Varejo Especializado | Algolia API direta |
-| Dealers (13+) | ✅ Funcional | Regional/Nacional | JSON-LD, VTEX, DOM fallback |
-| Shopee | ⏸️ Stand by | Nacional Marketplace | Requer sessão autenticada |
-| Casas Bahia | ⏸️ Stand by | Nacional Retail | WAF Akamai |
-| Fast Shop | ⏸️ Stand by | Nacional Varejo | Pendente validação |
+> Status validado em smoke test — 03/05/2026
+
+### Funcionando ✅
+
+| Plataforma | Tipo | Observações |
+|------------|------|-------------|
+| Mercado Livre | Nacional Retail | 16-22 sellers/keyword; ~22-42s/keyword |
+| Amazon | Nacional Retail | Seller via "Vendido por"; ~26-31s/keyword |
+| Leroy Merlin | Varejo Especializado | Algolia API direta; ~10-11s/keyword |
+| Dealers (Frigelar e outros) | Regional/Nacional | JSON-LD + VTEX + DOM fallback |
+
+### Com ressalvas ⚠️
+
+| Plataforma | Tipo | Observações |
+|------------|------|-------------|
+| Google Shopping | Comparador de Preços | reCAPTCHA em headless; funciona com delays 25-45s em coletas reais |
+| Magazine Luiza | Nacional Retail | **Implementação local em JS + TypeScript** — Akamai Bot Manager bloqueia o scraper Python; solução alternativa roda fora do bot principal |
+
+### On Hold / Stand-by ⏸️
+
+| Plataforma | Tipo | Motivo |
+|------------|------|--------|
+| Shopee | Nacional Marketplace | Requer sessão autenticada |
+| Casas Bahia | Nacional Retail | WAF Akamai |
+| Fast Shop | Nacional Varejo | Bloqueio total PerimeterX |
+
+### Dealers com problema ❌
+
+| Dealer | Desde | Status |
+|--------|-------|--------|
+| CentralAr | 26/04 | Diagnóstico pendente (Sprint 1) |
+| Eletrozema | 26/04 | Causa comum com CentralAr (VTEX IO) |
+| Dufrio | 29/04 | Diagnóstico pendente (Sprint 1) |
+| PoloAr, Climario, FrioPecas, Leveros, WebContinental | 20-31 dias | Sprint 2 |
 
 ### Dealers Incluídos
 
@@ -310,18 +333,60 @@ Parâmetros disponíveis: `platforms`, `pages`, `priority`.
 
 ### Keywords (`config.py`)
 
-```python
-KEYWORDS_LIST: List[Keyword] = [
-    Keyword("ar condicionado split",      "Genérica",        "alta"),
-    Keyword("ar condicionado inverter",   "Genérica",        "alta"),
-    Keyword("ar condicionado 12000 btus", "Capacidade BTU",  "alta"),
-    Keyword("ar condicionado midea",      "Marca",           "alta"),
-    Keyword("melhor ar condicionado",     "Intenção Compra", "media"),
-    # ...
-]
-```
+Lista completa de keywords monitoradas — definidas em `config.py`:
 
-**Prioridades:** `alta` (coleta diária), `media` (manhã), `baixa` (opcional)
+**Head terms genéricos** (prioridade `alta`)
+| Keyword |
+|---------|
+| ar condicionado split |
+| ar condicionado inverter |
+| ar condicionado |
+| ar condicionado split inverter |
+
+**Capacidade / BTU** (prioridade `alta`)
+| Keyword |
+|---------|
+| ar condicionado 9000 btus |
+| ar condicionado 12000 btus |
+| ar condicionado 18000 btus |
+| ar condicionado 24000 btus |
+| ar condicionado 9000 btus inverter |
+| ar condicionado 12000 btus inverter |
+| split 12000 btus inverter |
+| split 9000 btus inverter |
+
+**Marca Midea** (prioridade `alta`)
+| Keyword |
+|---------|
+| ar condicionado midea |
+| midea inverter |
+| midea 12000 btus |
+| ar condicionado midea 12000 |
+| midea ecomaster |
+| midea airvolution |
+
+**Concorrentes** (prioridade `alta` ou `media`)
+| Keyword | Prioridade |
+|---------|-----------|
+| ar condicionado lg | alta |
+| lg dual inverter | alta |
+| ar condicionado lg dual inverter 12000 | alta |
+| ar condicionado samsung | alta |
+| samsung windfree | alta |
+| ar condicionado gree | media |
+| ar condicionado elgin | media |
+| ar condicionado philco | media |
+| ar condicionado tcl | media |
+
+**Intenção de compra / Promoção** (prioridade `alta` ou `media`)
+| Keyword | Prioridade |
+|---------|-----------|
+| melhor ar condicionado custo benefício | alta |
+| melhor ar condicionado 2026 | alta |
+| comprar ar condicionado | media |
+| ar condicionado em promoção | media |
+
+**Total: 34 keywords** | **Prioridades:** `alta` (coleta diária), `media` (manhã), `baixa` (opcional)
 
 ### Filtro de Turno
 
@@ -347,7 +412,7 @@ rac-position-tracker/
 │   ├── base.py                  # BaseScraper ABC (Playwright, stealth JS, _build_record)
 │   ├── mercado_livre.py         # MLScraper
 │   ├── amazon.py                # AmazonScraper
-│   ├── magalu.py                # MagaluScraper (rotação anti-Radware)
+│   ├── magalu.py                # MagaluScraper (Python — bloqueado por Akamai em produção)
 │   ├── google_shopping.py       # GoogleShoppingScraper
 │   ├── leroy_merlin.py          # LeroyMerlinScraper (Algolia API)
 │   ├── dealers.py               # DealerScraper (JSON-LD + VTEX + DOM)
@@ -435,6 +500,9 @@ free -h                    # verificar uso atual
 sudo swapon --show         # confirmar swap ativo
 ```
 
+### Magalu não retorna resultados no bot Python
+O scraper Python (`scrapers/magalu.py`) é bloqueado pelo Akamai Bot Manager em produção. A coleta do Magalu passou a rodar **localmente via implementação em JS + TypeScript**, separada do bot principal. Execute-a no ambiente local com Node.js.
+
 ### Cron não executa na VM Oracle
 ```bash
 sudo systemctl status cron
@@ -483,8 +551,8 @@ crontab -l
 
 Desenvolvido para monitoramento competitivo de preços no varejo brasileiro de climatização (RAC).
 
-**Stack:** Python · Playwright · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud
+**Stack:** Python · Playwright · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · TypeScript (Magalu)
 
 ---
 
-**Versão:** 3.1 | **Última atualização:** Abril 2026
+**Versão:** 3.2 | **Última atualização:** Maio 2026
