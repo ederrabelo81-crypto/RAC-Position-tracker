@@ -2,20 +2,21 @@
 
 ## DEALER_CONFIGS Reference (scrapers/dealers.py)
 
-| Dealer | URL | Pagination | max_pages | Overrides | Status |
+| Dealer | URL | Pagination | max_pages | Overrides | Status (Mai 2026) |
 |--------|-----|------------|-----------|-----------|--------|
-| Frigelar | /busca?q=ar+condicionado+split+inverter | vtex | 3 | — | ✅ (search URL avoids reCAPTCHA) |
-| CentralAr | /ar-condicionado/inverter/c/INVERTER | vtex | 5 | — | ✅ |
-| PoloAr | /ar-condicionado/inverter?...page=0 | param_zero | 5 | — | ⚠️ Price via JSON-LD |
+| Frigelar | /busca?q=ar+condicionado+split+inverter | vtex | 3 | — | ✅ Validado smoke test 03/05 |
+| CentralAr | /ar-condicionado/inverter/c/INVERTER | vtex | 5 | — | ❌ Parado desde 26/04 — Sprint 1 |
+| Eletrozema | — | vtex | 5 | — | ❌ Parado desde 26/04 — Sprint 1 (causa comum CentralAr) |
+| Dufrio | /ar-condicionado/ar-condicionado-split-inverter | vtex | 5 | — | ❌ Parado desde 29/04 — Sprint 1 |
+| PoloAr | /ar-condicionado/inverter?...page=0 | param_zero | 5 | — | ❌ Parado desde 13/04 — Sprint 2 |
+| Climario | /ar-condicionado?order=OrderByTopSaleDESC | vtex | 5 | — | ❌ Parado desde 03/04 — Sprint 2 |
+| FrioPecas | /ar-condicionado/ar-condicionado-split-inverter | vtex | 5 | — | ❌ Parado desde 03/04 — Sprint 2 |
+| Leveros | /ar-condicionado/inverter | vtex | 5 | item_selector_candidates (5 options) | ❌ Parado desde 02/04 — Sprint 2 |
+| WebContinental | /climatizacao/ar-condicionado/...hi-wall | vtex | 5 | — | ❌ Parado desde 02/04 — Sprint 2 |
 | Belmicro | /climatizacao | vtex | 5 | — | ⚠️ Price via JSON-LD |
 | GoCompras | /ar-condicionado/split-hi-wall/ | query | 5 | — | ✅ |
-| FrioPecas | /ar-condicionado/ar-condicionado-split-inverter | vtex | 5 | — | ✅ |
-| WebContinental | /climatizacao/ar-condicionado/...hi-wall | vtex | 5 | — | ✅ |
-| Dufrio | /ar-condicionado/ar-condicionado-split-inverter | vtex | 5 | — | ✅ |
-| Leveros | /ar-condicionado/inverter | vtex | 5 | item_selector_candidates (5 options) | ⚠️ Price via JSON-LD |
 | ArCerto | /categoria/ar-condicionado-inverter/ | woocommerce | 1 | — | ⚠️ p2 Cloudflare |
 | FerreiraCoasta | /Destaque/split-inverter-subcategoria | query | 5 | infinite_scroll: True | ✅ |
-| Climario | /ar-condicionado?order=OrderByTopSaleDESC | vtex | 5 | — | ✅ |
 | EngageEletro | /ar-e-clima/ar-condicionado/ | query | 5 | item_selector: ".cardprod" | ⚠️ Custom platform |
 
 ## How to Add a New Dealer

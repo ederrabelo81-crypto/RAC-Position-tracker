@@ -77,3 +77,38 @@ Called at end of each dealer scrape. Logs:
 - Empty product names (should be 0)
 - Remaining duplicates after dedup
 - Brand concatenation bugs (ArCerto pattern)
+
+---
+
+## Smoke Test Workflow
+
+Valida todas as plataformas em ~6-8 minutos (1 keyword × 1 página cada).
+
+```bash
+python scripts/smoke_test.py
+```
+
+**Saída esperada** (resultado do smoke test 03/05/2026):
+
+| Platform | Status | Items | Sellers | Duration |
+|----------|--------|-------|---------|----------|
+| Mercado Livre | ✅ PASS | 8 | 7 | 22s |
+| Amazon | ✅ PASS | 6 | 2 | 28s |
+| Leroy Merlin | ✅ PASS | 9 | 4 | 10s |
+| Dealers (Frigelar) | ✅ PASS | 30 | — | 108s |
+| Google Shopping | ⚠️ reCAPTCHA headless | 0 | 0 | 47s |
+| Magalu | ❌ Akamai bloqueado | 0 | 0 | ~180s |
+
+**Comportamentos esperados:**
+- Google Shopping: reCAPTCHA em headless é normal — coletas reais com delays funcionam
+- Magalu: detecção Akamai aborta em <3 min — `🚫 Akamai Bot Manager detectado`
+- Dealers warnings (100% sem Posição Patrocinada, 100% sem Avaliação): comportamento correto
+
+**Smoke test antes de deploy:**
+```bash
+# 1. Rodar smoke test
+python scripts/smoke_test.py
+
+# 2. Confirmar que ML/Amazon/Leroy/Dealers passam
+# 3. Se algum desses falha → investigar antes de atualizar produção
+```

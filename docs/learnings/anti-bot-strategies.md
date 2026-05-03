@@ -28,7 +28,21 @@
 
 ## Platform-Specific Anti-Bot
 
-### Radware Bot Manager (Magalu)
+### Akamai Bot Manager (Magalu — ❌ bloqueado desde ~Mai/2026)
+- **Status**: Magalu migrou de Radware para Akamai Bot Manager
+- **Comportamento**: Retorna HTTP 200 + HTML de erro 403 "Não é possível acessar a página"
+- **Detecção** (implementada): `_is_akamai_blocked()` detecta em <10s, aborta sem retry
+  ```python
+  # scrapers/magalu.py — check no HTML retornado
+  "Não é possível acessar a página" in html or "akamai" in html.lower()
+  ```
+- **Log**: `🚫 Akamai Bot Manager detectado — proxy residencial brasileiro necessário`
+- **Performance atual**: ~3 min até detecção e abort (antes: 10+ min em retry inútil)
+- **Solução definitiva**: Proxy residencial BR — Bright Data (~$500/mês), Smartproxy, Oxylabs
+- **Alternativa**: Session hijacking via CDP (captura cookies de sessão real do browser)
+
+### Radware Bot Manager (Magalu — histórico, substituído por Akamai)
+- Anteriormente ativo; substituído por Akamai em Mai/2026
 - Triggers after ~25 requests in same browser context
 - Detection: `<title>Radware Bot Manager Captcha</title>` or `rdaformdiv`
 - Mitigation: `_rotate_browser()` every 15 keywords (proactive)
@@ -39,6 +53,11 @@
 - Detection: `grecaptcha.render` in HTML (>10 occurrences)
 - Mitigation: use search URL instead of category URL
 - `_is_blocked_page()` detects and breaks the loop
+
+### Google Shopping reCAPTCHA
+- Dispara em coletas headless sem delays suficientes
+- **Em coletas reais** (delays 25-45s, shuffle de keywords, UA rotation) funciona normalmente
+- Não requer ação — comportamento esperado em smoke test
 
 ### Cloudflare (ArCerto page 2+)
 - Challenges on pagination (page 1 works, page 2 blocks)

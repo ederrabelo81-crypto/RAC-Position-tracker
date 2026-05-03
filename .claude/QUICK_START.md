@@ -47,6 +47,20 @@ python -m playwright install chromium
 - Logs: `logs/bot_YYYYMMDD_HHMMSS.log`
 - Debug HTML: `logs/dealer_debug_<name>_p<N>.html`
 
+## Smoke Test (validar plataformas em ~7 min)
+
+```bash
+# Valida todas as plataformas: 1 keyword × 1 página cada
+python scripts/smoke_test.py
+```
+
+Resultado esperado (smoke test 03/05/2026):
+- ✅ PASS: Mercado Livre, Amazon, Leroy Merlin, Dealers (Frigelar)
+- ⚠️ reCAPTCHA headless (esperado): Google Shopping
+- ❌ Akamai bloqueado (sem proxy): Magalu
+
+---
+
 ## Common Workflows
 
 ### Debug a dealer with 0 products
