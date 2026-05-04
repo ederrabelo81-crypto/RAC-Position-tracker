@@ -1,0 +1,40 @@
+{
+  "name": "rac-marketplace-scraper",
+  "version": "1.0.0",
+  "description": "RAC competitive intelligence scraper for Magalu and Shopee BR",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "scrape": "ts-node src/index.ts --platforms magalu,shopee --pages 5",
+    "scrape:magalu": "ts-node src/index.ts --platforms magalu --pages 5",
+    "scrape:shopee": "ts-node src/index.ts --platforms shopee --pages 5",
+    "scrape:test": "ts-node src/index.ts --pages 2 --test",
+    "scrape:magalu:test": "ts-node src/index.ts --platforms magalu --pages 2 --test",
+    "scrape:shopee:test": "ts-node src/index.ts --platforms shopee --pages 2 --test",
+    "session:magalu": "ts-node src/scripts/capture-session.ts magalu",
+    "session:shopee": "ts-node src/scripts/capture-session.ts shopee",
+    "dump:magalu": "ts-node src/scripts/dump-html.ts magalu",
+    "dump:shopee": "ts-node src/scripts/dump-html.ts shopee",
+    "import-cookies:shopee": "ts-node src/scripts/import-cookies.ts shopee",
+    "import-cookies:magalu": "ts-node src/scripts/import-cookies.ts magalu"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "commander": "^11.1.0",
+    "csv-writer": "^1.6.0",
+    "dotenv": "^16.4.0",
+    "node-cron": "^3.0.3",
+    "puppeteer": "^22.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/puppeteer": "^7.0.4",
+    "typescript": "^5.3.0",
+    "ts-node-dev": "^2.0.0"
+  }
+}
