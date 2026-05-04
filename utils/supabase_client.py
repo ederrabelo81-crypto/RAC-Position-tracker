@@ -925,29 +925,46 @@ def log_auditoria_run(
         logger.warning(f"[Auditoria] Erro ao consultar Supabase: {exc}")
         return
 
-    # Calcula esperado: CSV após filtro AC (mesmo critério do upload)
+    # Calcula esperado: únicos por (plataforma, keyword, produto) após filtro AC.
+    # A constraint coletas_unique_run permite apenas 1 linha por (keyword, produto, run_id),
+    # então o CSV pode ter duplicatas intra-run (mesmo produto em posições diferentes
+    # para a mesma keyword) que são descartadas corretamente pelo banco.
     try:
         from utils.text import is_valid_product
-        prod_col  = df.get("Produto / SKU", df.get("Produto/SKU", df.get("produto", pd.Series())))
-        preco_col = df.get("Preço (R$)", df.get("preco", pd.Series()))
-        csv_ac = sum(
-            1 for p, r in zip(prod_col, preco_col)
-            if is_valid_product(str(p) if pd.notna(p) else "", float(r) if pd.notna(r) else None)
-        )
+        plat_col  = df.get("Plataforma",    df.get("plataforma",   pd.Series()))
+        kw_col    = df.get("Keyword Buscada", df.get("keyword",    pd.Series()))
+        prod_col  = df.get("Produto / SKU", df.get("Produto/SKU",  df.get("produto", pd.Series())))
+        preco_col = df.get("Preço (R$)",    df.get("preco",        pd.Series()))
+
+        seen: set = set()
+        csv_ac = 0
+        for plat, kw, p, r in zip(plat_col, kw_col, prod_col, preco_col):
+            prod_str  = str(p) if pd.notna(p) else ""
+            preco_val = float(r) if pd.notna(r) else None
+            if not is_valid_product(prod_str, preco_val):
+                continue
+            key = (str(plat) if pd.notna(plat) else "", str(kw) if pd.notna(kw) else "", prod_str)
+            if key not in seen:
+                seen.add(key)
+                csv_ac += 1
+        csv_duplicatas = csv_total - csv_ac
     except Exception:
-        csv_ac = csv_total  # fallback sem filtro
+        csv_ac = csv_total
+        csv_duplicatas = 0
 
     sep = "=" * 60
     logger.info(f"\n{sep}")
     logger.info(f"AUDITORIA RUN {run_id}")
     logger.info(sep)
-    logger.info(f"CSV total:          {csv_total}")
-    logger.info(f"CSV após filtro AC: {csv_ac}  (esperado no Supabase)")
-    logger.info(f"Supabase (run_id):  {sb_total}")
+    logger.info(f"CSV total:                    {csv_total}")
+    if csv_duplicatas:
+        logger.info(f"CSV duplicatas intra-run:     {csv_duplicatas}  (mesmo produto+keyword, posições diferentes)")
+    logger.info(f"CSV únicos (plat+kw+produto): {csv_ac}  (esperado no Supabase)")
+    logger.info(f"Supabase (run_id):            {sb_total}")
     diff = csv_ac - sb_total
     if diff > 0:
         logger.warning(
-            f"[Auditoria] DISCREPÂNCIA: {diff} registro(s) AC do CSV não estão no Supabase."
+            f"[Auditoria] DISCREPÂNCIA: {diff} registro(s) únicos do CSV não estão no Supabase."
         )
     else:
         logger.success("[Auditoria] CSV e Supabase em sincronia.")
