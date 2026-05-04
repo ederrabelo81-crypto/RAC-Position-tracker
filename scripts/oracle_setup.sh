@@ -152,6 +152,16 @@ set -a; source .env; set +a
 LOG=logs/cron.log
 mkdir -p logs
 
+LOCK_FILE=/tmp/rac_coleta_manha.lock
+
+# Adquire lock exclusivo não-bloqueante (fd 9)
+# Se outra instância estiver rodando, aborta sem duplicar dados no Supabase
+exec 9>"$LOCK_FILE"
+if ! flock --nonblock 9; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: coleta manhã já em execução (lock ativo). Abortando." >> "$LOG"
+    exit 1
+fi
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Iniciando coleta manhã ===" >> "$LOG"
 
 # 1. Atualiza o repo (não-fatal — se falhar, segue com código local)
@@ -187,6 +197,16 @@ set -a; source .env; set +a
 
 LOG=logs/cron.log
 mkdir -p logs
+
+LOCK_FILE=/tmp/rac_coleta_noite.lock
+
+# Adquire lock exclusivo não-bloqueante (fd 9)
+# Se outra instância estiver rodando, aborta sem duplicar dados no Supabase
+exec 9>"$LOCK_FILE"
+if ! flock --nonblock 9; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: coleta noite já em execução (lock ativo). Abortando." >> "$LOG"
+    exit 1
+fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Iniciando coleta noite ===" >> "$LOG"
 
