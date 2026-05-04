@@ -840,31 +840,44 @@ def upload_to_supabase(
         try:
             result = client.table("coletas").upsert(
                 batch,
-                ignore_duplicates=True,  # → INSERT ON CONFLICT DO NOTHING
+                on_conflict="data,turno,plataforma,keyword,produto,run_id",
+                ignore_duplicates=True,  # → INSERT ON CONFLICT (constraint cols) DO NOTHING
             ).execute()
             inseridas = len(result.data) if result.data else 0
             ignoradas = len(batch) - inseridas
             sent += inseridas
-            logger.info(
-                f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} | "
-                f"Tentadas={len(batch)} | Inseridas={inseridas} | Ignoradas={ignoradas}"
-            )
+            if ignoradas:
+                logger.info(
+                    f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} | "
+                    f"Inseridas={inseridas} | Já existiam={ignoradas} (ignoradas)"
+                )
+            else:
+                logger.info(
+                    f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} | "
+                    f"Inseridas={inseridas}"
+                )
         except Exception as exc:
             errors += len(batch)
             logger.warning(
                 f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} falhou: {exc}"
             )
 
+    ignorados = total - sent - errors
     logger.info(
         f"[INSERT] Run={run_id or 'NULL'} | "
-        f"Tentadas={total} | Inseridas={sent} | Erros={errors}"
+        f"Tentadas={total} | Inseridas={sent} | Já existiam={ignorados} | Erros={errors}"
     )
 
     if errors == 0:
-        logger.success(f"[Supabase] {sent} registros enviados com sucesso.")
+        if sent == 0 and ignorados > 0:
+            logger.info(
+                f"[Supabase] Todos os {ignorados} registros já existiam no banco (run idempotente)."
+            )
+        else:
+            logger.success(f"[Supabase] {sent} registros inseridos com sucesso.")
         return True
-    elif sent > 0:
-        logger.warning(f"[Supabase] Upload parcial: {sent} OK, {errors} com erro.")
+    elif sent > 0 or ignorados > 0:
+        logger.warning(f"[Supabase] Upload parcial: {sent} inseridos, {ignorados} já existiam, {errors} com erro.")
         return False
     else:
         logger.error(f"[Supabase] Upload falhou para todos os {total} registros.")
