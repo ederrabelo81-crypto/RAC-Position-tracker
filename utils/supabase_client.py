@@ -840,8 +840,8 @@ def upload_to_supabase(
         try:
             result = client.table("coletas").upsert(
                 batch,
-                on_conflict="data,turno,plataforma,keyword,produto,run_id",
-                ignore_duplicates=True,  # → INSERT ON CONFLICT (constraint cols) DO NOTHING
+                on_conflict="data,turno,plataforma,produto",
+                ignore_duplicates=True,  # → INSERT ON CONFLICT (coletas_unique_idx) DO NOTHING
             ).execute()
             inseridas = len(result.data) if result.data else 0
             ignoradas = len(batch) - inseridas
