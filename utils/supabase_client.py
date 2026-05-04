@@ -890,10 +890,13 @@ def log_auditoria_run(
     client: Optional["Client"] = None,
 ) -> None:
     """
-    Compara contagem do CSV com o que foi gravado no Supabase para este run_id.
+    Compara contagem do CSV com registros no Supabase para a mesma data+turno.
+
+    Consulta por (data, turno) em vez de run_id porque registros "já existiam"
+    (inseridos por runs anteriores) não terão o run_id atual mas estão no banco.
 
     Args:
-        run_id:   UUID da execução atual
+        run_id:   UUID da execução atual (usado só para log)
         csv_path: caminho para o CSV gerado nesta execução
         client:   client Supabase já instanciado (opcional — cria novo se None)
     """
@@ -902,7 +905,11 @@ def log_auditoria_run(
     try:
         df = pd.read_csv(csv_path, sep=";", encoding="utf-8-sig")
         csv_total = len(df)
-        csv_por_plataforma = df.get("Plataforma", df.get("plataforma", pd.Series())).value_counts().to_dict()
+        # Extrai data e turno do CSV para a consulta por (data, turno)
+        data_col  = df.get("Data",  df.get("data",  pd.Series()))
+        turno_col = df.get("Turno", df.get("turno", pd.Series()))
+        data_val  = data_col.dropna().iloc[0]  if not data_col.dropna().empty  else None
+        turno_val = turno_col.dropna().iloc[0] if not turno_col.dropna().empty else None
     except Exception as exc:
         logger.warning(f"[Auditoria] Não foi possível ler o CSV: {exc}")
         return
@@ -913,29 +920,60 @@ def log_auditoria_run(
         logger.warning("[Auditoria] Client Supabase indisponível — pulando auditoria.")
         return
 
+    # Conta por (data, turno) — captura tanto registros do run atual quanto
+    # os que já existiam de runs anteriores e foram ignorados pelo DO NOTHING
+    sb_total = 0
+    query_desc = f"run_id={run_id}"
     try:
-        sb_result = (
-            client.table("coletas")
-            .select("plataforma", count="exact")
-            .eq("run_id", run_id)
-            .execute()
-        )
+        if data_val and turno_val:
+            sb_result = (
+                client.table("coletas")
+                .select("id", count="exact")
+                .eq("data",  str(data_val))
+                .eq("turno", str(turno_val))
+                .execute()
+            )
+            query_desc = f"data={data_val} / turno={turno_val}"
+        else:
+            sb_result = (
+                client.table("coletas")
+                .select("id", count="exact")
+                .eq("run_id", run_id)
+                .execute()
+            )
         sb_total = sb_result.count or 0
     except Exception as exc:
         logger.warning(f"[Auditoria] Erro ao consultar Supabase: {exc}")
         return
 
+    # O CSV pode conter produtos não-AC que o upload filtra; calcula o esperado
+    try:
+        from utils.text import is_valid_product
+        prod_col  = df.get("Produto / SKU", df.get("Produto/SKU", df.get("produto", pd.Series())))
+        preco_col = df.get("Preço (R$)", df.get("preco", pd.Series()))
+        csv_ac = sum(
+            1 for p, r in zip(prod_col, preco_col)
+            if is_valid_product(str(p) if pd.notna(p) else "", float(r) if pd.notna(r) else None)
+        )
+    except Exception:
+        csv_ac = csv_total  # fallback sem filtro
+
     sep = "=" * 60
     logger.info(f"\n{sep}")
     logger.info(f"AUDITORIA RUN {run_id}")
     logger.info(sep)
-    logger.info(f"CSV total:      {csv_total}")
-    logger.info(f"Supabase total: {sb_total}")
-    logger.info(f"Diff:           {csv_total - sb_total}")
-    if csv_total != sb_total:
+    logger.info(f"CSV total:            {csv_total}")
+    logger.info(f"CSV após filtro AC:   {csv_ac}")
+    logger.info(f"Supabase ({query_desc}): {sb_total}")
+    diff = csv_ac - sb_total
+    if diff > 0:
         logger.warning(
-            "[Auditoria] DISCREPÂNCIA detectada! "
-            f"{csv_total - sb_total} linha(s) no CSV não foram gravadas no Supabase."
+            f"[Auditoria] DISCREPÂNCIA: {diff} registro(s) AC do CSV não estão no Supabase."
+        )
+    elif diff < 0:
+        logger.info(
+            f"[Auditoria] Supabase tem {abs(diff)} registro(s) a mais que o CSV "
+            f"(dados de outros runs no mesmo turno)."
         )
     else:
         logger.success("[Auditoria] CSV e Supabase em sincronia.")
