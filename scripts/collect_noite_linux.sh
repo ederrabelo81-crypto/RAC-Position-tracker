@@ -4,12 +4,14 @@
 
 set -u  # erro em variável não definida (sem set -e — git pull não-fatal)
 
-cd "$(dirname "$(realpath "$0")")/.."
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 source .venv/bin/activate
 set -a; source .env; set +a
 
-LOG=logs/cron.log
-mkdir -p logs
+LOG="$PROJECT_DIR/logs/cron.log"
+mkdir -p "$PROJECT_DIR/logs"
 
 LOCK_FILE=/tmp/rac_coleta_noite.lock
 
