@@ -171,7 +171,11 @@ def upload_csv(csv_path: Path, turno_override: str | None, dry_run: bool) -> boo
     for i in range(0, len(records), _BATCH_SIZE):
         batch = records[i : i + _BATCH_SIZE]
         batch_num = i // _BATCH_SIZE + 1
-        resp = client.table("coletas").upsert(batch, ignore_duplicates=True).execute()
+        resp = (
+            client.table("coletas")
+            .upsert(batch, on_conflict="data,turno,plataforma,keyword,produto,run_id")
+            .execute()
+        )
         if hasattr(resp, "data") and resp.data is not None:
             inserted += len(resp.data)
             logger.info(f"Batch {batch_num}: {len(resp.data)} registros inseridos/atualizados")
