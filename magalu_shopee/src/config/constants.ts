@@ -33,5 +33,4 @@ export const MOBILE_USER_AGENTS = [
   'Mozilla/5.0 (Linux; Android 13; Samsung Galaxy S23) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.6045.163 Mobile Safari/537.36',
 ];
 
-export const SUPABASE_TABLE = 'rac_products_magalu_shopee';
 export const SUPABASE_BATCH_SIZE = 500;
