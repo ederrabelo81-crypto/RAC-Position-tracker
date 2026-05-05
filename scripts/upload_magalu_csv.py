@@ -153,9 +153,23 @@ def upload_csv(csv_path: Path, turno_override: str | None, dry_run: bool) -> boo
         logger.warning("Nenhum registro encontrado no CSV.")
         return True
 
+    # Deduplica pelo conjunto de colunas da constraint única — o CSV pode ter
+    # o mesmo produto em páginas diferentes com a mesma keyword/turno/run_id
+    _key = lambda r: (r["data"], r["turno"], r["plataforma"], r["keyword"], r["produto"], r["run_id"])
+    seen: set = set()
+    deduped = []
+    for r in records:
+        k = _key(r)
+        if k not in seen:
+            seen.add(k)
+            deduped.append(r)
+    if len(deduped) < len(records):
+        logger.warning(f"{len(records) - len(deduped)} duplicatas removidas antes do upload")
+    records = deduped
+
     # Estatísticas rápidas
     plataformas = {r["plataforma"] for r in records}
-    logger.info(f"{len(records)} registros | plataformas: {plataformas}")
+    logger.info(f"{len(records)} registros únicos | plataformas: {plataformas}")
 
     if dry_run:
         logger.info(f"[DRY-RUN] Primeira linha mapeada: {records[0]}")
