@@ -1,4 +1,5 @@
 import cron from 'node-cron';
+import { randomUUID } from 'crypto';
 import { MagaluScraper } from '../scrapers/magalu.scraper';
 import { ShopeeScraper } from '../scrapers/shopee.scraper';
 import { SEARCH_QUERIES } from '../config/queries';
@@ -41,7 +42,7 @@ async function runCollection(platforms: string[], maxPages: number, turno: strin
   if (allProducts.length > 0) {
     const csvPath = await writeToCsvTimestamped(allProducts, './data');
     logger.info(`CSV salvo: ${csvPath}`);
-    await uploadToSupabase(allProducts);
+    await uploadToSupabase(allProducts, turno, randomUUID());
   }
 
   const totalMin = ((Date.now() - startTime) / 60000).toFixed(1);

@@ -4,7 +4,8 @@ import { startScheduler, runCollection } from './scheduler/cron';
 import { MagaluScraper } from './scrapers/magalu.scraper';
 import { ShopeeScraper } from './scrapers/shopee.scraper';
 import { SEARCH_QUERIES, TEST_QUERIES } from './config/queries';
-import { uploadToSupabase, testConnection } from './storage/supabase-uploader';
+import { uploadToSupabase, testConnection, determineTurno } from './storage/supabase-uploader';
+import { randomUUID } from 'crypto';
 import { writeToCsvTimestamped } from './storage/csv-writer';
 import { RacProduct } from './types';
 import { logger } from './utils/logger';
@@ -80,7 +81,7 @@ const opts = program.opts<{
   if (allProducts.length > 0) {
     const csvPath = await writeToCsvTimestamped(allProducts, './data');
     logger.info(`CSV salvo: ${csvPath}`);
-    await uploadToSupabase(allProducts);
+    await uploadToSupabase(allProducts, determineTurno(), randomUUID());
   }
 
   logger.info(`Coleta manual finalizada: ${allProducts.length} produtos`);
