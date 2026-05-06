@@ -15,7 +15,7 @@ program
   .description('RAC Marketplace Scraper — Magalu & Shopee')
   .option('--schedule', 'Modo agendado (cron)')
   .option('--platforms <list>', 'Marketplaces separados por vírgula (magalu,shopee)', 'magalu')
-  .option('--pages <n>', 'Páginas por query', '5')
+  .option('--pages <n>', 'Páginas por query', '2')
   .option('--test', 'Modo teste: 3 queries + 2 páginas')
   .option('--no-headless', 'Abre browser visível (debug)')
   .option('--check-db', 'Testa conexão com Supabase e sai')
