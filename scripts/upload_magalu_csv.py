@@ -10,6 +10,7 @@ Uso:
 """
 
 import argparse
+import math
 import sys
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -84,14 +85,20 @@ def _parse_collected_at(raw: str) -> tuple[str, str, str]:
 
 def _to_int(val) -> int | None:
     try:
-        return int(float(val)) if val not in (None, "", "nan") else None
+        if val is None or str(val).strip() in ("", "nan", "NaN"):
+            return None
+        f = float(val)
+        return None if math.isnan(f) else int(f)
     except (ValueError, TypeError):
         return None
 
 
 def _to_float(val) -> float | None:
     try:
-        return float(val) if val not in (None, "", "nan") else None
+        if val is None or str(val).strip() in ("", "nan", "NaN"):
+            return None
+        f = float(val)
+        return None if math.isnan(f) else f
     except (ValueError, TypeError):
         return None
 
