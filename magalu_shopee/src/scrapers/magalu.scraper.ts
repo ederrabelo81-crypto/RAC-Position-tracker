@@ -227,7 +227,17 @@ export class MagaluScraper extends BaseScraper {
                 const id = (o['id'] || o['productId'] || o['sku']) as string | undefined;
                 const price = (o['price'] || o['bestPrice'] || o['salesPrice']) as number | string | undefined;
                 if (id && price !== undefined) {
-                  map.set(String(id).toUpperCase(), String(price));
+                  // CRÍTICO: preço do __NEXT_DATA__ vem como número JS (1994.91).
+                  // parsePrice() remove pontos achando que são milhar — inflaria 100x.
+                  // Converte para formato BR ("1994,91") antes de retornar.
+                  let priceStr: string;
+                  if (typeof price === 'number' && isFinite(price)) {
+                    priceStr = price.toFixed(2).replace('.', ',');
+                  } else {
+                    const num = Number(price);
+                    priceStr = isFinite(num) ? num.toFixed(2).replace('.', ',') : String(price);
+                  }
+                  map.set(String(id).toUpperCase(), priceStr);
                 }
                 Object.values(o).forEach(walk);
               };
