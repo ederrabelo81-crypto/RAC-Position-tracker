@@ -87,9 +87,9 @@ echo   Tarefas instaladas com sucesso!
 echo ============================================================================
 echo.
 echo Tarefas ativas:
-schtasks /Query /TN "RAC_Coleta_Manha" /FO LIST ^| findstr /C:"TaskName" /C:"Next Run Time" /C:"Status"
+schtasks /Query /TN "RAC_Coleta_Manha" /FO LIST
 echo.
-schtasks /Query /TN "RAC_Coleta_Tarde" /FO LIST ^| findstr /C:"TaskName" /C:"Next Run Time" /C:"Status"
+schtasks /Query /TN "RAC_Coleta_Tarde" /FO LIST
 echo.
 echo Para testar manualmente agora:
 echo   schtasks /Run /TN "RAC_Coleta_Manha"
