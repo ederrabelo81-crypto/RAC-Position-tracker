@@ -19,7 +19,7 @@ export abstract class BaseScraper {
   constructor(config?: Partial<ScraperConfig>) {
     this.config = {
       headless: config?.headless ?? true,
-      maxPages: config?.maxPages ?? 5,
+      maxPages: config?.maxPages ?? 2,
       delayMs: config?.delayMs ?? 3000,
       retryAttempts: config?.retryAttempts ?? 3,
     };

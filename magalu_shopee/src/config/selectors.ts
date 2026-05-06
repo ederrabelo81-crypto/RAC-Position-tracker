@@ -32,6 +32,16 @@ export const SELECTORS = {
     reviewCount: '[data-testid="review"] span:last-child',
     seller: '[data-testid="seller-name"]',
     nextButton: '[data-testid="next-page"]',
+    // Fallbacks para detecção de próxima página (verificados no mesmo contexto do DOM)
+    nextButtonFallbacks: [
+      '[data-testid="next-page"]',
+      '[data-testid="pagination-next"]',
+      'button[aria-label*="róxima"]',
+      'a[rel="next"]',
+      '[class*="Pagination"] [class*="next" i]',
+      '[class*="pagination__next"]',
+      '[class*="PaginationNext"]',
+    ] as string[],
     noResults: '[data-testid="empty-state"]',
     productImage: 'img[data-testid="product-card-image"]',
   },
