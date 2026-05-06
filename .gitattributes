@@ -1,0 +1,18 @@
+# Force LF line endings for shell scripts on all platforms
+*.sh text eol=lf
+
+# Python and text files: normalize on commit, checkout as-is
+*.py text
+*.ts text
+*.js text
+*.json text
+*.yml text
+*.yaml text
+*.md text
+*.txt text
+*.csv text
+
+# Binary files: no conversion
+*.png binary
+*.jpg binary
+*.ico binary
