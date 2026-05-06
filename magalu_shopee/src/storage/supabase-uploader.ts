@@ -77,13 +77,28 @@ export async function uploadToSupabase(
   const supabase = getClient();
   let inserted = 0;
 
-  const records = products.map((p) => toColetasRecord(p, resolvedTurno, resolvedRunId));
+  const allRecords = products.map((p) => toColetasRecord(p, resolvedTurno, resolvedRunId));
+
+  // Deduplica pela chave única antes de enviar — evita ON CONFLICT DO UPDATE intra-batch
+  const seen = new Set<string>();
+  const records = allRecords.filter((r) => {
+    const key = `${r.data}|${r.turno}|${r.plataforma}|${r.keyword}|${r.produto}|${r.run_id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (records.length < allRecords.length) {
+    logger.warn(`Supabase: ${allRecords.length - records.length} duplicatas removidas antes do upload`);
+  }
 
   for (let i = 0; i < records.length; i += SUPABASE_BATCH_SIZE) {
     const batch = records.slice(i, i + SUPABASE_BATCH_SIZE);
     const batchNum = Math.floor(i / SUPABASE_BATCH_SIZE) + 1;
 
-    const { error } = await supabase.from(COLETAS_TABLE).insert(batch);
+    const { error } = await supabase
+      .from(COLETAS_TABLE)
+      .upsert(batch, { onConflict: 'data,turno,plataforma,keyword,produto,run_id' });
 
     if (error) {
       logger.error(`Supabase: Erro no batch ${batchNum} — ${error.message}`);
