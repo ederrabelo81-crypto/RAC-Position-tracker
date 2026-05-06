@@ -119,6 +119,22 @@ export class MagaluScraper extends BaseScraper {
     }
 
     const rawItems = await this.extractFromDOM(query, pageNum);
+
+    // Diagnóstico: mostra HTML do 1º card para identificar seletores corretos
+    if (rawItems.length > 0) {
+      const firstDiag = (rawItems[0] as Record<string, unknown>)._diag_first_card as string | undefined;
+      if (firstDiag) {
+        logger.debug(`Magalu: HTML 1º card (p${pageNum}):\n${firstDiag}`);
+      }
+      const withPrice = rawItems.filter((r) => (r as Record<string, unknown>).current_price_raw).length;
+      const pct = rawItems.length > 0 ? Math.round((withPrice / rawItems.length) * 100) : 0;
+      if (pct < 50) {
+        logger.warn(`Magalu: Apenas ${withPrice}/${rawItems.length} cards com preço (${pct}%) — seletor de preço pode estar quebrado`);
+      } else {
+        logger.info(`Magalu: ${withPrice}/${rawItems.length} cards com preço (${pct}%)`);
+      }
+    }
+
     return this.enrichProducts(rawItems);
   }
 
@@ -132,26 +148,54 @@ export class MagaluScraper extends BaseScraper {
 
     return this.page.evaluate(
       (selectors, searchQuery, page) => {
+        // Tenta uma lista de seletores em ordem; retorna texto do primeiro que bater
+        function trySelectors(parent: Element, candidates: string[]): string | null {
+          for (const sel of candidates) {
+            try {
+              const el = parent.querySelector(sel) as HTMLElement | null;
+              const text = el?.innerText?.trim();
+              if (text) return text;
+            } catch { /* seletor inválido, ignora */ }
+          }
+          return null;
+        }
+
+        // Regex fallback: extrai R$ X.XXX,XX ou X.XXX,XX do texto bruto do card
+        function extractPriceFromText(text: string): string | null {
+          const match = text.match(/R\$\s*[\d.]+,\d{2}|[\d]{1,3}(?:\.\d{3})+,\d{2}/);
+          return match ? match[0] : null;
+        }
+
         const items: Record<string, unknown>[] = [];
         const cards = document.querySelectorAll(selectors.productCard);
+        let firstCardDiag = '';
 
         cards.forEach((card, index) => {
-          // O card É o elemento <a> — href está direto nele, não em filho
           const cardAnchor = card as HTMLAnchorElement;
           const titleEl = card.querySelector(selectors.title) as HTMLElement | null;
-          const priceEl = card.querySelector(selectors.price) as HTMLElement | null;
-          const oldPriceEl = card.querySelector(selectors.oldPrice) as HTMLElement | null;
+
+          const href = cardAnchor.href || '';
+          if (!href || !titleEl) return;
+
+          // Diagnóstico: captura estrutura do 1º card para logging
+          if (index === 0) {
+            firstCardDiag = card.innerHTML.slice(0, 2000);
+          }
+
+          // Preço: multi-seletor + regex fallback
+          let currentPriceRaw = trySelectors(card, selectors.priceFallbacks);
+          if (!currentPriceRaw) {
+            currentPriceRaw = extractPriceFromText(card.textContent || '');
+          }
+
+          const originalPriceRaw = trySelectors(card, selectors.oldPriceFallbacks);
+
           const ratingEl = card.querySelector(selectors.rating) as HTMLElement | null;
           const reviewEl = card.querySelector(selectors.reviewCount) as HTMLElement | null;
           const sellerEl = card.querySelector(selectors.seller) as HTMLElement | null;
           const imgEl = card.querySelector(selectors.productImage) as HTMLImageElement | null;
 
-          const href = cardAnchor.href || '';
-          if (!href || !titleEl) return;
-
-          // ID do produto: /p/XXXXXXXX/ no path
           const idMatch = href.match(/\/p\/([a-z0-9]+)\//i);
-          // seller_id no query string: ?seller_id=xxx ou ?ads=...&seller_id=xxx
           const sellerMatch = href.match(/[?&]seller_id=([^&]+)/);
           const sellerFromUrl = sellerMatch ? sellerMatch[1] : null;
 
@@ -163,14 +207,14 @@ export class MagaluScraper extends BaseScraper {
             search_query: searchQuery,
             page_number: page,
             position: index + 1,
-            current_price_raw: priceEl?.innerText.trim() || null,
-            original_price_raw: oldPriceEl?.innerText.trim() || null,
+            current_price_raw: currentPriceRaw,
+            original_price_raw: originalPriceRaw,
             rating_raw: ratingEl?.innerText.trim() || null,
             review_count_raw: reviewEl?.innerText.trim() || null,
-            // seller_id da URL é mais confiável que o texto do card
             seller: sellerEl?.innerText.trim() || sellerFromUrl || null,
             image_url: imgEl?.src || null,
             collected_at: new Date().toISOString(),
+            _diag_first_card: index === 0 ? firstCardDiag : undefined,
           });
         });
 
@@ -186,6 +230,7 @@ export class MagaluScraper extends BaseScraper {
     const results: RacProduct[] = [];
 
     for (const item of raw as Record<string, unknown>[]) {
+      delete item._diag_first_card;
       const name = (item.product_name as string) || '';
 
       if (!isValidRacProduct(name)) continue;
