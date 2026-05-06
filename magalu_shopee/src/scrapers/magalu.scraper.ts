@@ -17,6 +17,7 @@ interface PageResult {
   hasNextPage: boolean;
   firstCardDiag: string;
   priceStrategy: string;
+  nextDataDiag: string;
 }
 
 export class MagaluScraper extends BaseScraper {
@@ -135,15 +136,26 @@ export class MagaluScraper extends BaseScraper {
       logger.debug(`Magalu: HTML 1º card (p${pageNum}):\n${pageResult.firstCardDiag}`);
     }
 
-    const withPrice = pageResult.items.filter(
-      (r) => (r as Record<string, unknown>).current_price_raw
-    ).length;
+    // Conta preços que REALMENTE parseiam para número válido (não só "tem string")
+    const withPrice = pageResult.items.filter((r) => {
+      const raw = (r as Record<string, unknown>).current_price_raw as string | null;
+      if (!raw) return false;
+      const parsed = parsePrice(raw);
+      return parsed !== null && parsed > 0;
+    }).length;
     const pct = pageResult.items.length > 0
       ? Math.round((withPrice / pageResult.items.length) * 100)
       : 0;
 
+    if (pageResult.nextDataDiag) {
+      logger.debug(`Magalu: __NEXT_DATA__ diag: ${pageResult.nextDataDiag}`);
+    }
+
     if (pct < 50 && pageResult.items.length > 0) {
-      logger.warn(`Magalu: ${withPrice}/${pageResult.items.length} com preço (${pct}%) [estratégia: ${pageResult.priceStrategy}]`);
+      logger.warn(`Magalu: ${withPrice}/${pageResult.items.length} com preço VÁLIDO (${pct}%) [estratégia: ${pageResult.priceStrategy}]`);
+      // Em caso de falha, mostra amostra do raw para diagnóstico
+      const sampleRaw = pageResult.items.slice(0, 3).map((r) => (r as Record<string, unknown>).current_price_raw);
+      logger.warn(`Magalu: amostra current_price_raw: ${JSON.stringify(sampleRaw)}`);
     } else if (pageResult.items.length > 0) {
       logger.info(`Magalu: ${withPrice}/${pageResult.items.length} com preço (${pct}%) [estratégia: ${pageResult.priceStrategy}]`);
     }
@@ -171,7 +183,7 @@ export class MagaluScraper extends BaseScraper {
   }
 
   private async extractFromDOM(query: string, pageNum: number): Promise<PageResult> {
-    if (!this.page) return { items: [], hasNextPage: false, firstCardDiag: '', priceStrategy: 'none' };
+    if (!this.page) return { items: [], hasNextPage: false, firstCardDiag: '', priceStrategy: 'none', nextDataDiag: '' };
 
     const sel = SELECTORS.magalu;
 
@@ -211,42 +223,88 @@ export class MagaluScraper extends BaseScraper {
 
         // ── Estratégia 1: __NEXT_DATA__ (Next.js — preços no JSON do servidor) ──
         let nextDataPrices: Map<string, string> | null = null;
+        let nextDataDiag = '';
         try {
           const nextDataEl = document.getElementById('__NEXT_DATA__');
           if (nextDataEl?.textContent) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const data = JSON.parse(nextDataEl.textContent) as any;
-            // Percorre a árvore procurando arrays de produtos com price/id
-            const extractPricesFromObj = (obj: unknown): Map<string, string> => {
-              const map = new Map<string, string>();
-              const walk = (node: unknown): void => {
-                if (!node || typeof node !== 'object') return;
-                if (Array.isArray(node)) { node.forEach(walk); return; }
-                const o = node as Record<string, unknown>;
-                // Produto com id e price
-                const id = (o['id'] || o['productId'] || o['sku']) as string | undefined;
-                const price = (o['price'] || o['bestPrice'] || o['salesPrice']) as number | string | undefined;
-                if (id && price !== undefined) {
-                  // CRÍTICO: preço do __NEXT_DATA__ vem como número JS (1994.91).
-                  // parsePrice() remove pontos achando que são milhar — inflaria 100x.
-                  // Converte para formato BR ("1994,91") antes de retornar.
-                  let priceStr: string;
-                  if (typeof price === 'number' && isFinite(price)) {
-                    priceStr = price.toFixed(2).replace('.', ',');
-                  } else {
-                    const num = Number(price);
-                    priceStr = isFinite(num) ? num.toFixed(2).replace('.', ',') : String(price);
+
+            // Extrai número de qualquer estrutura: number, string numérica, ou objeto aninhado
+            // (ex: { value: 5388, currency: 'BRL' } → 5388)
+            const extractNum = (val: unknown, depth = 0): number | null => {
+              if (depth > 4) return null;
+              if (typeof val === 'number' && isFinite(val) && val > 0) return val;
+              if (typeof val === 'string') {
+                const n = parseFloat(val.replace(',', '.'));
+                return isFinite(n) && n > 0 ? n : null;
+              }
+              if (val && typeof val === 'object') {
+                const obj = val as Record<string, unknown>;
+                // Chaves comuns em objetos de preço (ordem de prioridade — preço atual antes de full)
+                const priceKeys = [
+                  'bestPrice', 'salesPrice', 'finalPrice', 'currentPrice',
+                  'price', 'value', 'amount', 'priceValue',
+                ];
+                for (const k of priceKeys) {
+                  if (k in obj) {
+                    const r = extractNum(obj[k], depth + 1);
+                    if (r !== null) return r;
                   }
-                  map.set(String(id).toUpperCase(), priceStr);
                 }
-                Object.values(o).forEach(walk);
-              };
-              walk(data);
-              return map;
+              }
+              return null;
             };
-            nextDataPrices = extractPricesFromObj(data);
+
+            const map = new Map<string, string>();
+            let firstProductDiag: Record<string, unknown> | null = null;
+
+            const walk = (node: unknown): void => {
+              if (!node || typeof node !== 'object') return;
+              if (Array.isArray(node)) { node.forEach(walk); return; }
+              const o = node as Record<string, unknown>;
+
+              const id = (o['id'] || o['productId'] || o['sku']) as string | undefined;
+              if (id) {
+                // Tenta múltiplas chaves candidatas (priorizando preço atual sobre original)
+                const candidates: unknown[] = [
+                  o['bestPrice'], o['salesPrice'], o['finalPrice'], o['currentPrice'],
+                  o['price'], o['pricing'], o['priceTemplate'], o['attributes'],
+                ];
+                let priceNum: number | null = null;
+                for (const c of candidates) {
+                  priceNum = extractNum(c);
+                  if (priceNum !== null) break;
+                }
+
+                if (priceNum !== null) {
+                  // BR format: "1994,91" — parsePrice() lida corretamente
+                  const priceStr = priceNum.toFixed(2).replace('.', ',');
+                  map.set(String(id).toUpperCase(), priceStr);
+
+                  // Diag: estrutura do 1º produto encontrado
+                  if (!firstProductDiag) {
+                    firstProductDiag = {
+                      id,
+                      keys: Object.keys(o).slice(0, 15),
+                      priceField: candidates.find((c) => extractNum(c) !== null),
+                    };
+                  }
+                }
+              }
+
+              Object.values(o).forEach(walk);
+            };
+
+            walk(data);
+            nextDataPrices = map;
+            if (firstProductDiag) {
+              nextDataDiag = JSON.stringify(firstProductDiag).slice(0, 500);
+            }
           }
-        } catch { /* __NEXT_DATA__ não disponível ou estrutura inesperada */ }
+        } catch (e) {
+          nextDataDiag = `error: ${e instanceof Error ? e.message : String(e)}`;
+        }
 
         // ── Estratégia 2: preços globais por posição ─────────────────────────
         // Coleta todos os elementos de preço visíveis na página e mapeia por índice
@@ -346,7 +404,7 @@ export class MagaluScraper extends BaseScraper {
         }
 
         const hasNextPage = detectNextPage(selectors.nextButtonFallbacks);
-        return { items, hasNextPage, firstCardDiag, priceStrategy };
+        return { items, hasNextPage, firstCardDiag, priceStrategy, nextDataDiag };
       },
       sel,
       query,
