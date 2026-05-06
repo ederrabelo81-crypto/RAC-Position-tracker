@@ -5,8 +5,29 @@ export const SELECTORS = {
     productCard: 'a[data-testid="product-card-container"]',
     link: 'a[data-testid="product-card-container"]', // o card já é o link
     title: '[data-testid="product-title"]',
+    // Seletor primário — pode ter mudado no redesign; ver priceFallbacks abaixo
     price: '[data-testid="price-value"]',
+    // Fallbacks em ordem de prioridade (tentados quando o primário retorna null)
+    priceFallbacks: [
+      '[data-testid="price-value"]',
+      '[data-testid="price-best"]',
+      '[data-testid="best-price"]',
+      '[data-testid="current-price"]',
+      '[data-testid="price"]',
+      'p[class*="Price"]',
+      'span[class*="Price"]',
+      '[class*="price-value"]',
+      '[class*="Price__value"]',
+      '[class*="Price__container"] span',
+    ] as string[],
     oldPrice: '[data-testid="price-original"]',
+    oldPriceFallbacks: [
+      '[data-testid="price-original"]',
+      '[data-testid="original-price"]',
+      '[data-testid="price-from"]',
+      'span[class*="OriginalPrice"]',
+      'del[class*="Price"]',
+    ] as string[],
     rating: '[data-testid="review"] span:first-child',
     reviewCount: '[data-testid="review"] span:last-child',
     seller: '[data-testid="seller-name"]',
