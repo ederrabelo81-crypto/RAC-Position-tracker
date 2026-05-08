@@ -281,8 +281,8 @@ class GoogleShoppingScraper(BaseScraper):
                     and len(seller) < 100
                     and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller)
                     and not _SELLER_BLACKLIST_RE.search(seller)):
-                logger.debug(f"[Google Shopping] seller [texto]: {seller}")
-                return seller
+                    logger.debug(f"[Google Shopping] seller [texto]: {seller}")
+                    return seller
 
         return None
 

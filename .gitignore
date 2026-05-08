@@ -1,22 +1,22 @@
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.venv/
+venv/
+.env
+.env.local
+*.env.*
+
 # Logs and temp files
 *.log
-logs/
+*.tmp
 
-# Python bytecode
-__pycache__/
-*.py[cod]
-*.pyo
-
-# Virtual environments
-venv/
-.venv/
-env/
-
-# Environment variables
-.env
-
-# Output files
-output/
-
-# OS
-.DS_Store
+# Editors
+.vscode/
+.idea/
+```
