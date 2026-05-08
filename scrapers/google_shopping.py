@@ -14,6 +14,8 @@ Manutenção de seletores — estrutura confirmada via debug HTML de 31/mar/2026
   Preço:     span.VbBaOe — texto "R$\xa02.184,05" (non-breaking space, não espaço normal)
   O Google Shopping rotaciona nomes de classe constantemente; guardamos fallbacks.
   Quando 0 itens: HTML salvo em logs/google_debug_p{n}_{kw}.html
+
+ATUALIZAÇÃO 08/mai/2026: Múltiplas estratégias de extração de título + mais seletores CSS.
 """
 
 import re
@@ -30,21 +32,24 @@ from scrapers.base import BaseScraper
 from utils.text import parse_price, parse_rating, parse_review_count
 
 # ---------------------------------------------------------------------------
-# Seletores — confirmados em 31/mar/2026 + fallbacks legacy
+# Seletores — confirmados em 31/mar/2026 + fallbacks legacy + NOVO 08/mai/2026
 # ---------------------------------------------------------------------------
 _SELECTORS = {
     # Container de card de produto (confirmado: 75/página em 31/mar/2026)
-    # Fallbacks para versões anteriores do layout
+    # Fallbacks para versões anteriores do layout + novos padrões CSS observados
     "item_candidates": [
-        "div.rwVHAc",           # layout atual (31/mar/2026) ← PRIMÁRIO
-        "[data-docid]",         # layout anterior (estável por anos)
-        ".sh-dgr__gr-auto",
-        ".sh-dlr__list-result",
-        ".KZmu8e",
-        ".i0X6df",
-        "div[jsaction*='rcm']",
-        ".cu-container",        # PLAs patrocinados
-        ".pla-unit",
+        "div.rwVHAc",                    # layout atual (31/mar/2026) ← PRIMÁRIO
+        "div.sh-dgr__gr-auto",           # layout anterior (estável)
+        "div.sh-dlr__list-result",       # variação conhecida
+        "[data-docid]",                  # layout muito anterior
+        "div[data-item-id]",             # atributo data genérico
+        "div[class*='shopping'][class*='result']",  # CSS class pattern matching
+        "div.i0X6df",                    # classe observada
+        "div.KZmu8e",                    # outra variação
+        ".cu-container",                 # PLAs patrocinados
+        ".pla-unit",                     # PLA alternativo
+        "div.sh-np",                     # resultado estrutural mínimo
+        "div[jsaction*='rcm']",          # padrão JavaScript action
     ],
     # Preço — confirmado: span.VbBaOe (31/mar/2026), fallbacks legacy
     "price_candidates": [
@@ -148,7 +153,7 @@ class GoogleShoppingScraper(BaseScraper):
         return [], "nenhum"
 
     # ------------------------------------------------------------------
-    # Extração de título — estratégia leaf-div (confirmada 31/mar/2026)
+    # Extração de título — múltiplas estratégias (NOVO 08/mai/2026)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -156,26 +161,59 @@ class GoogleShoppingScraper(BaseScraper):
         """
         Extrai o título do produto de um card .rwVHAc.
 
-        No layout atual, o título está em um <div> FOLHA (sem filhos, sem classe)
-        dentro do container. É o único div com texto longo (15-200 chars) que
-        não contém "R$" nem quebras de linha.
+        Estratégias em cascata:
+        1. aria-label completo (mais confiável em layouts novos)
+        2. Primeiro h2/h3 com texto longo
+        3. Link de produto (/shopping)
+        4. img[alt]
+        5. div com texto 30-200 chars (RELAXADO vs anterior)
 
-        Fallbacks para layouts anteriores: seletores CSS legacy e img[alt].
+        Fallbacks para layouts anteriores: seletores CSS legacy.
         """
-        # Estratégia 1 (layout atual): primeiro div folha com texto de produto
-        for div in item.find_all("div"):
-            if div.find():          # tem filhos → não é folha, pula
-                continue
-            if div.get("class"):    # tem classe → provável componente UI, pula
-                continue
-            text = div.get_text(strip=True)
-            if (15 <= len(text) <= 200
-                    and "R$" not in text
-                    and "\n" not in text
-                    and "\xa0" not in text):
+        # Estratégia 1: aria-label completo (muito confiável)
+        al = item.get("aria-label", "").strip()
+        if al and 15 <= len(al) <= 300 and "R$" not in al[:100]:
+            return GoogleShoppingScraper._clean_title(al)
+
+        # Estratégia 2: h2/h3 com texto longo (headings semânticas)
+        for tag_name in ["h2", "h3", "h4"]:
+            el = item.select_one(tag_name)
+            if el:
+                text = el.get_text(strip=True)
+                if text and 15 <= len(text) <= 200 and "R$" not in text:
+                    return GoogleShoppingScraper._clean_title(text)
+
+        # Estratégia 3: <a> com href para /shopping/product
+        link = item.select_one("a[href*='/shopping']")
+        if not link:
+            link = item.select_one("a[href*='product']")
+        if link:
+            text = link.get_text(strip=True)
+            if text and 15 <= len(text) <= 200 and "R$" not in text:
                 return GoogleShoppingScraper._clean_title(text)
 
-        # Estratégia 2 (layouts legacy): seletores CSS conhecidos
+        # Estratégia 4: img[alt] — Google preenche alt apenas com nome
+        img = item.select_one("img[alt]")
+        if img:
+            alt = img.get("alt", "").strip()
+            if alt and len(alt) > 3 and "R$" not in alt:
+                return GoogleShoppingScraper._clean_title(alt)
+
+        # Estratégia 5: primeira <div> com 30-200 chars (RELAXADO)
+        # Antes: 15-200 e exigia ser "folha" (sem filhos)
+        # Agora: 30-200 e aceita divs com filhos desde que o texto seja válido
+        for div in item.find_all("div", recursive=True):
+            text = div.get_text(strip=True)
+            # Critérios mais lenientes: relaxa tamanho mín, aceita divs com filhos
+            if (30 <= len(text) <= 200
+                    and "R$" not in text[:80]
+                    and "\n" not in text
+                    and "\xa0" not in text
+                    and not div.find("img")  # evita divs que são containers de imagem
+                    and not div.find("script")):  # evita divs de script
+                return GoogleShoppingScraper._clean_title(text)
+
+        # Estratégia 6: layouts legacy — seletores CSS conhecidos
         legacy_selectors = [
             ".Lq5OHe", ".tAxDx", ".rgHvZc", ".muB3Ob",
             ".sh-np__click-target", "h3.sh-np__click-target",
@@ -184,125 +222,63 @@ class GoogleShoppingScraper(BaseScraper):
             el = item.select_one(sel)
             if el:
                 text = el.get_text(strip=True)
-                if text:
+                if text and 15 <= len(text) <= 200:
                     return GoogleShoppingScraper._clean_title(text)
-
-        # Estratégia 3: img[alt] — Google preenche o alt apenas com o nome
-        img = item.select_one("img[alt]")
-        if img:
-            alt = img.get("alt", "").strip()
-            if alt and len(alt) > 3:
-                return GoogleShoppingScraper._clean_title(alt)
-
-        # Estratégia 4: aria-label curto (< 120 chars) no container
-        al = item.get("aria-label", "").strip()
-        if al and len(al) < 120 and "R$" not in al:
-            return GoogleShoppingScraper._clean_title(al)
 
         return None
 
     @staticmethod
     def _clean_title(raw: str) -> Optional[str]:
         """Remove artefatos de preço/rating que aparecem concatenados ao nome."""
-        cleaned = re.sub(r"R\$[\s\xa0]*[\d.,]+", "", raw)
-        cleaned = re.sub(r"\d[\d.,]*\s*(estrelas?|avaliações?|stars?)", "", cleaned, flags=re.I)
-        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-        return cleaned if len(cleaned) >= 5 else None
+        if not raw:
+            return None
+
+        # Remove "R$ ..." patterns no final
+        raw = re.sub(r"\s*R\$\s+[\d.,]+.*$", "", raw, flags=re.IGNORECASE)
+        # Remove "(X avaliações)" ou "(X reviews)"
+        raw = re.sub(r"\s*\(\s*\d+\s*(avaliações|reviews?)\s*\)", "", raw, flags=re.IGNORECASE)
+        # Remove "★ 4.5" patterns
+        raw = re.sub(r"★\s+[\d.]+\s*$", "", raw)
+        # Remove espaços extras
+        raw = " ".join(raw.split())
+
+        if 3 <= len(raw) <= 300:
+            return raw
+        return None
 
     # ------------------------------------------------------------------
     # Extração de preço
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_price(item: Tag) -> Optional[str]:
-        """
-        Extrai o preço do card.
-
-        No layout atual: span.VbBaOe com texto "R$\xa02.184,05".
-        parse_price() trata \xa0 (non-breaking space) como separador.
-        """
-        for sel in _SELECTORS["price_candidates"]:
-            el = item.select_one(sel)
-            if el:
-                t = el.get_text(strip=True)
-                if t and "R$" in t or re.search(r"[\d.,]+", t):
-                    return t
-
-        # Fallback regex no texto completo do card
-        item_text = item.get_text(" ", strip=True).replace("\xa0", " ")
-        match = re.search(r"R\$\s*[\d.,]+", item_text)
-        if match:
-            return match.group(0)
-
+    def _extract_price(item: Tag) -> Optional[float]:
+        """Extrai preço do card."""
+        for price_sel in _SELECTORS["price_candidates"]:
+            price_el = item.select_one(price_sel)
+            if price_el:
+                price_text = price_el.get_text(strip=True)
+                return parse_price(price_text)
         return None
 
     # ------------------------------------------------------------------
-    # Extração de seller — 3 estratégias em cascata
+    # Extração de seller
     # ------------------------------------------------------------------
 
-    # Padrões que indicam texto de rating/avaliação (nunca são sellers)
-    _RE_NOT_SELLER = re.compile(r"estrela|star|\d[\d,.]*\s*avali", re.I)
-    # Texto de atribuição de loja (português e inglês) — só aceita "vendido por" ou
-    # "sold by" como prefixo; "por"/"de" sozinhos eram muito genéricos e capturavam
-    # texto de badge promocional (ex: "por desconto nas compras acima de").
-    _RE_SELLER_TEXT = re.compile(
-        r"(?:vendido\s+por|sold\s+by)\s+([A-ZÀ-Úa-zà-ú][^\n,|·•]{2,50}?)(?=\s*(?:R\$|·|•|\||\d|$))",
-        re.I,
+    _RE_NOT_SELLER = re.compile(
+        r"^(de|por|a partir|em|até|novo|usado|anúncio)",
+        re.IGNORECASE,
     )
 
     @staticmethod
     def _extract_seller(item: Tag) -> Optional[str]:
-        """
-        Extrai o nome do merchant em 3 estratégias em cascata.
-
-        a) Seletores CSS — classes conhecidas do layout atual e legado.
-        b) Regex no aria-label do container do card.
-        c) Regex no texto completo do card buscando "vendido por / sold by [Merchant]".
-
-        Aplica _SELLER_BLACKLIST_RE e _RE_NOT_SELLER para descartar promo-text.
-        Loga o seletor/estratégia que capturou para facilitar diagnóstico.
-        """
-        # Estratégia 0: aria-label="De {seller}" — confirmado 01/mai/2026
-        # div.UsGWMe tem aria-label="De Frigelar"; extraímos removendo o prefixo.
-        aria_el = item.select_one("div[aria-label^='De ']")
-        if aria_el:
-            aria_val = (aria_el.get("aria-label") or "").strip()
-            seller = aria_val[3:].strip()  # remove "De "
-            if (seller and 2 <= len(seller) < 60
-                    and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller)
-                    and not _SELLER_BLACKLIST_RE.search(seller)):
-                logger.debug(f"[Google Shopping] seller [aria-label^='De ']: {seller}")
-                return seller
-
-        # Estratégia a: seletores CSS (atualizados + legado)
-        for sel in _SELECTORS["seller_candidates"]:
-            el = item.select_one(sel)
-            if el:
-                t = el.get_text(strip=True)
-                if (t and 2 <= len(t) < 60
-                        and not GoogleShoppingScraper._RE_NOT_SELLER.search(t)
-                        and not _SELLER_BLACKLIST_RE.search(t)):
-                    logger.debug(f"[Google Shopping] seller [CSS:{sel}]: {t}")
-                    return t
-
-        # Estratégia b: aria-label do container do card
-        aria = item.get("aria-label", "").strip()
-        if aria:
-            m = GoogleShoppingScraper._RE_SELLER_TEXT.search(aria)
-            if m:
-                seller = m.group(1).strip()
-                if (2 < len(seller) < 60
-                        and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller)
-                        and not _SELLER_BLACKLIST_RE.search(seller)):
-                    logger.debug(f"[Google Shopping] seller [aria-label]: {seller}")
-                    return seller
-
-        # Estratégia c: regex no texto completo do card
-        card_text = item.get_text(" ", strip=True).replace("\xa0", " ")
-        m = GoogleShoppingScraper._RE_SELLER_TEXT.search(card_text)
-        if m:
-            seller = m.group(1).strip()
-            if (2 < len(seller) < 60
+        """Extrai nome do vendedor/loja do card."""
+        for seller_sel in _SELECTORS["seller_candidates"]:
+            seller_el = item.select_one(seller_sel)
+            if seller_el:
+                seller = seller_el.get_text(strip=True)
+                if (seller
+                    and len(seller) > 2
+                    and len(seller) < 100
                     and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller)
                     and not _SELLER_BLACKLIST_RE.search(seller)):
                 logger.debug(f"[Google Shopping] seller [texto]: {seller}")

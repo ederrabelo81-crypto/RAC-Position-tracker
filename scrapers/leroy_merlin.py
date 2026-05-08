@@ -194,7 +194,17 @@ class LeroyMerlinScraper(BaseScraper):
             )
             resp.raise_for_status()
             data = resp.json()
-            hits = data.get("hits", [])
+            
+            # NOVO 08/mai/2026: Suportar múltiplas estruturas de resposta Algolia
+            # A API pode retornar hits em diferentes chaves dependendo do versioning
+            hits = (
+                data.get("hits", [])
+                or (data.get("results", [{}])[0].get("hits", []) if data.get("results") else [])
+                or data.get("products", [])
+                or data.get("data", [])
+                or []
+            )
+            
             nb_pages = data.get("nbPages", 1)
             if hits:
                 logger.info(
@@ -491,6 +501,14 @@ class LeroyMerlinScraper(BaseScraper):
                 or hit.get("productName")
                 or hit.get("description")
             )
+            
+            # NOVO 08/mai/2026: Validar título antes de continuar
+            if not title:
+                logger.warning(
+                    f"[{self.platform_name}] Hit sem título detectado: "
+                    f"objectID={hit.get('objectID', 'N/A')}, pula registro"
+                )
+                continue  # ← PULA registros sem título
 
             # Preço: campos confirmados via debug em produção (30/03/2026).
             # averagePromotionalPrice e medianPromotionalPrice são os únicos
