@@ -286,12 +286,21 @@ class GoogleShoppingScraper(BaseScraper):
             if seller_el:
                 seller = seller_el.get_text(strip=True)
                 if (seller
+<<<<<<< Updated upstream
                     and len(seller) > 2
                     and len(seller) < 100
                     and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller)
                     and not _SELLER_BLACKLIST_RE.search(seller)):
                     logger.debug(f"[Google Shopping] seller [texto]: {seller}")
                     return seller
+=======
+    and len(seller) > 2
+    and len(seller) < 100
+    and not GoogleShoppingScraper._RE_NOT_SELLER.search(seller)
+    and not _SELLER_BLACKLIST_RE.search(seller)):
+    logger.debug(f"[Google Shopping] seller [texto]: {seller}")
+    return seller
+>>>>>>> Stashed changes
 
         return None
 
