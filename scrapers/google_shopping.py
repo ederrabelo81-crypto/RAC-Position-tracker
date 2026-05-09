@@ -38,7 +38,8 @@ _SELECTORS = {
     # Container de card de produto (confirmado: 75/página em 31/mar/2026)
     # Fallbacks para versões anteriores do layout + novos padrões CSS observados
     "item_candidates": [
-        "div.rwVHAc",                    # layout atual (31/mar/2026) ← PRIMÁRIO
+        "div.Ez5pwe",                    # NOVO layout (mai/2026) ← PRIMÁRIO
+        "div.rwVHAc",                    # layout anterior (31/mar/2026)
         "div.sh-dgr__gr-auto",           # layout anterior (estável)
         "div.sh-dlr__list-result",       # variação conhecida
         "[data-docid]",                  # layout muito anterior
@@ -53,7 +54,8 @@ _SELECTORS = {
     ],
     # Preço — confirmado: span.VbBaOe (31/mar/2026), fallbacks legacy
     "price_candidates": [
-        ".VbBaOe",              # layout atual (31/mar/2026) ← PRIMÁRIO
+        ".lmQWe",               # NOVO layout (mai/2026) ← PRIMÁRIO
+        ".VbBaOe",              # layout anterior (31/mar/2026)
         ".a8Pemb",
         ".OFFNJ",
         ".g9WsWb",
@@ -65,7 +67,8 @@ _SELECTORS = {
     ],
     # Vendedor / loja — confirmado 01/mai/2026: div.UsGWMe (aria-label="De {seller}")
     "seller_candidates": [
-        ".UsGWMe",              # layout atual (01/mai/2026) ← PRIMÁRIO
+        ".n7emVc",              # NOVO layout (mai/2026) ← PRIMÁRIO
+        ".UsGWMe",              # layout anterior (01/mai/2026)
         ".Baoj6d",              # classe auxiliar observada junto a UsGWMe
         ".E5ocAb",
         ".aULzUe",
@@ -215,7 +218,7 @@ class GoogleShoppingScraper(BaseScraper):
 
         # Estratégia 6: layouts legacy — seletores CSS conhecidos
         legacy_selectors = [
-            ".Lq5OHe", ".tAxDx", ".rgHvZc", ".muB3Ob",
+            ".gkQHve", ".Lq5OHe", ".tAxDx", ".rgHvZc", ".muB3Ob",
             ".sh-np__click-target", "h3.sh-np__click-target",
         ]
         for sel in legacy_selectors:
@@ -354,6 +357,13 @@ class GoogleShoppingScraper(BaseScraper):
 
             title     = self._extract_title(item)
             price_raw = self._extract_price(item)
+            
+            # Se o título falhou, tenta extrair de aria-label do container principal
+            if not title:
+                al = item.get("aria-label", "")
+                if al and "Ar Condicionado" in al:
+                    title = self._clean_title(al)
+
             seller    = self._extract_seller(item)
             if not seller:
                 empty_seller_count += 1
@@ -400,7 +410,7 @@ class GoogleShoppingScraper(BaseScraper):
                 position_general=pos_general,
                 position_organic=pos_general,
                 position_sponsored=None,
-                price_raw=price_raw,
+                price_float=price_raw,  # price_raw já é float aqui
                 seller=seller,
                 is_fulfillment=False,
                 rating=rating,
