@@ -16,6 +16,8 @@ Manutenção de seletores — estrutura confirmada via debug HTML de 31/mar/2026
   Quando 0 itens: HTML salvo em logs/google_debug_p{n}_{kw}.html
 
 ATUALIZAÇÃO 08/mai/2026: Múltiplas estratégias de extração de título + mais seletores CSS.
+ATUALIZAÇÃO 09/mai/2026: Restaurada leaf-div como estratégia primária (COMMON_MISTAKES #2);
+  aria-label rebaixado para último recurso; removido check hardcoded "Ar Condicionado".
 """
 
 import re
@@ -162,23 +164,33 @@ class GoogleShoppingScraper(BaseScraper):
     @staticmethod
     def _extract_title(item: Tag) -> Optional[str]:
         """
-        Extrai o título do produto de um card .rwVHAc.
+        Extrai o título do produto de um card Google Shopping.
 
-        Estratégias em cascata:
-        1. aria-label completo (mais confiável em layouts novos)
-        2. Primeiro h2/h3 com texto longo
-        3. Link de produto (/shopping)
-        4. img[alt]
-        5. div com texto 30-200 chars (RELAXADO vs anterior)
-
-        Fallbacks para layouts anteriores: seletores CSS legacy.
+        Estratégias em cascata (ordem importa — mais confiável primeiro):
+        1. Leaf-div: primeiro <div> folha (sem filhos, sem classe), 15-200 chars,
+           sem R$/\\n/\\xa0 — estratégia documentada em COMMON_MISTAKES.md #2.
+        2. h2/h3/h4 com texto longo (headings semânticos).
+        3. Link <a href="/shopping"> — texto do link de produto.
+        4. img[alt] — Google preenche alt apenas com nome do produto.
+        5. Seletores CSS legacy de layouts anteriores.
+        6. aria-label do container — ÚLTIMO RECURSO: Google concatena
+           "nome + R$ preço + seller" no aria-label; _clean_title() remove artefatos
+           mas pode falhar; só usar quando tudo acima falhar.
         """
-        # Estratégia 1: aria-label completo (muito confiável)
-        al = item.get("aria-label", "").strip()
-        if al and 15 <= len(al) <= 300 and "R$" not in al[:100]:
-            return GoogleShoppingScraper._clean_title(al)
+        # Estratégia 1: leaf-div — sem filhos, sem classe (COMMON_MISTAKES.md #2)
+        for div in item.find_all("div"):
+            if div.find():          # tem filhos → não é folha, pula
+                continue
+            if div.get("class"):    # tem classe → componente UI, pula
+                continue
+            text = div.get_text(strip=True)
+            if (15 <= len(text) <= 200
+                    and "R$" not in text
+                    and "\n" not in text
+                    and "\xa0" not in text):
+                return GoogleShoppingScraper._clean_title(text)
 
-        # Estratégia 2: h2/h3 com texto longo (headings semânticas)
+        # Estratégia 2: h2/h3/h4 com texto longo (headings semânticos)
         for tag_name in ["h2", "h3", "h4"]:
             el = item.select_one(tag_name)
             if el:
@@ -195,28 +207,14 @@ class GoogleShoppingScraper(BaseScraper):
             if text and 15 <= len(text) <= 200 and "R$" not in text:
                 return GoogleShoppingScraper._clean_title(text)
 
-        # Estratégia 4: img[alt] — Google preenche alt apenas com nome
+        # Estratégia 4: img[alt] — Google preenche alt apenas com nome do produto
         img = item.select_one("img[alt]")
         if img:
             alt = img.get("alt", "").strip()
             if alt and len(alt) > 3 and "R$" not in alt:
                 return GoogleShoppingScraper._clean_title(alt)
 
-        # Estratégia 5: primeira <div> com 30-200 chars (RELAXADO)
-        # Antes: 15-200 e exigia ser "folha" (sem filhos)
-        # Agora: 30-200 e aceita divs com filhos desde que o texto seja válido
-        for div in item.find_all("div", recursive=True):
-            text = div.get_text(strip=True)
-            # Critérios mais lenientes: relaxa tamanho mín, aceita divs com filhos
-            if (30 <= len(text) <= 200
-                    and "R$" not in text[:80]
-                    and "\n" not in text
-                    and "\xa0" not in text
-                    and not div.find("img")  # evita divs que são containers de imagem
-                    and not div.find("script")):  # evita divs de script
-                return GoogleShoppingScraper._clean_title(text)
-
-        # Estratégia 6: layouts legacy — seletores CSS conhecidos
+        # Estratégia 5: seletores CSS de layouts anteriores
         legacy_selectors = [
             ".gkQHve", ".Lq5OHe", ".tAxDx", ".rgHvZc", ".muB3Ob",
             ".sh-np__click-target", "h3.sh-np__click-target",
@@ -227,6 +225,14 @@ class GoogleShoppingScraper(BaseScraper):
                 text = el.get_text(strip=True)
                 if text and 15 <= len(text) <= 200:
                     return GoogleShoppingScraper._clean_title(text)
+
+        # Estratégia 6: aria-label — ÚLTIMO RECURSO (ver COMMON_MISTAKES.md #2)
+        # Google concatena nome+preço+seller; _clean_title() tenta remover artefatos.
+        al = item.get("aria-label", "").strip()
+        if al and 15 <= len(al) <= 300:
+            cleaned = GoogleShoppingScraper._clean_title(al)
+            if cleaned:
+                return cleaned
 
         return None
 
@@ -357,13 +363,6 @@ class GoogleShoppingScraper(BaseScraper):
 
             title     = self._extract_title(item)
             price_raw = self._extract_price(item)
-            
-            # Se o título falhou, tenta extrair de aria-label do container principal
-            if not title:
-                al = item.get("aria-label", "")
-                if al and "Ar Condicionado" in al:
-                    title = self._clean_title(al)
-
             seller    = self._extract_seller(item)
             if not seller:
                 empty_seller_count += 1
