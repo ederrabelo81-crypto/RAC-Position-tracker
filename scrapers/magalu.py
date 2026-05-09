@@ -7,6 +7,7 @@ Estratégia de extração (em ordem de prioridade):
   3. Dump de debug HTML quando 0 itens (para análise manual de seletores)
 
 Proteções detectadas:
+  - Akamai Bot Manager (novo em 2025 — requer proxy residencial)
   - PerimeterX (px-captcha, _pxAppId)
   - Cloudflare (#challenge-form)
   - Página silenciosa (carregou mas sem conteúdo útil)
@@ -134,6 +135,7 @@ _SELECTORS = {
     # Detecção de bloqueio
     "px_block":    "#px-captcha, #pxCaptcha, [id*='px-'], [class*='px-captcha']",
     "cf_block":    "#challenge-form, #challenge-running",
+    "akamai_block": "script[src*='akamai'], script[src*='botmanager'], [class*='akamai'], [id*='akamai']",
     "no_results":  '[data-testid="no-results"], [class*="NoResults"], [class*="empty-results"]',
 }
 
@@ -149,7 +151,7 @@ class MagaluScraper(BaseScraper):
 
     platform_name = "Magalu"
 
-    # Rotar o browser a cada N keywords para evitar Radware Bot Manager
+    # Rotar o browser a cada N keywords para evitar Akamai Bot Manager
     _ROTATION_INTERVAL = 15
 
     def __init__(self, headless: bool = True) -> None:
@@ -183,355 +185,343 @@ class MagaluScraper(BaseScraper):
 
     def _setup_xhr_intercept(self) -> None:
         """Registra listener para capturar respostas da API interna do Magalu."""
-        self._api_results = []
-
-        def handle_response(response):
-            try:
-                url = response.url
-                if (
-                    "product-search" in url
-                    or "search_items" in url
-                    or ("/api/" in url and "search" in url)
-                ) and response.status == 200:
-                    ct = response.headers.get("content-type", "")
-                    if "json" in ct:
+        def handle_route(route):
+            request = route.request
+            # Intercepta requisições para API do Magalu
+            if "api/product-search" in request.url:
+                response = route.fetch()
+                if response.status == 200:
+                    try:
                         data = response.json()
                         self._api_results.append(data)
                         logger.debug(
-                            f"[{self.platform_name}] XHR capturado: {url[:80]}"
+                            f"[{self.platform_name}] XHR capturado: "
+                            f"{data.get('count', 0)} itens na resposta"
                         )
-            except Exception:
-                pass  # respostas binárias/erros não bloqueiam
+                    except Exception as e:
+                        logger.debug(f"[{self.platform_name}] Erro ao parsear XHR: {e}")
+                route.continue_()
+            else:
+                route.continue_()
 
-        self._page.on("response", handle_response)
+        self._page.route("**/*", handle_route)
+
+    # ------------------------------------------------------------------
+    # Detecção de bloqueios
+    # ------------------------------------------------------------------
+
+    def _is_akamai_blocked(self, html: str, page: int = 1) -> bool:
+        """
+        Detecta se Akamai Bot Manager bloqueou a página.
+        Akamai deixa pouco sinal na HTML — indicadores são:
+          - Script tags com src*=akamai ou botmanager
+          - Página vazia/blank (HTTP 200 mas sem conteúdo)
+          - Múltiplas tentativas sem resultados
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Verifica presença de scripts Akamai
+        scripts = soup.find_all("script")
+        for script in scripts:
+            src = script.get("src", "")
+            if src and ("akamai" in src.lower() or "botmanager" in src.lower()):
+                logger.warning(
+                    f"[{self.platform_name}] Script Akamai detectado em página {page}"
+                )
+                return True
+        
+        # Verifica se a página está vazia demais (bloqueio silencioso)
+        body = soup.body
+        if body:
+            # Se body tem menos de 2000 caracteres e sem conteúdo útil
+            body_text = body.get_text(strip=True)
+            if len(body_text) < 1000:
+                logger.warning(
+                    f"[{self.platform_name}] Página {page} muito pequena ({len(body_text)} chars) — "
+                    "possível bloqueio Akamai"
+                )
+                return True
+        
+        return False
+
+    def _detect_soft_block(self, html: str, page: int = 1) -> bool:
+        """
+        Detecta soft-block (página vazia sem erro explícito).
+        Diferente de Akamai — soft-block é tratado com retry + backoff.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Procura por indicador explícito "sem resultados"
+        no_results = soup.select_one(_SELECTORS["no_results"])
+        if no_results:
+            logger.debug(
+                f"[{self.platform_name}] 'Nenhum resultado' detectado em página {page}"
+            )
+            return False
+
+        # Se não tem itens e não tem aviso explícito — soft-block
+        items = []
+        for selector in _SELECTORS["item_candidates"]:
+            items = soup.select(selector)
+            if items:
+                break
+
+        if not items:
+            logger.warning(
+                f"[{self.platform_name}] Soft-block detectado em página {page} "
+                "(0 itens, sem aviso explícito)"
+            )
+            return True
+
+        return False
+
+    # ------------------------------------------------------------------
+    # Parse de resultados
+    # ------------------------------------------------------------------
 
     def _parse_api_results(
         self,
-        data: Dict,
+        api_data: Dict[str, Any],
         keyword: str,
         keyword_category_map: dict,
-        page_offset: int,
+        page_offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Extrai registros da resposta JSON da API interna."""
-        records = []
+        """Extrai produtos da resposta JSON da API interna."""
+        records: List[Dict[str, Any]] = []
 
-        # Tenta diferentes estruturas conhecidas da API
-        products = (
-            data.get("products")
-            or data.get("items")
-            or data.get("results")
-            or data.get("data", {}).get("products")
-            or []
-        )
+        products = api_data.get("products", [])
+        if not products:
+            logger.debug(f"[{self.platform_name}] API retornou 0 produtos")
+            return records
 
-        org_ctr = spo_ctr = 0
-        for idx, prod in enumerate(products):
-            pos_general = page_offset + idx + 1
-            sponsored = prod.get("isSponsored") or prod.get("sponsored", False)
-
-            if sponsored:
-                spo_ctr += 1
-                pos_organic, pos_sponsored = None, spo_ctr
-            else:
-                org_ctr += 1
-                pos_organic, pos_sponsored = org_ctr, None
-
-            # Normaliza campos que podem ter nomes diferentes entre versões
-            title = (
-                prod.get("title")
-                or prod.get("name")
-                or prod.get("description")
-            )
-            price_val = (
-                prod.get("price")
-                or prod.get("sellPrice")
-                or prod.get("bestPrice")
-                or prod.get("priceValue")
-            )
-            _seller_raw = prod.get("seller")
-            seller = (
-                prod.get("sellerName")
-                or (_seller_raw.get("name") if isinstance(_seller_raw, dict) else _seller_raw)
-                or "Magalu"
-            )
-            rating = (
-                prod.get("rating")
-                or prod.get("ratingAverage")
-                or prod.get("averageRating")
-                or prod.get("starRating")
-            )
-            review_count = (
-                prod.get("reviewCount")
-                or prod.get("ratingsCount")
-                or prod.get("numberOfRatings")
-                or prod.get("numberOfReviews")
-                or prod.get("reviewsCount")
-            )
-            tag = prod.get("badge") or prod.get("tag")
-
+        for idx, product in enumerate(products, start=page_offset + 1):
             try:
-                price_float = float(str(price_val).replace(",", ".")) if price_val else None
-            except (ValueError, TypeError):
-                price_float = None
+                # Extrai dados base
+                product_id = product.get("productId") or product.get("id", "")
+                title = product.get("name", "")
+                url = product.get("url", "")
 
-            records.append(self._build_record(
-                keyword=keyword,
-                keyword_category_map=keyword_category_map,
-                title=title,
-                position_general=pos_general,
-                position_organic=pos_organic,
-                position_sponsored=pos_sponsored,
-                price_float=price_float,
-                seller=seller,
-                is_fulfillment=False,
-                rating=parse_rating(str(rating)) if rating else None,
-                review_count=int(review_count) if review_count else None,
-                tag_destaque=str(tag) if tag else None,
-            ))
+                # Preço (pode estar em múltiplas localizações)
+                price_obj = product.get("price", {})
+                if isinstance(price_obj, dict):
+                    price_str = str(price_obj.get("price", 0))
+                else:
+                    price_str = str(price_obj) if price_obj else "0"
 
+                price = parse_price(price_str) if price_str else None
+
+                # Seller
+                seller_obj = product.get("seller", {})
+                if isinstance(seller_obj, dict):
+                    seller = seller_obj.get("name", "")
+                else:
+                    seller = str(seller_obj) if seller_obj else ""
+
+                # Avaliação
+                rating = parse_rating(product.get("score"))
+                review_count = parse_review_count(product.get("reviews"))
+
+                # Validação mínima
+                if not title or not product_id:
+                    logger.debug(f"[{self.platform_name}] Produto sem título/ID ignorado")
+                    continue
+
+                record = {
+                    "posicao": idx,
+                    "produto_id": str(product_id),
+                    "titulo": title.strip(),
+                    "url": url.strip() if url else "",
+                    "preco": price,
+                    "lojista": seller.strip() if seller else "Magalu",
+                    "avaliacao": rating,
+                    "num_avaliacoes": review_count,
+                    "categoria": keyword_category_map.get(keyword, "Geral"),
+                    "keyword": keyword,
+                    "plataforma": self.platform_name,
+                }
+
+                records.append(record)
+
+            except Exception as e:
+                logger.debug(f"[{self.platform_name}] Erro parseando produto: {e}")
+                continue
+
+        logger.info(
+            f"[{self.platform_name}] API: {len(records)} produtos extraídos"
+        )
         return records
-
-    # ------------------------------------------------------------------
-    # Parse DOM — com cadeia de fallback
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _first_match(item: Tag, candidates: List[str]) -> Optional[Tag]:
-        """Retorna o primeiro elemento que combinar com qualquer seletor."""
-        for sel in candidates:
-            el = item.select_one(sel)
-            if el:
-                return el
-        return None
-
-    @staticmethod
-    def _detect_items(soup: BeautifulSoup) -> tuple[List[Tag], str]:
-        """
-        Itera pelos seletores de container até encontrar ≥3 itens.
-        Retorna (items, seletor_usado).
-        """
-        for sel in _SELECTORS["item_candidates"]:
-            items = soup.select(sel)
-            if len(items) >= 3:
-                return items, sel
-        return [], "nenhum"
-
-    @staticmethod
-    def _is_sponsored_dom(item: Tag) -> bool:
-        for sel in _SELECTORS["sponsored_candidates"]:
-            if item.select_one(sel):
-                return True
-        text = item.get_text(" ", strip=True).lower()
-        return "patrocinado" in text or "sponsored" in text
 
     def _parse_results_dom(
         self,
         html: str,
         keyword: str,
         keyword_category_map: dict,
-        page: int,
-        page_offset: int,
+        page: int = 1,
+        page_offset: int = 0,
     ) -> List[Dict[str, Any]]:
+        """Parse do DOM quando XHR falha."""
+        records: List[Dict[str, Any]] = []
+
         soup = BeautifulSoup(html, "html.parser")
 
-        # Detecção de bloqueios silenciosos
-        if soup.select_one(_SELECTORS["px_block"]):
-            logger.warning(f"[{self.platform_name}] PerimeterX detectado (página {page})")
-            return []
-        if soup.select_one(_SELECTORS["cf_block"]):
-            logger.warning(f"[{self.platform_name}] Cloudflare challenge detectado (página {page})")
-            return []
+        # Encontra itens
+        items = []
+        for selector in _SELECTORS["item_candidates"]:
+            items = soup.select(selector)
+            if items:
+                logger.debug(
+                    f"[{self.platform_name}] Seletor '{selector}' retornou {len(items)} itens"
+                )
+                break
 
-        items, sel_used = self._detect_items(soup)
-        logger.info(
-            f"[{self.platform_name}] {len(items)} itens encontrados na página "
-            f"(seletor: {sel_used})"
-        )
+        if not items:
+            logger.info(
+                f"[{self.platform_name}] 0 itens encontrados na página (seletor: nenhum)"
+            )
+            # Salva HTML para debug
+            debug_file = (
+                LOGS_DIR / f"magalu_debug_p{page}_{keyword.replace(' ', '_')[:30]}.html"
+            )
+            debug_file.write_text(html, encoding="utf-8")
+            logger.warning(
+                f"[{self.platform_name}] 0 itens — HTML salvo para diagnóstico: {debug_file}\n"
+                f"  → Abra o arquivo no browser e inspecione o seletor correto."
+            )
+            return records
 
-        # Debug dump quando vazio
-        if len(items) == 0:
-            self._dump_debug_html(html, page, keyword)
-            return []
+        # Parse de cada item
+        for idx, item in enumerate(items, start=page_offset + 1):
+            try:
+                # Título
+                title = ""
+                for selector in _SELECTORS["title_candidates"]:
+                    elem = item.select_one(selector)
+                    if elem:
+                        title = elem.get_text(strip=True)
+                        if title:
+                            break
 
-        records = []
-        org_ctr = spo_ctr = 0
+                # URL (link do produto)
+                url = ""
+                for link_selector in ['a[href*="/p/"]', 'a[href*="magalu"]', 'a']:
+                    link_elem = item.select_one(link_selector)
+                    if link_elem and link_elem.get("href"):
+                        url = link_elem.get("href")
+                        if not url.startswith("http"):
+                            url = f"https://www.magazineluiza.com.br{url}"
+                        break
 
-        for idx, item in enumerate(items):
-            pos_general = page_offset + idx + 1
-            sponsored = self._is_sponsored_dom(item)
+                # Preço
+                price = None
+                for selector in _SELECTORS["price_candidates"]:
+                    price_elem = item.select_one(selector)
+                    if price_elem:
+                        price_str = price_elem.get_text(strip=True)
+                        price = parse_price(price_str)
+                        if price:
+                            break
 
-            if sponsored:
-                spo_ctr += 1
-                pos_organic, pos_sponsored = None, spo_ctr
-            else:
-                org_ctr += 1
-                pos_organic, pos_sponsored = org_ctr, None
+                # Seller
+                seller = "Magalu"
+                for selector in _SELECTORS["seller_candidates"]:
+                    seller_elem = item.select_one(selector)
+                    if seller_elem:
+                        seller = seller_elem.get_text(strip=True)
+                        if seller:
+                            break
 
-            title_el  = self._first_match(item, _SELECTORS["title_candidates"])
-            price_el  = self._first_match(item, _SELECTORS["price_candidates"])
-            seller_el = self._first_match(item, _SELECTORS["seller_candidates"])
-            rating_el = self._first_match(item, _SELECTORS["rating_candidates"])
-            review_el = self._first_match(item, _SELECTORS["review_count_candidates"])
-            tag_el    = self._first_match(item, _SELECTORS["tag_candidates"])
+                # Avaliação
+                rating = None
+                for selector in _SELECTORS["rating_candidates"]:
+                    rating_elem = item.select_one(selector)
+                    if rating_elem:
+                        rating_str = rating_elem.get_text(strip=True)
+                        rating = parse_rating(rating_str)
+                        if rating:
+                            break
 
-            # Título: fallback para img[alt] quando seletores CSS não encontram
-            title = title_el.get_text(strip=True) if title_el else None
-            if not title:
-                img = item.select_one("img[alt]")
-                if img:
-                    title = img.get("alt", "").strip() or None
+                # Contagem de avaliações
+                review_count = None
+                for selector in _SELECTORS["review_count_candidates"]:
+                    review_elem = item.select_one(selector)
+                    if review_elem:
+                        review_str = review_elem.get_text(strip=True)
+                        review_count = parse_review_count(review_str)
+                        if review_count:
+                            break
 
-            # Preço: fallback regex R$ quando seletores CSS não encontram
-            price_raw = price_el.get_text(strip=True) if price_el else None
-            if not price_raw:
-                item_text = item.get_text(" ", strip=True)
-                m = re.search(r"R\$\s*[\d.,]+", item_text)
-                if m:
-                    price_raw = m.group(0)
+                # Validação mínima
+                if not title or not url:
+                    logger.debug(f"[{self.platform_name}] Item sem título/URL ignorado")
+                    continue
 
-            records.append(self._build_record(
-                keyword=keyword,
-                keyword_category_map=keyword_category_map,
-                title=title,
-                position_general=pos_general,
-                position_organic=pos_organic,
-                position_sponsored=pos_sponsored,
-                price_raw=price_raw,
-                seller=seller_el.get_text(strip=True) if seller_el else "Magalu",
-                is_fulfillment=False,
-                rating=parse_rating(rating_el.get_text() if rating_el else None),
-                review_count=parse_review_count(review_el.get_text() if review_el else None),
-                tag_destaque=tag_el.get_text(strip=True) if tag_el else None,
-            ))
+                record = {
+                    "posicao": idx,
+                    "produto_id": url.split("/p/")[-1].split("/")[0] if "/p/" in url else "",
+                    "titulo": title.strip(),
+                    "url": url.strip(),
+                    "preco": price,
+                    "lojista": seller.strip() if seller else "Magalu",
+                    "avaliacao": rating,
+                    "num_avaliacoes": review_count,
+                    "categoria": keyword_category_map.get(keyword, "Geral"),
+                    "keyword": keyword,
+                    "plataforma": self.platform_name,
+                }
 
+                records.append(record)
+
+            except Exception as e:
+                logger.debug(f"[{self.platform_name}] Erro parseando item: {e}")
+                continue
+
+        logger.info(f"[{self.platform_name}] DOM: {len(records)} produtos extraídos")
         return records
 
     # ------------------------------------------------------------------
-    # Debug dump
-    # ------------------------------------------------------------------
-
-    def _dump_debug_html(self, html: str, page: int, keyword: str) -> None:
-        """Salva HTML bruto em logs/ para análise manual de seletores."""
-        try:
-            log_dir = Path(LOGS_DIR)
-            log_dir.mkdir(parents=True, exist_ok=True)
-            safe_kw = keyword[:30].replace(" ", "_").replace("/", "-")
-            path = log_dir / f"magalu_debug_p{page}_{safe_kw}.html"
-            path.write_text(html, encoding="utf-8")
-            logger.warning(
-                f"[{self.platform_name}] 0 itens — HTML salvo para diagnóstico: {path}\n"
-                f"  → Abra o arquivo no browser e inspecione o seletor correto."
-            )
-        except Exception as e:
-            logger.debug(f"[{self.platform_name}] Erro ao salvar debug: {e}")
-
-    # ------------------------------------------------------------------
-    # Detecção de Radware Bot Manager
-    # ------------------------------------------------------------------
-
-    def _is_radware_blocked(self) -> bool:
-        """
-        Detecta página de CAPTCHA do Radware Bot Manager.
-
-        Radware injeta uma página com título "Radware Bot Manager Captcha"
-        quando detecta comportamento automatizado. A detecção também cobre
-        variações via body text e meta tags.
-        """
-        try:
-            title = self._page.title().lower()
-            if "radware" in title or "bot manager" in title:
-                return True
-            # Fallback: verificação no HTML (evita re-parse completo com BeautifulSoup)
-            html_snippet = self._page.content()[:4000]
-            return (
-                "Radware Bot Manager" in html_snippet
-                or "radware_captcha" in html_snippet.lower()
-                or "rdaformdiv" in html_snippet.lower()
-            )
-        except Exception:
-            return False
-
-    # ------------------------------------------------------------------
-    # Espera inteligente por conteúdo
+    # Métodos auxiliares
     # ------------------------------------------------------------------
 
     def _wait_for_products(self, timeout_ms: int = 15_000) -> bool:
-        """
-        Aguarda até que algum seletor de container de produto apareça.
-        Retorna True se encontrou, False se timeout.
-        """
-        # Inclui nm-* no topo — design system atual do Magalu
-        for sel in _SELECTORS["item_candidates"][:6]:  # testa os 6 primeiros
-            try:
-                self._page.wait_for_selector(sel, timeout=timeout_ms)
-                logger.debug(f"[{self.platform_name}] Produtos encontrados com: {sel}")
-                return True
-            except Exception:
-                continue
-        return False
+        """Aguarda produtos aparecerem na página."""
+        try:
+            for selector in _SELECTORS["item_candidates"]:
+                try:
+                    self._page.wait_for_selector(selector, timeout=timeout_ms)
+                    logger.debug(
+                        f"[{self.platform_name}] Produtos detectados via '{selector}'"
+                    )
+                    return True
+                except Exception:
+                    continue
+            logger.debug(f"[{self.platform_name}] Nenhum seletor de produto respondeu")
+            return False
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] wait_for_products erro: {e}")
+            return False
+
+    def _wait_for_network_idle(self, timeout_ms: int = 5_000) -> None:
+        """Aguarda requisições pendentes terminarem."""
+        try:
+            self._page.wait_for_load_state("networkidle", timeout=timeout_ms)
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] wait_for_network_idle timeout: {e}")
+
+    def _human_scroll(self, steps: int = 10, step_px: int = 280) -> None:
+        """Scroll humanizado com delays aleatórios."""
+        for i in range(steps):
+            self._page.evaluate(
+                f"window.scrollBy(0, {step_px})"
+            )
+            time.sleep(random.uniform(0.3, 0.8))
+
+    def _random_delay(self, min_s: float = 1.0, max_s: float = 3.0) -> None:
+        """Delay aleatório humanizado."""
+        delay = random.uniform(min_s, max_s)
+        time.sleep(delay)
 
     # ------------------------------------------------------------------
-    # Detecção de soft-block silencioso
-    # ------------------------------------------------------------------
-
-    def _detect_soft_block(self, html: str, page_num: int) -> bool:
-        """
-        Distingue soft-block silencioso de busca legítima sem resultados.
-
-        Soft-block: página carregou (200 OK), 0 produtos, SEM mensagem de
-        'Nenhum resultado' — o Magalu simplesmente serve HTML vazio.
-
-        Busca vazia legítima: 0 produtos MAS com mensagem de erro/sem-resultado.
-
-        Akamai hard-block: retorna HTML de erro com título específico — levanta
-        MagaluAkamaiBlockException para abortar imediatamente sem retry.
-        """
-        url = self._page.url
-
-        # 1. Detecta Akamai Bot Manager (bloqueio hard — não adianta retry)
-        akamai_signals = [
-            "Não é possível acessar a página",
-            "(Erro 403)",
-            "akamai-bot/css/styles",
-            "wx.mlcdn.com.br/akamai-bot",
-        ]
-        if any(signal in html for signal in akamai_signals):
-            logger.error(
-                f"[{self.platform_name}] 🚫 Akamai Bot Manager detectado (página {page_num}) — "
-                "bloqueio hard. Proxy residencial brasileiro é necessário para bypass."
-            )
-            raise MagaluAkamaiBlockException(
-                f"Akamai bloqueou scraper na página {page_num}. "
-                "Proxy residencial BR necessário."
-            )
-
-        # 2. Verifica URL patterns de bloqueio
-        if any(s in url for s in ("captcha", "/erro", "blocked")):
-            logger.warning(
-                f"[{self.platform_name}] Soft-block detectado via URL (página {page_num}): {url[:80]}"
-            )
-            return True
-
-        soup = BeautifulSoup(html, "html.parser")
-        items, _ = self._detect_items(soup)
-        if items:
-            return False  # tem produtos — não é bloqueio
-
-        # 3. Busca legítima sem resultados (tem mensagem de erro)
-        no_result_el = soup.select_one(_SELECTORS["no_results"])
-        no_result_text = bool(re.search(r"Nenhum resultado", html, re.I))
-        if no_result_el or no_result_text:
-            return False  # busca legítima sem resultados — não é bloqueio
-
-        # 4. Soft-block silencioso (0 produtos SEM mensagem de erro)
-        logger.warning(
-            f"[{self.platform_name}] Soft-block silencioso detectado "
-            f"(página {page_num}): 0 produtos sem mensagem 'Nenhum resultado'"
-        )
-        return True
-
-    # ------------------------------------------------------------------
-    # Search principal
+    # Search — orquestração principal
     # ------------------------------------------------------------------
 
     @retry(
@@ -550,7 +540,7 @@ class MagaluScraper(BaseScraper):
         all_records: List[Dict[str, Any]] = []
         soft_block_detected = False
 
-        # Delay humanizado entre keywords para evitar padrão detectável pelo Radware/PerimeterX
+        # Delay humanizado entre keywords para evitar padrão detectável
         if self._keywords_processed > 0:
             _inter_delay = random.uniform(8.0, 20.0)
             logger.debug(
@@ -558,7 +548,7 @@ class MagaluScraper(BaseScraper):
             )
             time.sleep(_inter_delay)
 
-        # Rotação proativa a cada _ROTATION_INTERVAL keywords (reseta fingerprint do Radware)
+        # Rotação proativa a cada _ROTATION_INTERVAL keywords (reseta fingerprint)
         self._keywords_processed += 1
         if self._keywords_processed > 1 and self._keywords_processed % self._ROTATION_INTERVAL == 0:
             logger.info(
@@ -591,22 +581,16 @@ class MagaluScraper(BaseScraper):
 
                 self._page.goto(url, wait_until="domcontentloaded")
 
-                # Detecta Radware Bot Manager (dispara após ~25 requests no mesmo contexto)
-                if self._is_radware_blocked():
-                    soft_block_detected = True
-                    logger.warning(
-                        f"[{self.platform_name}] Radware detectado em '{keyword}' (página {page}) "
-                        "— rotacionando browser e retentando"
+                # DETECÇÃO AKAMAI — AQUI ESTÁ A CORREÇÃO CRÍTICA
+                current_html = self._page.content()
+                if self._is_akamai_blocked(current_html, page):
+                    logger.error(
+                        f"[{self.platform_name}] 🚫 Akamai Bot Manager detectado (página {page}) "
+                        "— bloqueio hard. Proxy residencial brasileiro é necessário para bypass."
                     )
-                    self._rotate_browser()
-                    self._setup_xhr_intercept()
-                    self._page.goto(url, wait_until="domcontentloaded")
-                    if self._is_radware_blocked():
-                        logger.error(
-                            f"[{self.platform_name}] Radware persiste após rotação — "
-                            "pulando keyword"
-                        )
-                        break
+                    raise MagaluAkamaiBlockException(
+                        f"Akamai bloqueou em '{keyword}' — requer proxy residencial"
+                    )
 
                 # Aguarda produtos aparecerem (máx 15s)
                 found = self._wait_for_products(timeout_ms=15_000)
