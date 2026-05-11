@@ -87,12 +87,15 @@ jobs:
       - name: Install Node.js dependencies (magalu_shopee)
         run: cd magalu_shopee && npm ci --silent
 
-      # ── 6. Playwright system dependencies ─────────────────────────────────
-      # ubuntu-latest já inclui google-chrome-stable pré-instalado.
-      - name: Install Playwright system dependencies
+      # ── 6. Playwright browsers + system dependencies ──────────────────────
+      # install-deps: bibliotecas de sistema (libglib2, libnss3, etc.)
+      # install chromium: baixa o binário do Chromium para ~/.cache/ms-playwright
+      # google-chrome-stable está pré-instalado no runner e é usado como channel="chrome"
+      - name: Install Playwright browsers and system dependencies
         run: |
-          google-chrome --version
           playwright install-deps chromium
+          playwright install chromium
+          google-chrome --version || true
 
       # ── 7. Determina parâmetros de execução ────────────────────────────────
       - name: Resolve run parameters
