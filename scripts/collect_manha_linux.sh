@@ -25,6 +25,18 @@ fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Iniciando coleta manhã ===" >> "$LOG"
 
+# 1b. Xvfb — display virtual para MLScraper (headless=False, bypass bot detection)
+if command -v Xvfb &>/dev/null; then
+    if ! pgrep -x Xvfb > /dev/null; then
+        Xvfb :99 -screen 0 1366x768x24 -nolisten tcp &
+        sleep 1
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Xvfb iniciado (PID=$!)" >> "$LOG"
+    fi
+    export DISPLAY=:99
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: Xvfb não encontrado — ML pode falhar (instale: sudo apt-get install -y xvfb)" >> "$LOG"
+fi
+
 # 1. Atualiza o repo (não-fatal — se falhar, segue com código local)
 if git pull --ff-only origin main >> "$LOG" 2>&1; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] git pull OK — commit: $(git rev-parse --short HEAD)" >> "$LOG"
