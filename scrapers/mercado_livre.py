@@ -24,7 +24,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import MAX_PAGES
 from scrapers.base import BaseScraper
-from utils.session_grabber import apply_session_to_context
 from utils.text import parse_rating, parse_review_count
 
 
@@ -94,20 +93,13 @@ class MLScraper(BaseScraper):
 
     platform_name = "Mercado Livre"
 
-    # ------------------------------------------------------------------
-    # Browser lifecycle — injeta cookies de sessão salva
-    # ------------------------------------------------------------------
-
-    def _launch(self) -> None:
-        """Inicia browser e injeta cookies de sessão ML se disponíveis."""
-        super()._launch()
-        if apply_session_to_context("mercadolivre", self._context):
-            logger.info(f"[{self.platform_name}] Cookies de sessão carregados.")
-        else:
-            logger.warning(
-                f"[{self.platform_name}] Sem sessão salva — pode encontrar login gate. "
-                "Execute: python utils/session_grabber.py --site mercadolivre"
-            )
+    def __init__(self, headless: bool = True) -> None:
+        # ML detecta Chromium headless como bot e exibe login gate.
+        # Forçamos headless=False — no Oracle VM use xvfb para display virtual:
+        #   sudo apt-get install -y xvfb
+        #   Xvfb :99 -screen 0 1366x768x24 &
+        #   export DISPLAY=:99
+        super().__init__(headless=False)
 
     def _is_login_gate(self) -> bool:
         """Retorna True se a página atual for o login/device-verification gate do ML."""
