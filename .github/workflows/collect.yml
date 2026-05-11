@@ -7,6 +7,10 @@ name: RAC Price Collection
 #   • 08:00 BRT (11:00 UTC) todos os dias  →  coleta manhã  — alta + media, 2 páginas
 #   • 18:00 BRT (21:00 UTC) todos os dias  →  coleta tarde  — apenas alta,  1 página
 #
+# Arquitetura de coleta:
+#   Python  →  ML, Google Shopping, Amazon, Leroy Merlin, Dealers (Playwright)
+#   Node.js →  Magalu (Puppeteer-stealth, bypass Akamai Bot Manager)
+#
 # Variáveis obrigatórias (Settings → Secrets and variables → Actions):
 #   SUPABASE_URL   —  URL do projeto Supabase
 #   SUPABASE_KEY   —  chave de serviço (service_role) ou anon key com insert
@@ -18,9 +22,13 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: 'Plataformas separadas por espaço'
+        description: 'Plataformas Python separadas por espaço'
         required: false
-        default: 'ml magalu amazon google_shopping leroy dealers'
+        default: 'ml google_shopping amazon leroy dealers'
+      node_platforms:
+        description: 'Plataformas Node.js separadas por vírgula (magalu,shopee)'
+        required: false
+        default: 'magalu'
       pages:
         description: 'Páginas por keyword (1–5)'
         required: false
@@ -29,10 +37,15 @@ on:
         description: 'Prioridade das keywords (alta, media, baixa ou vazio = todas)'
         required: false
         default: ''
+      skip_nodejs:
+        description: 'Pular Node.js Magalu (true/false)'
+        required: false
+        default: 'false'
 
 env:
   PYTHON_VERSION: '3.11'
-  TZ: America/Sao_Paulo   # datetime.now() retorna BRT em vez de UTC
+  NODE_VERSION: '20'
+  TZ: America/Sao_Paulo
 
 jobs:
   collect:
@@ -52,53 +65,60 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
 
-      # ── 3. Dependências Python ─────────────────────────────────────────────
+      # ── 3. Node.js ─────────────────────────────────────────────────────────
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: magalu_shopee/package-lock.json
+
+      # ── 4. Dependências Python ─────────────────────────────────────────────
       - name: Install Python dependencies
         run: pip install --upgrade pip && pip install -r requirements.txt
 
-      # ── 4. Playwright system dependencies ────────────────────────────────
+      # ── 5. Dependências Node.js ────────────────────────────────────────────
+      - name: Install Node.js dependencies (magalu_shopee)
+        run: cd magalu_shopee && npm ci --silent
+
+      # ── 6. Playwright system dependencies ─────────────────────────────────
       # ubuntu-latest já inclui google-chrome-stable pré-instalado.
-      # Só precisamos das libs de sistema para o Playwright funcionar.
-      # O BaseScraper tenta channel="chrome" primeiro (menos detectável),
-      # caindo para chromium como fallback.
       - name: Install Playwright system dependencies
         run: |
-          google-chrome --version   # confirma Chrome pré-instalado
+          google-chrome --version
           playwright install-deps chromium
 
-      # ── 5. Determina parâmetros de execução ────────────────────────────────
-      # Arquitetura de coleta:
-      #   GitHub Actions → magalu amazon leroy  (APIs/Algolia, IPs de datacenter OK)
-      #   Windows Task Scheduler → ml google_shopping dealers  (IPs residenciais)
-      #
-      # Coleta manhã (13:00 UTC = 10:00 BRT): alta + media, 2 páginas
-      # Coleta noite (00:00 UTC = 21:00 BRT):  apenas alta,  1 página
-      # Dispatch manual: usa os inputs fornecidos
+      # ── 7. Determina parâmetros de execução ────────────────────────────────
       - name: Resolve run parameters
         id: params
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "platforms=${{ github.event.inputs.platforms }}" >> "$GITHUB_OUTPUT"
-            echo "pages=${{ github.event.inputs.pages }}"         >> "$GITHUB_OUTPUT"
+            echo "platforms=${{ github.event.inputs.platforms }}"           >> "$GITHUB_OUTPUT"
+            echo "node_platforms=${{ github.event.inputs.node_platforms }}" >> "$GITHUB_OUTPUT"
+            echo "pages=${{ github.event.inputs.pages }}"                   >> "$GITHUB_OUTPUT"
+            echo "skip_nodejs=${{ github.event.inputs.skip_nodejs }}"       >> "$GITHUB_OUTPUT"
             PRIO="${{ github.event.inputs.priority }}"
-            echo "priority=${PRIO}"                               >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "0 13 * * *" ]; then
-            echo "platforms=magalu amazon leroy" >> "$GITHUB_OUTPUT"
-            echo "pages=2"                       >> "$GITHUB_OUTPUT"
-            echo "priority=alta media"           >> "$GITHUB_OUTPUT"
+            echo "priority=${PRIO}"                                         >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 11 * * *" ]; then
+            echo "platforms=ml google_shopping amazon leroy dealers" >> "$GITHUB_OUTPUT"
+            echo "node_platforms=magalu"                             >> "$GITHUB_OUTPUT"
+            echo "pages=2"                                           >> "$GITHUB_OUTPUT"
+            echo "priority=alta media"                               >> "$GITHUB_OUTPUT"
+            echo "skip_nodejs=false"                                 >> "$GITHUB_OUTPUT"
           else
-            # cron 00:00 UTC = 21:00 BRT — varredura rápida de noite
-            echo "platforms=magalu amazon leroy" >> "$GITHUB_OUTPUT"
-            echo "pages=1"                       >> "$GITHUB_OUTPUT"
-            echo "priority=alta"                 >> "$GITHUB_OUTPUT"
+            # cron 21:00 UTC = 18:00 BRT
+            echo "platforms=ml google_shopping amazon leroy dealers" >> "$GITHUB_OUTPUT"
+            echo "node_platforms=magalu"                             >> "$GITHUB_OUTPUT"
+            echo "pages=1"                                           >> "$GITHUB_OUTPUT"
+            echo "priority=alta"                                     >> "$GITHUB_OUTPUT"
+            echo "skip_nodejs=false"                                 >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 6. Executa coleta ──────────────────────────────────────────────────
-      - name: Run collector
+      # ── 8. Executa coleta Python ───────────────────────────────────────────
+      - name: Run Python collector
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # Indica ao scraper que está rodando em CI (sem display, sandbox desabilitado)
           CI: 'true'
           DISPLAY: ':99'
         run: |
@@ -114,17 +134,36 @@ jobs:
           echo "Executando: $CMD"
           eval "$CMD"
 
-      # ── 7. Salva CSV como artefato ─────────────────────────────────────────
+      # ── 9. Executa coleta Node.js (Magalu) ────────────────────────────────
+      - name: Run Node.js collector (Magalu)
+        if: steps.params.outputs.skip_nodejs != 'true'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          CI: 'true'
+        run: |
+          NODE_PLATFORMS="${{ steps.params.outputs.node_platforms }}"
+          PAGES="${{ steps.params.outputs.pages }}"
+
+          echo "Executando Node.js: --platforms $NODE_PLATFORMS --pages $PAGES"
+          cd magalu_shopee
+          node node_modules/.bin/ts-node src/index.ts \
+            --platforms "$NODE_PLATFORMS" \
+            --pages "$PAGES"
+
+      # ── 10. Salva CSVs como artefato ───────────────────────────────────────
       - name: Upload CSV artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rac-coleta-${{ github.run_id }}
-          path: output/*.csv
+          path: |
+            output/*.csv
+            magalu_shopee/data/*.csv
           retention-days: 30
           if-no-files-found: warn
 
-      # ── 8. Salva logs sempre (não só em falha) — útil para diagnóstico ─────
+      # ── 11. Salva logs ─────────────────────────────────────────────────────
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4

@@ -32,13 +32,30 @@ else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: git pull falhou — usando código local: $(git rev-parse --short HEAD)" >> "$LOG"
 fi
 
-# 2. Executa coleta
+# 2. Python: ML + Google Shopping + Amazon + Leroy + Dealers
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: ml google_shopping amazon leroy dealers (2 páginas)..." >> "$LOG"
 python main.py \
-    --platforms ml magalu amazon google_shopping leroy dealers \
+    --platforms ml google_shopping amazon leroy dealers \
     --pages 2 \
     --priority alta media \
     >> "$LOG" 2>&1
-EXIT_CODE=$?
+PYTHON_EXIT=$?
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python concluído (exit=$PYTHON_EXIT)" >> "$LOG"
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Coleta manhã concluída (exit=$EXIT_CODE) ===" >> "$LOG"
+# 3. Node.js: Magalu (Puppeteer-stealth — bypass Akamai Bot Manager)
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Node.js: magalu (2 páginas)..." >> "$LOG"
+if command -v node &>/dev/null && [ -f "$PROJECT_DIR/magalu_shopee/node_modules/.bin/ts-node" ]; then
+    cd "$PROJECT_DIR/magalu_shopee"
+    node node_modules/.bin/ts-node src/index.ts --platforms magalu --pages 2 >> "$LOG" 2>&1
+    NODE_EXIT=$?
+    cd "$PROJECT_DIR"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Node.js Magalu concluído (exit=$NODE_EXIT)" >> "$LOG"
+else
+    NODE_EXIT=0
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: Node.js ou ts-node não encontrado — Magalu pulado" >> "$LOG"
+fi
+
+# Considera falha se Python falhou (Node.js é best-effort)
+EXIT_CODE=$PYTHON_EXIT
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Coleta manhã concluída (python=$PYTHON_EXIT node=$NODE_EXIT) ===" >> "$LOG"
 exit $EXIT_CODE
