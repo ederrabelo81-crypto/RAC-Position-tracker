@@ -4,11 +4,11 @@
 
 set -u  # erro em variável não definida (sem set -e — git pull não-fatal)
 
-SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Caminhos hardcoded — evita ambiguidade no ambiente minimalista do cron
+PROJECT_DIR="/home/ubuntu/rac-position-tracker"
 cd "$PROJECT_DIR"
-source .venv/bin/activate
-set -a; source .env; set +a
+source "$PROJECT_DIR/.venv/bin/activate"
+set -a; source "$PROJECT_DIR/.env"; set +a
 
 LOG="$PROJECT_DIR/logs/cron.log"
 mkdir -p "$PROJECT_DIR/logs"
