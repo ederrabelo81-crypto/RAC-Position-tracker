@@ -216,7 +216,9 @@ class GoogleShoppingScraper(BaseScraper):
 
         # Estratégia 5: seletores CSS de layouts anteriores
         legacy_selectors = [
-            ".gkQHve", ".Lq5OHe", ".tAxDx", ".rgHvZc", ".muB3Ob",
+            ".gkQHve",              # confirmado 11/mai/2026 — dentro de product-viewer-entrypoint
+            ".SsM98d",              # confirmado 11/mai/2026 — cópia do título no mesmo card
+            ".Lq5OHe", ".tAxDx", ".rgHvZc", ".muB3Ob",
             ".sh-np__click-target", "h3.sh-np__click-target",
         ]
         for sel in legacy_selectors:

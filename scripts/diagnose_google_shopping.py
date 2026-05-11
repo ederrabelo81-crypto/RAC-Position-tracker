@@ -227,33 +227,44 @@ def analyse_html(html: str, keyword: str) -> dict:
     if items:
         result["top_classes"] = collect_all_classes(items).most_common(30)
 
+        # Importa a extração completa (cascata de 6 estratégias) do scraper de produção
+        try:
+            from scrapers.google_shopping import GoogleShoppingScraper
+            _extract_title_full = GoogleShoppingScraper._extract_title
+        except Exception:
+            _extract_title_full = extract_title_leaf_div  # fallback se import falhar
+
         # Amostra dos primeiros 3 cards
         samples = []
         for i, item in enumerate(items[:3]):
-            titulo  = extract_title_leaf_div(item)
+            titulo_leafdiv = extract_title_leaf_div(item)
+            titulo_full    = _extract_title_full(item)
             preco_txt, preco_sel = extract_price(item)
             seller_txt, seller_sel = extract_seller(item)
             aria = item.get("aria-label", "")
             samples.append({
-                "idx":        i + 1,
-                "titulo":     titulo,
-                "preco":      preco_txt,
-                "preco_sel":  preco_sel,
-                "seller":     seller_txt,
-                "seller_sel": seller_sel,
-                "aria_label": aria[:120] if aria else None,
-                "html_snippet": item.decode_contents()[:600],
+                "idx":           i + 1,
+                "titulo_leafdiv": titulo_leafdiv,
+                "titulo_full":    titulo_full,
+                "preco":          preco_txt,
+                "preco_sel":      preco_sel,
+                "seller":         seller_txt,
+                "seller_sel":     seller_sel,
+                "aria_label":     aria[:120] if aria else None,
+                "html_snippet":   item.decode_contents()[:600],
             })
         result["samples"] = samples
 
-        # Estatísticas de extração em todos os cards
-        titles_ok  = sum(1 for it in items if extract_title_leaf_div(it))
-        prices_ok  = sum(1 for it in items if extract_price(it)[0])
-        sellers_ok = sum(1 for it in items if extract_seller(it)[0])
+        # Estatísticas de extração em todos os cards (leaf-div e cascata completa)
+        titles_leafdiv = sum(1 for it in items if extract_title_leaf_div(it))
+        titles_full    = sum(1 for it in items if _extract_title_full(it))
+        prices_ok      = sum(1 for it in items if extract_price(it)[0])
+        sellers_ok     = sum(1 for it in items if extract_seller(it)[0])
         result["extraction_stats"] = {
-            "titles":  f"{titles_ok}/{len(items)}",
-            "prices":  f"{prices_ok}/{len(items)}",
-            "sellers": f"{sellers_ok}/{len(items)}",
+            "titles_leafdiv": f"{titles_leafdiv}/{len(items)} (só leaf-div)",
+            "titles_full":    f"{titles_full}/{len(items)} (cascata completa — valor real do scraper)",
+            "prices":         f"{prices_ok}/{len(items)}",
+            "sellers":        f"{sellers_ok}/{len(items)}",
         }
     else:
         result["top_classes"] = []
@@ -314,9 +325,10 @@ def format_report(r: dict, html_path: Path, report_path: Path) -> str:
         st = r["extraction_stats"]
         lines += [
             "  Taxa de extração por campo:",
-            f"    Títulos:  {st['titles']}",
-            f"    Preços:   {st['prices']}",
-            f"    Sellers:  {st['sellers']}",
+            f"    Títulos (leaf-div):        {st['titles_leafdiv']}",
+            f"    Títulos (cascata scraper): {st['titles_full']}",
+            f"    Preços:                    {st['prices']}",
+            f"    Sellers:                   {st['sellers']}",
             sep2,
         ]
 
@@ -338,7 +350,8 @@ def format_report(r: dict, html_path: Path, report_path: Path) -> str:
             lines += [
                 f"",
                 f"  Card #{s['idx']}",
-                f"    título:     {s['titulo']!r}",
+                f"    título (leaf-div):        {s['titulo_leafdiv']!r}",
+                f"    título (cascata scraper): {s['titulo_full']!r}",
                 f"    preço:      {s['preco']!r}  (via {s['preco_sel']})",
                 f"    seller:     {s['seller']!r}  (via {s['seller_sel']})",
                 f"    aria-label: {s['aria_label']!r}",
