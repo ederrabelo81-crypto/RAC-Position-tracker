@@ -44,10 +44,12 @@ else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: git pull falhou — usando código local: $(git rev-parse --short HEAD)" >> "$LOG"
 fi
 
-# 2. Python: ML + Google Shopping + Amazon + Leroy + Dealers
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: ml google_shopping amazon leroy dealers (2 páginas)..." >> "$LOG"
+# 2. Python: Google Shopping + Amazon + Leroy + Dealers
+# ML removido deste VM — IP de datacenter Oracle é bloqueado pelo ML.
+# ML roda via GitHub Actions (IP Azure) — schedules: 09:00 e 20:00 BRT.
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: google_shopping amazon leroy dealers (2 páginas)..." >> "$LOG"
 python main.py \
-    --platforms ml google_shopping amazon leroy dealers \
+    --platforms google_shopping amazon leroy dealers \
     --pages 2 \
     --priority alta media \
     >> "$LOG" 2>&1
