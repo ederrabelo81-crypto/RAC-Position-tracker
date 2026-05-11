@@ -167,8 +167,12 @@ class GoogleShoppingScraper(BaseScraper):
         Extrai o título do produto de um card Google Shopping.
 
         Estratégias em cascata (ordem importa — mais confiável primeiro):
-        1. Leaf-div: primeiro <div> folha (sem filhos, sem classe), 15-200 chars,
+        1. Leaf-div estrito: primeiro <div> folha (sem filhos, sem classe), 15-200 chars,
            sem R$/\\n/\\xa0 — estratégia documentada em COMMON_MISTAKES.md #2.
+        1b. Leaf-div relaxado: <div> com classe mas sem filhos-div, mesmos filtros.
+            Necessário desde mai/2026: Google encapsula título em <product-viewer-entrypoint>
+            (Web Component), cujo conteúdo BeautifulSoup não navega via CSS selectors.
+            Os divs de título (.gkQHve, .SsM98d) têm classe mas não têm filhos-div.
         2. h2/h3/h4 com texto longo (headings semânticos).
         3. Link <a href="/shopping"> — texto do link de produto.
         4. img[alt] — Google preenche alt apenas com nome do produto.
@@ -177,11 +181,25 @@ class GoogleShoppingScraper(BaseScraper):
            "nome + R$ preço + seller" no aria-label; _clean_title() remove artefatos
            mas pode falhar; só usar quando tudo acima falhar.
         """
-        # Estratégia 1: leaf-div — sem filhos, sem classe (COMMON_MISTAKES.md #2)
+        # Estratégia 1: leaf-div estrito — sem filhos, sem classe (COMMON_MISTAKES.md #2)
         for div in item.find_all("div"):
             if div.find():          # tem filhos → não é folha, pula
                 continue
             if div.get("class"):    # tem classe → componente UI, pula
+                continue
+            text = div.get_text(strip=True)
+            if (15 <= len(text) <= 200
+                    and "R$" not in text
+                    and "\n" not in text
+                    and "\xa0" not in text):
+                return GoogleShoppingScraper._clean_title(text)
+
+        # Estratégia 1b: leaf-div relaxado — tem classe mas não tem filhos-div
+        # Captura .gkQHve / .SsM98d dentro de <product-viewer-entrypoint> (mai/2026)
+        for div in item.find_all("div"):
+            if div.find("div"):     # tem filhos-div → container, pula
+                continue
+            if not div.get("class"):  # sem classe → já testado na estratégia 1
                 continue
             text = div.get_text(strip=True)
             if (15 <= len(text) <= 200
@@ -216,7 +234,9 @@ class GoogleShoppingScraper(BaseScraper):
 
         # Estratégia 5: seletores CSS de layouts anteriores
         legacy_selectors = [
-            ".gkQHve", ".Lq5OHe", ".tAxDx", ".rgHvZc", ".muB3Ob",
+            ".gkQHve",              # confirmado 11/mai/2026 — dentro de product-viewer-entrypoint
+            ".SsM98d",              # confirmado 11/mai/2026 — cópia do título no mesmo card
+            ".Lq5OHe", ".tAxDx", ".rgHvZc", ".muB3Ob",
             ".sh-np__click-target", "h3.sh-np__click-target",
         ]
         for sel in legacy_selectors:

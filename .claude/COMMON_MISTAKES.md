@@ -7,12 +7,13 @@
 **Right:** Use 5-level fallback: CSS selectors -> VTEX split price (currencyInteger+Decimal) -> [data-price] -> meta[itemprop="price"] -> JSON-LD schema.org/Product -> regex R$.
 **Files:** `scrapers/dealers.py` `_extract_price_el()`, `_extract_jsonld_prices()`, `_jsonld_match()`
 
-## 2. Google Shopping Title Concatenation
+## 2. Google Shopping Title — Web Component Shadow DOM (atualizado mai/2026)
 
-**Wrong:** Use `aria-label` or container text for titles.
-**Why:** Google Shopping concatenates "Product name + R$ price + seller" in aria-label.
-**Right:** Use leaf-div strategy: first `<div>` with no children AND no class, 15-200 chars, no R$/\n/\xa0.
-**Files:** `scrapers/google_shopping.py` `_extract_title()`
+**Wrong:** Use `aria-label` ou CSS selectors como `.gkQHve` via `select_one()` para títulos.
+**Why (original):** aria-label concatena "nome + R$ preço + seller".
+**Why (mai/2026):** Google encapsula o título em `<product-viewer-entrypoint>` (Web Component). BeautifulSoup NÃO consegue navegar dentro de custom elements via CSS selectors — `item.select_one('.gkQHve')` retorna None mesmo que o elemento exista no HTML serializado pelo Playwright.
+**Right:** Use leaf-div relaxado: `<div>` sem filhos-div (independente de ter classe ou não), 15-200 chars, sem R$/\n/\xa0. Isso captura `.gkQHve` e `.SsM98d` que ficam dentro do Web Component mas são acessíveis via `find_all("div")`.
+**Files:** `scrapers/google_shopping.py` `_extract_title()` estratégias 1 e 1b.
 
 ## 3. Selector Returns Too Many Items (Leveros 775 bug)
 
