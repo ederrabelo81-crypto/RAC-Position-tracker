@@ -24,6 +24,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import MAX_PAGES
 from scrapers.base import BaseScraper
+from utils.session_grabber import apply_session_to_context
 from utils.text import parse_rating, parse_review_count
 
 
@@ -92,6 +93,32 @@ class MLScraper(BaseScraper):
     """Scraper modular para o Mercado Livre."""
 
     platform_name = "Mercado Livre"
+
+    # ------------------------------------------------------------------
+    # Browser lifecycle — injeta cookies de sessão salva
+    # ------------------------------------------------------------------
+
+    def _launch(self) -> None:
+        """Inicia browser e injeta cookies de sessão ML se disponíveis."""
+        super()._launch()
+        if apply_session_to_context("mercadolivre", self._context):
+            logger.info(f"[{self.platform_name}] Cookies de sessão carregados.")
+        else:
+            logger.warning(
+                f"[{self.platform_name}] Sem sessão salva — pode encontrar login gate. "
+                "Execute: python utils/session_grabber.py --site mercadolivre"
+            )
+
+    def _is_login_gate(self) -> bool:
+        """Retorna True se a página atual for o login/device-verification gate do ML."""
+        url = self._page.url
+        if "account-verification" in url or "webdevice" in url:
+            return True
+        try:
+            content = self._page.content()
+            return "Para continuar, acesse sua conta" in content
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # URL helpers
@@ -377,6 +404,15 @@ class MLScraper(BaseScraper):
                 # navega para a URL de busca
                 self._page.goto(url, wait_until="domcontentloaded")
                 self._wait_for_network_idle()
+
+                # --- Detecta login gate (/gz/webdevice/account-verification) ---
+                if self._is_login_gate():
+                    logger.error(
+                        f"[{self.platform_name}] Login gate detectado. "
+                        "Capture uma sessão e tente novamente: "
+                        "python utils/session_grabber.py --site mercadolivre"
+                    )
+                    break
 
                 # --- Trata popup de seleção de CEP (confirmado em produção) ---
                 self._dismiss_cep_popup()

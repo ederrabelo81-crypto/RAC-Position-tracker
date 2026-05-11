@@ -12,8 +12,9 @@ COMO FUNCIONA:
     4. Os scrapers carregam essa sessão automaticamente nas próximas execuções
 
 SITES SUPORTADOS:
-    casasbahia  — bypass do WAF Akamai (Reference ID no HTML de erro)
-    shopee      — salva sessão autenticada (evita redirect para /buyer/login)
+    casasbahia    — bypass do WAF Akamai (Reference ID no HTML de erro)
+    shopee        — salva sessão autenticada (evita redirect para /buyer/login)
+    mercadolivre  — salva sessão autenticada (evita login gate /gz/webdevice)
 
 RENOVAÇÃO:
     Sessões expiram em horas/dias. Rode novamente quando o scraper voltar a falhar.
@@ -66,6 +67,24 @@ SITE_CONFIG = {
             "  2. O script vai navegar automaticamente para a página de busca\n"
             "  3. Se aparecer tela de LOGIN, faça login com sua conta Shopee\n"
             "  4. Após login, navegue para: shopee.com.br/search?keyword=ar+condicionado\n"
+            "  5. Aguarde os PRODUTOS aparecerem na tela\n"
+            "  6. Quando ver produtos listados, pressione ENTER aqui\n"
+        ),
+    },
+    "mercadolivre": {
+        "url": "https://www.mercadolivre.com.br",
+        "check_url": "https://lista.mercadolivre.com.br/ar-condicionado",
+        "success_hint": "Aguarde os produtos aparecerem na página de busca.",
+        "blocked_text": "account-verification",
+        # ML usa device verification (/gz/webdevice) para sessões novas.
+        # Navegamos para a busca automaticamente para capturar cookies completos.
+        "auto_navigate": True,
+        "wait_message": (
+            "\n🔑 INSTRUÇÃO — MERCADO LIVRE:\n"
+            "  1. Aguarde a homepage carregar\n"
+            "  2. Faça login com sua conta Mercado Livre\n"
+            "  3. O script vai navegar automaticamente para a busca\n"
+            "  4. Se aparecer verificacao de dispositivo, confirme no app/email\n"
             "  5. Aguarde os PRODUTOS aparecerem na tela\n"
             "  6. Quando ver produtos listados, pressione ENTER aqui\n"
         ),
@@ -270,6 +289,7 @@ def grab_session(site: str, headless: bool = False) -> bool:
         _CRITICAL = {
             "shopee": ["csrftoken", "SPC_SI", "SPC_SEC_SI"],
             "casasbahia": ["AKA_A2", "ak_bmsc", "bm_sz"],
+            "mercadolivre": ["c_user_id", "MELI_SESSION", "_d2id"],
         }
         for name in _CRITICAL.get(site, []):
             found = any(c["name"] == name for c in cookies)
