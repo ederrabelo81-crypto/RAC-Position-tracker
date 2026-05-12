@@ -607,7 +607,7 @@ class MagaluScraper(BaseScraper):
                 self._random_delay(min_s=1.0, max_s=2.5)
 
                 # captura screenshot da página de busca
-                self.capture_screenshot(identifier=f"{keyword}_p{page}", tipo="busca")
+                self._last_screenshot_busca = self.capture_screenshot(identifier=f"{keyword}_p{page}", tipo="busca")
 
                 # --- Tenta usar resultados XHR capturados primeiro ---
                 api_records: List[Dict[str, Any]] = []
@@ -648,6 +648,9 @@ class MagaluScraper(BaseScraper):
                         self._wait_for_network_idle()
                         self._random_delay(min_s=2.5, max_s=6.0)
                         self._human_scroll(steps=8, step_px=280)
+
+                        # recaptura screenshot da página alternativa
+                        self._last_screenshot_busca = self.capture_screenshot(identifier=f"{keyword}_p{page}", tipo="busca")
 
                         # Checa XHR capturado na segunda tentativa
                         if self._api_results:
