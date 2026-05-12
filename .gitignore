@@ -1,31 +1,4 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Logs e outputs gerados
-*.log
-*.tmp
-*.swp
-logs/
-output/
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Editors
-.vscode/
-.idea/
-
-# Dependencies
-.venv/
-venv/
-node_modules/
-
-# Build artifacts
-dist/
-build/
-target/
+```
+# Claude AI related files
+.claude/
+```
