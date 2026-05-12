@@ -273,8 +273,8 @@ class BaseScraper(ABC):
         )
 
         # Armazena screenshot de busca para passar ao _build_record
-        if tipo == "busca" and url:
-            self._last_screenshot_busca = url
+        if tipo == "busca":
+            self._last_screenshot_busca = url if url else None
 
         return url
 

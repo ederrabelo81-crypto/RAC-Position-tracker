@@ -650,6 +650,9 @@ class MagaluScraper(BaseScraper):
                         self._random_delay(min_s=2.5, max_s=6.0)
                         self._human_scroll(steps=8, step_px=280)
 
+                        # recaptura screenshot da página alternativa
+                        self.capture_screenshot(identifier=keyword, tipo="busca")
+
                         # Checa XHR capturado na segunda tentativa
                         if self._api_results:
                             for data in self._api_results:
