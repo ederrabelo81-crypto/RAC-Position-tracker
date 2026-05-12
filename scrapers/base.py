@@ -20,11 +20,16 @@ from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_
 
 from config import (
     ANALYST_NAME,
+    ENABLE_SCREENSHOTS,
     MAX_DELAY,
     MIN_DELAY,
     NETWORK_IDLE_TIMEOUT,
     PAGE_TIMEOUT,
     PLATFORM_TYPE,
+    SCREENSHOTS_BUCKET,
+    SCREENSHOTS_DIR,
+    SCREENSHOTS_RETENTION_DAYS,
+    SCREENSHOTS_VIEWPORT,
     USER_AGENTS,
 )
 from utils.brands import extract_brand
@@ -56,6 +61,24 @@ class BaseScraper(ABC):
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._user_agent = random.choice(USER_AGENTS)
+
+        # ScreenshotManager só é instanciado quando a flag está ativa —
+        # garante zero overhead/import quando desligado.
+        self.screenshot_manager = None
+        if ENABLE_SCREENSHOTS:
+            try:
+                from utils.screenshot_manager import ScreenshotManager
+                self.screenshot_manager = ScreenshotManager(
+                    base_dir=SCREENSHOTS_DIR,
+                    retention_days=SCREENSHOTS_RETENTION_DAYS,
+                    bucket_name=SCREENSHOTS_BUCKET,
+                    viewport=SCREENSHOTS_VIEWPORT,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[{self.platform_name}] ScreenshotManager não inicializado: {exc}"
+                )
+                self.screenshot_manager = None
 
     # ------------------------------------------------------------------
     # Gerenciamento de ciclo de vida do browser
@@ -152,9 +175,15 @@ class BaseScraper(ABC):
                 "Execute: python -m playwright install chromium"
             )
 
+        # Viewport maior quando capturando screenshots para evidência mais legível
+        if self.screenshot_manager is not None:
+            vp_w, vp_h = SCREENSHOTS_VIEWPORT
+        else:
+            vp_w, vp_h = 1366, 768
+
         self._context = self._browser.new_context(
             user_agent=self._user_agent,
-            viewport={"width": 1366, "height": 768},
+            viewport={"width": vp_w, "height": vp_h},
             locale="pt-BR",
             timezone_id="America/Sao_Paulo",
             accept_downloads=False,
@@ -204,7 +233,40 @@ class BaseScraper(ABC):
 
     def __enter__(self) -> "BaseScraper":
         self._launch()
+        if self.screenshot_manager is not None:
+            try:
+                self.screenshot_manager.cleanup_expired()
+            except Exception as exc:
+                logger.warning(
+                    f"[{self.platform_name}] Cleanup de screenshots falhou: {exc}"
+                )
         return self
+
+    # ------------------------------------------------------------------
+    # Hook de screenshot — no-op silencioso quando ENABLE_SCREENSHOTS=False
+    # ------------------------------------------------------------------
+
+    def capture_screenshot(
+        self,
+        identifier: str,
+        tipo: str = "busca",
+        full_page: bool = False,
+    ) -> Optional[str]:
+        """
+        Captura a página atual via ScreenshotManager.
+
+        Retorna o caminho remoto/local ou None se desligado/indisponível.
+        Seguro de chamar mesmo com ENABLE_SCREENSHOTS=False — vira no-op.
+        """
+        if self.screenshot_manager is None or self._page is None:
+            return None
+        return self.screenshot_manager.capture(
+            page=self._page,
+            platform=self.platform_name,
+            identifier=identifier,
+            tipo=tipo,
+            full_page=full_page,
+        )
 
     def __exit__(self, *_) -> None:
         self._close()
@@ -400,6 +462,9 @@ class BaseScraper(ABC):
         rating: Optional[float] = None,
         review_count: Optional[int] = None,
         tag_destaque: Optional[str] = None,
+        url_produto: Optional[str] = None,
+        screenshot_busca: Optional[str] = None,
+        screenshot_produto: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Monta um dicionário compatível com as colunas do DataFrame de saída.
@@ -438,6 +503,9 @@ class BaseScraper(ABC):
             "Avaliação":           rating,
             "Qtd Avaliações":      review_count,
             "Tag Destaque":        normalize_text(tag_destaque),
+            "URL Produto":         url_produto,
+            "Screenshot Busca":    screenshot_busca,
+            "Screenshot Produto":  screenshot_produto,
         }
 
     # ------------------------------------------------------------------

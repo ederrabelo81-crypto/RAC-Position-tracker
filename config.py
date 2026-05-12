@@ -243,3 +243,13 @@ USER_AGENTS: List[str] = [
 OUTPUT_DIR: str = "output"
 LOGS_DIR: str = "logs"
 DIAGNOSTICO_DIR: str = "diagnostico"
+
+# ---------------------------------------------------------------------------
+# Screenshots (página de busca + produto)
+# Quando False, o ScreenshotManager NÃO é instanciado: zero overhead.
+# ---------------------------------------------------------------------------
+ENABLE_SCREENSHOTS: bool = False
+SCREENSHOTS_DIR: str = "screenshots"
+SCREENSHOTS_RETENTION_DAYS: int = 15
+SCREENSHOTS_BUCKET: str = "rac-screenshots"
+SCREENSHOTS_VIEWPORT: tuple = (1920, 1080)
