@@ -10,14 +10,15 @@ USO (única vez, rodar na máquina local com browser):
 PRÉ-REQUISITOS:
     1. ML_APP_ID e ML_APP_SECRET configurados no .env
     2. No portal developers.mercadolivre.com.br, na configuração do app,
-       adicione "https://www.mercadolivre.com.br" como Redirect URI permitida.
+       adicione "http://localhost:8765/callback" como Redirect URI.
 
 O QUE FAZ:
-    1. Abre browser na URL de autorização do ML
-    2. Usuário faz login e autoriza o app
-    3. ML redireciona para mercadolivre.com.br?code=XXXX
-    4. Script extrai o code da URL, troca por access_token + refresh_token
-    5. Salva em utils/sessions/mercadolivre_oauth.json
+    1. Inicia um servidor HTTP local na porta 8765
+    2. Abre browser na URL de autorização do ML
+    3. Usuário faz login e clica em "Permitir"
+    4. ML redireciona para localhost:8765/callback?code=XXXX
+    5. Script captura o code, troca por access_token + refresh_token
+    6. Salva em utils/sessions/mercadolivre_oauth.json
 
 Após isso, MLAPIScraper usa o refresh_token para renovar tokens automaticamente.
 """
@@ -25,15 +26,12 @@ Após isso, MLAPIScraper usa o refresh_token para renovar tokens automaticamente
 import json
 import os
 import sys
+import threading
+import webbrowser
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
-
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    print("ERRO: pip install playwright && python -m playwright install chromium")
-    sys.exit(1)
 
 try:
     import requests
@@ -41,7 +39,9 @@ except ImportError:
     print("ERRO: pip install requests")
     sys.exit(1)
 
+# ---------------------------------------------------------------------------
 # Carrega .env se existir
+# ---------------------------------------------------------------------------
 env_path = Path(__file__).parent.parent / ".env"
 if env_path.exists():
     for line in env_path.read_text().splitlines():
@@ -52,7 +52,8 @@ if env_path.exists():
 
 APP_ID     = os.environ.get("ML_APP_ID", "").strip()
 APP_SECRET = os.environ.get("ML_APP_SECRET", "").strip()
-REDIRECT   = "https://www.mercadolivre.com.br"
+PORT       = 8765
+REDIRECT   = f"http://localhost:{PORT}/callback"
 API_BASE   = "https://api.mercadolibre.com"
 SESSIONS_DIR = Path(__file__).parent.parent / "utils" / "sessions"
 
@@ -72,20 +73,91 @@ auth_url = (
     })
 )
 
+# ---------------------------------------------------------------------------
+# Servidor HTTP local para capturar o code do redirect
+# ---------------------------------------------------------------------------
+_captured_code: list = []   # lista mutável para comunicação entre threads
+
+
+class _CallbackHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        qs   = parse_qs(urlparse(self.path).query)
+        code = qs.get("code", [None])[0]
+
+        if code:
+            _captured_code.append(code)
+            body = b"<h2>Autorizado! Pode fechar esta janela.</h2>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            error = qs.get("error", ["desconhecido"])[0]
+            body  = f"<h2>Erro: {error}. Tente novamente.</h2>".encode()
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass   # silencia logs do servidor
+
+
+def _run_server(server: HTTPServer):
+    while not _captured_code:
+        server.handle_request()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 print(f"\n{'='*60}")
-print("  ML OAuth Setup — authorization_code")
+print("  ML OAuth Setup — authorization_code + localhost redirect")
 print(f"{'='*60}")
 print("\n  INSTRUÇÕES:")
-print("  1. O browser vai abrir na página de login do Mercado Livre")
-print("  2. Faça login com sua conta ML")
-print("  3. Clique em 'Permitir' para autorizar o app")
-print("  4. Você será redirecionado para mercadolivre.com.br")
-print("  5. O script detecta automaticamente e salva o token")
-print(f"\n  App ID: {APP_ID}")
+print("  1. No portal developers.mercadolivre.com.br → seu app → Editar")
+print(f"     Adicione como Redirect URI: {REDIRECT}")
+print("  2. Salve e volte aqui, pressione ENTER para continuar")
+print("  3. O browser vai abrir na página de login do ML")
+print("  4. Faça login e clique em 'Permitir'")
+print("  5. O script captura o token automaticamente\n")
+print(f"  App ID:   {APP_ID}")
 print(f"  Redirect: {REDIRECT}")
 
+try:
+    input("\n  → Redirect URI adicionado no portal? Pressione ENTER para abrir o browser: ")
+except KeyboardInterrupt:
+    print("\n  Cancelado.")
+    sys.exit(0)
 
-def exchange_code(code: str) -> dict:
+# Inicia servidor local
+server = HTTPServer(("localhost", PORT), _CallbackHandler)
+t = threading.Thread(target=_run_server, args=(server,), daemon=True)
+t.start()
+
+print(f"\n  Servidor local iniciado em {REDIRECT}")
+print("  Abrindo browser...")
+webbrowser.open(auth_url)
+print("  Aguardando autorização (até 3 minutos)...")
+
+# Aguarda até 3 minutos pelo código
+import time as _time
+deadline = _time.time() + 180
+while not _captured_code and _time.time() < deadline:
+    _time.sleep(0.5)
+
+server.server_close()
+
+if not _captured_code:
+    print("\n❌ Timeout. Nenhuma autorização recebida em 3 minutos.")
+    print("   Verifique se o Redirect URI está correto no portal do app.")
+    sys.exit(1)
+
+code = _captured_code[0]
+print(f"\n  ✅ Código de autorização capturado: {code[:12]}...")
+print("  Trocando por access_token + refresh_token...")
+
+try:
     resp = requests.post(
         f"{API_BASE}/oauth/token",
         data={
@@ -98,63 +170,7 @@ def exchange_code(code: str) -> dict:
         timeout=15,
     )
     resp.raise_for_status()
-    return resp.json()
-
-
-with sync_playwright() as p:
-    browser = None
-    for channel in ["chrome", "msedge", None]:
-        try:
-            browser = p.chromium.launch(
-                headless=False,
-                channel=channel,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            )
-            print(f"\n  Browser: {channel or 'chromium'}")
-            break
-        except Exception:
-            continue
-
-    if not browser:
-        print("ERRO: Nenhum browser disponível. Execute: python -m playwright install chromium")
-        sys.exit(1)
-
-    context = browser.new_context(locale="pt-BR", timezone_id="America/Sao_Paulo")
-    page    = context.new_page()
-
-    print(f"\n  Abrindo: {auth_url[:80]}...")
-    page.goto(auth_url, wait_until="domcontentloaded", timeout=30_000)
-
-    print("\n  Aguardando autorização do usuário...")
-    print("  (O script detecta automaticamente o redirect)")
-
-    # Aguarda até a URL mudar para mercadolivre.com.br?code=...
-    code = None
-    try:
-        page.wait_for_url(
-            lambda url: "mercadolivre.com.br" in url and "code=" in url,
-            timeout=180_000,  # 3 minutos para o usuário autorizar
-        )
-        final_url = page.url
-        qs   = parse_qs(urlparse(final_url).query)
-        code = qs.get("code", [None])[0]
-    except Exception as e:
-        print(f"\n  AVISO: Timeout ou erro ao aguardar redirect ({e})")
-        print("  Verifique se o Redirect URI está configurado no portal do app.")
-
-    browser.close()
-
-if not code:
-    print("\n❌ Código de autorização não obtido. Verifique:")
-    print("   - O app tem 'https://www.mercadolivre.com.br' como Redirect URI?")
-    print("   - O usuário autorizou o app?")
-    sys.exit(1)
-
-print(f"\n  Código obtido: {code[:12]}...")
-print("  Trocando por access_token + refresh_token...")
-
-try:
-    tokens = exchange_code(code)
+    tokens = resp.json()
 except Exception as e:
     print(f"\n❌ Falha ao trocar código por tokens: {e}")
     sys.exit(1)
@@ -178,9 +194,10 @@ session_data = {
 out_path = SESSIONS_DIR / "mercadolivre_oauth.json"
 out_path.write_text(json.dumps(session_data, indent=2))
 
-print(f"\n✅ Tokens salvos em: {out_path}")
-print(f"   access_token:  {access_token[:20]}...")
-print(f"   refresh_token: {str(refresh_token)[:20]}..." if refresh_token else "   refresh_token: (ausente)")
-print(f"   expires_in:    {expires_in}s ({expires_in//3600}h)")
-print("\n  Pronto! MLAPIScraper vai usar e renovar este token automaticamente.")
-print("  Copie utils/sessions/mercadolivre_oauth.json para o Oracle VM.")
+print(f"\n  ✅ Tokens salvos em: {out_path}")
+print(f"     access_token:  {access_token[:20]}...")
+print(f"     refresh_token: {str(refresh_token)[:20]}..." if refresh_token else "     refresh_token: (ausente)")
+print(f"     expires_in:    {expires_in}s ({expires_in//3600}h)")
+print("\n  Próximo passo — copie o arquivo para o Oracle VM:")
+print(f"  scp {out_path} ubuntu@<IP-DO-VM>:~/rac-position-tracker/utils/sessions/")
+print("\n  Pronto! MLAPIScraper renovará o token automaticamente a cada coleta.\n")
