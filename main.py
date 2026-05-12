@@ -93,6 +93,9 @@ COLUMN_ORDER = [
     "Avaliação",
     "Qtd Avaliações",
     "Tag Destaque",
+    "URL Produto",
+    "Screenshot Busca",
+    "Screenshot Produto",
 ]
 
 
