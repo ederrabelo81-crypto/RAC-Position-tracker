@@ -65,6 +65,7 @@ class BaseScraper(ABC):
         # ScreenshotManager só é instanciado quando a flag está ativa —
         # garante zero overhead/import quando desligado.
         self.screenshot_manager = None
+        self._last_screenshot_busca: Optional[str] = None
         if ENABLE_SCREENSHOTS:
             try:
                 from utils.screenshot_manager import ScreenshotManager
@@ -257,16 +258,25 @@ class BaseScraper(ABC):
 
         Retorna o caminho remoto/local ou None se desligado/indisponível.
         Seguro de chamar mesmo com ENABLE_SCREENSHOTS=False — vira no-op.
+
+        Se tipo="busca", armazena em self._last_screenshot_busca para uso em _build_record.
         """
         if self.screenshot_manager is None or self._page is None:
             return None
-        return self.screenshot_manager.capture(
+
+        url = self.screenshot_manager.capture(
             page=self._page,
             platform=self.platform_name,
             identifier=identifier,
             tipo=tipo,
             full_page=full_page,
         )
+
+        # Armazena screenshot de busca para passar ao _build_record
+        if tipo == "busca":
+            self._last_screenshot_busca = url
+
+        return url
 
     def __exit__(self, *_) -> None:
         self._close()

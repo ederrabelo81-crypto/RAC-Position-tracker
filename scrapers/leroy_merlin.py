@@ -782,6 +782,7 @@ class LeroyMerlinScraper(BaseScraper):
             self._captured_products = []
             offset = (page - 1) * _ITEMS_PER_PAGE
             records: List[Dict[str, Any]] = []
+            self._last_screenshot_busca = None  # reset antes de nova página
 
             # --- Estratégia 1: Algolia API direta (primário — mais rápido) ---
             # Prova-se mais confiável quando o DNS resolve (maioria dos casos).
@@ -802,7 +803,7 @@ class LeroyMerlinScraper(BaseScraper):
                     time.sleep(2.0)
 
                     # captura screenshot da página de busca
-                    self.capture_screenshot(identifier=f"{keyword}_p{page}", tipo="busca")
+                    self._last_screenshot_busca = self.capture_screenshot(identifier=f"{keyword}_p{page}", tipo="busca")
 
                     html = self._page.content()
 

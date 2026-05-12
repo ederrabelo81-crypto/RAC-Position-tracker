@@ -413,7 +413,7 @@ class MLScraper(BaseScraper):
                 self._human_scroll(steps=10, step_px=300)
 
                 # captura screenshot da página de busca
-                self.capture_screenshot(identifier=f"{keyword}_p{page}", tipo="busca")
+                self._last_screenshot_busca = self.capture_screenshot(identifier=f"{keyword}_p{page}", tipo="busca")
 
                 # verifica se chegamos a uma página sem resultados
                 soup = self._get_soup()
