@@ -17,8 +17,14 @@ name: RAC Price Collection
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
-  # Coleta automática centralizada na Oracle Cloud VM (cron via SSH).
-  # GitHub Actions mantido apenas para execução manual (backup/teste).
+  # Coleta principal centralizada na Oracle Cloud VM (cron via SSH).
+  # GitHub Actions cobre:
+  #   • ML (bloqueado por IP no Oracle VM — Azure IPs não são bloqueados)
+  #   • Backup manual de todas as plataformas
+  schedule:
+    # ML via GitHub Actions: 09:00 BRT (12:00 UTC) e 20:00 BRT (23:00 UTC)
+    - cron: '0 12 * * *'   # manhã
+    - cron: '0 23 * * *'   # noite
   workflow_dispatch:
     inputs:
       platforms:
@@ -81,12 +87,15 @@ jobs:
       - name: Install Node.js dependencies (magalu_shopee)
         run: cd magalu_shopee && npm ci --silent
 
-      # ── 6. Playwright system dependencies ─────────────────────────────────
-      # ubuntu-latest já inclui google-chrome-stable pré-instalado.
-      - name: Install Playwright system dependencies
+      # ── 6. Playwright browsers + system dependencies ──────────────────────
+      # install-deps: bibliotecas de sistema (libglib2, libnss3, etc.)
+      # install chromium: baixa o binário do Chromium para ~/.cache/ms-playwright
+      # google-chrome-stable está pré-instalado no runner e é usado como channel="chrome"
+      - name: Install Playwright browsers and system dependencies
         run: |
-          google-chrome --version
           playwright install-deps chromium
+          playwright install chromium
+          google-chrome --version || true
 
       # ── 7. Determina parâmetros de execução ────────────────────────────────
       - name: Resolve run parameters
@@ -99,26 +108,32 @@ jobs:
             echo "skip_nodejs=${{ github.event.inputs.skip_nodejs }}"       >> "$GITHUB_OUTPUT"
             PRIO="${{ github.event.inputs.priority }}"
             echo "priority=${PRIO}"                                         >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "0 11 * * *" ]; then
-            echo "platforms=ml google_shopping amazon leroy dealers" >> "$GITHUB_OUTPUT"
-            echo "node_platforms=magalu"                             >> "$GITHUB_OUTPUT"
-            echo "pages=2"                                           >> "$GITHUB_OUTPUT"
-            echo "priority=alta media"                               >> "$GITHUB_OUTPUT"
-            echo "skip_nodejs=false"                                 >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 12 * * *" ]; then
+            # 09:00 BRT — ML manhã (Oracle VM bloqueado por IP)
+            echo "platforms=ml"       >> "$GITHUB_OUTPUT"
+            echo "node_platforms="    >> "$GITHUB_OUTPUT"
+            echo "pages=2"            >> "$GITHUB_OUTPUT"
+            echo "priority=alta media" >> "$GITHUB_OUTPUT"
+            echo "skip_nodejs=true"   >> "$GITHUB_OUTPUT"
           else
-            # cron 21:00 UTC = 18:00 BRT
-            echo "platforms=ml google_shopping amazon leroy dealers" >> "$GITHUB_OUTPUT"
-            echo "node_platforms=magalu"                             >> "$GITHUB_OUTPUT"
-            echo "pages=1"                                           >> "$GITHUB_OUTPUT"
-            echo "priority=alta"                                     >> "$GITHUB_OUTPUT"
-            echo "skip_nodejs=false"                                 >> "$GITHUB_OUTPUT"
+            # 20:00 BRT — ML noite
+            echo "platforms=ml"       >> "$GITHUB_OUTPUT"
+            echo "node_platforms="    >> "$GITHUB_OUTPUT"
+            echo "pages=1"            >> "$GITHUB_OUTPUT"
+            echo "priority=alta"      >> "$GITHUB_OUTPUT"
+            echo "skip_nodejs=true"   >> "$GITHUB_OUTPUT"
           fi
 
       # ── 8. Executa coleta Python ───────────────────────────────────────────
+      # MLAPIScraper usa requests.Session — sem browser, sem Xvfb necessário.
+      # Para workflow_dispatch com outras plataformas (Google Shopping, Amazon…),
+      # o Playwright corre headless=True, que funciona sem display no runner.
       - name: Run Python collector
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_URL:   ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:   ${{ secrets.SUPABASE_KEY }}
+          ML_APP_ID:      ${{ secrets.ML_APP_ID }}
+          ML_APP_SECRET:  ${{ secrets.ML_APP_SECRET }}
           CI: 'true'
           DISPLAY: ':99'
         run: |
@@ -134,7 +149,7 @@ jobs:
           echo "Executando: $CMD"
           eval "$CMD"
 
-      # ── 9. Executa coleta Node.js (Magalu) ────────────────────────────────
+      # ── 10. Executa coleta Node.js (Magalu) ───────────────────────────────
       - name: Run Node.js collector (Magalu)
         if: steps.params.outputs.skip_nodejs != 'true'
         env:
