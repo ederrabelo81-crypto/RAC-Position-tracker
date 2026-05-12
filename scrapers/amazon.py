@@ -299,6 +299,9 @@ class AmazonScraper(BaseScraper):
                 self._random_delay(min_s=3.5, max_s=9.0)
                 self._human_scroll(steps=10, step_px=320)
 
+                # captura screenshot da página de busca
+                self.capture_screenshot(identifier=keyword, tipo="busca")
+
                 offset  = (page - 1) * 16
                 records = self._parse_results(
                     html=self._page.content(),

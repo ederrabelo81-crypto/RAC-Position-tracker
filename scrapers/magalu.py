@@ -606,6 +606,9 @@ class MagaluScraper(BaseScraper):
                 self._human_scroll(steps=10, step_px=280)
                 self._random_delay(min_s=1.0, max_s=2.5)
 
+                # captura screenshot da página de busca
+                self.capture_screenshot(identifier=keyword, tipo="busca")
+
                 # --- Tenta usar resultados XHR capturados primeiro ---
                 api_records: List[Dict[str, Any]] = []
                 if self._api_results:
