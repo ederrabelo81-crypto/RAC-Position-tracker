@@ -804,40 +804,54 @@ class DealerScraper(BaseScraper):
 
     def _wait_for_prices(self) -> None:
         """
-        Aguarda até que algum elemento de preço apareça na página.
-        VTEX IO e outros sites carregam preços via fetch separado após o DOM.
-        
-        Timeout aumentado para 10s por seletor (total ~60s) para cobrir sites
-        mais lentos como PoloAr e ArCerto (WooCommerce).
-        
-        CORREÇÃO PROBLEMA #1: Respeita wait_timeout do config para sites OCC
-        (Frigelar, FerreiraCosta) que precisam de tempo extra para renderização.
+        Aguarda renderização de preços e produtos da página.
+
+        Estratégia em 3 camadas:
+        1. Aguarda produtos renderizarem (usando _wait_for_products)
+        2. Aguarda preços carregarem (fetch separado em VTEX)
+        3. Se ajax_prices=True, aguarda networkidle (XHR em PoloAr, etc)
+
+        Respeita wait_timeout e ajax_prices do config do dealer.
         """
-        # Verifica se há timeout customizado no config do dealer
         config = DEALER_CONFIGS.get(self._current_dealer, {})
         wait_timeout = config.get("wait_timeout", 10_000)  # default 10s
-        
+        ajax_prices = config.get("ajax_prices", False)
+        extended_wait = config.get("extended_wait", 15_000)  # para PoloAr
+
+        # Camada 1: Aguardar produtos renderizarem (DOM)
+        self._wait_for_products(timeout=wait_timeout)
+
+        # Camada 2: Se AJAX prices, aguardar XHR completar
+        if ajax_prices:
+            logger.debug(f"[{self.platform_name}] Aguardando XHR (AJAX prices)...")
+            try:
+                self._page.wait_for_load_state("networkidle", timeout=extended_wait)
+                logger.debug(f"[{self.platform_name}] XHR completo")
+            except Exception as e:
+                logger.debug(f"[{self.platform_name}] Timeout XHR: {e} — continuando assim mesmo")
+
+        # Camada 3: Aguardar preços carregarem via fetch (VTEX IO)
         price_wait_selectors = [
             '[class*="sellingPrice"]',
             '[class*="currencyInteger"]',
+            '[class*="currencyDecimal"]',
             '[class*="skuBestPrice"]',
             '.price',
             '[data-price]',
             '[itemprop="price"]',
-            # WooCommerce
             '.woocommerce-Price-amount',
             'span[class*="Price"]',
-            # Fallback genérico para qualquer elemento com "price" no class
-            '[class*="price"]',
         ]
+
         for sel in price_wait_selectors:
             try:
-                self._page.wait_for_selector(sel, timeout=wait_timeout)
-                logger.debug(f"[{self.platform_name}] Preços carregados ({sel})")
+                self._page.wait_for_selector(sel, timeout=3_000)  # timeout curto por seletor
+                logger.debug(f"[{self.platform_name}] Preços renderizados ({sel})")
                 return
             except Exception:
                 continue
-        logger.info(f"[{self.platform_name}] Timeout aguardando preços — extraindo HTML assim mesmo")
+
+        logger.debug(f"[{self.platform_name}] Nenhum preço encontrado — extraindo HTML assim mesmo")
 
     # ------------------------------------------------------------------
     # Infinite scroll (FerreiraCosta e similares)

@@ -61,11 +61,13 @@ class BaseScraper(ABC):
     # Gerenciamento de ciclo de vida do browser
     # ------------------------------------------------------------------
 
-    # Patch JS completo — mesma versão do session_grabber para consistência
+    # Patch JS completo — WAF bypass com máxima stealth
     _STEALTH_JS = """
-        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        // Remove webdriver detection (primary WAF indicator)
+        Object.defineProperty(navigator, 'webdriver', {get: () => false});
         try { delete navigator.__proto__.webdriver; } catch(_) {}
 
+        // Chrome API simulation
         window.chrome = {
             runtime: {
                 onConnect: {addListener: () => {}},
@@ -76,19 +78,36 @@ class BaseScraper(ABC):
             csi: () => ({}),
         };
 
+        // Plugins array (Firefox has real plugins)
         Object.defineProperty(navigator, 'plugins', {
-            get: () => { const a = [1,2,3,4,5]; a.item = () => null; return a; }
+            get: () => {
+                const a = [1,2,3,4,5];
+                a.item = () => null;
+                return a;
+            }
         });
 
+        // Language preference (Brazilian Portuguese)
         Object.defineProperty(navigator, 'languages', {
             get: () => ['pt-BR', 'pt', 'en-US', 'en']
         });
 
+        // Permissions API
         const _origQuery = navigator.permissions.query.bind(navigator.permissions);
         navigator.permissions.query = (p) =>
             p.name === 'notifications'
                 ? Promise.resolve({state: Notification.permission})
                 : _origQuery(p);
+
+        // Remove headless detection
+        Object.defineProperty(document, 'hidden', {get: () => false});
+        Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
+
+        // UA string normalization
+        const baseUA = navigator.userAgent;
+        Object.defineProperty(navigator, 'userAgent', {
+            get: () => baseUA.replace(/HeadlessChrome/, 'Chrome')
+        });
     """
 
     def _launch(self) -> None:
@@ -229,6 +248,137 @@ class BaseScraper(ABC):
         except Exception:
             # timeout de networkidle é tolerado — página pode ter polling
             pass
+
+    def _wait_for_products(
+        self,
+        timeout: int = 10000,
+        item_selectors: Optional[List[str]] = None,
+    ) -> bool:
+        """
+        Aguarda renderização de produtos com múltiplos seletores.
+        Útil para dealers com estruturas DOM variadas.
+
+        Args:
+            timeout: tempo máximo em ms
+            item_selectors: lista de seletores a tentar (usa padrão se None)
+
+        Returns:
+            True se produtos encontrados, False se timeout
+        """
+        if item_selectors is None:
+            # Seletores genéricos para cobrir VTEX, WooCommerce, custom
+            item_selectors = [
+                'article[class*="vtex-product-summary"]',
+                'li.product-summary',
+                'ul.products li.product',
+                '[class*="product-card"]',
+                '[data-sku]',
+                '[data-product-id]',
+                '.pdc_product-item',  # SAP Hybris
+                '.cardprod',  # EngageEletro
+            ]
+
+        combined_selector = ", ".join(item_selectors)
+        try:
+            self._page.wait_for_selector(combined_selector, timeout=timeout)
+            logger.debug(f"[{self.platform_name}] Produtos renderizados com sucesso")
+            return True
+        except Exception as e:
+            logger.warning(
+                f"[{self.platform_name}] Timeout aguardando produtos ({timeout}ms): {e}"
+            )
+            return False
+
+    def _inject_form_value(self, selector: str, value: str) -> bool:
+        """
+        Injeta valor em um input/select e pressiona Enter.
+        Usado para CEP injection (Frigelar), filtros, etc.
+
+        Args:
+            selector: seletor CSS do input
+            value: valor a injetar
+
+        Returns:
+            True se sucesso, False se elemento não encontrado
+        """
+        try:
+            elem = self._page.query_selector(selector)
+            if not elem:
+                logger.debug(f"[{self.platform_name}] Input não encontrado: {selector}")
+                return False
+
+            elem.fill(value)
+            elem.press("Enter")
+            logger.debug(f"[{self.platform_name}] Valor injetado: {selector} = {value}")
+
+            # Aguardar página processar o input
+            time.sleep(random.uniform(1.0, 3.0))
+            return True
+        except Exception as e:
+            logger.warning(f"[{self.platform_name}] Erro ao injetar valor: {e}")
+            return False
+
+    def _check_waf_block(self) -> bool:
+        """
+        Detecta se página foi bloqueada por WAF (403, "Access Denied", etc).
+
+        Returns:
+            True se bloqueado, False se OK
+        """
+        try:
+            html = self._page.content()
+            text = html.lower()
+
+            # Padrões de WAF block
+            waf_indicators = [
+                "403",
+                "access denied",
+                "please wait",
+                "checking your browser",
+                "valide seu acesso",
+                "insira um cep",
+                "too many requests",
+                "rate limit",
+            ]
+
+            for indicator in waf_indicators:
+                if indicator in text:
+                    logger.warning(
+                        f"[{self.platform_name}] WAF block detectado: {indicator}"
+                    )
+                    return True
+
+            return False
+        except Exception as e:
+            logger.debug(f"[{self.platform_name}] Erro ao verificar WAF: {e}")
+            return False
+
+    def _dump_debug_html(self, filename_prefix: str = "debug") -> str:
+        """
+        Salva HTML da página para debug (útil quando 0 produtos encontrados).
+
+        Args:
+            filename_prefix: prefixo do arquivo (ex: "debug_frigelar_p1")
+
+        Returns:
+            Path do arquivo salvo
+        """
+        from pathlib import Path
+
+        try:
+            html = self._page.content()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{filename_prefix}_{timestamp}.html"
+            filepath = Path("logs") / filename
+
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            filepath.write_text(html, encoding="utf-8")
+
+            logger.debug(f"[{self.platform_name}] Debug HTML salvo: {filepath}")
+            return str(filepath)
+        except Exception as e:
+            logger.warning(f"[{self.platform_name}] Erro ao salvar debug HTML: {e}")
+            return ""
 
     # ------------------------------------------------------------------
     # Construção de registro de dado padronizado
