@@ -1,0 +1,150 @@
+{
+  "Frigelar": {
+    "status": "blocked_waf",
+    "url": "https://www.frigelar.com.br/split-inverter/c",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "OCC/Knockout.js",
+    "pagination": "vtex",
+    "special": ""
+  },
+  "CentralAr": {
+    "status": "blocked_waf",
+    "url": "https://www.centralar.com.br/ar-condicionado/inverter/c/INVERTER",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "VTEX IO (SAP Hybris)",
+    "pagination": "vtex",
+    "special": ""
+  },
+  "PoloAr": {
+    "status": "blocked_waf",
+    "url": "https://www.poloar.com.br/ar-condicionado/inverter?category-1=ar-condicionado&category-2=inverter&fuzzy=0&operator=and&facets=category-1%2Ccategory-2%2Cfuzzy%2Coperator&sort=score_desc&page=0",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "Custom",
+    "pagination": "param_zero",
+    "special": ""
+  },
+  "GoCompras": {
+    "status": "blocked_waf",
+    "url": "https://www.gocompras.com.br/ar-condicionado/split-hi-wall/",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "WooCommerce",
+    "pagination": "query",
+    "special": ""
+  },
+  "FrioPecas": {
+    "status": "blocked_waf",
+    "url": "https://www.friopecas.com.br/ar-condicionado/ar-condicionado-split-inverter",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "VTEX",
+    "pagination": "vtex",
+    "special": ""
+  },
+  "WebContinental": {
+    "status": "blocked_waf",
+    "url": "https://www.webcontinental.com.br/climatizacao/ar-condicionado/ar-condicionado-split-hi-wall",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "VTEX",
+    "pagination": "vtex",
+    "special": ""
+  },
+  "Dufrio": {
+    "status": "blocked_waf",
+    "url": "https://www.dufrio.com.br/ar-condicionado/ar-condicionado-split-inverter",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "VTEX",
+    "pagination": "vtex",
+    "special": "VTEX split price"
+  },
+  "Leveros": {
+    "status": "blocked_waf",
+    "url": "https://www.leveros.com.br/ar-condicionado/inverter",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "VTEX",
+    "pagination": "vtex",
+    "special": "JSON-LD priority"
+  },
+  "ArCerto": {
+    "status": "blocked_waf",
+    "url": "https://www.arcerto.com/categoria/ar-condicionado-inverter/",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "WooCommerce",
+    "pagination": "woocommerce",
+    "special": "CF challenge on page 2+"
+  },
+  "Climario": {
+    "status": "blocked_waf",
+    "url": "https://www.climario.com.br/ar-condicionado?initialMap=c&initialQuery=ar-condicionado&map=category-1,category-2&query=/ar-condicionado/ar-condicionado-hi-wall-inverter&order=OrderByTopSaleDESC&searchState",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "VTEX",
+    "pagination": "vtex",
+    "special": ""
+  },
+  "NorteRefrigeracao": {
+    "status": "blocked_waf",
+    "url": "https://www.norterefrigeracao.com.br/ar-condicionado/",
+    "http_status": 403,
+    "dom_items": 0,
+    "jsonld_items": 0,
+    "problems": [
+      "Nenhum produto detectado (DOM + JSON-LD vazios)"
+    ],
+    "type": "Custom",
+    "pagination": "query",
+    "special": ""
+  },
+  "UnicaAR": {
+    "status": "on_hold",
+    "url": "https://www.unicaarcondicionado.com.br/ar-condicionado",
+    "reason": "Domínio não resolvido ou não validado"
+  }
+}
