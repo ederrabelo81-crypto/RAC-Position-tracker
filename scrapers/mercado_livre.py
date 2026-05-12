@@ -357,6 +357,7 @@ class MLScraper(BaseScraper):
                 rating=rating,
                 review_count=review_count,
                 tag_destaque=tag,
+                screenshot_busca=self._last_screenshot_busca,
             )
             records.append(record)
 

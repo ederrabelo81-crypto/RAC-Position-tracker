@@ -338,6 +338,7 @@ class MagaluScraper(BaseScraper):
                     "categoria": keyword_category_map.get(keyword, "Geral"),
                     "keyword": keyword,
                     "plataforma": self.platform_name,
+                    "screenshot_busca": self._last_screenshot_busca,
                 }
 
                 records.append(record)

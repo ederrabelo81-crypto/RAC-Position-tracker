@@ -575,6 +575,7 @@ class LeroyMerlinScraper(BaseScraper):
                 rating=float(rating) if rating else None,
                 review_count=int(review_count) if review_count else None,
                 tag_destaque=None,
+                screenshot_busca=self._last_screenshot_busca,
             ))
 
         if hits:
@@ -723,6 +724,7 @@ class LeroyMerlinScraper(BaseScraper):
                 rating=parse_rating(rating_el.get_text() if rating_el else None),
                 review_count=parse_review_count(review_el.get_text() if review_el else None),
                 tag_destaque=tag_el.get_text(strip=True) if tag_el else None,
+                screenshot_busca=self._last_screenshot_busca,
             ))
 
         return records

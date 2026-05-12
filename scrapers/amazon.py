@@ -260,6 +260,7 @@ class AmazonScraper(BaseScraper):
                 rating=rating,
                 review_count=review_count,
                 tag_destaque=tag,
+                screenshot_busca=self._last_screenshot_busca,
             ))
 
         return records
