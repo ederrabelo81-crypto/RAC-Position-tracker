@@ -150,14 +150,35 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         ],
     },
     "CentralAr": {
-        # Maior dealer especializado em AC do Brasil — VTEX IO (SAP Hybris)
+        # Maior dealer especializado em AC do Brasil — SAP Hybris (não VTEX)
         # FIX 2026-05-02: Seletor .pdc_product-item detectado no DOM (20 itens)
-        # Plataforma não é VTEX padrão — usa estrutura SAP Hybris com pdc_product-item
+        # Plataforma SAP Hybris usa .pdc_product-item (Product Display Container)
         "url":        "https://www.centralar.com.br/ar-condicionado/inverter/c/INVERTER",
         "pagination": "vtex",
         "max_pages":  5,
-        "item_selector": ".pdc_product-item",  # Seletor específico para container de produto SAP Hybris
-        "prefer_jsonld": False,  # JSON-LD é Organization, não Product
+
+        # Seletor primário (SAP Hybris específico)
+        "item_selector": ".pdc_product-item",
+
+        # Seletores fallback se SAP redesenhar
+        "item_selector_candidates": [
+            ".pdc_product-item",                    # Primary SAP selector
+            "[class*='pdc'][class*='product']",     # Broader SAP match
+            "[class*='product-item']",              # Generic fallback
+            "[class*='product'][class*='card']",    # Card style
+            "div[data-product-id]",                 # Data attribute fallback
+        ],
+
+        # Price extraction (SAP Hybris usa estrutura diferente)
+        "price_selector": "[class*='pdc'][class*='price'], [data-price], [itemprop='price']",
+        "price_wait_selector": "[class*='price']",
+
+        # Estratégia de extração
+        "prefer_jsonld": False,  # JSON-LD é Organization, não Product em CentralAr
+        "requires_cep": False,   # Cobertura nacional — sem bloqueio por CEP
+
+        # SAP pode necessitar espera um pouco mais
+        "wait_timeout": 8000,
     },
     "Climario": {
         # FIX PROBLEMA #3: URL desatualizada - faltam filtros VTEX para Hi-Wall Inverter
