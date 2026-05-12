@@ -301,7 +301,8 @@ class AmazonScraper(BaseScraper):
                 self._human_scroll(steps=10, step_px=320)
 
                 # captura screenshot da página de busca
-                self.capture_screenshot(identifier=keyword, tipo="busca")
+                self._last_screenshot_busca = None
+                self._last_screenshot_busca = self.capture_screenshot(identifier=keyword, tipo="busca")
 
                 offset  = (page - 1) * 16
                 records = self._parse_results(
