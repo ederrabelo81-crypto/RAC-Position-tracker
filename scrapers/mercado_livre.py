@@ -412,6 +412,9 @@ class MLScraper(BaseScraper):
                 # scroll humano para carregar lazy-load
                 self._human_scroll(steps=10, step_px=300)
 
+                # captura screenshot da página de busca
+                self.capture_screenshot(identifier=f"{keyword}_p{page}", tipo="busca")
+
                 # verifica se chegamos a uma página sem resultados
                 soup = self._get_soup()
                 if soup.select_one(".ui-search-rescue"):  # página de "sem resultados"
