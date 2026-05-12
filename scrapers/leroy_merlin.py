@@ -801,6 +801,9 @@ class LeroyMerlinScraper(BaseScraper):
                     self._human_scroll(steps=8, step_px=350)
                     time.sleep(2.0)
 
+                    # captura screenshot da página de busca
+                    self.capture_screenshot(identifier=f"{keyword}_p{page}", tipo="busca")
+
                     html = self._page.content()
 
                     if self._captured_products:
