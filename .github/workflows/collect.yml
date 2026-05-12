@@ -135,8 +135,10 @@ jobs:
       # ── 9. Executa coleta Python ───────────────────────────────────────────
       - name: Run Python collector
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_URL:   ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:   ${{ secrets.SUPABASE_KEY }}
+          ML_APP_ID:      ${{ secrets.ML_APP_ID }}
+          ML_APP_SECRET:  ${{ secrets.ML_APP_SECRET }}
           CI: 'true'
           DISPLAY: ':99'
         run: |

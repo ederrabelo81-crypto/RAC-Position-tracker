@@ -1,18 +1,26 @@
 """
-scrapers/mercado_livre_api.py — Mercado Livre via API REST oficial.
+scrapers/mercado_livre_api.py — Mercado Livre via API REST oficial (OAuth).
 
 Usa api.mercadolibre.com em vez de Playwright — sem bloqueio de IP de cloud,
 sem browser, 10x mais rápido. Funciona em Oracle VM, GitHub Actions, etc.
 
+SETUP (único, gratuito):
+  1. Acesse developers.mercadolivre.com.br → Criar aplicação
+  2. Copie App ID e Secret
+  3. Adicione ao .env:   ML_APP_ID=...  ML_APP_SECRET=...
+  4. Adicione ao GitHub: Settings → Secrets → ML_APP_ID + ML_APP_SECRET
+
 Endpoints:
-  Busca:  GET https://api.mercadolibre.com/sites/MLB/search?q={kw}&limit=50&offset={n}
-  Seller: GET https://api.mercadolibre.com/users/{seller_id}  (cache local)
+  Token:  POST https://api.mercadolibre.com/oauth/token (client_credentials)
+  Busca:  GET  https://api.mercadolibre.com/sites/MLB/search?q={kw}&limit=50
+  Seller: GET  https://api.mercadolibre.com/users/{seller_id}  (cache local)
 
 Limitações conhecidas:
   - Posição Patrocinada não disponível na API pública (todos marcados como orgânicos)
   - Tags de destaque mapeadas a partir do campo `tags` da resposta
 """
 
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -41,16 +49,14 @@ _TAG_MAP: Dict[str, str] = {
     "lightning_deal_item":    "OFERTA RELÂMPAGO",
 }
 
-# Cache em memória para nomes de seller (evita N chamadas duplicadas)
-_seller_cache: Dict[int, str] = {}
-
 
 class MLAPIScraper(BaseScraper):
     """
-    Scraper do Mercado Livre usando a API REST pública.
+    Scraper do Mercado Livre usando a API REST com OAuth client_credentials.
 
     Não inicia browser — substitui Playwright por requests HTTP.
     Compatível com a interface BaseScraper (_build_record, context manager).
+    Requer ML_APP_ID e ML_APP_SECRET no .env ou variáveis de ambiente.
     """
 
     platform_name = "Mercado Livre"
@@ -62,15 +68,61 @@ class MLAPIScraper(BaseScraper):
         self._session.headers.update({
             "Accept":          "application/json",
             "Accept-Language": "pt-BR,pt;q=0.9",
-            "User-Agent":      "Mozilla/5.0 (compatible; RACBot/1.0)",
+            "User-Agent":      "RACPositionTracker/1.0",
         })
+
+    # ------------------------------------------------------------------
+    # OAuth — client_credentials (token válido por 6h)
+    # ------------------------------------------------------------------
+
+    def _get_access_token(self) -> Optional[str]:
+        """
+        Obtém access_token via client_credentials.
+        Lê ML_APP_ID e ML_APP_SECRET do ambiente.
+        Retorna None se credenciais não configuradas.
+        """
+        app_id     = os.environ.get("ML_APP_ID", "").strip()
+        app_secret = os.environ.get("ML_APP_SECRET", "").strip()
+
+        if not app_id or not app_secret:
+            logger.warning(
+                f"[{self.platform_name}] ML_APP_ID / ML_APP_SECRET não configurados. "
+                "Crie um app em developers.mercadolivre.com.br e adicione ao .env"
+            )
+            return None
+
+        try:
+            resp = self._session.post(
+                f"{_API_BASE}/oauth/token",
+                data={
+                    "grant_type":    "client_credentials",
+                    "client_id":     app_id,
+                    "client_secret": app_secret,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            token = resp.json().get("access_token")
+            logger.info(f"[{self.platform_name}] OAuth token obtido (válido 6h)")
+            return token
+        except Exception as exc:
+            logger.error(f"[{self.platform_name}] Falha ao obter OAuth token: {exc}")
+            return None
 
     # ------------------------------------------------------------------
     # Context manager — sem browser para iniciar/fechar
     # ------------------------------------------------------------------
 
     def _launch(self) -> None:
-        logger.info(f"[{self.platform_name}] API REST — sem browser necessário")
+        logger.info(f"[{self.platform_name}] API REST — obtendo OAuth token...")
+        token = self._get_access_token()
+        if token:
+            self._session.headers["Authorization"] = f"Bearer {token}"
+        else:
+            logger.error(
+                f"[{self.platform_name}] Sem token OAuth — coleta vai falhar com 403. "
+                "Configure ML_APP_ID e ML_APP_SECRET."
+            )
 
     def _close(self) -> None:
         self._session.close()
@@ -84,19 +136,6 @@ class MLAPIScraper(BaseScraper):
         resp = self._session.get(url, params=params, timeout=15)
         resp.raise_for_status()
         return resp.json()
-
-    def _get_seller_name(self, seller_id: int, nickname: str) -> str:
-        """Resolve nome completo do seller via API (com cache)."""
-        if seller_id in _seller_cache:
-            return _seller_cache[seller_id]
-        try:
-            data = self._get_json(f"{_API_BASE}/users/{seller_id}")
-            name = data.get("name") or nickname
-            _seller_cache[seller_id] = name
-            return name
-        except Exception:
-            _seller_cache[seller_id] = nickname
-            return nickname
 
     # ------------------------------------------------------------------
     # Parse de um item da API → record
@@ -113,11 +152,10 @@ class MLAPIScraper(BaseScraper):
         title = item.get("title")
         price = item.get("price")  # já é float na API
 
-        # Seller
+        # Seller — usa nickname diretamente da resposta de busca.
+        # Chamar /users/{id} por item dobraria o número de requests sem ganho real.
         seller_info = item.get("seller") or {}
-        seller_id   = seller_info.get("id", 0)
-        nickname    = seller_info.get("nickname", "")
-        seller_name = self._get_seller_name(seller_id, nickname)
+        seller_name = seller_info.get("nickname") or None
 
         # Fulfillment: logistic_type="fulfillment" = Mercado Envios Full
         shipping       = item.get("shipping") or {}
