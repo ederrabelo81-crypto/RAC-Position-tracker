@@ -1,15 +1,13 @@
 name: RAC Price Collection
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Coleta automática de preços de ar condicionado em marketplaces e dealers.
+# Coleta de backup manual — acionada via workflow_dispatch.
 #
-# Schedules (horário de Brasília = UTC-3):
-#   • 08:00 BRT (11:00 UTC) todos os dias  →  coleta manhã  — alta + media, 2 páginas
-#   • 18:00 BRT (21:00 UTC) todos os dias  →  coleta tarde  — apenas alta,  1 página
+# Arquitetura de coleta (produção):
+#   Oracle VM (cron)  →  Google Shopping, Amazon, Leroy, Dealers, Magalu
+#   PC local Windows  →  ML (IP residencial — bloqueio de datacenter no ML)
 #
-# Arquitetura de coleta:
-#   Python  →  ML, Google Shopping, Amazon, Leroy Merlin, Dealers (Playwright)
-#   Node.js →  Magalu (Puppeteer-stealth, bypass Akamai Bot Manager)
+# Este workflow só é usado como backup quando a VM está indisponível.
 #
 # Variáveis obrigatórias (Settings → Secrets and variables → Actions):
 #   SUPABASE_URL   —  URL do projeto Supabase
@@ -17,14 +15,6 @@ name: RAC Price Collection
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
-  # Coleta principal centralizada na Oracle Cloud VM (cron via SSH).
-  # GitHub Actions cobre:
-  #   • ML (bloqueado por IP no Oracle VM — Azure IPs não são bloqueados)
-  #   • Backup manual de todas as plataformas
-  schedule:
-    # ML via GitHub Actions: 09:00 BRT (12:00 UTC) e 20:00 BRT (23:00 UTC)
-    - cron: '0 12 * * *'   # manhã
-    - cron: '0 23 * * *'   # noite
   workflow_dispatch:
     inputs:
       platforms:
@@ -88,58 +78,22 @@ jobs:
         run: cd magalu_shopee && npm ci --silent
 
       # ── 6. Playwright browsers + system dependencies ──────────────────────
-      # install-deps: bibliotecas de sistema (libglib2, libnss3, etc.)
-      # install chromium: baixa o binário do Chromium para ~/.cache/ms-playwright
-      # google-chrome-stable está pré-instalado no runner e é usado como channel="chrome"
       - name: Install Playwright browsers and system dependencies
         run: |
           playwright install-deps chromium
           playwright install chromium
           google-chrome --version || true
 
-      # ── 7. Determina parâmetros de execução ────────────────────────────────
-      - name: Resolve run parameters
-        id: params
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "platforms=${{ github.event.inputs.platforms }}"           >> "$GITHUB_OUTPUT"
-            echo "node_platforms=${{ github.event.inputs.node_platforms }}" >> "$GITHUB_OUTPUT"
-            echo "pages=${{ github.event.inputs.pages }}"                   >> "$GITHUB_OUTPUT"
-            echo "skip_nodejs=${{ github.event.inputs.skip_nodejs }}"       >> "$GITHUB_OUTPUT"
-            PRIO="${{ github.event.inputs.priority }}"
-            echo "priority=${PRIO}"                                         >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "0 12 * * *" ]; then
-            # 09:00 BRT — ML manhã (Oracle VM bloqueado por IP)
-            echo "platforms=ml"       >> "$GITHUB_OUTPUT"
-            echo "node_platforms="    >> "$GITHUB_OUTPUT"
-            echo "pages=2"            >> "$GITHUB_OUTPUT"
-            echo "priority=alta media" >> "$GITHUB_OUTPUT"
-            echo "skip_nodejs=true"   >> "$GITHUB_OUTPUT"
-          else
-            # 20:00 BRT — ML noite
-            echo "platforms=ml"       >> "$GITHUB_OUTPUT"
-            echo "node_platforms="    >> "$GITHUB_OUTPUT"
-            echo "pages=1"            >> "$GITHUB_OUTPUT"
-            echo "priority=alta"      >> "$GITHUB_OUTPUT"
-            echo "skip_nodejs=true"   >> "$GITHUB_OUTPUT"
-          fi
-
-      # ── 8. Executa coleta Python ───────────────────────────────────────────
-      # MLAPIScraper usa requests.Session — sem browser, sem Xvfb necessário.
-      # Para workflow_dispatch com outras plataformas (Google Shopping, Amazon…),
-      # o Playwright corre headless=True, que funciona sem display no runner.
+      # ── 7. Executa coleta Python ───────────────────────────────────────────
       - name: Run Python collector
         env:
-          SUPABASE_URL:   ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY:   ${{ secrets.SUPABASE_KEY }}
-          ML_APP_ID:      ${{ secrets.ML_APP_ID }}
-          ML_APP_SECRET:  ${{ secrets.ML_APP_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           CI: 'true'
-          DISPLAY: ':99'
         run: |
-          PLATFORMS="${{ steps.params.outputs.platforms }}"
-          PAGES="${{ steps.params.outputs.pages }}"
-          PRIORITY="${{ steps.params.outputs.priority }}"
+          PLATFORMS="${{ github.event.inputs.platforms }}"
+          PAGES="${{ github.event.inputs.pages }}"
+          PRIORITY="${{ github.event.inputs.priority }}"
 
           CMD="python main.py --platforms $PLATFORMS --pages $PAGES"
           if [ -n "$PRIORITY" ]; then
@@ -149,16 +103,16 @@ jobs:
           echo "Executando: $CMD"
           eval "$CMD"
 
-      # ── 10. Executa coleta Node.js (Magalu) ───────────────────────────────
+      # ── 8. Executa coleta Node.js (Magalu) ────────────────────────────────
       - name: Run Node.js collector (Magalu)
-        if: steps.params.outputs.skip_nodejs != 'true'
+        if: ${{ github.event.inputs.skip_nodejs != 'true' }}
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           CI: 'true'
         run: |
-          NODE_PLATFORMS="${{ steps.params.outputs.node_platforms }}"
-          PAGES="${{ steps.params.outputs.pages }}"
+          NODE_PLATFORMS="${{ github.event.inputs.node_platforms }}"
+          PAGES="${{ github.event.inputs.pages }}"
 
           echo "Executando Node.js: --platforms $NODE_PLATFORMS --pages $PAGES"
           cd magalu_shopee
@@ -166,7 +120,7 @@ jobs:
             --platforms "$NODE_PLATFORMS" \
             --pages "$PAGES"
 
-      # ── 10. Salva CSVs como artefato ───────────────────────────────────────
+      # ── 9. Salva CSVs como artefato ────────────────────────────────────────
       - name: Upload CSV artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -178,7 +132,7 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      # ── 11. Salva logs ─────────────────────────────────────────────────────
+      # ── 10. Salva logs ─────────────────────────────────────────────────────
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4

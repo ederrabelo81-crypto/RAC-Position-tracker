@@ -1,7 +1,8 @@
 @echo off
 :: RAC Price Collector — Coleta Noite (21:00 BRT)
-:: Plataformas: ML + Google Shopping + Amazon + Leroy + Dealers (Python) | Magalu (Node.js)
+:: Plataformas: ML (Playwright — IP residencial necessario)
 :: Prioridade: alta | Paginas: 1
+:: Oracle VM ja cuida de: google_shopping, amazon, leroy, dealers, magalu
 
 setlocal
 set "BASE_DIR=C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
@@ -10,18 +11,19 @@ set "LOG=%BASE_DIR%\logs\scheduler.log"
 cd /d "%BASE_DIR%"
 if not exist logs mkdir logs
 
-echo [%DATE% %TIME%] === Iniciando coleta noite === >> "%LOG%"
+echo [%DATE% %TIME%] === Iniciando coleta noite (ML) === >> "%LOG%"
 
-:: ── Python: ML + Google Shopping + Amazon + Leroy + Dealers ─────────────────
-echo [%DATE% %TIME%] Python: ml google_shopping amazon leroy dealers (1 pagina)... >> "%LOG%"
-python main.py --platforms ml google_shopping amazon leroy dealers --pages 1 --priority alta >> "%LOG%" 2>&1
+:: Ativa ambiente virtual
+if not exist ".venv\Scripts\activate.bat" (
+    echo [%DATE% %TIME%] ERRO: .venv nao encontrado. Execute sync_windows.bat primeiro. >> "%LOG%"
+    exit /b 1
+)
+call .venv\Scripts\activate.bat
+
+:: ── Python: ML ───────────────────────────────────────────────────────────────
+echo [%DATE% %TIME%] Python: ml (1 pagina, alta)... >> "%LOG%"
+python main.py --platforms ml --pages 1 --priority alta >> "%LOG%" 2>&1
 echo [%DATE% %TIME%] Python concluido (exit=%ERRORLEVEL%) >> "%LOG%"
-
-:: ── Node.js: Magalu ──────────────────────────────────────────────────────────
-echo [%DATE% %TIME%] Node.js: magalu (1 pagina)... >> "%LOG%"
-cd /d "%BASE_DIR%\magalu_shopee"
-node node_modules\.bin\ts-node src\index.ts --platforms magalu --pages 1 >> "%LOG%" 2>&1
-echo [%DATE% %TIME%] Node.js Magalu concluido (exit=%ERRORLEVEL%) >> "%LOG%"
 
 echo [%DATE% %TIME%] === Coleta noite concluida === >> "%LOG%"
 endlocal

@@ -39,7 +39,7 @@ from config import (
     ACTIVE_PLATFORMS, PRIORITY_FILTER,
 )
 from scrapers.base import BaseScraper
-from scrapers.mercado_livre_api import MLAPIScraper
+from scrapers.mercado_livre import MLScraper
 from scrapers.magalu import MagaluScraper
 from scrapers.amazon import AmazonScraper
 from scrapers.shopee import ShopeeScraper
@@ -53,7 +53,7 @@ from scrapers.dealers import DealerScraper, DEALER_CONFIGS
 # Mapeamento de apelidos de linha de comando para classes de scraper
 # ---------------------------------------------------------------------------
 SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
-    "ml":             MLAPIScraper,
+    "ml":             MLScraper,
     "magalu":         MagaluScraper,
     "amazon":         AmazonScraper,
     "shopee":         ShopeeScraper,
@@ -184,7 +184,7 @@ def _run_scraper(
     em caso de exceção.
 
     Args:
-        scraper_cls:  classe do scraper (ex: MLAPIScraper)
+        scraper_cls:  classe do scraper (ex: MLScraper)
         keywords_map: dict {categoria: [keywords]} do config
         page_limit:   páginas por keyword
         headless:     modo headless do browser
@@ -496,7 +496,7 @@ def demo() -> None:
     keywords_map  = {"Capacidade": [demo_keyword]}
 
     records = _run_scraper(
-        scraper_cls=MLAPIScraper,
+        scraper_cls=MLScraper,
         keywords_map=keywords_map,
         page_limit=1,
         headless=True,

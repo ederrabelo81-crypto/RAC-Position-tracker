@@ -34,7 +34,7 @@ fi
 
 # 2. Python: Google Shopping + Amazon + Leroy + Dealers
 # ML removido deste VM — IP de datacenter Oracle é bloqueado pelo ML.
-# ML roda via GitHub Actions (IP Azure) — schedules: 09:00 e 20:00 BRT.
+# ML roda apenas no PC local Windows do analista (IP residencial).
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: google_shopping amazon leroy dealers (2 páginas)..." >> "$LOG"
 python main.py \
     --platforms google_shopping amazon leroy dealers \
