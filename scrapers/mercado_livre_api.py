@@ -20,8 +20,11 @@ Limitações conhecidas:
   - Tags de destaque mapeadas a partir do campo `tags` da resposta
 """
 
+import json
 import os
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -72,22 +75,50 @@ class MLAPIScraper(BaseScraper):
         })
 
     # ------------------------------------------------------------------
-    # OAuth — client_credentials (token válido por 6h)
+    # OAuth — authorization_code flow com auto-refresh
     # ------------------------------------------------------------------
+
+    _OAUTH_SESSION_PATH = (
+        Path(__file__).parent.parent / "utils" / "sessions" / "mercadolivre_oauth.json"
+    )
 
     def _get_access_token(self) -> Optional[str]:
         """
-        Obtém access_token via client_credentials.
-        Lê ML_APP_ID e ML_APP_SECRET do ambiente.
-        Retorna None se credenciais não configuradas.
+        Obtém access_token válido para busca.
+
+        Prioridade:
+          1. refresh_token salvo em utils/sessions/mercadolivre_oauth.json
+          2. Falha com instrução clara se sessão não existir
+
+        Setup único: python scripts/ml_oauth_setup.py (abre browser para autorização)
         """
         app_id     = os.environ.get("ML_APP_ID", "").strip()
         app_secret = os.environ.get("ML_APP_SECRET", "").strip()
 
         if not app_id or not app_secret:
-            logger.warning(
-                f"[{self.platform_name}] ML_APP_ID / ML_APP_SECRET não configurados. "
-                "Crie um app em developers.mercadolivre.com.br e adicione ao .env"
+            logger.error(
+                f"[{self.platform_name}] ML_APP_ID / ML_APP_SECRET não configurados no .env"
+            )
+            return None
+
+        if not self._OAUTH_SESSION_PATH.exists():
+            logger.error(
+                f"[{self.platform_name}] Sessão OAuth não encontrada. "
+                "Execute UMA VEZ: python scripts/ml_oauth_setup.py"
+            )
+            return None
+
+        try:
+            data = json.loads(self._OAUTH_SESSION_PATH.read_text())
+        except Exception as exc:
+            logger.error(f"[{self.platform_name}] Erro ao ler sessão OAuth: {exc}")
+            return None
+
+        refresh_token = data.get("refresh_token")
+        if not refresh_token:
+            logger.error(
+                f"[{self.platform_name}] refresh_token ausente na sessão. "
+                "Execute novamente: python scripts/ml_oauth_setup.py"
             )
             return None
 
@@ -95,18 +126,32 @@ class MLAPIScraper(BaseScraper):
             resp = self._session.post(
                 f"{_API_BASE}/oauth/token",
                 data={
-                    "grant_type":    "client_credentials",
+                    "grant_type":    "refresh_token",
                     "client_id":     app_id,
                     "client_secret": app_secret,
+                    "refresh_token": refresh_token,
                 },
                 timeout=15,
             )
             resp.raise_for_status()
-            token = resp.json().get("access_token")
-            logger.info(f"[{self.platform_name}] OAuth token obtido (válido 6h)")
-            return token
+            tokens = resp.json()
+            new_access  = tokens["access_token"]
+            new_refresh = tokens.get("refresh_token", refresh_token)
+
+            # Persiste o novo refresh_token (ML rotaciona em cada uso)
+            data["access_token"]  = new_access
+            data["refresh_token"] = new_refresh
+            data["refreshed_at"]  = datetime.now().isoformat()
+            self._OAUTH_SESSION_PATH.write_text(json.dumps(data, indent=2))
+
+            logger.info(f"[{self.platform_name}] OAuth token renovado via refresh_token")
+            return new_access
+
         except Exception as exc:
-            logger.error(f"[{self.platform_name}] Falha ao obter OAuth token: {exc}")
+            logger.error(
+                f"[{self.platform_name}] Falha ao renovar token: {exc}. "
+                "Execute novamente: python scripts/ml_oauth_setup.py"
+            )
             return None
 
     # ------------------------------------------------------------------
