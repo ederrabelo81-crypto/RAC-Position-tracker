@@ -124,15 +124,10 @@ jobs:
             echo "skip_nodejs=true"   >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 8. Xvfb — display virtual para MLScraper (headless=False) ───────────
-      - name: Start Xvfb virtual display
-        run: |
-          sudo apt-get install -y xvfb --quiet
-          Xvfb :99 -screen 0 1366x768x24 -nolisten tcp &
-          sleep 1
-          echo "Xvfb iniciado (PID=$!)"
-
-      # ── 9. Executa coleta Python ───────────────────────────────────────────
+      # ── 8. Executa coleta Python ───────────────────────────────────────────
+      # MLAPIScraper usa requests.Session — sem browser, sem Xvfb necessário.
+      # Para workflow_dispatch com outras plataformas (Google Shopping, Amazon…),
+      # o Playwright corre headless=True, que funciona sem display no runner.
       - name: Run Python collector
         env:
           SUPABASE_URL:   ${{ secrets.SUPABASE_URL }}

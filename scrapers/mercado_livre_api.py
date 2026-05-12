@@ -181,8 +181,8 @@ class MLAPIScraper(BaseScraper):
             price_float=float(price) if price is not None else None,
             seller=seller_name,
             is_fulfillment=is_fulfillment,
-            rating=float(rating) if rating else None,
-            review_count=int(review_count) if review_count else None,
+            rating=float(rating) if rating is not None else None,
+            review_count=int(review_count) if review_count is not None else None,
             tag_destaque=tag_destaque,
         )
 
