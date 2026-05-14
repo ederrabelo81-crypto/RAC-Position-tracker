@@ -29,6 +29,7 @@ from config import (
     SCREENSHOTS_BUCKET,
     SCREENSHOTS_DIR,
     SCREENSHOTS_RETENTION_DAYS,
+    SCREENSHOTS_UPLOAD_SUPABASE,
     SCREENSHOTS_VIEWPORT,
     USER_AGENTS,
 )
@@ -74,6 +75,7 @@ class BaseScraper(ABC):
                     retention_days=SCREENSHOTS_RETENTION_DAYS,
                     bucket_name=SCREENSHOTS_BUCKET,
                     viewport=SCREENSHOTS_VIEWPORT,
+                    upload_enabled=SCREENSHOTS_UPLOAD_SUPABASE,
                 )
             except Exception as exc:
                 logger.warning(
