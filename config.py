@@ -258,3 +258,11 @@ SCREENSHOTS_DIR: str = "screenshots"
 SCREENSHOTS_RETENTION_DAYS: int = 15
 SCREENSHOTS_BUCKET: str = "rac-screenshots"
 SCREENSHOTS_VIEWPORT: tuple = (1920, 1080)
+
+# Upload para o Supabase Storage. Desligado por padrão: o plano free tem
+# apenas 1 GB de Storage e 15 dias de coleta estouram esse limite. Os
+# screenshots ficam apenas em SCREENSHOTS_DIR (acesso local direto).
+# Para reativar (ex: em plano pago), defina SCREENSHOTS_UPLOAD_SUPABASE=true.
+SCREENSHOTS_UPLOAD_SUPABASE: bool = os.getenv(
+    "SCREENSHOTS_UPLOAD_SUPABASE", "false"
+).strip().lower() in ("1", "true", "yes", "sim", "on")

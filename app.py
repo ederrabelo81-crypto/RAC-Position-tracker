@@ -708,6 +708,25 @@ def _style_midea_df(df: pd.DataFrame, brand_col: str = "marca"):
     return styler
 
 
+def _resolve_screenshot_path(raw) -> Path | None:
+    """Resolve uma referência de screenshot armazenada para um Path local.
+
+    No modo local-only os screenshots guardam um caminho de arquivo
+    (ex: 'screenshots/20260514/Mercado_Livre/kw_busca.webp'), relativo à raiz
+    do projeto. Retorna o Path se o arquivo existir, senão None. URLs http(s)
+    retornam None (o chamador trata como imagem remota).
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    raw = raw.strip()
+    if not raw or raw.startswith("http://") or raw.startswith("https://"):
+        return None
+    p = Path(raw)
+    if not p.is_absolute():
+        p = PROJECT_ROOT / p
+    return p if p.exists() else None
+
+
 st.set_page_config(
     page_title="RAC Price Monitor",
     page_icon="❄️",
@@ -1693,21 +1712,87 @@ def page_results():
         c for c in [
             "data", "turno", "plataforma", "marca", "produto",
             "posicao_geral", "posicao_organica", "preco",
-            "seller", "keyword", "tag",
+            "seller", "keyword", "tag", "url_produto",
         ] if c in df.columns
     ]
 
-    st.dataframe(
+    st.caption(
+        "💡 Clique em **Abrir** na coluna Link para ir ao produto, ou selecione "
+        "uma linha para ver os links clicáveis e o screenshot da coleta."
+    )
+    event = st.dataframe(
         _style_midea_df(df[display_cols]),
         use_container_width=True,
         height=520,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="results_table",
         column_config={
             "data":            st.column_config.DateColumn("Date"),
             "preco":           st.column_config.NumberColumn("Price (R$)", format="R$ %.2f"),
             "posicao_geral":   st.column_config.NumberColumn("Position"),
             "posicao_organica":st.column_config.NumberColumn("Organic Pos."),
+            "produto":         st.column_config.TextColumn("Produto / SKU", width="large"),
+            "url_produto":     st.column_config.LinkColumn(
+                "Link", display_text="Abrir ↗", width="small",
+                help="Abre a página do produto numa nova aba",
+            ),
         },
     )
+
+    # --- Detalhe da linha selecionada: links clicáveis + screenshot local ---
+    sel_rows = event.selection.rows if (event and event.selection) else []
+    if sel_rows:
+        row = df.iloc[sel_rows[0]]
+        st.divider()
+        st.subheader("🔎 Detalhe do produto selecionado")
+
+        nome  = row.get("produto") or "(sem nome)"
+        url   = row.get("url_produto")
+        preco = row.get("preco")
+        preco_fmt = _fmt_brl(preco) if pd.notna(preco) else "—"
+        has_url = isinstance(url, str) and url.startswith("http")
+
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            if has_url:
+                st.markdown(
+                    f"**Produto:** [{nome}]({url})  \n"
+                    f"**Preço:** [{preco_fmt}]({url})  \n"
+                    f"**Plataforma:** {row.get('plataforma', '—')}  ·  "
+                    f"**Seller:** {row.get('seller', '—')}"
+                )
+                st.caption(url)
+            else:
+                st.markdown(
+                    f"**Produto:** {nome}  \n"
+                    f"**Preço:** {preco_fmt}  \n"
+                    f"**Plataforma:** {row.get('plataforma', '—')}  ·  "
+                    f"**Seller:** {row.get('seller', '—')}"
+                )
+                st.caption("URL do produto não disponível para este registro.")
+        with c2:
+            if has_url:
+                st.link_button("🛒 Abrir produto", url, use_container_width=True)
+
+        # Screenshot da página de busca (modo local-only)
+        shot = row.get("screenshot_busca")
+        shot_path = _resolve_screenshot_path(shot)
+        if shot_path:
+            st.image(
+                str(shot_path),
+                caption=f"📸 Screenshot da coleta — {shot_path}",
+                use_column_width=True,
+            )
+        elif isinstance(shot, str) and shot.startswith("http"):
+            st.image(shot, caption="📸 Screenshot da coleta (Supabase)", use_column_width=True)
+        elif isinstance(shot, str) and shot.strip():
+            st.info(
+                f"Screenshot registrado mas não encontrado no disco local:\n\n"
+                f"`{shot}`\n\nProcure em: `{PROJECT_ROOT / 'screenshots'}`"
+            )
+        else:
+            st.caption("Sem screenshot para este registro.")
 
     # --- Download ---
     csv_bytes = df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")

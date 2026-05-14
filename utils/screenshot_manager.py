@@ -119,18 +119,25 @@ class ScreenshotManager:
         retention_days: int = 15,
         bucket_name: str = DEFAULT_BUCKET,
         viewport: Tuple[int, int] = (1920, 1080),
+        upload_enabled: bool = False,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.retention_days = retention_days
         self.bucket_name = bucket_name
         self.viewport = viewport
+        self.upload_enabled = upload_enabled
 
         self._manifest_path = self.base_dir / "screenshot_manifest.json"
         self._lock_path = self.base_dir / "screenshot_manifest.lock"
 
-        # Cache do client supabase — None se indisponível
-        self._supabase = self._init_supabase()
+        # Cache do client supabase — None quando upload desabilitado ou indisponível.
+        # Modo local-only: screenshots ficam só no disco (sem custo de Storage).
+        if upload_enabled:
+            self._supabase = self._init_supabase()
+        else:
+            logger.info("[Screenshots] Modo local-only — upload para Supabase desativado.")
+            self._supabase = None
 
     # ------------------------------------------------------------------
     # Setup auxiliar
