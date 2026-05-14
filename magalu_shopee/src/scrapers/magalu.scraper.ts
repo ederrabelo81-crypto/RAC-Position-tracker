@@ -1,7 +1,7 @@
 import { BaseScraper } from './base.scraper';
 import { RacProduct, ScraperConfig } from '../types';
 import { SELECTORS } from '../config/selectors';
-import { DELAYS, PAGE_TIMEOUT_MS, MOBILE_USER_AGENTS } from '../config/constants';
+import { DELAYS, PAGE_TIMEOUT_MS, MOBILE_USER_AGENTS, MAGALU_HOME_URL } from '../config/constants';
 import { detectBrand } from '../utils/brand-detector';
 import { isValidRacProduct, extractBTU, extractProductType, parsePrice } from '../utils/validators';
 import { logger } from '../utils/logger';
@@ -36,6 +36,43 @@ export class MagaluScraper extends BaseScraper {
     }
   }
 
+  /**
+   * Navegação de aquecimento — visita a home mobile e deixa o Akamai emitir
+   * um par _abck/bm_sz frescos, atrelados a ESTE browser + IP, antes da 1ª
+   * busca. Reaproveitar cookies antigos de uma sessão salva era justamente o
+   * que fazia o Akamai bloquear a coleta (0 produtos em todas as queries).
+   */
+  protected async warmUp(): Promise<void> {
+    if (!this.page) return;
+    try {
+      logger.debug('Magalu: warm-up — visitando home para emitir sessão Akamai fresca');
+      await this.page.goto(MAGALU_HOME_URL, {
+        waitUntil: 'domcontentloaded',
+        timeout: PAGE_TIMEOUT_MS,
+        referer: 'https://www.google.com.br/',
+      });
+      // O sensor JS do Akamai roda após o DOM pronto — dá tempo para ele
+      // coletar os sinais e emitir os cookies de sessão.
+      await this.sleep(this.randomDelay(2500, 4500));
+      await this.humanScroll();
+      await this.sleep(this.randomDelay(800, 1600));
+
+      const cookies = await this.page.cookies();
+      const hasAbck = cookies.some((c) => c.name === '_abck');
+      const hasBmsz = cookies.some((c) => c.name === 'bm_sz');
+      logger.debug(
+        `Magalu: warm-up concluído — _abck=${hasAbck} bm_sz=${hasBmsz} (${cookies.length} cookies na sessão)`
+      );
+      if (!hasAbck) {
+        logger.warn('Magalu: warm-up não recebeu cookie _abck — Akamai pode bloquear a busca');
+      }
+    } catch (err) {
+      logger.warn(
+        `Magalu: warm-up falhou (${err instanceof Error ? err.message : String(err)}) — prosseguindo mesmo assim`
+      );
+    }
+  }
+
   async scrape(query: string, maxPages?: number): Promise<RacProduct[]> {
     const pages = maxPages ?? this.config.maxPages;
     const allProducts: RacProduct[] = [];
@@ -46,6 +83,8 @@ export class MagaluScraper extends BaseScraper {
     await this.launch(false);
 
     try {
+      await this.warmUp();
+
       for (let pageNum = 1; pageNum <= pages; pageNum++) {
         const result = await this.withRetry(
           () => this.scrapePage(query, pageNum),
@@ -87,10 +126,12 @@ export class MagaluScraper extends BaseScraper {
     const url = buildMagaluUrl(query, pageNum);
     logger.debug(`Magalu: GET ${url}`);
 
-    // 'load' espera DOMContentLoaded + recursos — dá mais tempo ao React renderizar preços
+    // 'load' espera DOMContentLoaded + recursos — dá mais tempo ao React renderizar preços.
+    // referer = home mobile: a busca parece navegação dentro do site, não deep-link cru.
     await this.page.goto(url, {
       waitUntil: 'load',
       timeout: PAGE_TIMEOUT_MS,
+      referer: MAGALU_HOME_URL,
     });
 
     await this.sleep(this.randomDelay(2000, 3500));
@@ -104,11 +145,29 @@ export class MagaluScraper extends BaseScraper {
     const html = await this.page.content();
 
     if (this.isSoftBlocked(html)) {
-      logger.warn(`Magalu: Bloqueio real detectado em "${query}" p${pageNum}. Aguardando ${DELAYS.SOFT_BLOCK_MS / 1000}s...`);
+      const dumpPath = this.dumpHtml(html, `magalu_${query}_p${pageNum}`);
+      logger.warn(
+        `Magalu: bloqueio detectado em "${query}" p${pageNum}` +
+        (dumpPath ? ` — HTML salvo em ${dumpPath}` : '') +
+        '. Renovando sessão (warm-up) e tentando novamente...'
+      );
       await this.sleep(DELAYS.SOFT_BLOCK_MS);
-      await this.page.goto(url, { waitUntil: 'load', timeout: PAGE_TIMEOUT_MS });
+      await this.warmUp();
+      await this.page.goto(url, {
+        waitUntil: 'load',
+        timeout: PAGE_TIMEOUT_MS,
+        referer: MAGALU_HOME_URL,
+      });
+      await this.sleep(this.randomDelay(2000, 3500));
+      await this.humanScroll();
       await this.waitForPriceElement();
-      await this.sleep(3000);
+      await this.sleep(2000);
+
+      const retryHtml = await this.page.content();
+      if (this.isSoftBlocked(retryHtml)) {
+        this.dumpHtml(retryHtml, `magalu_${query}_p${pageNum}_retry`);
+        logger.error(`Magalu: ainda bloqueado em "${query}" p${pageNum} após renovar a sessão`);
+      }
     }
 
     const cardCount = await this.page.$$eval(

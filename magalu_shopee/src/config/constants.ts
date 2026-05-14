@@ -1,5 +1,8 @@
 // Desktop bloqueado por Akamai — usar versão mobile
 export const MAGALU_BASE_URL = 'https://m.magazineluiza.com.br/busca';
+// Home mobile — usada como navegação de aquecimento (warm-up) para o browser
+// ganhar uma sessão Akamai fresca antes de ir direto para a busca.
+export const MAGALU_HOME_URL = 'https://m.magazineluiza.com.br/';
 export const SHOPEE_BASE_URL = 'https://shopee.com.br/search';
 
 export const DELAYS = {
@@ -26,11 +29,14 @@ export const USER_AGENTS = [
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
 ];
 
-// User-agents mobile — usados pelo MagaluScraper (m.magazineluiza.com.br)
+// User-agents mobile — usados pelo MagaluScraper (m.magazineluiza.com.br).
+// Apenas Android/Chrome: o engine do Puppeteer é Chromium, então uma UA de
+// iPhone/Safari geraria fingerprint inconsistente com os client hints (UA-CH)
+// que o browser envia — exatamente o tipo de divergência que o Akamai detecta.
 export const MOBILE_USER_AGENTS = [
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36',
-  'Mozilla/5.0 (Linux; Android 13; Samsung Galaxy S23) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.6045.163 Mobile Safari/537.36',
+  'Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.6045.163 Mobile Safari/537.36',
+  'Mozilla/5.0 (Linux; Android 14; SM-A546E) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.143 Mobile Safari/537.36',
 ];
 
 export const SUPABASE_BATCH_SIZE = 500;
