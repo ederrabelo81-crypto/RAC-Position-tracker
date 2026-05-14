@@ -1787,9 +1787,12 @@ def page_results():
         elif isinstance(shot, str) and shot.startswith("http"):
             st.image(shot, caption="📸 Screenshot da coleta (Supabase)", use_column_width=True)
         elif isinstance(shot, str) and shot.strip():
-            st.info(
-                f"Screenshot registrado mas não encontrado no disco local:\n\n"
-                f"`{shot}`\n\nProcure em: `{PROJECT_ROOT / 'screenshots'}`"
+            # Modo local-only: o screenshot existe apenas no PC onde a coleta
+            # rodou. No Streamlit Cloud o arquivo não está presente — mostramos
+            # só a referência, sem alarmar (os links de URL continuam funcionando).
+            st.caption(
+                f"📸 Screenshot salvo localmente: `{shot}` — visível apenas no "
+                "dashboard rodado no PC onde a coleta foi feita (modo local-only)."
             )
         else:
             st.caption("Sem screenshot para este registro.")
