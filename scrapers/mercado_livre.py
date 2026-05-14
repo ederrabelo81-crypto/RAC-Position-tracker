@@ -82,6 +82,15 @@ _SELECTORS = {
 
     # indicador de patrocinado — testa múltiplas abordagens
     "sponsored_label": ".ui-search-item__promoted-label",
+
+    # link do produto — âncora que leva ao PDP
+    "url_candidates": [
+        "a.poly-component__title",          # sistema Poly (atual)
+        "a.ui-search-link",                 # legado
+        "a.ui-search-item__group__element", # legado alternativo
+        'a[href*="mercadolivre.com"]',      # fallback genérico
+        'a[href*="/MLB"]',                  # fallback por padrão de SKU ML
+    ],
 }
 
 # ML pagina de 48 em 48 itens; o offset começa em 1
@@ -201,6 +210,21 @@ class MLScraper(BaseScraper):
         return False
 
     # ------------------------------------------------------------------
+    # Extração de URL do produto
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_url(item: Tag) -> Optional[str]:
+        """Extrai a URL do PDP do produto a partir das âncoras do card."""
+        for sel in _SELECTORS["url_candidates"]:
+            el = item.select_one(sel)
+            href = el.get("href") if el else None
+            if href:
+                # remove query string de tracking, mantém o path canônico
+                return href.split("#")[0].strip()
+        return None
+
+    # ------------------------------------------------------------------
     # Detecção de Fulfillment (FULL)
     # ------------------------------------------------------------------
 
@@ -309,6 +333,9 @@ class MLScraper(BaseScraper):
             # --- preço ---
             price = self._extract_price(item)
 
+            # --- URL do produto ---
+            url_produto = self._extract_url(item)
+
             # --- seller: mesma lógica de fallback ---
             seller = "Mercado Livre"
             for sel in _SELECTORS["seller_candidates"]:
@@ -357,6 +384,7 @@ class MLScraper(BaseScraper):
                 rating=rating,
                 review_count=review_count,
                 tag_destaque=tag,
+                url_produto=url_produto,
             )
             records.append(record)
 

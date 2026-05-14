@@ -1170,8 +1170,8 @@ class DealerScraper(BaseScraper):
                 pass
         return prices
 
-    @staticmethod
     def _extract_jsonld_products(
+        self,
         html: str,
         dealer: str,
         keyword_category_map: dict,
@@ -1276,11 +1276,20 @@ class DealerScraper(BaseScraper):
                     
                     # Corrige marca concatenada
                     name = DealerScraper._fix_brand_concat(name)
-                    
+
+                    # URL do produto — campo padrão schema.org/Product
+                    url_produto = entry.get("url") or entry.get("@id")
+                    if isinstance(offers, dict) and not url_produto:
+                        url_produto = offers.get("url")
+                    if isinstance(url_produto, str):
+                        url_produto = url_produto.strip() or None
+                    else:
+                        url_produto = None
+
                     org_ctr += 1
                     pos_general = base_position + org_ctr
-                    
-                    records.append(DealerScraper._build_record(
+
+                    records.append(self._build_record(
                         keyword=dealer,
                         keyword_category_map=keyword_category_map,
                         title=name,
@@ -1292,6 +1301,7 @@ class DealerScraper(BaseScraper):
                         is_fulfillment=False,
                         rating=None,
                         review_count=None,
+                        url_produto=url_produto,
                     ))
                     
             except Exception as exc:
@@ -1449,6 +1459,36 @@ class DealerScraper(BaseScraper):
 
         return []
 
+    # Origem do dealer corrente (scheme://host) — setada em search()
+    _current_dealer_origin: str = ""
+
+    def _absolutize_url(self, href: Optional[str]) -> Optional[str]:
+        """Converte um href relativo em URL absoluta usando a origem do dealer."""
+        if not href or not isinstance(href, str):
+            return None
+        href = href.strip()
+        if not href:
+            return None
+        if href.startswith("http://") or href.startswith("https://"):
+            return href
+        if href.startswith("//"):
+            return f"https:{href}"
+        origin = self._current_dealer_origin or ""
+        if href.startswith("/"):
+            return f"{origin}{href}"
+        return f"{origin}/{href}"
+
+    @staticmethod
+    def _extract_vtex_url(prod: Dict) -> Optional[str]:
+        """Extrai a URL do PDP de um produto VTEX (link absoluto ou linkText)."""
+        link = prod.get("link") or prod.get("url")
+        if link and isinstance(link, str) and link.strip():
+            return link.strip()
+        link_text = prod.get("linkText") or prod.get("slug")
+        if link_text and isinstance(link_text, str) and link_text.strip():
+            return f"{link_text.strip('/')}/p"
+        return None
+
     def _build_records_from_vtex_products(
         self,
         products_raw: List[Dict],
@@ -1507,6 +1547,7 @@ class DealerScraper(BaseScraper):
                 price_float=price_float,
                 seller=seller_name,
                 is_fulfillment=False,
+                url_produto=self._absolutize_url(self._extract_vtex_url(prod)),
             ))
 
         # Log de produtos sem preço após dedup — CRÍTICO para debugging
@@ -1691,6 +1732,14 @@ class DealerScraper(BaseScraper):
             rating_el = DealerScraper._first_match(item, _SELECTORS["rating_candidates"])
             review_el = DealerScraper._first_match(item, _SELECTORS["review_count_candidates"])
 
+            # ── URL do produto ────────────────────────────────────────
+            url_el = (
+                item.select_one('a[href*="/p/"]')
+                or item.select_one('a[href*="/produto"]')
+                or item.select_one("a[href]")
+            )
+            url_produto = self._absolutize_url(url_el.get("href")) if url_el else None
+
             records.append(self._build_record(
                 keyword=dealer,
                 keyword_category_map=keyword_category_map,
@@ -1704,6 +1753,7 @@ class DealerScraper(BaseScraper):
                 is_fulfillment=False,
                 rating=parse_rating(rating_el.get_text() if rating_el else None),
                 review_count=parse_review_count(review_el.get_text() if review_el else None),
+                url_produto=url_produto,
             ))
 
         # Fallback por índice (pós-loop): se os counts batem (±15%) e ainda há 
@@ -1956,6 +2006,9 @@ class DealerScraper(BaseScraper):
         self._current_dealer = dealer
 
         base_url   = config["url"]
+        # Origem (scheme://host) do dealer — usada para absolutizar URLs de produto
+        _parsed_base = urlparse(base_url)
+        self._current_dealer_origin = f"{_parsed_base.scheme}://{_parsed_base.netloc}"
         pagination = config.get("pagination", "query")
         max_pages  = min(config.get("max_pages", 5), page_limit)
 
@@ -2016,6 +2069,11 @@ class DealerScraper(BaseScraper):
                 # Aguarda preços carregarem (fetch separado em VTEX/SPAs)
                 self._wait_for_prices()
                 self._random_delay(min_s=1.0, max_s=2.5)
+
+                # captura screenshot da página de catálogo do dealer
+                self._last_screenshot_busca = self.capture_screenshot(
+                    identifier=f"{dealer}_p{page}", tipo="busca"
+                )
 
                 # base_position = quantos itens já coletamos (posição contínua)
                 base_position = len(all_records)
