@@ -15,7 +15,11 @@ Uso completo (todos os sites, todas as keywords):
     python main.py --platforms all --pages 3
 
 Uso específico:
-    python main.py --platforms ml magalu --keywords "ar condicionado inverter 12000"
+    python main.py --platforms ml amazon --keywords "ar condicionado inverter 12000"
+
+Nota: Magalu e Shopee NÃO são tratados por este projeto Python. Eles foram
+migrados para o projeto Node.js/TypeScript em magalu_shopee/. Veja o README
+dessa pasta para instruções de execução.
 """
 
 import argparse
@@ -40,9 +44,7 @@ from config import (
 )
 from scrapers.base import BaseScraper
 from scrapers.mercado_livre import MLScraper
-from scrapers.magalu import MagaluScraper
 from scrapers.amazon import AmazonScraper
-from scrapers.shopee import ShopeeScraper
 from scrapers.casas_bahia import CasasBahiaScraper
 from scrapers.google_shopping import GoogleShoppingScraper
 from scrapers.leroy_merlin import LeroyMerlinScraper
@@ -54,9 +56,7 @@ from scrapers.dealers import DealerScraper, DEALER_CONFIGS
 # ---------------------------------------------------------------------------
 SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
     "ml":             MLScraper,
-    "magalu":         MagaluScraper,
     "amazon":         AmazonScraper,
-    "shopee":         ShopeeScraper,
     "casasbahia":     CasasBahiaScraper,
     "google_shopping": GoogleShoppingScraper,
     "leroy":          LeroyMerlinScraper,

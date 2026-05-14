@@ -9,7 +9,9 @@ Uso:
     python scripts/smoke_test.py --only ml        # testa apenas Mercado Livre
     python scripts/smoke_test.py --only dealers   # testa apenas DealerScraper
 
-Plataformas suportadas: ml, amazon, magalu, google_shopping, leroy, dealers
+Plataformas suportadas: ml, amazon, google_shopping, leroy, dealers
+
+Nota: Magalu e Shopee foram migrados para o projeto Node.js em magalu_shopee/.
 """
 
 import argparse
@@ -27,7 +29,6 @@ from scrapers.amazon import AmazonScraper
 from scrapers.dealers import DealerScraper
 from scrapers.google_shopping import GoogleShoppingScraper
 from scrapers.leroy_merlin import LeroyMerlinScraper
-from scrapers.magalu import MagaluScraper
 from scrapers.mercado_livre import MLScraper
 
 # ---------------------------------------------------------------------------
@@ -42,7 +43,6 @@ SMOKE_DEALER = "Frigelar"  # primeiro dealer ativo em DEALER_CONFIGS
 PLATFORMS = {
     "ml":             (MLScraper,             SMOKE_KEYWORD,   SMOKE_KEYWORD_MAP),
     "amazon":         (AmazonScraper,         SMOKE_KEYWORD,   SMOKE_KEYWORD_MAP),
-    "magalu":         (MagaluScraper,         SMOKE_KEYWORD,   SMOKE_KEYWORD_MAP),
     "google_shopping":(GoogleShoppingScraper, SMOKE_KEYWORD,   SMOKE_KEYWORD_MAP),
     "leroy":          (LeroyMerlinScraper,    SMOKE_KEYWORD,   SMOKE_KEYWORD_MAP),
     "dealers":        (DealerScraper,         SMOKE_DEALER,    {}),
