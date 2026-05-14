@@ -59,6 +59,13 @@ _SELECTORS = {
         "span[aria-label*='avaliações'], "
         "[data-csa-c-slot-id='alf-reviews'] .a-size-base"
     ),
+    # Link do produto — âncora do título leva ao PDP (/dp/ASIN)
+    "url_candidates": [
+        "h2 a.a-link-normal",
+        "h2 a",
+        "a.a-link-normal.s-no-outline",
+        'a[href*="/dp/"]',
+    ],
     "tag_destaque":   ".a-badge-text",
     "fulfillment":    ".a-icon-prime, [aria-label='Amazon Prime'], [class*='prime']",
 
@@ -164,6 +171,19 @@ class AmazonScraper(BaseScraper):
 
         return None
 
+    @staticmethod
+    def _extract_url(item: Tag) -> Optional[str]:
+        """Extrai a URL do PDP. Hrefs da Amazon são relativos — prefixa o domínio."""
+        for sel in _SELECTORS["url_candidates"]:
+            el = item.select_one(sel)
+            href = el.get("href") if el else None
+            if href:
+                href = href.split("?")[0].split("#")[0].strip()
+                if href.startswith("/"):
+                    href = f"https://www.amazon.com.br{href}"
+                return href
+        return None
+
     def _dump_debug_html(self, html: str, page: int, keyword: str) -> None:
         try:
             log_dir = Path(LOGS_DIR)
@@ -247,6 +267,8 @@ class AmazonScraper(BaseScraper):
             tag_el = item.select_one(_SELECTORS["tag_destaque"])
             tag    = tag_el.get_text(strip=True) if tag_el else None
 
+            url_produto = self._extract_url(item)
+
             records.append(self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
@@ -260,6 +282,7 @@ class AmazonScraper(BaseScraper):
                 rating=rating,
                 review_count=review_count,
                 tag_destaque=tag,
+                url_produto=url_produto,
             ))
 
         return records

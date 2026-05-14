@@ -63,8 +63,16 @@ _COLUMN_MAP = {
     "Avaliação":            "avaliacao",
     "Qtd Avaliações":       "qtd_avaliacoes",
     "Tag Destaque":         "tag",
+    "URL Produto":          "url_produto",
+    "Screenshot Busca":     "screenshot_busca",
+    "Screenshot Produto":   "screenshot_produto",
     # run_id é injetado diretamente no upload — não vem do CSV/dict interno
 }
+
+# Colunas adicionadas posteriormente ao schema — podem não existir em bancos
+# ainda não migrados. Se o upsert falhar por coluna ausente, o upload remove
+# essas chaves e tenta novamente (degradação graciosa).
+_OPTIONAL_DEST_COLS = {"url_produto", "screenshot_busca", "screenshot_produto"}
 
 # Colunas numéricas — None em vez de NaN para o Postgres
 _INT_COLS   = {"posicao_organica", "posicao_patrocinada", "posicao_geral", "qtd_avaliacoes"}
@@ -831,11 +839,31 @@ def upload_to_supabase(
     batches = math.ceil(total / _BATCH_SIZE)
     sent    = 0
     errors  = 0
+    # Quando o banco ainda não tem as colunas opcionais (url/screenshots),
+    # o primeiro erro de coluna ausente ativa este flag e os lotes seguintes
+    # já são enviados sem essas chaves.
+    drop_optional = False
+
+    def _strip_optional(batch_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            {k: v for k, v in row.items() if k not in _OPTIONAL_DEST_COLS}
+            for row in batch_rows
+        ]
+
+    def _is_missing_column_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            "pgrst204" in msg
+            or ("column" in msg and ("does not exist" in msg or "could not find" in msg))
+            or any(c in msg for c in _OPTIONAL_DEST_COLS)
+        )
 
     logger.info(f"[Supabase] Enviando {total} registros em {batches} lote(s)...")
 
     for i in range(batches):
         batch = rows[i * _BATCH_SIZE : (i + 1) * _BATCH_SIZE]
+        if drop_optional:
+            batch = _strip_optional(batch)
         plataforma = batch[0].get("plataforma", "?") if batch else "?"
         try:
             result = client.table("coletas").upsert(
@@ -857,6 +885,29 @@ def upload_to_supabase(
                     f"Inseridas={inseridas}"
                 )
         except Exception as exc:
+            # Banco sem as colunas opcionais (url/screenshots) → remove e tenta de novo
+            if not drop_optional and _is_missing_column_error(exc):
+                drop_optional = True
+                logger.warning(
+                    "[Supabase] Colunas opcionais (url_produto/screenshot_*) ausentes "
+                    "no banco — reenviando sem elas. Aplique a migração "
+                    "docs/migrations/001_add_url_screenshot_columns.sql para persisti-las."
+                )
+                try:
+                    result = client.table("coletas").upsert(
+                        _strip_optional(batch),
+                        on_conflict="data,turno,plataforma,keyword,produto,run_id",
+                        ignore_duplicates=True,
+                    ).execute()
+                    inseridas = len(result.data) if result.data else 0
+                    sent += inseridas
+                    logger.info(
+                        f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} | "
+                        f"Inseridas={inseridas} (sem colunas opcionais)"
+                    )
+                    continue
+                except Exception as exc2:
+                    exc = exc2
             errors += len(batch)
             logger.warning(
                 f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} falhou: {exc}"

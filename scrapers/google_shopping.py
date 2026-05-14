@@ -104,6 +104,13 @@ _SELECTORS = {
     ],
     # Detecção de CAPTCHA / bloqueio
     "captcha": "#captcha-form, #recaptcha, .g-recaptcha, #challenge-form",
+    # Link do produto/loja dentro do card
+    "url_candidates": [
+        "a[href*='/shopping/product']",
+        "a[href*='google.com/shopping']",
+        "a[href^='http']",
+        "a[href^='/url?']",
+    ],
 }
 
 _RESULTS_PER_PAGE = 10
@@ -290,6 +297,36 @@ class GoogleShoppingScraper(BaseScraper):
         return None
 
     # ------------------------------------------------------------------
+    # Extração de URL do produto
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_url(item: Tag) -> Optional[str]:
+        """
+        Extrai a URL do card. O Google encapsula links de produto em redirects
+        `/url?q=<destino>` — extraímos o destino real quando presente.
+        """
+        from urllib.parse import urlparse, parse_qs, unquote
+
+        for sel in _SELECTORS["url_candidates"]:
+            el = item.select_one(sel)
+            href = el.get("href") if el else None
+            if not href:
+                continue
+            href = href.strip()
+            # Redirect do Google: /url?q=<url_real>&...
+            if href.startswith("/url?"):
+                qs = parse_qs(urlparse(href).query)
+                real = (qs.get("q") or qs.get("url") or [None])[0]
+                if real:
+                    return unquote(real)
+                continue
+            if href.startswith("/"):
+                href = f"https://www.google.com{href}"
+            return href
+        return None
+
+    # ------------------------------------------------------------------
     # Extração de seller
     # ------------------------------------------------------------------
 
@@ -419,6 +456,8 @@ class GoogleShoppingScraper(BaseScraper):
             if not title:
                 empty_title_count += 1
 
+            url_produto = self._extract_url(item)
+
             # Google Shopping: todos os resultados são PLAs (anúncios pagos).
             # Registramos como orgânicos em ordem de posição (sem posição patrocinada)
             # para manter consistência com os outros scrapers.
@@ -435,6 +474,7 @@ class GoogleShoppingScraper(BaseScraper):
                 rating=rating,
                 review_count=review_count,
                 tag_destaque=tag,
+                url_produto=url_produto,
             ))
 
         if empty_title_count > 0:
@@ -489,6 +529,11 @@ class GoogleShoppingScraper(BaseScraper):
                 # Delay generoso — Google detecta padrões rápidos com alta precisão
                 self._random_delay(min_s=_MIN_DELAY_GOOGLE, max_s=_MAX_DELAY_GOOGLE)
                 self._human_scroll(steps=8, step_px=350)
+
+                # captura screenshot da página de busca
+                self._last_screenshot_busca = self.capture_screenshot(
+                    identifier=f"{keyword}_p{page}", tipo="busca"
+                )
 
                 offset  = (page - 1) * _RESULTS_PER_PAGE
                 records = self._parse_results(

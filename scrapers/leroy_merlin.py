@@ -575,6 +575,7 @@ class LeroyMerlinScraper(BaseScraper):
                 rating=float(rating) if rating else None,
                 review_count=int(review_count) if review_count else None,
                 tag_destaque=None,
+                url_produto=self._extract_algolia_url(hit),
             ))
 
         if hits:
@@ -670,6 +671,26 @@ class LeroyMerlinScraper(BaseScraper):
         return None
 
     @staticmethod
+    def _extract_algolia_url(hit: dict) -> Optional[str]:
+        """Extrai/constrói a URL do PDP a partir de um hit Algolia (padrão VTEX)."""
+        url = (
+            hit.get("url")
+            or hit.get("productUrl")
+            or hit.get("link")
+            or hit.get("permalink")
+        )
+        if url and isinstance(url, str):
+            url = url.strip()
+            if url.startswith("/"):
+                url = f"https://www.leroymerlin.com.br{url}"
+            return url
+        # VTEX: linkText → https://www.leroymerlin.com.br/{linkText}/p
+        link_text = hit.get("linkText") or hit.get("slug")
+        if link_text and isinstance(link_text, str):
+            return f"https://www.leroymerlin.com.br/{link_text.strip('/')}/p"
+        return None
+
+    @staticmethod
     def _detect_items(soup: BeautifulSoup) -> tuple[List[Tag], str]:
         for sel in _SELECTORS["item_candidates"]:
             items = soup.select(sel)
@@ -710,6 +731,19 @@ class LeroyMerlinScraper(BaseScraper):
             tag_el    = self._first_match(item, _SELECTORS["tag_candidates"])
             pos = page_offset + idx + 1
 
+            # URL do produto — âncora para /p/ ou /produto/
+            url_produto = None
+            link_el = (
+                item.select_one('a[href*="/p/"]')
+                or item.select_one('a[href*="/produto/"]')
+                or item.select_one("a[href]")
+            )
+            if link_el and link_el.get("href"):
+                href = link_el.get("href").strip()
+                if href.startswith("/"):
+                    href = f"https://www.leroymerlin.com.br{href}"
+                url_produto = href
+
             records.append(self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
@@ -723,6 +757,7 @@ class LeroyMerlinScraper(BaseScraper):
                 rating=parse_rating(rating_el.get_text() if rating_el else None),
                 review_count=parse_review_count(review_el.get_text() if review_el else None),
                 tag_destaque=tag_el.get_text(strip=True) if tag_el else None,
+                url_produto=url_produto,
             ))
 
         return records
@@ -789,6 +824,22 @@ class LeroyMerlinScraper(BaseScraper):
             records = self._algolia_search(keyword, keyword_category_map, page, offset)
             if records:
                 logger.info(f"[{self.platform_name}] {len(records)} itens via Algolia API")
+                # A API Algolia não renderiza página — navega o browser apenas
+                # para capturar o screenshot de evidência quando habilitado.
+                if self.screenshot_manager is not None:
+                    try:
+                        self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+                        self._wait_for_products(timeout_ms=4_000)
+                        self._human_scroll(steps=6, step_px=350)
+                        shot = self.capture_screenshot(
+                            identifier=f"{keyword}_p{page}", tipo="busca"
+                        )
+                        for rec in records:
+                            rec["Screenshot Busca"] = shot
+                    except Exception as exc:
+                        logger.debug(
+                            f"[{self.platform_name}] Screenshot (Algolia path) falhou: {exc}"
+                        )
 
             # --- Estratégia 2: Browser + XHR (fallback para falha de DNS) ---
             # O browser tem seu próprio stack DNS — funciona mesmo quando

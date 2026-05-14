@@ -326,21 +326,23 @@ class MagaluScraper(BaseScraper):
                     logger.debug(f"[{self.platform_name}] Produto sem título/ID ignorado")
                     continue
 
-                record = {
-                    "posicao": idx,
-                    "produto_id": str(product_id),
-                    "titulo": title.strip(),
-                    "url": url.strip() if url else "",
-                    "preco": price,
-                    "lojista": seller.strip() if seller else "Magalu",
-                    "avaliacao": rating,
-                    "num_avaliacoes": review_count,
-                    "categoria": keyword_category_map.get(keyword, "Geral"),
-                    "keyword": keyword,
-                    "plataforma": self.platform_name,
-                }
+                if url and not url.startswith("http"):
+                    url = f"https://www.magazineluiza.com.br{url}"
 
-                records.append(record)
+                records.append(self._build_record(
+                    keyword=keyword,
+                    keyword_category_map=keyword_category_map,
+                    title=title.strip(),
+                    position_general=idx,
+                    position_organic=idx,
+                    position_sponsored=None,
+                    price_float=price,
+                    seller=seller.strip() if seller else "Magalu",
+                    is_fulfillment=False,
+                    rating=rating,
+                    review_count=review_count,
+                    url_produto=url.strip() if url else None,
+                ))
 
             except Exception as e:
                 logger.debug(f"[{self.platform_name}] Erro parseando produto: {e}")
@@ -455,21 +457,20 @@ class MagaluScraper(BaseScraper):
                     logger.debug(f"[{self.platform_name}] Item sem título/URL ignorado")
                     continue
 
-                record = {
-                    "posicao": idx,
-                    "produto_id": url.split("/p/")[-1].split("/")[0] if "/p/" in url else "",
-                    "titulo": title.strip(),
-                    "url": url.strip(),
-                    "preco": price,
-                    "lojista": seller.strip() if seller else "Magalu",
-                    "avaliacao": rating,
-                    "num_avaliacoes": review_count,
-                    "categoria": keyword_category_map.get(keyword, "Geral"),
-                    "keyword": keyword,
-                    "plataforma": self.platform_name,
-                }
-
-                records.append(record)
+                records.append(self._build_record(
+                    keyword=keyword,
+                    keyword_category_map=keyword_category_map,
+                    title=title.strip(),
+                    position_general=idx,
+                    position_organic=idx,
+                    position_sponsored=None,
+                    price_float=price,
+                    seller=seller.strip() if seller else "Magalu",
+                    is_fulfillment=False,
+                    rating=rating,
+                    review_count=review_count,
+                    url_produto=url.strip(),
+                ))
 
             except Exception as e:
                 logger.debug(f"[{self.platform_name}] Erro parseando item: {e}")

@@ -12,6 +12,7 @@ Status das plataformas (validado em produção — Mar/2026):
   ⏸️  Casas Bahia    — em stand by (WAF Akamai, requer sessão via session_grabber)
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -246,9 +247,13 @@ DIAGNOSTICO_DIR: str = "diagnostico"
 
 # ---------------------------------------------------------------------------
 # Screenshots (página de busca + produto)
-# Quando False, o ScreenshotManager NÃO é instanciado: zero overhead.
+# Habilitado por padrão — captura evidência da SERP de cada coleta.
+# Para desligar (zero overhead, ScreenshotManager não é instanciado),
+# defina ENABLE_SCREENSHOTS=false no .env.
 # ---------------------------------------------------------------------------
-ENABLE_SCREENSHOTS: bool = False
+ENABLE_SCREENSHOTS: bool = os.getenv("ENABLE_SCREENSHOTS", "true").strip().lower() in (
+    "1", "true", "yes", "sim", "on"
+)
 SCREENSHOTS_DIR: str = "screenshots"
 SCREENSHOTS_RETENTION_DAYS: int = 15
 SCREENSHOTS_BUCKET: str = "rac-screenshots"

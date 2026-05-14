@@ -486,6 +486,11 @@ class BaseScraper(ABC):
         now = now_brt()
         title_clean = normalize_text(title)
 
+        # screenshot da página de busca: se o caller não passar explicitamente,
+        # usa o último capturado por capture_screenshot(tipo="busca").
+        if screenshot_busca is None:
+            screenshot_busca = self._last_screenshot_busca
+
         # preço: prioriza float já parseado; fallback para parse da string
         if price_float is None and price_raw:
             price_float = parse_price(price_raw)
