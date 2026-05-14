@@ -3,7 +3,26 @@
 > **Project:** RAC Price Monitor — Retail Analytics & Competitive Intelligence  
 > **Domain:** E-commerce price scraping & competitive intelligence for air conditioning market in Brazil  
 > **Stack:** Python 3.10+, Playwright, BeautifulSoup, Pandas, Supabase, Streamlit  
+> **Sub-projeto:** `magalu_shopee/` — Node.js/TypeScript + Puppeteer (Magalu & Shopee)  
 > **Status:** ✅ Production | Oracle Cloud VM (Brazil East) + GitHub Actions (manual backup)
+
+---
+
+## ⚠️ Magalu & Shopee — Projeto Node.js separado
+
+**Magalu e Shopee NÃO são mais scrapers Python.** Foram migrados para o
+sub-projeto `magalu_shopee/` (Node.js/TypeScript + Puppeteer + stealth).
+
+```bash
+# Rodar Magalu (e/ou Shopee) — a partir da pasta magalu_shopee/
+cd magalu_shopee
+node_modules/.bin/ts-node src/index.ts --platforms magalu --pages 2
+node_modules/.bin/ts-node src/index.ts --platforms magalu,shopee --pages 2
+```
+
+O projeto Python (`main.py`) cobre apenas: `ml`, `amazon`, `google_shopping`,
+`leroy`, `dealers`. `python main.py` sem `--platforms` usa `ACTIVE_PLATFORMS`
+do `config.py`, que já exclui Magalu/Shopee.
 
 ---
 
@@ -180,16 +199,18 @@ rac-position-tracker/
 ├── diagnostico.py               # Debug utilities
 ├── requirements.txt             # Python dependencies
 │
+├── magalu_shopee/               # Sub-projeto Node.js/TS — Magalu & Shopee (Puppeteer)
+│   └── src/index.ts             # Entry point: ts-node src/index.ts --platforms magalu
+│
 ├── scrapers/
 │   ├── __init__.py
 │   ├── base.py                  # BaseScraper ABC (Playwright lifecycle, stealth)
 │   ├── mercado_livre.py         # MLScraper
 │   ├── amazon.py                # AmazonScraper
-│   ├── magalu.py                # MagaluScraper (Radware mitigation)
 │   ├── google_shopping.py       # GoogleShoppingScraper
 │   ├── leroy_merlin.py          # LeroyMerlinScraper (Algolia API)
 │   ├── dealers.py               # DealerScraper (13+ dealers, JSON-LD, VTEX)
-│   └── [shopee, casas_bahia, fast_shop].py  # Stand-by
+│   └── [casas_bahia, fast_shop].py  # Stand-by
 │
 ├── utils/
 │   ├── text.py                  # parse_price, parse_rating, now_brt(), normalize
@@ -650,7 +671,7 @@ Workflow: `.github/workflows/collect.yml`
 ```yaml
 # Usage: GitHub → Actions → RAC Price Collection → Run workflow
 inputs:
-  platforms: 'ml magalu amazon google_shopping leroy dealers'
+  platforms: 'ml amazon google_shopping leroy dealers'
   pages: '2'
   priority: ''  # empty = all priorities
 ```
@@ -693,12 +714,12 @@ python utils/supabase_client.py                   # Run cleanup functions
 | Leroy Merlin | ✅ | Algolia API; 10-11s/keyword; 15 3P seller IDs não resolvidos (404 VTEX) |
 | Dealers (Frigelar) | ✅ | JSON-LD + VTEX + DOM fallback; 30 itens / 108s |
 | Google Shopping | ⚠️ | reCAPTCHA em headless; funciona com delays 25-45s em coletas reais |
-| Magalu | ❌ | Akamai Bot Manager — proxy residencial BR necessário (~$500/mês) |
+| Magalu | 🟢 Node.js | Migrado para `magalu_shopee/` (Puppeteer + stealth) — não é mais Python |
+| Shopee | 🟢 Node.js | Migrado para `magalu_shopee/` (Puppeteer + sessão autenticada) |
 | Dealers (CentralAr) | ❌ | Parado desde 26/04 — diagnóstico pendente (Sprint 1) |
 | Dealers (Eletrozema) | ❌ | Parado desde 26/04 — causa comum com CentralAr (VTEX IO) |
 | Dealers (Dufrio) | ❌ | Parado desde 29/04 — diagnóstico pendente (Sprint 1) |
 | Dealers (PoloAr, Climario, FrioPecas, Leveros, WebContinental) | ❌ | Parados 20-31 dias — Sprint 2 |
-| Shopee | ⏸️ | Needs authenticated session |
 | Casas Bahia | ⏸️ | Akamai WAF |
 | Fast Shop | ⏸️ | PerimeterX total block |
 
