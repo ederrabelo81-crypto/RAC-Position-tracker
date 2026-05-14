@@ -1,4 +1,18 @@
-```
 # Claude AI related files
 .claude/
-```
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Coletas e artefatos locais
+output/
+logs/
+screenshots/
+*.log
+
+# Ambiente
+.env
