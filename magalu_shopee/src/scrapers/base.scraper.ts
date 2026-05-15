@@ -14,6 +14,9 @@ export abstract class BaseScraper {
   protected browser: Browser | null = null;
   protected page: Page | null = null;
   protected lastRequestTime = 0;
+  // Persiste o parâmetro isMobile do último launch() para que restartBrowser()
+  // possa recriar o browser com a mesma configuração de viewport/UA.
+  protected lastLaunchMobile = false;
 
   protected readonly config: ScraperConfig;
   protected abstract readonly siteDomain: string;
@@ -32,6 +35,7 @@ export abstract class BaseScraper {
   }
 
   protected async launch(isMobile = false): Promise<void> {
+    this.lastLaunchMobile = isMobile;
     this.browser = await puppeteer.launch({
       headless: this.config.headless,
       args: [
@@ -100,6 +104,24 @@ export abstract class BaseScraper {
     }
     this.browser = null;
     this.page = null;
+  }
+
+  /**
+   * Fecha o browser completamente, aguarda sleepMs e sobe uma nova instância
+   * com fingerprint diferente (novo processo Chromium). Não chama warmUp() —
+   * o chamador decide se precisa de aquecimento após o restart.
+   *
+   * Usar quando o Akamai flaggou o fingerprint atual: reusar o mesmo browser
+   * após um 403 é ineficaz porque o bloqueio está no fingerprint, não na sessão.
+   */
+  protected async restartBrowser(sleepMs = 0): Promise<void> {
+    logger.warn('BaseScraper: reiniciando browser com fingerprint novo...');
+    await this.close();
+    if (sleepMs > 0) {
+      logger.debug(`BaseScraper: aguardando ${(sleepMs / 1000).toFixed(0)}s antes de relançar...`);
+      await this.sleep(sleepMs);
+    }
+    await this.launch(this.lastLaunchMobile);
   }
 
   /**
@@ -181,7 +203,15 @@ export abstract class BaseScraper {
       lower.includes('you have been blocked') ||
       lower.includes('403 forbidden');
 
-    return hasCaptchaChallenge || hasAkamaiBlock || isTooShort || hasExplicitBlock;
+    // Magalu custom Akamai block page — identificada pelo CSS akamai-bot e
+    // pelo elemento error-code contendo 403.
+    const isMagaluAkamaiBlock =
+      html.includes('akamai-bot') ||
+      lower.includes('não é possível acessar a página') ||
+      lower.includes('error-robot.svg') ||
+      (lower.includes('id="error-code"') && lower.includes('403'));
+
+    return hasCaptchaChallenge || hasAkamaiBlock || isTooShort || hasExplicitBlock || isMagaluAkamaiBlock;
   }
 
   /**
@@ -212,9 +242,22 @@ export abstract class BaseScraper {
         return await fn();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        // "Execution context was destroyed" ocorre quando o Akamai redireciona a
+        // página enquanto page.evaluate() ainda está em execução. Reiniciar o
+        // browser é mais eficaz do que um backoff simples nesse caso.
+        const isContextDestroyed =
+          msg.includes('Execution context was destroyed') ||
+          msg.includes('Protocol error (Runtime.callFunctionOn)');
+
         logger.warn(`${label} — tentativa ${attempt}/${this.config.retryAttempts}: ${msg}`);
         if (attempt < this.config.retryAttempts) {
-          await this.sleep(attempt * 5000);
+          if (isContextDestroyed) {
+            logger.warn(`${label}: contexto destruído (redirect Akamai?) — reiniciando browser antes de tentar novamente`);
+            await this.restartBrowser();
+            await this.warmUp();
+          } else {
+            await this.sleep(attempt * 5000);
+          }
         }
       }
     }

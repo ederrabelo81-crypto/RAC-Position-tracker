@@ -12,6 +12,10 @@ export const DELAYS = {
   MAX_MS: parseInt(process.env.MAX_DELAY_MS || '5000'),
   SOFT_BLOCK_MS: 45000,
   BETWEEN_QUERIES_MS: 5000,
+  // Akamai 403: o block page pede "tente novamente em 1 minuto".
+  // Reiniciar o browser antes disso só recebe outro 403 imediato.
+  BLOCK_RESTART_MIN_MS: 70000,
+  BLOCK_RESTART_MAX_MS: 90000,
 };
 
 export const RETRY = {
