@@ -50,5 +50,12 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python concluído (exit=$PYTHON_EXIT)" >> "
 # permanece apenas para Shopee (requer sessão autenticada).
 
 EXIT_CODE=$PYTHON_EXIT
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Coleta manhã concluída (python=$PYTHON_EXIT) ===" >> "$LOG"
+
+# 3. Validação de status — consulta Supabase, envia status PASS/FAIL no Telegram
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Validação diária..." >> "$LOG"
+python scripts/daily_status_check.py --turno Abertura >> "$LOG" 2>&1
+DAILY_STATUS_EXIT=$?
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Validação concluída (exit=$DAILY_STATUS_EXIT)" >> "$LOG"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Coleta manhã concluída (python=$PYTHON_EXIT, status=$DAILY_STATUS_EXIT) ===" >> "$LOG"
 exit $EXIT_CODE

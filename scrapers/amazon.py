@@ -86,6 +86,18 @@ class AmazonScraper(BaseScraper):
 
     platform_name = "Amazon"
 
+    # Após N CAPTCHAs consecutivos, rotaciona o browser pra resetar
+    # fingerprint TLS. Mantém um teto pra evitar loop infinito quando o
+    # IP inteiro do datacenter está em blacklist.
+    _MAX_BROWSER_ROTATIONS = 2
+
+    def __init__(self, headless: bool = True) -> None:
+        super().__init__(headless=headless)
+        # Flag pública lida em main._run_scraper pra abortar keywords restantes
+        # quando IP foi marcado pelo Amazon (CAPTCHA infinito).
+        self.captcha_hit: bool = False
+        self._rotations_done: int = 0
+
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
         encoded = quote_plus(keyword)
@@ -208,15 +220,18 @@ class AmazonScraper(BaseScraper):
     ) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
 
-        # Detecção de bloqueios
+        # Detecção de bloqueios — sinaliza pro caller via captcha_hit/_blocked_page
+        # pra orquestrador decidir rotação/abortar.
         if soup.select_one(_SELECTORS["captcha"]):
             logger.warning(
                 f"[{self.platform_name}] CAPTCHA detectado (página {page}). "
                 "Configure proxy residencial para produção."
             )
+            self._blocked_page = True
             return []
         if soup.select_one(_SELECTORS["bot_check"]):
             logger.warning(f"[{self.platform_name}] Bot-check detectado (página {page}).")
+            self._blocked_page = True
             return []
 
         items, sel_used = self._detect_items(soup)
@@ -308,7 +323,12 @@ class AmazonScraper(BaseScraper):
         keyword_category_map: dict,
         page_limit: int = MAX_PAGES,
     ) -> List[Dict[str, Any]]:
-        """Busca keyword na Amazon Brasil por até `page_limit` páginas."""
+        """Busca keyword na Amazon Brasil por até `page_limit` páginas.
+
+        Se detectar CAPTCHA, tenta rotacionar o browser (novo fingerprint TLS)
+        até `_MAX_BROWSER_ROTATIONS` vezes. Após o limite, marca `captcha_hit`
+        para o orquestrador abortar as keywords restantes da sessão.
+        """
         all_records: List[Dict[str, Any]] = []
 
         for page in range(1, page_limit + 1):
@@ -316,6 +336,7 @@ class AmazonScraper(BaseScraper):
             logger.info(f"[{self.platform_name}] Página {page}/{page_limit} → {url}")
 
             try:
+                self._blocked_page = False
                 self._page.goto(url, wait_until="domcontentloaded")
                 self._wait_for_products(timeout_ms=12_000)
                 self._wait_for_network_idle()
@@ -335,6 +356,40 @@ class AmazonScraper(BaseScraper):
                     page_offset=offset,
                 )
                 all_records.extend(records)
+
+                # CAPTCHA detectado: tenta rotacionar browser e refazer a página
+                if self._blocked_page and self._rotations_done < self._MAX_BROWSER_ROTATIONS:
+                    self._rotations_done += 1
+                    logger.warning(
+                        f"[{self.platform_name}] CAPTCHA — rotacionando browser "
+                        f"({self._rotations_done}/{self._MAX_BROWSER_ROTATIONS}) e "
+                        f"refazendo página {page}"
+                    )
+                    self._rotate_browser()
+                    self._random_delay(min_s=8.0, max_s=15.0)
+                    self._blocked_page = False
+                    self._page.goto(url, wait_until="domcontentloaded")
+                    self._wait_for_products(timeout_ms=12_000)
+                    self._wait_for_network_idle()
+                    self._random_delay(min_s=4.0, max_s=8.0)
+                    self._human_scroll(steps=10, step_px=320)
+                    records = self._parse_results(
+                        html=self._page.content(),
+                        keyword=keyword,
+                        keyword_category_map=keyword_category_map,
+                        page=page,
+                        page_offset=offset,
+                    )
+                    all_records.extend(records)
+
+                if self._blocked_page and self._rotations_done >= self._MAX_BROWSER_ROTATIONS:
+                    logger.error(
+                        f"[{self.platform_name}] CAPTCHA persistente após "
+                        f"{self._rotations_done} rotações — abortando keywords restantes "
+                        "(provavelmente IP em blacklist)."
+                    )
+                    self.captcha_hit = True
+                    break
 
                 if not records:
                     logger.warning(

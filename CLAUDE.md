@@ -709,6 +709,11 @@ python main.py --no-headless --platforms ml       # Visible browser (debug)
 # Dashboard
 streamlit run app.py
 
+# Validação diária — relatório PASS/FAIL por plataforma no Telegram
+python scripts/daily_status_check.py              # Hoje, ambos turnos
+python scripts/daily_status_check.py --turno Abertura
+python scripts/daily_status_check.py --data 2026-05-14 --no-notify
+
 # Database maintenance
 python scripts/fix_turno.py --confirm             # Fix inverted turno
 python utils/supabase_client.py                   # Run cleanup functions

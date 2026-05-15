@@ -137,6 +137,11 @@ class MagaluScraper(BaseScraper):
         self._pw_page = None           # Page (reusada entre keywords)
         self._browser_mode: bool = True  # True = usa Playwright pra cada busca
 
+        # Contador de bloqueios consecutivos pra disparar revalidação de sessão
+        # (visita home + interação humana pra sensor.js promover _abck).
+        self._consecutive_blocks: int = 0
+        self._blocks_before_reval: int = 3
+
         # Resolução de headless (prioridade: env var > CLI --no-headless > True)
         env_headless = os.getenv("MAGALU_HEADLESS")
         if env_headless is not None:
@@ -408,57 +413,89 @@ class MagaluScraper(BaseScraper):
         """
         Navega pra `/busca/{keyword}` dentro do browser persistente e retorna
         o HTML renderizado. None se browser não tá aberto/erro.
+
+        Tenta domínio mobile primeiro; se bloqueado, tenta desktop como fallback
+        — Akamai às vezes aceita um quando rejeita o outro com o mesmo _abck
+        em estado "challenge".
         """
         if not self._pw_page:
             return None
 
         slug = quote_plus(keyword.strip())
-        url = f"{_MAGALU_MOBILE_BASE}/busca/{slug}/"
-        if page_num > 1:
-            url += f"?page={page_num}"
+        candidates = [
+            (_MAGALU_MOBILE_BASE, _MAGALU_MOBILE_HOME),
+            (_MAGALU_DESKTOP_BASE, _MAGALU_DESKTOP_HOME),
+        ]
 
-        try:
-            self._pw_page.goto(url, wait_until="domcontentloaded", timeout=40_000)
-        except Exception as exc:
-            logger.warning(f"[Magalu] Browser goto '{keyword}' p{page_num}: {exc}")
-            return None
+        for base, home in candidates:
+            url = f"{base}/busca/{slug}/"
+            if page_num > 1:
+                url += f"?page={page_num}"
 
-        # Espera produtos aparecerem (sinal de página renderizada com sucesso).
-        # Se for página de bloqueio, esse selector não aparece — timeout aceito.
-        try:
-            self._pw_page.wait_for_selector(
-                'a[href*="/p/"], [data-testid="product-card"]',
-                timeout=12_000,
+            try:
+                self._pw_page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+            except Exception as exc:
+                logger.warning(
+                    f"[Magalu] Browser goto '{keyword}' p{page_num} em "
+                    f"{base[8:30]}: {exc}"
+                )
+                continue
+
+            # Espera produtos aparecerem (sinal de página renderizada com sucesso).
+            try:
+                self._pw_page.wait_for_selector(
+                    'a[href*="/p/"], [data-testid="product-card"]',
+                    timeout=12_000,
+                )
+            except Exception:
+                pass
+
+            # Scroll pra carregar lazy items
+            try:
+                for _ in range(3):
+                    self._pw_page.mouse.wheel(0, 600)
+                    time.sleep(random.uniform(0.3, 0.8))
+            except Exception:
+                pass
+
+            time.sleep(random.uniform(0.8, 1.5))
+
+            try:
+                html = self._pw_page.content()
+            except Exception as exc:
+                logger.warning(f"[Magalu] Browser content() erro: {exc}")
+                continue
+
+            blocked = (
+                "Não é possível acessar a página" in html
+                or len(html) < 5_000
             )
-        except Exception:
-            pass
 
-        # Scroll pra carregar lazy items
-        try:
-            for _ in range(3):
-                self._pw_page.mouse.wheel(0, 600)
-                time.sleep(random.uniform(0.3, 0.8))
-        except Exception:
-            pass
-
-        time.sleep(random.uniform(0.8, 1.5))
-
-        try:
-            html = self._pw_page.content()
-        except Exception as exc:
-            logger.warning(f"[Magalu] Browser content() erro: {exc}")
-            return None
-
-        # Detecta página de bloqueio dentro do browser também
-        if "Não é possível acessar a página" in html or len(html) < 5_000:
-            logger.warning(
-                f"[Magalu] Browser retornou bloqueio em '{keyword}' p{page_num} "
-                f"(len={len(html):,})"
+            # Bypass: mesmo em "bloqueio", verifica se há __NEXT_DATA__ válido
+            # com produtos. Akamai às vezes serve a página normal e marca
+            # apenas o response code; o JSON embutido fica acessível.
+            has_next_data = (
+                '__NEXT_DATA__' in html
+                and ('"products"' in html or '"product"' in html)
             )
-            self._dump_block_html(html, f"browser_{keyword}_p{page_num}")
-            return None
 
-        return html
+            if blocked and not has_next_data:
+                logger.warning(
+                    f"[Magalu] Browser bloqueio em '{keyword}' p{page_num} "
+                    f"({base[8:30]}, len={len(html):,}) — tentando próximo domínio"
+                )
+                self._dump_block_html(html, f"browser_{keyword}_p{page_num}")
+                continue
+
+            if blocked and has_next_data:
+                logger.info(
+                    f"[Magalu] Página marcada bloqueada mas __NEXT_DATA__ presente "
+                    f"em '{keyword}' p{page_num} — tentando extração"
+                )
+
+            return html
+
+        return None
 
     def _apply_cookies_to_cffi(self, cookies: List[Dict[str, Any]]) -> int:
         """Aplica lista de cookies (formato Playwright) na sessão curl_cffi."""
@@ -1052,6 +1089,46 @@ class MagaluScraper(BaseScraper):
     def _delay(self, min_s: float, max_s: float) -> None:
         time.sleep(random.uniform(min_s, max_s))
 
+    def _refresh_browser_session(self) -> None:
+        """
+        Revalida a sessão visitando a home + emulando interação humana.
+        Disparado após N bloqueios consecutivos pro sensor.js do Akamai
+        ter chance de promover o _abck cookie.
+        """
+        if not self._pw_page:
+            return
+        try:
+            logger.info(
+                f"[{self.platform_name}] Revalidando sessão "
+                f"(após {self._consecutive_blocks} bloqueios)..."
+            )
+            self._pw_page.goto(
+                _MAGALU_DESKTOP_HOME,
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
+            for _ in range(4):
+                self._pw_page.mouse.move(
+                    random.randint(150, 1200), random.randint(150, 700)
+                )
+                time.sleep(random.uniform(0.4, 0.9))
+            self._pw_page.mouse.wheel(0, 500)
+            time.sleep(random.uniform(1.0, 1.8))
+            self._pw_page.mouse.wheel(0, 300)
+            time.sleep(random.uniform(0.8, 1.5))
+
+            # Aplica cookies frescos no curl_cffi pra futuro fallback
+            try:
+                cookies = self._pw_context.cookies()
+                self._apply_cookies_to_cffi(cookies)
+            except Exception:
+                pass
+
+            self._consecutive_blocks = 0
+            logger.info(f"[{self.platform_name}] Sessão revalidada ✓")
+        except Exception as exc:
+            logger.warning(f"[{self.platform_name}] Revalidação falhou: {exc}")
+
     def _search_page(
         self,
         keyword: str,
@@ -1061,10 +1138,18 @@ class MagaluScraper(BaseScraper):
         """
         Executa a busca em UMA página. Estratégias em cascata:
           A. Browser persistente (modo principal — Akamai aceita)
-          B. curl_cffi HTML (fallback se browser não disponível — provavelmente 403)
+          B. curl_cffi HTML com cookies do browser (fallback)
         """
         records: List[Dict[str, Any]] = []
         html: Optional[str] = None
+
+        # Revalida sessão após N bloqueios consecutivos
+        if (
+            self._browser_mode
+            and self._pw_page
+            and self._consecutive_blocks >= self._blocks_before_reval
+        ):
+            self._refresh_browser_session()
 
         # --- Estratégia A: Browser persistente (modo principal) ---
         if self._browser_mode and self._pw_page:
@@ -1084,8 +1169,17 @@ class MagaluScraper(BaseScraper):
                         if new_build and new_build != self._build_id:
                             self._build_id = new_build
 
-        # --- Estratégia B: curl_cffi HTML (fallback) ---
+        # --- Estratégia B: curl_cffi HTML com cookies recém-extraídos ---
+        # Refresca cookies do browser antes de cada tentativa curl_cffi —
+        # _abck pode ter sido promovido durante a navegação anterior.
         if not records:
+            if self._pw_context and self._cffi_session is not None:
+                try:
+                    cookies = self._pw_context.cookies()
+                    self._apply_cookies_to_cffi(cookies)
+                except Exception:
+                    pass
+
             html = self._fetch_html_search(keyword, page)
             if html:
                 next_data = self._extract_next_data_from_html(html)
@@ -1102,6 +1196,11 @@ class MagaluScraper(BaseScraper):
                         new_build = self._extract_build_id(html)
                         if new_build and new_build != self._build_id:
                             self._build_id = new_build
+
+        if records:
+            self._consecutive_blocks = 0
+        else:
+            self._consecutive_blocks += 1
 
         return records
 
