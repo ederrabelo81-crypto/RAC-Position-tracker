@@ -42,6 +42,57 @@ export function loadCookies(domain: string): CookieParam[] | null {
   }
 }
 
+/**
+ * Identifica cookies voláteis que NÃO devem ser reaproveitados de uma sessão
+ * salva em disco — basicamente os do Akamai Bot Manager.
+ *
+ * `_abck`, `bm_*`, `ak_bmsc` e `AKA_A2` têm vida curta e ficam atrelados ao
+ * fingerprint do browser + IP que os emitiu. Reinjetar um `_abck` antigo (ou
+ * um `bm_sz` já expirado) faz o Akamai marcar a sessão como bot logo na
+ * primeira requisição — é pior do que não mandar cookie nenhum. O browser
+ * deve ganhar os seus próprios via navegação de aquecimento (warm-up).
+ */
+function isVolatileCookie(name: string): boolean {
+  return (
+    name === '_abck' ||
+    name === 'AKA_A2' ||
+    name.startsWith('bm_') ||
+    name.startsWith('ak_')
+  );
+}
+
+export interface CookieFilterResult {
+  kept: CookieParam[];
+  droppedVolatile: number;
+  droppedExpired: number;
+}
+
+/**
+ * Remove cookies do Akamai Bot Manager e cookies já expirados de uma lista
+ * carregada do disco. Mantém os cookies duráveis e inofensivos (consentimento,
+ * CEP/região, analytics) para que a busca continue localizada.
+ */
+export function stripVolatileCookies(cookies: CookieParam[]): CookieFilterResult {
+  const nowSec = Date.now() / 1000;
+  let droppedVolatile = 0;
+  let droppedExpired = 0;
+
+  const kept = cookies.filter((c) => {
+    const name = c.name || '';
+    if (isVolatileCookie(name)) {
+      droppedVolatile++;
+      return false;
+    }
+    if (typeof c.expires === 'number' && c.expires > 0 && c.expires < nowSec) {
+      droppedExpired++;
+      return false;
+    }
+    return true;
+  });
+
+  return { kept, droppedVolatile, droppedExpired };
+}
+
 export function cookiesExist(domain: string): boolean {
   return fs.existsSync(sessionPath(domain));
 }

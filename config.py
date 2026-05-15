@@ -4,12 +4,13 @@ config.py — Configurações globais do bot de monitoramento de preços.
 Status das plataformas (validado em produção — Mar/2026):
   ✅ Mercado Livre   — funcional (popup de CEP tratado automaticamente)
   ✅ Amazon          — funcional
-  ✅ Magalu          — funcional (seletores confirmados via diagnóstico)
   ✅ Google Shopping — funcional
   ✅ Leroy Merlin    — funcional (Algolia API, preço via averagePromotionalPrice)
   ⏸️  Fast Shop       — bloqueio total (PerimeterX bloqueia API + browser timeout)
-  ⏸️  Shopee         — em stand by (requer sessão autenticada via session_grabber)
   ⏸️  Casas Bahia    — em stand by (WAF Akamai, requer sessão via session_grabber)
+
+Magalu e Shopee foram migrados para o projeto Node.js/TypeScript em
+magalu_shopee/ e não são mais tratados por este projeto Python.
 """
 
 import os
@@ -92,9 +93,7 @@ PRIORITY_FILTER: Optional[List[str]] = None  # ex: ["alta"] para coletas rápida
 # ---------------------------------------------------------------------------
 ACTIVE_PLATFORMS = {
     "ml":             True,   # ✅ Mercado Livre — funcional
-    "magalu":         True,   # ✅ Magalu — seletores nm-* atualizados
     "amazon":         True,   # ✅ Amazon — extração de seller corrigida
-    "shopee":         False,  # ⏸️  Shopee — em stand by
     "casasbahia":     False,  # ⏸️  Casas Bahia — em stand by
     "google_shopping":True,   # ✅ Google Shopping — limpeza de título corrigida
     "leroy":          True,   # ✅ Leroy Merlin — funcional (Algolia API)

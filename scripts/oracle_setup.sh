@@ -173,7 +173,7 @@ fi
 
 # 2. Executa coleta
 python main.py \
-    --platforms ml magalu amazon google_shopping leroy dealers \
+    --platforms ml amazon google_shopping leroy dealers \
     --pages 2 \
     --priority alta media \
     >> "$LOG" 2>&1
@@ -219,7 +219,7 @@ fi
 
 # 2. Executa coleta
 python main.py \
-    --platforms ml magalu amazon google_shopping leroy dealers \
+    --platforms ml amazon google_shopping leroy dealers \
     --pages 1 \
     --priority alta \
     >> "$LOG" 2>&1
