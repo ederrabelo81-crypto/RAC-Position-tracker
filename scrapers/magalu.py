@@ -1,22 +1,26 @@
 """
 scrapers/magalu.py — Scraper da Magalu (magazineluiza.com.br).
 
-Estratégia (em ordem de prioridade):
+Estratégia (em cascata):
   0. Next.js __NEXT_DATA__ via curl_cffi `_next/data/{BUILD_ID}/busca/{slug}.json`
      — JSON puro, mesma payload que o site monta em runtime.
-  1. HTML mobile via curl_cffi (`m.magazineluiza.com.br/busca/...`) + extração
-     de `__NEXT_DATA__` embutido no HTML — fallback para BUILD_ID mudado.
-  2. HTML desktop via curl_cffi (`www.magazineluiza.com.br/busca/...`) — mesmo
-     parser, domínio diferente.
+  1. HTML via curl_cffi (`m.magazineluiza.com.br/busca/...`) + extração de
+     `__NEXT_DATA__` embutido no HTML — fallback se BUILD_ID/route mudou.
 
 Proteção: Akamai Bot Manager (substituiu Radware em Mai/2026).
-  Akamai detecta no nível TLS (JA3/JA4). Puppeteer-stealth e Playwright NÃO
-  bypassam isso — o Chromium tem fingerprint TLS diferente do Chrome real.
-  Solução: `curl_cffi` com `impersonate="chrome124"` replica o handshake TLS
-  exato do Chrome real, mesma técnica já validada em Casas Bahia.
+  Akamai usa DUAS camadas: TLS fingerprint (JA3/JA4) + sensor.js validation.
+    - TLS: curl_cffi com `impersonate="chrome124"` bypassa (replica handshake real).
+    - sensor.js: home aceita "challenge cookie" sem JS, MAS rotas protegidas
+      como /busca/ exigem "validated cookie" gerado pelo sensor.js.
 
-Sem browser: zero overhead de Playwright, zero detecção JS sensor, ~5-10×
-mais rápido que Puppeteer.
+Solução híbrida (Mai/2026):
+  1× por sessão (ou a cada 25min) abre Playwright headless, visita a home,
+  deixa o sensor.js validar a sessão, extrai cookies validados e copia pro
+  curl_cffi. Todas as buscas seguintes vão via curl_cffi rápido.
+
+  - Cache em data/magalu_session.json (idade ≤ 25min reusa direto)
+  - Auto-revalida se aparecer 403 no meio da coleta (1 retry por keyword)
+  - Browser usa Chrome real (channel="chrome") + stealth JS pra passar do sensor.
 """
 
 import json
@@ -24,6 +28,7 @@ import os
 import random
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
@@ -45,6 +50,13 @@ from utils.text import parse_price
 
 
 _ITEMS_PER_PAGE = 60  # Magalu mobile retorna ~60 itens por página
+
+# Cache de sessão validada (cookies do Akamai). Reutilizar entre execuções
+# evita o overhead de abrir o browser toda vez. Akamai valida o `_abck` por
+# ~30min — usamos margem de 25min pra renovar antes de expirar.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_BROWSER_SESSION_CACHE = _PROJECT_ROOT / "data" / "magalu_session.json"
+_SESSION_MAX_AGE_SEC = 25 * 60  # 25 minutos
 
 # Domínios — mobile costuma ter Akamai mais leniente que desktop
 _MAGALU_MOBILE_HOME = "https://m.magazineluiza.com.br/"
@@ -106,9 +118,259 @@ class MagaluScraper(BaseScraper):
         self._impersonate = random.choice(_IMPERSONATIONS)
         self._build_id: Optional[str] = None
         self._home_used: str = _MAGALU_MOBILE_HOME
+        self._session_validated: bool = False  # True após cookies validados aplicados
 
     # ------------------------------------------------------------------
-    # Override ciclo de vida — NÃO inicia Playwright (causa do bloqueio Akamai)
+    # Cache de sessão validada (cookies Akamai)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _load_cached_session() -> Optional[List[Dict[str, Any]]]:
+        """Carrega cookies salvos se cache estiver fresco (<25min)."""
+        if not _BROWSER_SESSION_CACHE.exists():
+            return None
+        try:
+            data = json.loads(_BROWSER_SESSION_CACHE.read_text(encoding="utf-8"))
+            saved_at = datetime.fromisoformat(data["saved_at"])
+            age_sec = (datetime.now() - saved_at).total_seconds()
+            if age_sec > _SESSION_MAX_AGE_SEC:
+                logger.info(
+                    f"[Magalu] Cache de sessão expirado ({age_sec / 60:.1f}min, "
+                    f"limite {_SESSION_MAX_AGE_SEC / 60:.0f}min)"
+                )
+                return None
+            logger.info(
+                f"[Magalu] Reusando sessão validada (idade {age_sec / 60:.1f}min, "
+                f"{len(data['cookies'])} cookies)"
+            )
+            return data["cookies"]
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
+            logger.warning(f"[Magalu] Cache de sessão corrompido ({exc}) — ignorando")
+            return None
+
+    @staticmethod
+    def _save_cached_session(cookies: List[Dict[str, Any]]) -> None:
+        """Salva cookies em disco com timestamp ISO."""
+        try:
+            _BROWSER_SESSION_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            _BROWSER_SESSION_CACHE.write_text(
+                json.dumps({
+                    "saved_at": datetime.now().isoformat(),
+                    "cookies": cookies,
+                }, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info(f"[Magalu] Sessão validada salva em {_BROWSER_SESSION_CACHE}")
+        except Exception as exc:
+            logger.warning(f"[Magalu] Falha ao salvar cache de sessão: {exc}")
+
+    @staticmethod
+    def _invalidate_cached_session() -> None:
+        """Remove o cache de sessão (forçar revalidação)."""
+        try:
+            if _BROWSER_SESSION_CACHE.exists():
+                _BROWSER_SESSION_CACHE.unlink()
+                logger.info("[Magalu] Cache de sessão invalidado")
+        except Exception as exc:
+            logger.debug(f"[Magalu] Falha ao remover cache: {exc}")
+
+    def _validate_session_via_browser(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Abre Playwright headless 1×, visita a home, deixa o sensor.js do
+        Akamai validar a sessão, exporta cookies. Retorna lista de cookies
+        formato Playwright (compatível com context.cookies()).
+
+        O sensor.js do Akamai:
+          1. Browser carrega home → Akamai seta _abck em modo "challenge"
+          2. sensor.js fingerprints o browser (canvas, webgl, etc.)
+          3. sensor.js POSTa fingerprint pra path obfuscado (ex: /rrj_QW/Q8mnYl/...)
+          4. Akamai valida → atualiza _abck pra modo "validated"
+
+        Sem browser real (curl_cffi sozinho), passamos da home mas não de
+        rotas protegidas como /busca/.
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            logger.error(
+                "[Magalu] Playwright não instalado. Execute: pip install playwright "
+                "&& python -m playwright install chromium"
+            )
+            return None
+
+        ua = _DESKTOP_UA_BY_CHROME.get(
+            self._impersonate, _DESKTOP_UA_BY_CHROME["chrome124"]
+        )
+        logger.info("[Magalu] Validando sessão via Playwright (browser real)...")
+
+        try:
+            with sync_playwright() as p:
+                # Tenta Chrome real → msedge → Chromium (em ordem de stealth)
+                browser = None
+                channel_used = None
+                for channel in ("chrome", "msedge", None):
+                    try:
+                        browser = p.chromium.launch(
+                            headless=True,
+                            channel=channel,
+                            args=[
+                                "--no-sandbox",
+                                "--disable-setuid-sandbox",
+                                "--disable-blink-features=AutomationControlled",
+                                "--disable-gpu",
+                                "--disable-dev-shm-usage",
+                                "--disable-infobars",
+                            ],
+                        )
+                        channel_used = channel or "chromium"
+                        break
+                    except Exception:
+                        continue
+
+                if browser is None:
+                    logger.error(
+                        "[Magalu] Não foi possível iniciar nenhum browser "
+                        "(chrome/msedge/chromium). Rode: python -m playwright install chromium"
+                    )
+                    return None
+
+                context = browser.new_context(
+                    user_agent=ua,
+                    viewport={"width": 1366, "height": 768},
+                    locale="pt-BR",
+                    timezone_id="America/Sao_Paulo",
+                )
+                # Stealth JS — esconde marcadores de automação do sensor.js
+                context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => false});
+                    try { delete navigator.__proto__.webdriver; } catch(_) {}
+                    window.chrome = {
+                        runtime: { onConnect: {addListener: () => {}}, onMessage: {addListener: () => {}} },
+                        loadTimes: () => ({}),
+                        csi: () => ({}),
+                    };
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => { const a = [1,2,3,4,5]; a.item = () => null; return a; }
+                    });
+                    Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en-US', 'en']});
+                    Object.defineProperty(document, 'hidden', {get: () => false});
+                    Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
+                """)
+
+                page = context.new_page()
+                page.set_default_timeout(45_000)
+
+                try:
+                    page.goto(
+                        _MAGALU_DESKTOP_HOME,
+                        wait_until="networkidle",
+                        timeout=45_000,
+                    )
+                except Exception as exc:
+                    logger.warning(f"[Magalu] Browser goto erro: {exc} — prosseguindo")
+
+                # Emula interação humana — Akamai pontua mouse/scroll
+                try:
+                    for _ in range(3):
+                        page.mouse.move(
+                            random.randint(150, 1200), random.randint(150, 700)
+                        )
+                        time.sleep(random.uniform(0.3, 0.8))
+                    page.mouse.wheel(0, 400)
+                    time.sleep(random.uniform(1.0, 2.0))
+                    page.mouse.wheel(0, 300)
+                    time.sleep(random.uniform(0.8, 1.5))
+                    page.mouse.wheel(0, -400)
+                    time.sleep(random.uniform(0.5, 1.0))
+                except Exception:
+                    pass
+
+                # Aguarda o sensor.js completar POST de validação ao Akamai.
+                # Sem essa espera, _abck fica em modo "challenge" e busca falha.
+                time.sleep(random.uniform(6.0, 10.0))
+
+                cookies = context.cookies()
+
+                names = {c["name"] for c in cookies}
+                has_abck = "_abck" in names
+                has_bmsz = "bm_sz" in names or "ak_bmsc" in names
+
+                # Heurística: _abck validado tem "~0~" no valor; challenge "~-1~"
+                abck_value = next(
+                    (c["value"] for c in cookies if c["name"] == "_abck"), ""
+                )
+                abck_status = "validated" if "~0~" in abck_value else "challenge"
+
+                browser.close()
+
+                logger.info(
+                    f"[Magalu] Sessão capturada via {channel_used}: "
+                    f"{len(cookies)} cookies (_abck={has_abck} bm={has_bmsz} "
+                    f"status={abck_status})"
+                )
+
+                if not has_abck:
+                    logger.warning(
+                        "[Magalu] _abck ausente — sessão pode não funcionar"
+                    )
+
+                return cookies
+        except Exception as exc:
+            logger.error(
+                f"[Magalu] Erro ao validar sessão via browser: {exc}"
+            )
+            return None
+
+    def _apply_cookies_to_cffi(self, cookies: List[Dict[str, Any]]) -> int:
+        """Aplica lista de cookies (formato Playwright) na sessão curl_cffi."""
+        applied = 0
+        for c in cookies:
+            domain = (c.get("domain") or "magazineluiza.com.br").lstrip(".")
+            try:
+                self._cffi_session.cookies.set(  # type: ignore[union-attr]
+                    c["name"],
+                    c["value"],
+                    domain=domain,
+                    path=c.get("path", "/"),
+                )
+                applied += 1
+            except Exception:
+                pass
+        return applied
+
+    def _ensure_validated_session(self, force_refresh: bool = False) -> bool:
+        """
+        Garante que self._cffi_session tem cookies Akamai validados.
+        Tenta cache primeiro; se ausente/expirado, abre Playwright pra validar.
+        Retorna True em sucesso.
+        """
+        if self._session_validated and not force_refresh:
+            return True
+
+        cookies: Optional[List[Dict[str, Any]]] = None
+
+        if not force_refresh:
+            cookies = self._load_cached_session()
+
+        if not cookies:
+            cookies = self._validate_session_via_browser()
+            if cookies:
+                self._save_cached_session(cookies)
+
+        if not cookies:
+            logger.error("[Magalu] Não foi possível obter sessão validada")
+            return False
+
+        applied = self._apply_cookies_to_cffi(cookies)
+        self._session_validated = True
+        logger.info(
+            f"[Magalu] {applied}/{len(cookies)} cookies aplicados ao curl_cffi"
+        )
+        return True
+
+    # ------------------------------------------------------------------
+    # Override ciclo de vida — curl_cffi como data plane; Playwright só
+    # pra validar sessão Akamai (1×, depois cache em disco)
     # ------------------------------------------------------------------
 
     def __enter__(self) -> "MagaluScraper":
@@ -119,8 +381,10 @@ class MagaluScraper(BaseScraper):
         self._cffi_session = cffi_requests.Session()
         logger.info(
             f"[{self.platform_name}] Sessão curl_cffi iniciada "
-            f"(impersonate={self._impersonate}) | sem browser"
+            f"(impersonate={self._impersonate})"
         )
+        # Valida sessão (cache ou Playwright) antes da 1ª busca
+        self._ensure_validated_session()
         return self
 
     def __exit__(self, *_) -> None:
@@ -130,6 +394,7 @@ class MagaluScraper(BaseScraper):
         except Exception:
             pass
         self._cffi_session = None
+        self._session_validated = False
 
     # ------------------------------------------------------------------
     # Headers — mimetiza navegação real do Chrome com Client Hints
@@ -635,6 +900,54 @@ class MagaluScraper(BaseScraper):
     def _delay(self, min_s: float, max_s: float) -> None:
         time.sleep(random.uniform(min_s, max_s))
 
+    def _search_page(
+        self,
+        keyword: str,
+        keyword_category_map: dict,
+        page: int,
+    ) -> List[Dict[str, Any]]:
+        """Executa a busca em UMA página testando as 2 estratégias em cascata."""
+        records: List[Dict[str, Any]] = []
+
+        # --- Estratégia 0: _next/data JSON ---
+        if self._build_id:
+            data = self._fetch_next_data(keyword, page)
+            if data:
+                products = self._find_products_in_json(data)
+                if products:
+                    records = self._parse_products(
+                        products, keyword, keyword_category_map, page
+                    )
+                    logger.info(
+                        f"[{self.platform_name}] {len(records)} produtos via _next/data"
+                    )
+
+        # --- Estratégia 1: HTML + __NEXT_DATA__ ---
+        if not records:
+            html = self._fetch_html_search(keyword, page)
+            if html:
+                next_data = self._extract_next_data_from_html(html)
+                if next_data:
+                    products = self._find_products_in_json(next_data)
+                    if products:
+                        records = self._parse_products(
+                            products, keyword, keyword_category_map, page
+                        )
+                        logger.info(
+                            f"[{self.platform_name}] {len(records)} produtos via "
+                            "HTML+__NEXT_DATA__"
+                        )
+                        # BUILD_ID pode ter mudado — atualiza pro próximo page
+                        new_build = self._extract_build_id(html)
+                        if new_build and new_build != self._build_id:
+                            logger.info(
+                                f"[{self.platform_name}] BUILD_ID atualizado: "
+                                f"{self._build_id} → {new_build}"
+                            )
+                            self._build_id = new_build
+
+        return records
+
     # ------------------------------------------------------------------
     # Interface pública
     # ------------------------------------------------------------------
@@ -679,48 +992,30 @@ class MagaluScraper(BaseScraper):
 
         self._delay(*_INTER_REQUEST_DELAY)
 
+        # Revalidação automática: se as 2 estratégias falharem na primeira
+        # página, abrimos browser pra renovar a sessão Akamai e tentamos de
+        # novo (1 retry só pra não enrolar).
+        session_revalidated_this_keyword = False
+
         for page in range(1, page_limit + 1):
             logger.info(
                 f"[{self.platform_name}] '{keyword}' página {page}/{page_limit}"
             )
-            records: List[Dict[str, Any]] = []
+            records = self._search_page(keyword, keyword_category_map, page)
 
-            # --- Estratégia 0: _next/data JSON ---
-            if self._build_id:
-                data = self._fetch_next_data(keyword, page)
-                if data:
-                    products = self._find_products_in_json(data)
-                    if products:
-                        records = self._parse_products(
-                            products, keyword, keyword_category_map, page
-                        )
-                        logger.info(
-                            f"[{self.platform_name}] {len(records)} produtos via _next/data"
-                        )
-
-            # --- Estratégia 1: HTML + __NEXT_DATA__ ---
-            if not records:
-                html = self._fetch_html_search(keyword, page)
-                if html:
-                    next_data = self._extract_next_data_from_html(html)
-                    if next_data:
-                        products = self._find_products_in_json(next_data)
-                        if products:
-                            records = self._parse_products(
-                                products, keyword, keyword_category_map, page
-                            )
-                            logger.info(
-                                f"[{self.platform_name}] {len(records)} produtos via "
-                                "HTML+__NEXT_DATA__"
-                            )
-                            # BUILD_ID pode ter mudado — atualiza pro próximo page
-                            new_build = self._extract_build_id(html)
-                            if new_build and new_build != self._build_id:
-                                logger.info(
-                                    f"[{self.platform_name}] BUILD_ID atualizado: "
-                                    f"{self._build_id} → {new_build}"
-                                )
-                                self._build_id = new_build
+            if not records and not session_revalidated_this_keyword:
+                logger.warning(
+                    f"[{self.platform_name}] '{keyword}' p{page} 0 itens — "
+                    "tentando revalidar sessão via browser e retentar..."
+                )
+                self._invalidate_cached_session()
+                if self._ensure_validated_session(force_refresh=True):
+                    self._build_id = None  # força redescoberta do BUILD_ID
+                    self._ensure_build_id()
+                    session_revalidated_this_keyword = True
+                    records = self._search_page(
+                        keyword, keyword_category_map, page
+                    )
 
             all_records.extend(records)
 

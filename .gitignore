@@ -14,5 +14,9 @@ logs/
 screenshots/
 *.log
 
+# Sessões de scraper (cookies Akamai validados — gerados em runtime)
+data/magalu_session.json
+utils/sessions/
+
 # Ambiente
 .env
