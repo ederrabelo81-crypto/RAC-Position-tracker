@@ -1,26 +1,33 @@
 """
 scrapers/magalu.py — Scraper da Magalu (magazineluiza.com.br).
 
-Estratégia (em cascata):
-  0. Next.js __NEXT_DATA__ via curl_cffi `_next/data/{BUILD_ID}/busca/{slug}.json`
-     — JSON puro, mesma payload que o site monta em runtime.
-  1. HTML via curl_cffi (`m.magazineluiza.com.br/busca/...`) + extração de
-     `__NEXT_DATA__` embutido no HTML — fallback se BUILD_ID/route mudou.
+Estratégia (Mai/2026, redesign após bypass falho do sensor.js Akamai):
 
-Proteção: Akamai Bot Manager (substituiu Radware em Mai/2026).
-  Akamai usa DUAS camadas: TLS fingerprint (JA3/JA4) + sensor.js validation.
-    - TLS: curl_cffi com `impersonate="chrome124"` bypassa (replica handshake real).
-    - sensor.js: home aceita "challenge cookie" sem JS, MAS rotas protegidas
-      como /busca/ exigem "validated cookie" gerado pelo sensor.js.
+  **Modo principal:** Playwright persistente — abre 1 browser real, mantém
+  aberto durante toda a coleta. Cada keyword vira `page.goto('/busca/...')`,
+  parser extrai `__NEXT_DATA__` do HTML renderizado.
 
-Solução híbrida (Mai/2026):
-  1× por sessão (ou a cada 25min) abre Playwright headless, visita a home,
-  deixa o sensor.js validar a sessão, extrai cookies validados e copia pro
-  curl_cffi. Todas as buscas seguintes vão via curl_cffi rápido.
+  **Por quê:** Akamai usa 2 camadas:
+    1. TLS fingerprint (JA3/JA4) — curl_cffi `impersonate=chrome124` bypassa
+    2. sensor.js validation — _abck sai em modo "challenge"; só vira
+       "validated" depois que o sensor.js POSTa fingerprint pro Akamai
+       e ele aprova. Em headless, sensor.js detecta automação e MANTÉM
+       challenge. Resultado: home passa, /busca/ continua bloqueando.
 
-  - Cache em data/magalu_session.json (idade ≤ 25min reusa direto)
-  - Auto-revalida se aparecer 403 no meio da coleta (1 retry por keyword)
-  - Browser usa Chrome real (channel="chrome") + stealth JS pra passar do sensor.
+  Tentamos resolver com cookie injection no curl_cffi, mas Akamai vincula
+  cookies à sessão TLS+fingerprint do browser que os emitiu — transferir
+  cookies entre browser e curl_cffi não basta. O browser TEM que ficar
+  aberto.
+
+  **Custos:** ~3-5s por keyword (page.goto + render + scroll). Pra coletas
+  de 31 keywords × 1-2 páginas, total ~3-6min — aceitável.
+
+Env vars:
+  MAGALU_HEADLESS=false       → browser visível (default true, ajuda muito
+                                no Windows local pra passar pelo sensor.js)
+  MAGALU_FORCE_CURL=true      → desabilita browser e tenta só curl_cffi
+                                (NÃO funcionará atualmente, deixado pra
+                                futuro se Akamai mudar de comportamento)
 """
 
 import json
@@ -120,6 +127,29 @@ class MagaluScraper(BaseScraper):
         self._home_used: str = _MAGALU_MOBILE_HOME
         self._session_validated: bool = False  # True após cookies validados aplicados
 
+        # ── Browser persistente (modo principal Mai/2026) ────────────────
+        # Mantém Playwright aberto durante TODA a coleta — buscas viram
+        # navigate dentro dele em vez de HTTP request via curl_cffi (que
+        # falha pq Akamai não aceita cookies sem fingerprint browser).
+        self._pw_handle = None         # sync_playwright() handle
+        self._pw_browser = None        # Browser instance
+        self._pw_context = None        # BrowserContext
+        self._pw_page = None           # Page (reusada entre keywords)
+        self._browser_mode: bool = True  # True = usa Playwright pra cada busca
+
+        # Resolução de headless (prioridade: env var > CLI --no-headless > True)
+        env_headless = os.getenv("MAGALU_HEADLESS")
+        if env_headless is not None:
+            self._browser_headless: bool = env_headless.lower() != "false"
+        else:
+            # `headless=False` (--no-headless do CLI) → browser visível.
+            # Recomendado pra Magalu local: browser visível passa muito
+            # mais fácil pelo sensor.js do Akamai.
+            self._browser_headless = headless
+
+        if os.getenv("MAGALU_FORCE_CURL", "").lower() == "true":
+            self._browser_mode = False  # modo legado, provavelmente falha
+
     # ------------------------------------------------------------------
     # Cache de sessão validada (cookies Akamai)
     # ------------------------------------------------------------------
@@ -174,20 +204,12 @@ class MagaluScraper(BaseScraper):
         except Exception as exc:
             logger.debug(f"[Magalu] Falha ao remover cache: {exc}")
 
-    def _validate_session_via_browser(self) -> Optional[List[Dict[str, Any]]]:
+    def _open_persistent_browser(self) -> bool:
         """
-        Abre Playwright headless 1×, visita a home, deixa o sensor.js do
-        Akamai validar a sessão, exporta cookies. Retorna lista de cookies
-        formato Playwright (compatível com context.cookies()).
+        Abre Playwright e mantém o browser aberto durante toda a coleta.
+        Visita home + faz uma busca de calibração pra Akamai aceitar `/busca/`.
 
-        O sensor.js do Akamai:
-          1. Browser carrega home → Akamai seta _abck em modo "challenge"
-          2. sensor.js fingerprints o browser (canvas, webgl, etc.)
-          3. sensor.js POSTa fingerprint pra path obfuscado (ex: /rrj_QW/Q8mnYl/...)
-          4. Akamai valida → atualiza _abck pra modo "validated"
-
-        Sem browser real (curl_cffi sozinho), passamos da home mas não de
-        rotas protegidas como /busca/.
+        Retorna True se browser está aberto e operacional.
         """
         try:
             from playwright.sync_api import sync_playwright
@@ -196,130 +218,247 @@ class MagaluScraper(BaseScraper):
                 "[Magalu] Playwright não instalado. Execute: pip install playwright "
                 "&& python -m playwright install chromium"
             )
-            return None
+            return False
 
         ua = _DESKTOP_UA_BY_CHROME.get(
             self._impersonate, _DESKTOP_UA_BY_CHROME["chrome124"]
         )
-        logger.info("[Magalu] Validando sessão via Playwright (browser real)...")
+
+        mode = "visible" if not self._browser_headless else "headless"
+        logger.info(f"[Magalu] Abrindo browser persistente ({mode})...")
 
         try:
-            with sync_playwright() as p:
-                # Tenta Chrome real → msedge → Chromium (em ordem de stealth)
-                browser = None
-                channel_used = None
-                for channel in ("chrome", "msedge", None):
-                    try:
-                        browser = p.chromium.launch(
-                            headless=True,
-                            channel=channel,
-                            args=[
-                                "--no-sandbox",
-                                "--disable-setuid-sandbox",
-                                "--disable-blink-features=AutomationControlled",
-                                "--disable-gpu",
-                                "--disable-dev-shm-usage",
-                                "--disable-infobars",
-                            ],
-                        )
-                        channel_used = channel or "chromium"
-                        break
-                    except Exception:
-                        continue
-
-                if browser is None:
-                    logger.error(
-                        "[Magalu] Não foi possível iniciar nenhum browser "
-                        "(chrome/msedge/chromium). Rode: python -m playwright install chromium"
-                    )
-                    return None
-
-                context = browser.new_context(
-                    user_agent=ua,
-                    viewport={"width": 1366, "height": 768},
-                    locale="pt-BR",
-                    timezone_id="America/Sao_Paulo",
-                )
-                # Stealth JS — esconde marcadores de automação do sensor.js
-                context.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => false});
-                    try { delete navigator.__proto__.webdriver; } catch(_) {}
-                    window.chrome = {
-                        runtime: { onConnect: {addListener: () => {}}, onMessage: {addListener: () => {}} },
-                        loadTimes: () => ({}),
-                        csi: () => ({}),
-                    };
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => { const a = [1,2,3,4,5]; a.item = () => null; return a; }
-                    });
-                    Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en-US', 'en']});
-                    Object.defineProperty(document, 'hidden', {get: () => false});
-                    Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
-                """)
-
-                page = context.new_page()
-                page.set_default_timeout(45_000)
-
-                try:
-                    page.goto(
-                        _MAGALU_DESKTOP_HOME,
-                        wait_until="networkidle",
-                        timeout=45_000,
-                    )
-                except Exception as exc:
-                    logger.warning(f"[Magalu] Browser goto erro: {exc} — prosseguindo")
-
-                # Emula interação humana — Akamai pontua mouse/scroll
-                try:
-                    for _ in range(3):
-                        page.mouse.move(
-                            random.randint(150, 1200), random.randint(150, 700)
-                        )
-                        time.sleep(random.uniform(0.3, 0.8))
-                    page.mouse.wheel(0, 400)
-                    time.sleep(random.uniform(1.0, 2.0))
-                    page.mouse.wheel(0, 300)
-                    time.sleep(random.uniform(0.8, 1.5))
-                    page.mouse.wheel(0, -400)
-                    time.sleep(random.uniform(0.5, 1.0))
-                except Exception:
-                    pass
-
-                # Aguarda o sensor.js completar POST de validação ao Akamai.
-                # Sem essa espera, _abck fica em modo "challenge" e busca falha.
-                time.sleep(random.uniform(6.0, 10.0))
-
-                cookies = context.cookies()
-
-                names = {c["name"] for c in cookies}
-                has_abck = "_abck" in names
-                has_bmsz = "bm_sz" in names or "ak_bmsc" in names
-
-                # Heurística: _abck validado tem "~0~" no valor; challenge "~-1~"
-                abck_value = next(
-                    (c["value"] for c in cookies if c["name"] == "_abck"), ""
-                )
-                abck_status = "validated" if "~0~" in abck_value else "challenge"
-
-                browser.close()
-
-                logger.info(
-                    f"[Magalu] Sessão capturada via {channel_used}: "
-                    f"{len(cookies)} cookies (_abck={has_abck} bm={has_bmsz} "
-                    f"status={abck_status})"
-                )
-
-                if not has_abck:
-                    logger.warning(
-                        "[Magalu] _abck ausente — sessão pode não funcionar"
-                    )
-
-                return cookies
+            self._pw_handle = sync_playwright().start()
         except Exception as exc:
+            logger.error(f"[Magalu] Falha ao iniciar Playwright: {exc}")
+            return False
+
+        # Tenta Chrome real → msedge → Chromium (em ordem de stealth)
+        channel_used = None
+        for channel in ("chrome", "msedge", None):
+            try:
+                self._pw_browser = self._pw_handle.chromium.launch(
+                    headless=self._browser_headless,
+                    channel=channel,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-gpu",
+                        "--disable-dev-shm-usage",
+                        "--disable-infobars",
+                    ],
+                )
+                channel_used = channel or "chromium"
+                break
+            except Exception:
+                continue
+
+        if self._pw_browser is None:
             logger.error(
-                f"[Magalu] Erro ao validar sessão via browser: {exc}"
+                "[Magalu] Não foi possível iniciar nenhum browser. Rode: "
+                "python -m playwright install chromium"
             )
+            self._close_persistent_browser()
+            return False
+
+        self._pw_context = self._pw_browser.new_context(
+            user_agent=ua,
+            viewport={"width": 1366, "height": 768},
+            locale="pt-BR",
+            timezone_id="America/Sao_Paulo",
+        )
+
+        # Stealth JS — esconde marcadores de automação do sensor.js
+        self._pw_context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => false});
+            try { delete navigator.__proto__.webdriver; } catch(_) {}
+            window.chrome = {
+                runtime: { onConnect: {addListener: () => {}}, onMessage: {addListener: () => {}} },
+                loadTimes: () => ({}),
+                csi: () => ({}),
+            };
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => { const a = [1,2,3,4,5]; a.item = () => null; return a; }
+            });
+            Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en-US', 'en']});
+            Object.defineProperty(document, 'hidden', {get: () => false});
+            Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
+        """)
+
+        self._pw_page = self._pw_context.new_page()
+        self._pw_page.set_default_timeout(45_000)
+
+        logger.info(f"[Magalu] Browser persistente aberto (channel={channel_used})")
+
+        # 1ª navegação: home — gera _abck inicial (challenge) e roda sensor.js
+        try:
+            self._pw_page.goto(
+                _MAGALU_DESKTOP_HOME,
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[Magalu] Home goto warn: {exc} — prosseguindo (sensor pode estar rodando)"
+            )
+
+        # Emula interação humana — Akamai pontua mouse/scroll
+        try:
+            for _ in range(3):
+                self._pw_page.mouse.move(
+                    random.randint(150, 1200), random.randint(150, 700)
+                )
+                time.sleep(random.uniform(0.3, 0.7))
+            self._pw_page.mouse.wheel(0, 400)
+            time.sleep(random.uniform(0.8, 1.5))
+            self._pw_page.mouse.wheel(0, 200)
+            time.sleep(random.uniform(0.6, 1.2))
+        except Exception:
+            pass
+
+        # Espera o _abck validar (poll cookie até ~25s). Sem isso, /busca/ 403.
+        try:
+            self._pw_page.wait_for_function(
+                """() => {
+                    const m = document.cookie.match(/_abck=([^;]+)/);
+                    return m && /~0~/.test(decodeURIComponent(m[1]));
+                }""",
+                timeout=25_000,
+            )
+            logger.info("[Magalu] _abck validado pelo sensor.js ✓")
+        except Exception:
+            logger.warning(
+                "[Magalu] _abck não validou em 25s — buscas podem falhar"
+            )
+
+        # Calibração: navega pra busca dentro do mesmo browser. Isso força
+        # Akamai a promover o cookie pra rota /busca/.
+        try:
+            cal_url = f"{_MAGALU_MOBILE_BASE}/busca/ar+condicionado/"
+            self._pw_page.goto(cal_url, wait_until="domcontentloaded", timeout=30_000)
+            time.sleep(random.uniform(2.0, 3.5))
+            html = self._pw_page.content()
+            if len(html) > 50_000 and "Não é possível acessar a página" not in html:
+                logger.info(
+                    f"[Magalu] Busca de calibração OK ({len(html):,} bytes) — sessão pronta"
+                )
+            else:
+                logger.warning(
+                    f"[Magalu] Busca de calibração suspeita (len={len(html):,}) — pode dar 403"
+                )
+        except Exception as exc:
+            logger.warning(f"[Magalu] Busca de calibração falhou: {exc}")
+
+        # Tenta extrair BUILD_ID daqui pra futuras chamadas
+        try:
+            html = self._pw_page.content()
+            build_id = self._extract_build_id(html)
+            if build_id:
+                self._build_id = build_id
+                logger.debug(f"[Magalu] BUILD_ID via browser: {build_id}")
+        except Exception:
+            pass
+
+        # Tenta copiar cookies pro curl_cffi também (futuro speed-up)
+        try:
+            cookies = self._pw_context.cookies()
+            applied = self._apply_cookies_to_cffi(cookies)
+            abck_value = next(
+                (c["value"] for c in cookies if c["name"] == "_abck"), ""
+            )
+            abck_status = "validated" if "~0~" in abck_value else "challenge"
+            logger.info(
+                f"[Magalu] {applied}/{len(cookies)} cookies copiados pro cffi "
+                f"(_abck status={abck_status})"
+            )
+        except Exception:
+            pass
+
+        return True
+
+    def _close_persistent_browser(self) -> None:
+        """Fecha o browser persistente limpando recursos."""
+        try:
+            if self._pw_page:
+                self._pw_page.close()
+        except Exception:
+            pass
+        try:
+            if self._pw_context:
+                self._pw_context.close()
+        except Exception:
+            pass
+        try:
+            if self._pw_browser:
+                self._pw_browser.close()
+        except Exception:
+            pass
+        try:
+            if self._pw_handle:
+                self._pw_handle.stop()
+        except Exception:
+            pass
+        self._pw_page = None
+        self._pw_context = None
+        self._pw_browser = None
+        self._pw_handle = None
+
+    def _search_via_browser(self, keyword: str, page_num: int) -> Optional[str]:
+        """
+        Navega pra `/busca/{keyword}` dentro do browser persistente e retorna
+        o HTML renderizado. None se browser não tá aberto/erro.
+        """
+        if not self._pw_page:
             return None
+
+        slug = quote_plus(keyword.strip())
+        url = f"{_MAGALU_MOBILE_BASE}/busca/{slug}/"
+        if page_num > 1:
+            url += f"?page={page_num}"
+
+        try:
+            self._pw_page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+        except Exception as exc:
+            logger.warning(f"[Magalu] Browser goto '{keyword}' p{page_num}: {exc}")
+            return None
+
+        # Espera produtos aparecerem (sinal de página renderizada com sucesso).
+        # Se for página de bloqueio, esse selector não aparece — timeout aceito.
+        try:
+            self._pw_page.wait_for_selector(
+                'a[href*="/p/"], [data-testid="product-card"]',
+                timeout=12_000,
+            )
+        except Exception:
+            pass
+
+        # Scroll pra carregar lazy items
+        try:
+            for _ in range(3):
+                self._pw_page.mouse.wheel(0, 600)
+                time.sleep(random.uniform(0.3, 0.8))
+        except Exception:
+            pass
+
+        time.sleep(random.uniform(0.8, 1.5))
+
+        try:
+            html = self._pw_page.content()
+        except Exception as exc:
+            logger.warning(f"[Magalu] Browser content() erro: {exc}")
+            return None
+
+        # Detecta página de bloqueio dentro do browser também
+        if "Não é possível acessar a página" in html or len(html) < 5_000:
+            logger.warning(
+                f"[Magalu] Browser retornou bloqueio em '{keyword}' p{page_num} "
+                f"(len={len(html):,})"
+            )
+            self._dump_block_html(html, f"browser_{keyword}_p{page_num}")
+            return None
+
+        return html
 
     def _apply_cookies_to_cffi(self, cookies: List[Dict[str, Any]]) -> int:
         """Aplica lista de cookies (formato Playwright) na sessão curl_cffi."""
@@ -383,11 +522,24 @@ class MagaluScraper(BaseScraper):
             f"[{self.platform_name}] Sessão curl_cffi iniciada "
             f"(impersonate={self._impersonate})"
         )
-        # Valida sessão (cache ou Playwright) antes da 1ª busca
-        self._ensure_validated_session()
+
+        if self._browser_mode:
+            # Abre browser persistente — fica aberto durante toda a coleta
+            opened = self._open_persistent_browser()
+            if not opened:
+                logger.error(
+                    "[Magalu] Browser não abriu — coleta provavelmente falhará"
+                )
+        else:
+            logger.warning(
+                "[Magalu] MAGALU_FORCE_CURL=true — modo curl_cffi puro (deve falhar "
+                "com Akamai atual; mantido pra debug/futuro)"
+            )
+
         return self
 
     def __exit__(self, *_) -> None:
+        self._close_persistent_browser()
         try:
             if self._cffi_session is not None:
                 self._cffi_session.close()
@@ -564,13 +716,13 @@ class MagaluScraper(BaseScraper):
 
     def _fetch_next_data(self, keyword: str, page: int) -> Optional[Dict]:
         """
-        Chama o endpoint `/_next/data/{BUILD_ID}/busca/{slug}.json`.
-        Retorna o JSON parseado ou None se falhar/bloqueado.
-
-        Esse endpoint é o que o Next.js usa pra hydrar a página depois da
-        navegação client-side. Retorna JSON com `pageProps.searchResult` ou
-        estrutura similar — bem mais limpo que o HTML completo.
+        DEPRECATED (Mai/2026): Magalu desabilitou o endpoint `_next/data`
+        — sempre retorna 404 mesmo com BUILD_ID correto. Função mantida
+        pra futuro caso volte. Retorna None imediatamente.
         """
+        return None
+
+        # --- código preservado abaixo (não executado) ---
         if not self._build_id:
             return None
 
@@ -906,23 +1058,33 @@ class MagaluScraper(BaseScraper):
         keyword_category_map: dict,
         page: int,
     ) -> List[Dict[str, Any]]:
-        """Executa a busca em UMA página testando as 2 estratégias em cascata."""
+        """
+        Executa a busca em UMA página. Estratégias em cascata:
+          A. Browser persistente (modo principal — Akamai aceita)
+          B. curl_cffi HTML (fallback se browser não disponível — provavelmente 403)
+        """
         records: List[Dict[str, Any]] = []
+        html: Optional[str] = None
 
-        # --- Estratégia 0: _next/data JSON ---
-        if self._build_id:
-            data = self._fetch_next_data(keyword, page)
-            if data:
-                products = self._find_products_in_json(data)
-                if products:
-                    records = self._parse_products(
-                        products, keyword, keyword_category_map, page
-                    )
-                    logger.info(
-                        f"[{self.platform_name}] {len(records)} produtos via _next/data"
-                    )
+        # --- Estratégia A: Browser persistente (modo principal) ---
+        if self._browser_mode and self._pw_page:
+            html = self._search_via_browser(keyword, page)
+            if html:
+                next_data = self._extract_next_data_from_html(html)
+                if next_data:
+                    products = self._find_products_in_json(next_data)
+                    if products:
+                        records = self._parse_products(
+                            products, keyword, keyword_category_map, page
+                        )
+                        logger.info(
+                            f"[{self.platform_name}] {len(records)} produtos via browser"
+                        )
+                        new_build = self._extract_build_id(html)
+                        if new_build and new_build != self._build_id:
+                            self._build_id = new_build
 
-        # --- Estratégia 1: HTML + __NEXT_DATA__ ---
+        # --- Estratégia B: curl_cffi HTML (fallback) ---
         if not records:
             html = self._fetch_html_search(keyword, page)
             if html:
@@ -935,15 +1097,10 @@ class MagaluScraper(BaseScraper):
                         )
                         logger.info(
                             f"[{self.platform_name}] {len(records)} produtos via "
-                            "HTML+__NEXT_DATA__"
+                            "curl_cffi HTML"
                         )
-                        # BUILD_ID pode ter mudado — atualiza pro próximo page
                         new_build = self._extract_build_id(html)
                         if new_build and new_build != self._build_id:
-                            logger.info(
-                                f"[{self.platform_name}] BUILD_ID atualizado: "
-                                f"{self._build_id} → {new_build}"
-                            )
                             self._build_id = new_build
 
         return records
@@ -966,68 +1123,40 @@ class MagaluScraper(BaseScraper):
         """
         Busca produtos no Magalu para a keyword especificada.
 
-        Estratégias (em cascata):
-          1. Next.js _next/data JSON (mais rápido, payload limpo)
-          2. HTML + __NEXT_DATA__ extraction (fallback se BUILD_ID inválido)
+        Modo principal: browser persistente (Playwright) — abre 1×, mantém
+        aberto, navega pra `/busca/<keyword>` por keyword.
 
         Returns:
             Lista de registros prontos para o DataFrame.
         """
         if self._cffi_session is None:
             logger.error(
-                f"[{self.platform_name}] Sessão curl_cffi não inicializada — "
+                f"[{self.platform_name}] Sessão não inicializada — "
                 "use 'with MagaluScraper() as s:'"
             )
             return []
 
         all_records: List[Dict[str, Any]] = []
 
-        # Warm-up + descoberta do BUILD_ID (uma vez por keyword — barato e
-        # essencial pra ter cookies frescos do Akamai)
-        if not self._ensure_build_id():
-            logger.warning(
-                f"[{self.platform_name}] '{keyword}' — sem BUILD_ID; "
-                "tentando HTML scraping direto..."
-            )
-
-        self._delay(*_INTER_REQUEST_DELAY)
-
-        # Revalidação automática: se as 2 estratégias falharem na primeira
-        # página, abrimos browser pra renovar a sessão Akamai e tentamos de
-        # novo (1 retry só pra não enrolar).
-        session_revalidated_this_keyword = False
+        # Delay curto entre keywords (browser já fica aberto, sem warm-up)
+        self._delay(2.0, 4.0)
 
         for page in range(1, page_limit + 1):
             logger.info(
                 f"[{self.platform_name}] '{keyword}' página {page}/{page_limit}"
             )
             records = self._search_page(keyword, keyword_category_map, page)
-
-            if not records and not session_revalidated_this_keyword:
-                logger.warning(
-                    f"[{self.platform_name}] '{keyword}' p{page} 0 itens — "
-                    "tentando revalidar sessão via browser e retentar..."
-                )
-                self._invalidate_cached_session()
-                if self._ensure_validated_session(force_refresh=True):
-                    self._build_id = None  # força redescoberta do BUILD_ID
-                    self._ensure_build_id()
-                    session_revalidated_this_keyword = True
-                    records = self._search_page(
-                        keyword, keyword_category_map, page
-                    )
-
             all_records.extend(records)
 
             if not records:
                 logger.warning(
-                    f"[{self.platform_name}] Página {page} retornou 0 itens — "
+                    f"[{self.platform_name}] '{keyword}' p{page} retornou 0 itens — "
                     "interrompendo keyword."
                 )
                 break
 
             if page < page_limit:
-                self._delay(*_INTER_PAGE_DELAY)
+                self._delay(3.0, 6.0)
 
         logger.success(
             f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
