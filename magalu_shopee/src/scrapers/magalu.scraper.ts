@@ -22,6 +22,9 @@ interface PageResult {
 
 export class MagaluScraper extends BaseScraper {
   protected readonly siteDomain = 'magazineluiza.com.br';
+  // Rastreia bloqueios consecutivos entre queries para aplicar backoff crescente
+  // e abortar cedo quando o IP está banido (evita 90min de espera inútil).
+  private consecutiveBlocks = 0;
 
   constructor(config?: Partial<ScraperConfig>) {
     super({ delayMs: DELAYS.MAGALU_MS, ...config });
@@ -78,9 +81,21 @@ export class MagaluScraper extends BaseScraper {
     const allProducts: RacProduct[] = [];
     const startTime = Date.now();
 
+    // Bail antecipado após 3 bloqueios consecutivos — IP provavelmente banido.
+    // Continuar só desperdiça tempo (170s × N queries restantes = horas para zero resultado).
+    if (this.consecutiveBlocks >= 3) {
+      logger.error(
+        `Magalu: ${this.consecutiveBlocks} bloqueios consecutivos — ` +
+        `abortando query "${query}". IP provavelmente banido; reinicie a coleta mais tarde.`
+      );
+      return [];
+    }
+
     logger.info(`Magalu: Iniciando coleta — query="${query}" (${pages} páginas)`);
 
     await this.launch(false);
+
+    let queryWasBlocked = false;
 
     try {
       await this.warmUp();
@@ -92,6 +107,11 @@ export class MagaluScraper extends BaseScraper {
         );
 
         if (result === null) continue;
+
+        if (result.wasBlocked) {
+          queryWasBlocked = true;
+          break;
+        }
 
         allProducts.push(...result.products);
         logger.info(
@@ -109,6 +129,20 @@ export class MagaluScraper extends BaseScraper {
       await this.close();
     }
 
+    if (queryWasBlocked) {
+      this.consecutiveBlocks++;
+      if (this.consecutiveBlocks < 3) {
+        const waitMs = this.consecutiveBlocks === 1 ? 90_000 : 120_000;
+        logger.warn(
+          `Magalu: bloqueio consecutivo #${this.consecutiveBlocks} — ` +
+          `aguardando ${waitMs / 1000}s antes da próxima query`
+        );
+        await this.sleep(waitMs);
+      }
+    } else {
+      this.consecutiveBlocks = 0;
+    }
+
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
     logger.info(`Magalu: Coleta finalizada — ${allProducts.length} produtos em ${duration}s`);
 
@@ -118,7 +152,7 @@ export class MagaluScraper extends BaseScraper {
   private async scrapePage(
     query: string,
     pageNum: number
-  ): Promise<{ products: RacProduct[]; hasNextPage: boolean }> {
+  ): Promise<{ products: RacProduct[]; hasNextPage: boolean; wasBlocked: boolean }> {
     if (!this.page) throw new Error('Browser não inicializado');
 
     await this.respectRateLimit();
@@ -147,27 +181,15 @@ export class MagaluScraper extends BaseScraper {
     if (this.isSoftBlocked(html)) {
       const dumpPath = this.dumpHtml(html, `magalu_${query}_p${pageNum}`);
       logger.warn(
-        `Magalu: bloqueio detectado em "${query}" p${pageNum}` +
+        `Magalu: bloqueio Akamai detectado em "${query}" p${pageNum}` +
         (dumpPath ? ` — HTML salvo em ${dumpPath}` : '') +
-        '. Renovando sessão (warm-up) e tentando novamente...'
+        '. Fechando browser e aguardando 70-90s antes de relançar com fingerprint novo...'
       );
-      await this.sleep(DELAYS.SOFT_BLOCK_MS);
-      await this.warmUp();
-      await this.page.goto(url, {
-        waitUntil: 'load',
-        timeout: PAGE_TIMEOUT_MS,
-        referer: MAGALU_HOME_URL,
-      });
-      await this.sleep(this.randomDelay(2000, 3500));
-      await this.humanScroll();
-      await this.waitForPriceElement();
-      await this.sleep(2000);
-
-      const retryHtml = await this.page.content();
-      if (this.isSoftBlocked(retryHtml)) {
-        this.dumpHtml(retryHtml, `magalu_${query}_p${pageNum}_retry`);
-        logger.error(`Magalu: ainda bloqueado em "${query}" p${pageNum} após renovar a sessão`);
-      }
+      // Reusar o mesmo browser após um 403 Akamai é ineficaz — o fingerprint
+      // já foi flaggado. Fechar completamente e relançar com nova instância.
+      const restartSleep = this.randomDelay(DELAYS.BLOCK_RESTART_MIN_MS, DELAYS.BLOCK_RESTART_MAX_MS);
+      await this.restartBrowser(restartSleep);
+      return { products: [], hasNextPage: false, wasBlocked: true };
     }
 
     const cardCount = await this.page.$$eval(
@@ -224,6 +246,7 @@ export class MagaluScraper extends BaseScraper {
     return {
       products: this.enrichProducts(pageResult.items),
       hasNextPage: pageResult.hasNextPage,
+      wasBlocked: false,
     };
   }
 
