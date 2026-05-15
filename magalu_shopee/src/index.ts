@@ -1,7 +1,8 @@
 import 'dotenv/config';
 import { program } from 'commander';
 import { startScheduler, runCollection } from './scheduler/cron';
-import { MagaluScraper } from './scrapers/magalu.scraper';
+// MagaluScraper descontinuado em Mai/2026 — Magalu voltou ao Python (curl_cffi).
+// O scraper ainda existe em ./scrapers/magalu.scraper, mas o entry point não o invoca.
 import { ShopeeScraper } from './scrapers/shopee.scraper';
 import { SEARCH_QUERIES, TEST_QUERIES } from './config/queries';
 import { uploadToSupabase, testConnection, determineTurno } from './storage/supabase-uploader';
@@ -55,15 +56,15 @@ const opts = program.opts<{
   const allProducts: RacProduct[] = [];
 
   if (platforms.includes('magalu')) {
-    const scraper = new MagaluScraper({ headless: opts.headless, maxPages });
-    for (const query of queries) {
-      try {
-        const products = await scraper.scrape(query);
-        allProducts.push(...products);
-      } catch (err) {
-        logger.error(`Magalu: Erro em "${query}": ${err}`);
-      }
-    }
+    // ⚠️ DEPRECATED (Mai/2026): Magalu migrou de volta para Python via curl_cffi.
+    // Puppeteer-stealth não bypassa o Akamai novo (TLS JA3/JA4 detection).
+    // Rode em vez disso: `python main.py --platforms magalu --pages N`
+    logger.error(
+      'Magalu: scraper Node.js descontinuado — Akamai bloqueia Puppeteer ' +
+      'por TLS fingerprint. Use o scraper Python: ' +
+      '`python main.py --platforms magalu --pages N` (raiz do projeto).'
+    );
+    logger.error('Magalu: pulando coleta neste run.');
   }
 
   if (platforms.includes('shopee')) {

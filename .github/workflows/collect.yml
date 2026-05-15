@@ -4,8 +4,11 @@ name: RAC Price Collection
 # Coleta de backup manual — acionada via workflow_dispatch.
 #
 # Arquitetura de coleta (produção):
-#   Oracle VM (cron)  →  Google Shopping, Amazon, Leroy, Dealers, Magalu
+#   Oracle VM (cron)  →  Magalu, Google Shopping, Amazon, Leroy, Dealers
 #   PC local Windows  →  ML (IP residencial — bloqueio de datacenter no ML)
+#
+# Magalu voltou ao Python via curl_cffi (Mai/2026) — substitui o Node.js
+# bloqueado pelo Akamai. Shopee continua em Node.js (sessão autenticada).
 #
 # Este workflow só é usado como backup quando a VM está indisponível.
 #
@@ -20,11 +23,11 @@ on:
       platforms:
         description: 'Plataformas Python separadas por espaço'
         required: false
-        default: 'ml google_shopping amazon leroy dealers'
+        default: 'magalu ml google_shopping amazon leroy dealers'
       node_platforms:
-        description: 'Plataformas Node.js separadas por vírgula (magalu,shopee)'
+        description: 'Plataformas Node.js separadas por vírgula (apenas shopee)'
         required: false
-        default: 'magalu'
+        default: ''
       pages:
         description: 'Páginas por keyword (1–5)'
         required: false
@@ -34,9 +37,9 @@ on:
         required: false
         default: ''
       skip_nodejs:
-        description: 'Pular Node.js Magalu (true/false)'
+        description: 'Pular Node.js (true/false) — default true, Magalu agora é Python'
         required: false
-        default: 'false'
+        default: 'true'
 
 env:
   PYTHON_VERSION: '3.11'
@@ -103,9 +106,9 @@ jobs:
           echo "Executando: $CMD"
           eval "$CMD"
 
-      # ── 8. Executa coleta Node.js (Magalu) ────────────────────────────────
-      - name: Run Node.js collector (Magalu)
-        if: ${{ github.event.inputs.skip_nodejs != 'true' }}
+      # ── 8. Executa coleta Node.js (apenas Shopee — Magalu agora é Python) ──
+      - name: Run Node.js collector (Shopee)
+        if: ${{ github.event.inputs.skip_nodejs != 'true' && github.event.inputs.node_platforms != '' }}
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

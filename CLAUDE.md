@@ -2,27 +2,36 @@
 
 > **Project:** RAC Price Monitor — Retail Analytics & Competitive Intelligence  
 > **Domain:** E-commerce price scraping & competitive intelligence for air conditioning market in Brazil  
-> **Stack:** Python 3.10+, Playwright, BeautifulSoup, Pandas, Supabase, Streamlit  
-> **Sub-projeto:** `magalu_shopee/` — Node.js/TypeScript + Puppeteer (Magalu & Shopee)  
+> **Stack:** Python 3.10+, Playwright, curl_cffi, BeautifulSoup, Pandas, Supabase, Streamlit  
+> **Sub-projeto:** `magalu_shopee/` — Node.js/TypeScript + Puppeteer (apenas Shopee — sessão autenticada)  
 > **Status:** ✅ Production | Oracle Cloud VM (Brazil East) + GitHub Actions (manual backup)
 
 ---
 
-## ⚠️ Magalu & Shopee — Projeto Node.js separado
+## ⚠️ Magalu — Voltou pra Python (Mai/2026)
 
-**Magalu e Shopee NÃO são mais scrapers Python.** Foram migrados para o
-sub-projeto `magalu_shopee/` (Node.js/TypeScript + Puppeteer + stealth).
+O scraper Node.js+Puppeteer parou de funcionar quando Magalu trocou o Bot
+Manager pra Akamai com detecção JA3/JA4. **Solução:** scraper Python novo
+em `scrapers/magalu.py` usando `curl_cffi` com TLS chrome impersonation —
+mesma técnica que destrava Casas Bahia. Sem browser, sem Puppeteer.
 
 ```bash
-# Rodar Magalu (e/ou Shopee) — a partir da pasta magalu_shopee/
+# Magalu agora roda no projeto Python principal
+python main.py --platforms magalu --pages 2
+
+# Shopee continua no Node.js (requer sessão autenticada)
 cd magalu_shopee
-node_modules/.bin/ts-node src/index.ts --platforms magalu --pages 2
-node_modules/.bin/ts-node src/index.ts --platforms magalu,shopee --pages 2
+node_modules/.bin/ts-node src/index.ts --platforms shopee --pages 2
 ```
 
-O projeto Python (`main.py`) cobre apenas: `ml`, `amazon`, `google_shopping`,
-`leroy`, `dealers`. `python main.py` sem `--platforms` usa `ACTIVE_PLATFORMS`
-do `config.py`, que já exclui Magalu/Shopee.
+Como funciona o `scrapers/magalu.py`:
+1. `curl_cffi` com `impersonate="chrome124"` (replica TLS handshake do Chrome real)
+2. Warm-up na home pra Akamai emitir cookies frescos
+3. Extrai BUILD_ID do Next.js do `__NEXT_DATA__`
+4. Bate em `_next/data/{BUILD_ID}/busca/{slug}.json` — JSON puro
+5. Fallback: scraping de HTML + extração de `__NEXT_DATA__` embutido
+
+Detecção de bloqueio fail-fast: HTTP 403, response <1KB, ou strings Akamai.
 
 ---
 
@@ -714,8 +723,8 @@ python utils/supabase_client.py                   # Run cleanup functions
 | Leroy Merlin | ✅ | Algolia API; 10-11s/keyword; 15 3P seller IDs não resolvidos (404 VTEX) |
 | Dealers (Frigelar) | ✅ | JSON-LD + VTEX + DOM fallback; 30 itens / 108s |
 | Google Shopping | ⚠️ | reCAPTCHA em headless; funciona com delays 25-45s em coletas reais |
-| Magalu | 🟢 Node.js | Migrado para `magalu_shopee/` (Puppeteer + stealth) — não é mais Python |
-| Shopee | 🟢 Node.js | Migrado para `magalu_shopee/` (Puppeteer + sessão autenticada) |
+| Magalu | ✅ Python | `scrapers/magalu.py` — curl_cffi + Next.js `_next/data` JSON (Mai/2026, Akamai bypass via TLS impersonation chrome124) |
+| Shopee | 🟢 Node.js | Permanece em `magalu_shopee/` (Puppeteer + sessão autenticada) |
 | Dealers (CentralAr) | ❌ | Parado desde 26/04 — diagnóstico pendente (Sprint 1) |
 | Dealers (Eletrozema) | ❌ | Parado desde 26/04 — causa comum com CentralAr (VTEX IO) |
 | Dealers (Dufrio) | ❌ | Parado desde 29/04 — diagnóstico pendente (Sprint 1) |

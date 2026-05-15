@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { randomUUID } from 'crypto';
-import { MagaluScraper } from '../scrapers/magalu.scraper';
+// MagaluScraper descontinuado em Mai/2026 — Magalu voltou ao Python (curl_cffi).
+// O scheduler pula a plataforma magalu se for solicitada e loga aviso.
 import { ShopeeScraper } from '../scrapers/shopee.scraper';
 import { SEARCH_QUERIES } from '../config/queries';
 import { uploadToSupabase } from '../storage/supabase-uploader';
@@ -23,7 +24,15 @@ async function runCollection(platforms: string[], maxPages: number, turno: strin
   logger.info(`Plataformas: ${platforms.join(', ')} | Queries: ${SEARCH_QUERIES.length} | Páginas: ${maxPages}`);
 
   for (const platform of platforms) {
-    const scraper = platform === 'magalu' ? new MagaluScraper() : new ShopeeScraper();
+    if (platform === 'magalu') {
+      logger.error(
+        'Scheduler: Magalu não roda mais aqui — Akamai bloqueia Puppeteer. ' +
+        'Use o scraper Python: `python main.py --platforms magalu --pages N` ' +
+        '(o cron do Linux já chama o Python automaticamente).'
+      );
+      continue;
+    }
+    const scraper = new ShopeeScraper();
 
     for (const query of SEARCH_QUERIES) {
       const t0 = Date.now();
@@ -49,7 +58,7 @@ async function runCollection(platforms: string[], maxPages: number, turno: strin
   logger.info(`========== COLETA ${turno.toUpperCase()} FINALIZADA: ${allProducts.length} produtos em ${totalMin}min ==========`);
 }
 
-export function startScheduler(platforms: string[] = ['magalu']): void {
+export function startScheduler(platforms: string[] = ['shopee']): void {
   // Valida expressões cron
   if (!cron.validate(SCHEDULE_MANHA) || !cron.validate(SCHEDULE_FECHAMENTO)) {
     logger.error('Scheduler: Expressão cron inválida');

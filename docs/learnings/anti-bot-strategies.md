@@ -28,18 +28,27 @@
 
 ## Platform-Specific Anti-Bot
 
-### Akamai Bot Manager (Magalu — ❌ bloqueado desde ~Mai/2026)
-- **Status**: Magalu migrou de Radware para Akamai Bot Manager
-- **Comportamento**: Retorna HTTP 200 + HTML de erro 403 "Não é possível acessar a página"
-- **Detecção** (implementada): `_is_akamai_blocked()` detecta em <10s, aborta sem retry
-  ```python
-  # scrapers/magalu.py — check no HTML retornado
-  "Não é possível acessar a página" in html or "akamai" in html.lower()
-  ```
-- **Log**: `🚫 Akamai Bot Manager detectado — proxy residencial brasileiro necessário`
-- **Performance atual**: ~3 min até detecção e abort (antes: 10+ min em retry inútil)
-- **Solução definitiva**: Proxy residencial BR — Bright Data (~$500/mês), Smartproxy, Oxylabs
-- **Alternativa**: Session hijacking via CDP (captura cookies de sessão real do browser)
+### Akamai Bot Manager (Magalu — ✅ resolvido Mai/2026 via curl_cffi)
+- **Histórico**:
+  - Out/2025: Radware Bot Manager — bypass via `_rotate_browser()` cada 15 keywords
+  - Abr/2026: Migração Radware → Akamai com detecção JA3/JA4 (TLS fingerprint)
+  - Abr-Mai/2026: Tentativa em Node.js+Puppeteer-stealth (`magalu_shopee/`) — falhou pelo mesmo motivo: TLS fingerprint do Chromium difere do Chrome real
+  - Mai/2026: **Solução definitiva** — Python + `curl_cffi` com `impersonate="chrome124"`
+- **Por que curl_cffi funciona**: replica o TLS handshake **byte por byte** do Chrome 124
+  real (cipher suites, extensions, ALPN, GREASE values). Akamai inspeciona JA3/JA4 do
+  ClientHello — com curl_cffi não há divergência detectável
+- **Arquitetura** (scrapers/magalu.py):
+  1. `cffi_session = curl_cffi.requests.Session()`
+  2. Warm-up na home (`m.magazineluiza.com.br/`) — Akamai emite `_abck`/`bm_sz` válidos
+  3. Extrai `buildId` do `__NEXT_DATA__`
+  4. Bate em `/_next/data/{buildId}/busca/{slug}.json` (JSON puro, sem render JS)
+  5. Fallback: HTML `/busca/{slug}/` + parser de `__NEXT_DATA__` embutido
+- **Detecção fail-fast**: HTTP 403, response <1KB, "Pardon Our Interruption",
+  "Reference #", "errors.edgesuite.net", "Acesso negado"
+- **Rotação**: `_IMPERSONATIONS` rotaciona `chrome124/120/131/119` por sessão pra
+  evitar repetição do mesmo JA3 fingerprint (Akamai monitora)
+- **Sem browser = sem Playwright/Puppeteer**: zero overhead, ~5-10× mais rápido,
+  zero detecção via JS sensor (Akamai sensor.js só roda em browser real)
 
 ### Radware Bot Manager (Magalu — histórico, substituído por Akamai)
 - Anteriormente ativo; substituído por Akamai em Mai/2026
