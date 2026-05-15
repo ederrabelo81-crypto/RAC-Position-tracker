@@ -167,10 +167,12 @@ PLATFORM_TYPE: Dict[str, str] = {
     # Sprint 4 — Regional Especializado/Nicho
     "Carajas":          "Regional Especializado",
     "QueroQuero":       "Regional Especializado",
-    "Fijioka":          "Regional Especializado",
+    "Fujioka":          "Regional Especializado",
     "Edimil":           "Regional Especializado",
     "UnicaAR":          "Regional Especializado",
     "TopMoveis":        "Regional Especializado",
+    "Martinello":       "Regional Especializado",
+    "GBarbosa":         "Regional Retail",
 }
 
 # ---------------------------------------------------------------------------

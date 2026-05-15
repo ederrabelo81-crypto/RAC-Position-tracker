@@ -101,17 +101,24 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  5,
     },
     "FrioPecas": {
+        # Review Mai/2026: dealer parado 20-31 dias (VTEX IO). JSON-LD do
+        # head do template costuma trazer Products mesmo quando o DOM
+        # principal vem incompleto pelo WAF — priorizar como fonte primária.
         "url":        "https://www.friopecas.com.br/ar-condicionado/ar-condicionado-split-inverter",
         "pagination": "vtex",
         "max_pages":  5,
+        "prefer_jsonld": True,
     },
     "WebContinental": {
+        # Review Mai/2026: dealer parado 20-31 dias (VTEX IO). Mesma estratégia
+        # de fallback via JSON-LD.
         "url": (
             "https://www.webcontinental.com.br/climatizacao"
             "/ar-condicionado/ar-condicionado-split-hi-wall"
         ),
         "pagination": "vtex",
         "max_pages":  5,
+        "prefer_jsonld": True,
     },
     "Dufrio": {
         # FIX PROBLEMA DUFRIO: Preços concatenados sem separador decimal
@@ -183,6 +190,7 @@ DEALER_CONFIGS: Dict[str, Dict] = {
     "Climario": {
         # FIX PROBLEMA #3: URL desatualizada - faltam filtros VTEX para Hi-Wall Inverter
         # URL corrigida com map=category-2 para isolar produtos específicos
+        # Review Mai/2026: parado 20-31 dias — priorizar JSON-LD como fallback.
         "url": (
             "https://www.climario.com.br/ar-condicionado"
             "?initialMap=c&initialQuery=ar-condicionado"
@@ -192,6 +200,7 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         ),
         "pagination": "vtex",
         "max_pages":  5,
+        "prefer_jsonld": True,
     },
     "EngageEletro": {
         # FIX PROBLEMA #5: Ruído "Ofer Seman" - filtro anti-ruído muito agressivo
@@ -238,9 +247,15 @@ DEALER_CONFIGS: Dict[str, Dict] = {
     },
     "Eletrozema": {
         # MG/GO/ES — VTEX IO
+        # Review Mai/2026: parado desde 26/04 (par com CentralAr, mesma causa
+        # raiz VTEX IO). Priorizar JSON-LD e aguardar render JS, pois o WAF
+        # tem retornado HTML incompleto em DOMContentLoaded.
         "url": "https://www.eletrozema.com.br/ar-condicionado/split-inverter/c",
         "pagination": "vtex",
         "max_pages":  5,
+        "prefer_jsonld": True,
+        "wait_for_js":   True,
+        "wait_timeout":  12_000,
     },
     "Angeloni": {
         # Sul (SC/PR/RS) — plataforma própria WooCommerce-like
@@ -341,11 +356,15 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "pagination": "vtex",
         "max_pages":  5,
     },
-    "Fijioka": {
-        # Sul (SC) — especializado AC
-        "url": "https://www.fijioka.com.br/ar-condicionado/split-inverter/",
-        "pagination": "woocommerce",
+    "Fujioka": {
+        # Centro-Oeste (GO/DF) — varejo de eletro; plataforma VTEX
+        # (URLs de produto terminam em `/p`, padrão clássico VTEX).
+        # Domínio real é fujioka.com.br — a entrada anterior usava o typo
+        # `fijioka.com.br`, que não resolve.
+        "url": "https://www.fujioka.com.br/eletrodomesticos/ar-condicionado",
+        "pagination": "vtex",
         "max_pages":  5,
+        "prefer_jsonld": True,
     },
     "Edimil": {
         # ON HOLD — domínio edimil.com.br não resolve (ERR_NAME_NOT_RESOLVED).
@@ -375,6 +394,28 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "pagination": "vtex",
         "max_pages":  5,
         "on_hold": True,
+    },
+
+    # ── SPRINT 5 ── Novos Varejos (Mai/2026) ────────────────────────────────
+
+    "Martinello": {
+        # Sul (RS/SC) — varejo de eletro; URLs de produto têm sufixo numérico
+        # (ex: `-79285`) sem `/p` — plataforma não-VTEX (provável Linx/Wake
+        # ou customizada). JSON-LD costuma estar disponível em sites neste
+        # padrão; priorizar essa fonte como primária.
+        "url":           "https://www.martinello.com.br/ar-e-ventilacao/ar-condicionado",
+        "pagination":    "query",
+        "max_pages":     5,
+        "prefer_jsonld": True,
+    },
+    "GBarbosa": {
+        # Nordeste (SE/AL/BA) — rede de supermercados; e-commerce VTEX
+        # (URLs de produto terminam em `/p`). Categoria específica de AC
+        # dentro do hub de climatização.
+        "url":           "https://www.gbarbosa.com.br/eletro/climatizacao/ar-condicionado",
+        "pagination":    "vtex",
+        "max_pages":     5,
+        "prefer_jsonld": True,
     },
 }
 
