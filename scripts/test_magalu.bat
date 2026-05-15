@@ -1,20 +1,33 @@
 @echo off
-:: RAC Price Collector — Teste manual Magalu (curl_cffi, sem browser)
-:: Roda 1 pagina do scraper Python novo pra validar bypass do Akamai.
+:: RAC Price Collector - Teste manual Magalu (Playwright browser persistente)
+:: Roda o scraper Python Magalu — agora com browser persistente pra bypassar
+:: o sensor.js do Akamai.
 ::
 :: Uso:
-::   scripts\test_magalu.bat                    -> 1 pagina, sem priority filter
-::   scripts\test_magalu.bat 2                  -> 2 paginas
-::   scripts\test_magalu.bat 1 alta             -> 1 pagina, so prioridade alta
+::   scripts\test_magalu.bat                    -> 1 pagina, browser visivel (RECOMENDADO)
+::   scripts\test_magalu.bat 2                  -> 2 paginas, browser visivel
+::   scripts\test_magalu.bat 1 alta             -> 1 pagina, priority alta
+::   scripts\test_magalu.bat 1 "" headless      -> 1 pagina, browser headless (mais provavel falhar)
 ::
-:: O scraper usa curl_cffi com TLS chrome impersonation — bypassa o Akamai
-:: que bloqueava o Puppeteer (magalu_shopee/).
+:: Dica: browser visivel (default) passa muito mais facil pelo Akamai.
+:: Em headless, sensor.js detecta automacao e bloqueia /busca/.
 
 setlocal
 set "BASE_DIR=C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
 set "PAGES=%~1"
 set "PRIORITY=%~2"
+set "MODE=%~3"
 if "%PAGES%"=="" set "PAGES=1"
+
+:: Default: browser visivel (passa pelo sensor.js do Akamai com muito mais facilidade).
+:: Use o 3o argumento "headless" pra forcar headless (debug ou Oracle VM).
+if /i "%MODE%"=="headless" (
+    set "MAGALU_HEADLESS=true"
+    set "MODE_LABEL=headless"
+) else (
+    set "MAGALU_HEADLESS=false"
+    set "MODE_LABEL=visible"
+)
 
 cd /d "%BASE_DIR%"
 
@@ -32,8 +45,20 @@ if errorlevel 1 (
     pip install curl-cffi^>=0.6.0
 )
 
-echo === Teste Magalu Python (curl_cffi) — %PAGES% pagina(s) ===
+:: Verifica Playwright Chromium instalado
+python -c "from playwright.sync_api import sync_playwright" 2>nul
+if errorlevel 1 (
+    echo [INFO] Instalando playwright...
+    pip install playwright
+    python -m playwright install chromium
+)
+
+echo === Teste Magalu (browser %MODE_LABEL%) - %PAGES% pagina(s) ===
+echo MAGALU_HEADLESS=%MAGALU_HEADLESS%
 echo.
+
+:: Limpa cache de sessao pra garantir reuso correto
+if exist "data\magalu_session.json" del /q "data\magalu_session.json" 2>nul
 
 if "%PRIORITY%"=="" (
     python main.py --platforms magalu --pages %PAGES%
