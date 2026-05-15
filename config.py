@@ -173,6 +173,7 @@ PLATFORM_TYPE: Dict[str, str] = {
     "TopMoveis":        "Regional Especializado",
     "Martinello":       "Regional Especializado",
     "GBarbosa":         "Regional Retail",
+    "Gazin":            "Regional Retail",
 }
 
 # ---------------------------------------------------------------------------

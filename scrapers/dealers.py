@@ -89,9 +89,13 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "extended_wait": 12000,
     },
     "Belmicro": {
-        # FIX PROBLEMA #1: URL desatualizada - apontando para categoria genérica
-        # URL corrigida para subcategoria específica de Split
-        "url":        "https://www.belmicro.com.br/climatizacao/Ar-Condicionado-Split",
+        # URL atualizada (Mai/2026) com params VTEX explícitos — caminho lowercase
+        # + initialMap/map para forçar a navegação pela categoria correta.
+        # Volume base anterior: ~14-15 itens/dia (URL Ar-Condicionado-Split).
+        "url": (
+            "https://www.belmicro.com.br/climatizacao/ar-condicionado-split"
+            "?initialMap=c&initialQuery=climatizacao&map=category-1,category-2"
+        ),
         "pagination": "vtex",
         "max_pages":  5,
     },
@@ -101,10 +105,16 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         "max_pages":  5,
     },
     "FrioPecas": {
-        # Review Mai/2026: dealer parado 20-31 dias (VTEX IO). JSON-LD do
-        # head do template costuma trazer Products mesmo quando o DOM
-        # principal vem incompleto pelo WAF — priorizar como fonte primária.
-        "url":        "https://www.friopecas.com.br/ar-condicionado/ar-condicionado-split-inverter",
+        # Mai/2026: dealer voltou a coletar (~12-15 itens/dia). URL atualizada
+        # com params VTEX explícitos (initialMap/map/query) — equivalente VTEX
+        # ao caminho `/ar-condicionado/ar-condicionado-split-inverter`, deixa
+        # a navegação determinística pra Search VTEX.
+        "url": (
+            "https://www.friopecas.com.br/ar-condicionado"
+            "?initialMap=c&initialQuery=ar-condicionado"
+            "&map=category-1,category-2"
+            "&query=/ar-condicionado/ar-condicionado-split-inverter&searchState"
+        ),
         "pagination": "vtex",
         "max_pages":  5,
         "prefer_jsonld": True,
@@ -160,7 +170,12 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         # Maior dealer especializado em AC do Brasil — SAP Hybris (não VTEX)
         # FIX 2026-05-02: Seletor .pdc_product-item detectado no DOM (20 itens)
         # Plataforma SAP Hybris usa .pdc_product-item (Product Display Container)
-        "url":        "https://www.centralar.com.br/ar-condicionado/inverter/c/INVERTER",
+        #
+        # URL atualizada (Mai/2026): restringe à faixa 11-12k BTU (faixa mais
+        # vendida do mercado residencial). Volume base anterior: ~17-21
+        # itens/dia (URL ampla `/inverter/c/INVERTER`). MONITORAR — se o
+        # volume cair sem ganho de qualidade, reverter.
+        "url":        "https://www.centralar.com.br/ar-condicionado/inverter/11000-12000-btus/c/INVERTER_11000_12000",
         "pagination": "vtex",
         "max_pages":  5,
 
@@ -283,12 +298,17 @@ DEALER_CONFIGS: Dict[str, Dict] = {
     },
     "Bemol": {
         # Amazonas — VTEX IO
+        # URL atualizada (Mai/2026): 0 registros históricos com caminho
+        # `/ar-condicionado/split`. Caminho mais profundo com hierarquia
+        # completa de categorias + params VTEX explícitos.
         "url": (
-            "https://www.bemol.com.br/ar-condicionado/split"
-            "?order=OrderByTopSaleDESC"
+            "https://www.bemol.com.br/ar-e-ventilacao/ar-condicionado/ar-condicionado-split"
+            "?initialMap=c&initialQuery=ar-e-ventilacao"
+            "&map=category-1,category-2,category-3"
         ),
-        "pagination": "vtex",
-        "max_pages":  5,
+        "pagination":    "vtex",
+        "max_pages":     5,
+        "prefer_jsonld": True,
     },
     "CasasDAgua": {
         # Sul (SC/RS) — VTEX IO
@@ -414,6 +434,19 @@ DEALER_CONFIGS: Dict[str, Dict] = {
         # dentro do hub de climatização.
         "url":           "https://www.gbarbosa.com.br/eletro/climatizacao/ar-condicionado",
         "pagination":    "vtex",
+        "max_pages":     5,
+        "prefer_jsonld": True,
+    },
+    "Gazin": {
+        # Centro-Oeste/Sul (MS/MT/PR/etc) — varejo de eletro com e-commerce
+        # próprio (não VTEX). URL com `filtro=d:category:...` + `sortBy`
+        # indica plataforma customizada / Linx-like. Sufixo `Ar Condicionado
+        # Split` no filtro restringe à categoria correta.
+        "url": (
+            "https://www.gazin.com.br/categoria/ar-condicionado"
+            "?filtro=d:category:Ar%20Condicionado%20Split&sortBy=relevancia"
+        ),
+        "pagination":    "query",
         "max_pages":     5,
         "prefer_jsonld": True,
     },
@@ -1237,8 +1270,15 @@ class DealerScraper(BaseScraper):
         soup = BeautifulSoup(html, "html.parser")
         seen_titles: Set[str] = set()
         org_ctr = 0
-        
+        # Diagnóstico: contadores de funil JSON-LD pra identificar onde produtos somem
+        diag_scripts = 0
+        diag_entries_seen = 0
+        diag_rejected_junk = 0
+        diag_rejected_not_rac = 0
+        diag_dup_titles = 0
+
         for script in soup.find_all("script", {"type": "application/ld+json"}):
+            diag_scripts += 1
             try:
                 raw = (script.string or "").strip()
                 if not raw:
@@ -1284,15 +1324,19 @@ class DealerScraper(BaseScraper):
                     
                     name = entry.get("name", "")
                     if not name or DealerScraper._is_junk_title(name):
+                        diag_rejected_junk += 1
                         continue
-                    
+                    diag_entries_seen += 1
+
                     # Valida título como produto real
                     if not DealerScraper._is_valid_product_title(name):
+                        diag_rejected_not_rac += 1
                         continue
-                    
+
                     # Dedup por título
                     name_key = DealerScraper._safe_lower(name).strip()
                     if name_key in seen_titles:
+                        diag_dup_titles += 1
                         continue
                     seen_titles.add(name_key)
                     
@@ -1348,7 +1392,22 @@ class DealerScraper(BaseScraper):
             except Exception as exc:
                 logger.debug(f"[{dealer}] Erro ao parsear JSON-LD: {exc}")
                 continue
-        
+
+        # Funil de extração JSON-LD — em WARNING quando script existe mas zero produtos
+        # (ajuda a diagnosticar Leveros, EngageEletro, Eletrozema)
+        if diag_scripts > 0 and not records:
+            logger.warning(
+                f"[{dealer}] JSON-LD funil: {diag_scripts} scripts, "
+                f"{diag_entries_seen} candidatos válidos, "
+                f"rejeitados: junk={diag_rejected_junk} not_rac={diag_rejected_not_rac} dup={diag_dup_titles} "
+                f"→ 0 produtos"
+            )
+        elif records:
+            logger.debug(
+                f"[{dealer}] JSON-LD funil: {diag_scripts} scripts → {len(records)} produtos "
+                f"(rejeitados: junk={diag_rejected_junk} not_rac={diag_rejected_not_rac} dup={diag_dup_titles})"
+            )
+
         return records
 
     # ------------------------------------------------------------------
