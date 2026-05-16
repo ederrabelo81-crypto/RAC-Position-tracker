@@ -2,7 +2,7 @@
 
 Bot de monitoramento de preços e posicionamento de produtos de ar condicionado em marketplaces brasileiros e varejistas especializados.
 
-**Status:** ✅ Produção | **Última atualização:** Maio 2026 (v3.2)
+**Status:** ✅ Produção | **Última atualização:** Maio 2026 (v3.3)
 
 ---
 
@@ -36,7 +36,7 @@ GitHub Actions
 
 ## 🌐 Plataformas Suportadas
 
-> Status validado em smoke test — 03/05/2026
+> Status validado em smoke test — 03/05/2026 | Última revisão — 16/05/2026
 
 ### Funcionando ✅
 
@@ -44,32 +44,36 @@ GitHub Actions
 |------------|------|-------------|
 | Mercado Livre | Nacional Retail | 16-22 sellers/keyword; ~22-42s/keyword |
 | Amazon | Nacional Retail | Seller via "Vendido por"; ~26-31s/keyword |
-| Leroy Merlin | Varejo Especializado | Algolia API direta; ~10-11s/keyword |
-| Dealers (Frigelar e outros) | Regional/Nacional | JSON-LD + VTEX + DOM fallback |
+| Leroy Merlin | Varejo Especializado | Algolia API direta; ~10-11s/keyword; 15 IDs 3P não resolvidos (404 VTEX) |
+| Magazine Luiza | Nacional Retail | **Python** — `curl_cffi` + TLS chrome impersonation; bypass Akamai via `_next/data` JSON (Mai/2026) |
+| Dealers (Frigelar e outros) | Regional/Nacional | JSON-LD + VTEX + DOM fallback; ~30 itens / 108s |
+| Shopee | Nacional Marketplace | **Node.js** (`magalu_shopee/`) — Puppeteer + sessão autenticada |
 
 ### Com ressalvas ⚠️
 
 | Plataforma | Tipo | Observações |
 |------------|------|-------------|
 | Google Shopping | Comparador de Preços | reCAPTCHA em headless; funciona com delays 25-45s em coletas reais |
-| Magazine Luiza | Nacional Retail | **Implementação local em JS + TypeScript** — Akamai Bot Manager bloqueia o scraper Python; solução alternativa roda fora do bot principal |
 
 ### On Hold / Stand-by ⏸️
 
 | Plataforma | Tipo | Motivo |
 |------------|------|--------|
-| Shopee | Nacional Marketplace | Requer sessão autenticada |
 | Casas Bahia | Nacional Retail | WAF Akamai |
 | Fast Shop | Nacional Varejo | Bloqueio total PerimeterX |
 
 ### Dealers com problema ❌
 
-| Dealer | Desde | Status |
-|--------|-------|--------|
-| CentralAr | 26/04 | Diagnóstico pendente (Sprint 1) |
-| Eletrozema | 26/04 | Causa comum com CentralAr (VTEX IO) |
-| Dufrio | 29/04 | Diagnóstico pendente (Sprint 1) |
-| PoloAr, Climario, FrioPecas, Leveros, WebContinental | 20-31 dias | Sprint 2 |
+| Dealer | Parado desde | Status |
+|--------|-------------|--------|
+| CentralAr | 26/04/2026 | Diagnóstico pendente (Sprint 1) |
+| Eletrozema | 26/04/2026 | Causa comum com CentralAr — VTEX IO (Sprint 1) |
+| Dufrio | 29/04/2026 | Diagnóstico pendente (Sprint 1) |
+| PoloAr | 20-31 dias | Sprint 2 |
+| Climario | 20-31 dias | Sprint 2 |
+| FrioPecas | 20-31 dias | Sprint 2 |
+| Leveros | 20-31 dias | Sprint 2 |
+| WebContinental | 20-31 dias | Sprint 2 |
 
 ### Dealers Incluídos
 
@@ -408,17 +412,19 @@ rac-position-tracker/
 ├── requirements.txt             # Dependências bot
 ├── requirements_app.txt         # Dependências dashboard
 │
+├── magalu_shopee/               # Sub-projeto Node.js/TS — Shopee (Puppeteer + sessão autenticada)
+│   └── src/index.ts             # Entry point: ts-node src/index.ts --platforms shopee
+│
 ├── scrapers/
 │   ├── base.py                  # BaseScraper ABC (Playwright, stealth JS, _build_record)
 │   ├── mercado_livre.py         # MLScraper
 │   ├── amazon.py                # AmazonScraper
-│   ├── magalu.py                # MagaluScraper (Python — bloqueado por Akamai em produção)
+│   ├── magalu.py                # MagaluScraper — curl_cffi + TLS impersonation chrome124; bypass Akamai (Mai/2026)
 │   ├── google_shopping.py       # GoogleShoppingScraper
 │   ├── leroy_merlin.py          # LeroyMerlinScraper (Algolia API)
 │   ├── dealers.py               # DealerScraper (JSON-LD + VTEX + DOM)
-│   ├── shopee.py                # ⏸️ Stand by
-│   ├── casas_bahia.py           # ⏸️ Stand by
-│   └── fast_shop.py             # ⏸️ Stand by
+│   ├── casas_bahia.py           # ⏸️ Stand by (Akamai WAF)
+│   └── fast_shop.py             # ⏸️ Stand by (PerimeterX)
 │
 ├── utils/
 │   ├── text.py                  # parse_price, get_turno, now_brt(), normalize_text
@@ -500,8 +506,8 @@ free -h                    # verificar uso atual
 sudo swapon --show         # confirmar swap ativo
 ```
 
-### Magalu não retorna resultados no bot Python
-O scraper Python (`scrapers/magalu.py`) é bloqueado pelo Akamai Bot Manager em produção. A coleta do Magalu passou a rodar **localmente via implementação em JS + TypeScript**, separada do bot principal. Execute-a no ambiente local com Node.js.
+### Magalu — como funciona o bypass Akamai
+O scraper Python (`scrapers/magalu.py`) usa `curl_cffi` com `impersonate="chrome124"` para replicar o TLS handshake do Chrome real e contornar o Akamai Bot Manager. Fluxo: warm-up na home → extrai `BUILD_ID` do `__NEXT_DATA__` → bate em `_next/data/{BUILD_ID}/busca/{slug}.json`. Se retornar HTTP 403, response < 1 KB ou strings Akamai, a detecção de bloqueio dispara fail-fast com fallback para scraping de HTML. Execute normalmente via `python main.py --platforms magalu`.
 
 ### Cron não executa na VM Oracle
 ```bash
@@ -551,8 +557,8 @@ crontab -l
 
 Desenvolvido para monitoramento competitivo de preços no varejo brasileiro de climatização (RAC).
 
-**Stack:** Python · Playwright · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · TypeScript (Magalu)
+**Stack:** Python · curl_cffi · Playwright · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · TypeScript/Puppeteer (Shopee)
 
 ---
 
-**Versão:** 3.2 | **Última atualização:** Maio 2026
+**Versão:** 3.3 | **Última atualização:** Maio 2026
