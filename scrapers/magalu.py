@@ -858,13 +858,23 @@ class MagaluScraper(BaseScraper):
     # Parser do JSON do Next.js — caminha a estrutura procurando produtos
     # ------------------------------------------------------------------
 
+    # Campos que indicam preço em qualquer profundidade do dict (numa SERP
+    # legítima do Magalu, todo produto tem pelo menos um destes).
+    _PRICE_KEYS = (
+        "bestPrice", "currentPrice", "salesPrice", "finalPrice", "price",
+        "promotionalPrice", "sellingPrice", "bestPriceTemplate",
+        "priceTemplate", "currentPriceTemplate", "prices",
+    )
+
     def _find_products_in_json(self, data: Any) -> List[Dict]:
         """
-        Caminha o JSON do Next.js procurando o array de produtos.
-        A estrutura típica é `pageProps.searchResult.products` mas pode variar.
-        Aceita qualquer array com objetos que tenham (id|productId) + (title|name).
+        Caminha o JSON do Next.js procurando o array de produtos COM preço.
+
+        Bug em produção (Mai/16): o walker pegava arrays de carrosséis
+        promocionais ("produtos similares", "mais vendidos") que contêm
+        title+id mas SEM price/path. Resultado: 37 registros lixo no DB.
+        Fix: arrays só são aceitos se a maioria dos itens tem campo de preço.
         """
-        # Caminhos preferenciais — testa primeiro
         preferred_paths = (
             ("props", "pageProps", "searchResult", "products"),
             ("props", "pageProps", "products"),
@@ -881,10 +891,13 @@ class MagaluScraper(BaseScraper):
                     node = None
                     break
                 node = node[key]
-            if isinstance(node, list) and node and self._looks_like_product(node[0]):
+            if (
+                isinstance(node, list) and node
+                and self._array_has_priced_products(node)
+            ):
                 return node
 
-        # Fallback: walk recursivo procurando o primeiro array de produtos
+        # Fallback: walk recursivo — também filtra arrays sem preços
         found: List[Dict] = []
         self._walk_find_product_array(data, found, depth=0)
         return found
@@ -896,13 +909,40 @@ class MagaluScraper(BaseScraper):
         has_title = any(k in obj for k in ("title", "name", "productName"))
         return has_id and has_title
 
+    def _has_price_field(self, obj: Any) -> bool:
+        """True se o dict tem qualquer campo conhecido de preço (não vazio)."""
+        if not isinstance(obj, dict):
+            return False
+        for key in self._PRICE_KEYS:
+            val = obj.get(key)
+            if val is None:
+                continue
+            if isinstance(val, (int, float)) and val > 0:
+                return True
+            if isinstance(val, str) and val.strip():
+                return True
+            if isinstance(val, dict) and val:
+                return True
+        return False
+
+    def _array_has_priced_products(self, arr: List[Any]) -> bool:
+        """
+        True se ≥50% dos primeiros 5 itens parecem produto E têm preço.
+        Evita arrays de carrosséis promocionais (sem price/path).
+        """
+        sample = [x for x in arr[:5] if self._looks_like_product(x)]
+        if not sample:
+            return False
+        with_price = sum(1 for x in sample if self._has_price_field(x))
+        return with_price * 2 >= len(sample)  # maioria
+
     def _walk_find_product_array(
         self, node: Any, found: List[Dict], depth: int
     ) -> None:
         if found or depth > 8:
             return
         if isinstance(node, list):
-            if node and self._looks_like_product(node[0]):
+            if node and self._array_has_priced_products(node):
                 found.extend(item for item in node if isinstance(item, dict))
                 return
             for item in node:
@@ -1019,6 +1059,7 @@ class MagaluScraper(BaseScraper):
         offset = (page - 1) * _ITEMS_PER_PAGE
         organic_counter = 0
         sponsored_counter = 0
+        skipped_no_price = 0
 
         for idx, prod in enumerate(products):
             title = (
@@ -1028,6 +1069,13 @@ class MagaluScraper(BaseScraper):
                 or self._deep_get(prod, "product", "title")
             )
             if not title:
+                continue
+
+            price = self._extract_price(prod)
+            # Produtos sem preço extraível são lixo de carrosséis promocionais
+            # ou de "produtos similares". Não inserimos no banco.
+            if price is None:
+                skipped_no_price += 1
                 continue
 
             # Detecta patrocinado — campo varia, tentamos vários
@@ -1046,7 +1094,6 @@ class MagaluScraper(BaseScraper):
                 organic_counter += 1
                 pos_organic, pos_sponsored = organic_counter, None
 
-            price = self._extract_price(prod)
             seller = self._extract_seller(prod) or "Magalu"
 
             rating_val = self._deep_get(prod, "rating", "score")
@@ -1080,6 +1127,13 @@ class MagaluScraper(BaseScraper):
                 tag_destaque=prod.get("badge") or self._deep_get(prod, "label", "text"),
                 url_produto=self._extract_url(prod),
             ))
+
+        if skipped_no_price:
+            logger.warning(
+                f"[{self.platform_name}] '{keyword}' p{page}: descartados "
+                f"{skipped_no_price} itens sem preço (provavelmente carrossel "
+                "promocional ou página degradada do Akamai)"
+            )
         return records
 
     # ------------------------------------------------------------------

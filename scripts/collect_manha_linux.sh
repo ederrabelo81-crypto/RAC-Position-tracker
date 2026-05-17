@@ -32,13 +32,17 @@ else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: git pull falhou — usando código local: $(git rev-parse --short HEAD)" >> "$LOG"
 fi
 
-# 2. Python: Google Shopping + Amazon + Leroy + Dealers + Magalu
+# 2. Python: Amazon + Leroy + Dealers + Google Shopping + Magalu
 # ML removido deste VM — IP de datacenter Oracle é bloqueado pelo ML.
 # ML roda apenas no PC local Windows do analista (IP residencial).
-# Magalu voltou para Python via curl_cffi (TLS chrome impersonation — bypassa Akamai).
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: magalu google_shopping amazon leroy dealers (2 páginas)..." >> "$LOG"
+# Ordem: scrapers estáveis primeiro (Amazon, Leroy, Dealers); scrapers
+# baseados em browser persistente por último (Google Shopping, Magalu).
+# Se Magalu/Google travar ou estourar timeout, Amazon/Leroy/Dealers já
+# foram coletados — não bloqueiam a pipeline inteira como antes.
+# (Bug Mai/13-17: Magalu travado deixou Amazon sem coletar por 5 dias.)
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: amazon leroy dealers google_shopping magalu (2 páginas)..." >> "$LOG"
 python main.py \
-    --platforms magalu google_shopping amazon leroy dealers \
+    --platforms amazon leroy dealers google_shopping magalu \
     --pages 2 \
     --priority alta media \
     >> "$LOG" 2>&1
