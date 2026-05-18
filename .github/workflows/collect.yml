@@ -1,49 +1,45 @@
 name: RAC Price Collection
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Coleta de backup manual — acionada via workflow_dispatch.
+# Coleta diária agendada + backup manual via workflow_dispatch.
 #
-# Arquitetura de coleta (produção):
-#   Oracle VM (cron)  →  Magalu, Google Shopping, Amazon, Leroy, Dealers
-#   PC local Windows  →  ML (IP residencial — bloqueio de datacenter no ML)
+# Schedule (UTC):
+#   13:00 UTC = 10:00 BRT  → turno Abertura  (2 páginas, alta+media)
+#   00:00 UTC = 21:00 BRT  → turno Fechamento (1 página, alta)
 #
-# Magalu voltou ao Python via curl_cffi (Mai/2026) — substitui o Node.js
-# bloqueado pelo Akamai. Shopee continua em Node.js (sessão autenticada).
+# Plataformas: magalu, google_shopping, amazon, leroy, dealers
+# ML excluído: IPs de datacenter GitHub são bloqueados pelo Mercado Livre.
 #
-# Este workflow só é usado como backup quando a VM está indisponível.
+# Magalu usa MAGALU_HEADLESS=false + xvfb (display virtual) para bypassar
+# o sensor.js do Akamai. O perfil Chrome é cacheado entre runs para
+# acumular histórico/cookies e aumentar a confiança do Akamai.
 #
 # Variáveis obrigatórias (Settings → Secrets and variables → Actions):
 #   SUPABASE_URL   —  URL do projeto Supabase
-#   SUPABASE_KEY   —  chave de serviço (service_role) ou anon key com insert
+#   SUPABASE_KEY   —  chave de serviço (service_role)
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
+  schedule:
+    - cron: '0 13 * * *'   # Abertura  — 10:00 BRT = 13:00 UTC
+    - cron: '0 0 * * *'    # Fechamento — 21:00 BRT = 00:00 UTC
   workflow_dispatch:
     inputs:
       platforms:
-        description: 'Plataformas Python separadas por espaço'
+        description: 'Plataformas separadas por espaço'
         required: false
-        default: 'magalu ml google_shopping amazon leroy dealers'
-      node_platforms:
-        description: 'Plataformas Node.js separadas por vírgula (apenas shopee)'
-        required: false
-        default: ''
+        default: 'magalu google_shopping amazon leroy dealers'
       pages:
         description: 'Páginas por keyword (1–5)'
         required: false
         default: '2'
       priority:
-        description: 'Prioridade das keywords (alta, media, baixa ou vazio = todas)'
+        description: 'Prioridade (alta, media, baixa — vazio = todas)'
         required: false
         default: ''
-      skip_nodejs:
-        description: 'Pular Node.js (true/false) — default true, Magalu agora é Python'
-        required: false
-        default: 'true'
 
 env:
   PYTHON_VERSION: '3.11'
-  NODE_VERSION: '20'
   TZ: America/Sao_Paulo
 
 jobs:
@@ -57,81 +53,99 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # ── 2. Python ──────────────────────────────────────────────────────────
+      # ── 2. Parâmetros do run (schedule vs. manual) ─────────────────────────
+      - name: Set run parameters
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            HOUR=$(date -u +%H)
+            # Cron das 13:00 UTC = Abertura; das 00:00 UTC = Fechamento
+            if [ "$HOUR" -ge 12 ] && [ "$HOUR" -lt 18 ]; then
+              TURNO="Abertura"
+              PAGES="2"
+              PRIORITY="alta media"
+            else
+              TURNO="Fechamento"
+              PAGES="1"
+              PRIORITY="alta"
+            fi
+            PLATFORMS="magalu google_shopping amazon leroy dealers"
+          else
+            TURNO="Manual"
+            PLATFORMS="${{ github.event.inputs.platforms }}"
+            PAGES="${{ github.event.inputs.pages }}"
+            PRIORITY="${{ github.event.inputs.priority }}"
+          fi
+
+          echo "turno=$TURNO"       >> "$GITHUB_OUTPUT"
+          echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
+          echo "pages=$PAGES"       >> "$GITHUB_OUTPUT"
+          echo "priority=$PRIORITY" >> "$GITHUB_OUTPUT"
+
+          echo "=== Parâmetros do run ==="
+          echo "  Turno    : $TURNO"
+          echo "  Platforms: $PLATFORMS"
+          echo "  Pages    : $PAGES"
+          echo "  Priority : ${PRIORITY:-'(todas)'}"
+
+      # ── 3. Python ──────────────────────────────────────────────────────────
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
 
-      # ── 3. Node.js ─────────────────────────────────────────────────────────
-      - name: Set up Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: magalu_shopee/package-lock.json
-
       # ── 4. Dependências Python ─────────────────────────────────────────────
       - name: Install Python dependencies
         run: pip install --upgrade pip && pip install -r requirements.txt
 
-      # ── 5. Dependências Node.js ────────────────────────────────────────────
-      - name: Install Node.js dependencies (magalu_shopee)
-        run: cd magalu_shopee && npm ci --silent
+      # ── 5. Perfil Chrome cacheado (Akamai trust acumula entre runs) ────────
+      - name: Restore Magalu Chrome profile cache
+        uses: actions/cache@v4
+        with:
+          path: data/magalu_chrome_profile
+          key: magalu-chrome-profile-v1-${{ runner.os }}
+          restore-keys: |
+            magalu-chrome-profile-v1-
 
-      # ── 6. Playwright browsers + system dependencies ──────────────────────
+      # ── 6. Playwright + dependências de sistema ────────────────────────────
       - name: Install Playwright browsers and system dependencies
         run: |
           playwright install-deps chromium
           playwright install chromium
-          google-chrome --version || true
 
-      # ── 7. Executa coleta Python ───────────────────────────────────────────
-      - name: Run Python collector
+      # ── 7. xvfb — display virtual para Magalu (bypassa sensor.js Akamai) ──
+      - name: Install xvfb (virtual display for Magalu)
+        run: sudo apt-get install -y xvfb
+
+      # ── 8. Coleta Python ───────────────────────────────────────────────────
+      - name: Run Python collector (xvfb + MAGALU_HEADLESS=false)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          MAGALU_HEADLESS: 'false'
           CI: 'true'
         run: |
-          PLATFORMS="${{ github.event.inputs.platforms }}"
-          PAGES="${{ github.event.inputs.pages }}"
-          PRIORITY="${{ github.event.inputs.priority }}"
+          PLATFORMS="${{ steps.params.outputs.platforms }}"
+          PAGES="${{ steps.params.outputs.pages }}"
+          PRIORITY="${{ steps.params.outputs.priority }}"
 
           CMD="python main.py --platforms $PLATFORMS --pages $PAGES"
           if [ -n "$PRIORITY" ]; then
             CMD="$CMD --priority $PRIORITY"
           fi
 
-          echo "Executando: $CMD"
-          eval "$CMD"
-
-      # ── 8. Executa coleta Node.js (apenas Shopee — Magalu agora é Python) ──
-      - name: Run Node.js collector (Shopee)
-        if: ${{ github.event.inputs.skip_nodejs != 'true' && github.event.inputs.node_platforms != '' }}
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          CI: 'true'
-        run: |
-          NODE_PLATFORMS="${{ github.event.inputs.node_platforms }}"
-          PAGES="${{ github.event.inputs.pages }}"
-
-          echo "Executando Node.js: --platforms $NODE_PLATFORMS --pages $PAGES"
-          cd magalu_shopee
-          node node_modules/.bin/ts-node src/index.ts \
-            --platforms "$NODE_PLATFORMS" \
-            --pages "$PAGES"
+          echo "Turno   : ${{ steps.params.outputs.turno }}"
+          echo "Comando : xvfb-run -a $CMD"
+          xvfb-run -a --server-args="-screen 0 1366x768x24" $CMD
 
       # ── 9. Salva CSVs como artefato ────────────────────────────────────────
       - name: Upload CSV artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rac-coleta-${{ github.run_id }}
-          path: |
-            output/*.csv
-            magalu_shopee/data/*.csv
+          name: rac-coleta-${{ steps.params.outputs.turno }}-${{ github.run_id }}
+          path: output/*.csv
           retention-days: 30
           if-no-files-found: warn
 
@@ -140,7 +154,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rac-logs-${{ github.run_id }}
+          name: rac-logs-${{ steps.params.outputs.turno }}-${{ github.run_id }}
           path: |
             logs/*.log
             logs/dealer_debug_*.html

@@ -72,6 +72,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _BROWSER_SESSION_CACHE = _PROJECT_ROOT / "data" / "magalu_session.json"
 _SESSION_MAX_AGE_SEC = 25 * 60  # 25 minutos
 
+# Perfil Chrome persistente. `launch_persistent_context` reusa esse diretório
+# entre runs — cookies, histórico, fingerprint do CDP, tudo acumula. Akamai
+# trata um perfil "antigo" como muito mais legítimo que um browser efêmero
+# acabado de spawnar. Após a primeira validação visível, o cookie _abck
+# fica gravado aqui e sensor.js libera direto nas próximas execuções
+# (inclusive em headless, em alguns casos).
+_BROWSER_PROFILE_DIR = _PROJECT_ROOT / "data" / "magalu_chrome_profile"
+
 # Domínios — mobile costuma ter Akamai mais leniente que desktop
 _MAGALU_MOBILE_HOME = "https://m.magazineluiza.com.br/"
 _MAGALU_MOBILE_BASE = "https://m.magazineluiza.com.br"
@@ -245,41 +253,53 @@ class MagaluScraper(BaseScraper):
             logger.error(f"[Magalu] Falha ao iniciar Playwright: {exc}")
             return False
 
+        # Cria perfil persistente — Chrome reusa o mesmo user_data_dir entre
+        # runs. Após a 1ª validação manual visível, o _abck fica salvo aqui
+        # e Akamai libera mais rápido nas próximas execuções.
+        _BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        profile_is_fresh = not any(_BROWSER_PROFILE_DIR.iterdir())
+        logger.info(
+            f"[Magalu] Profile dir: {_BROWSER_PROFILE_DIR} "
+            f"({'NOVO' if profile_is_fresh else 'existente'})"
+        )
+
         # Tenta Chrome real → msedge → Chromium (em ordem de stealth)
         channel_used = None
+        launch_args = [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--disable-infobars",
+        ]
         for channel in ("chrome", "msedge", None):
             try:
-                self._pw_browser = self._pw_handle.chromium.launch(
+                # launch_persistent_context retorna direto um BrowserContext —
+                # não há objeto Browser separado (context.browser é None).
+                self._pw_context = self._pw_handle.chromium.launch_persistent_context(
+                    user_data_dir=str(_BROWSER_PROFILE_DIR),
                     headless=self._browser_headless,
                     channel=channel,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-gpu",
-                        "--disable-dev-shm-usage",
-                        "--disable-infobars",
-                    ],
+                    user_agent=ua,
+                    viewport={"width": 1366, "height": 768},
+                    locale="pt-BR",
+                    timezone_id="America/Sao_Paulo",
+                    args=launch_args,
                 )
                 channel_used = channel or "chromium"
                 break
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"[Magalu] Falha launch channel={channel}: {exc}")
                 continue
 
-        if self._pw_browser is None:
+        if self._pw_context is None:
             logger.error(
                 "[Magalu] Não foi possível iniciar nenhum browser. Rode: "
                 "python -m playwright install chromium"
             )
             self._close_persistent_browser()
             return False
-
-        self._pw_context = self._pw_browser.new_context(
-            user_agent=ua,
-            viewport={"width": 1366, "height": 768},
-            locale="pt-BR",
-            timezone_id="America/Sao_Paulo",
-        )
 
         # Stealth JS — esconde marcadores de automação do sensor.js
         self._pw_context.add_init_script("""
@@ -298,10 +318,18 @@ class MagaluScraper(BaseScraper):
             Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
         """)
 
-        self._pw_page = self._pw_context.new_page()
+        # Persistent context já vem com 1 página aberta (about:blank) —
+        # reusa em vez de criar nova, pra economizar 1 sinal de automação.
+        if self._pw_context.pages:
+            self._pw_page = self._pw_context.pages[0]
+        else:
+            self._pw_page = self._pw_context.new_page()
         self._pw_page.set_default_timeout(45_000)
 
-        logger.info(f"[Magalu] Browser persistente aberto (channel={channel_used})")
+        logger.info(
+            f"[Magalu] Browser persistente aberto (channel={channel_used}, "
+            f"profile={'novo' if profile_is_fresh else 'reusado'})"
+        )
 
         # 1ª navegação: home — gera _abck inicial (challenge) e roda sensor.js
         try:
