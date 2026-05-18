@@ -40,8 +40,26 @@ fi
 # Se Magalu/Google travar ou estourar timeout, Amazon/Leroy/Dealers já
 # foram coletados — não bloqueiam a pipeline inteira como antes.
 # (Bug Mai/13-17: Magalu travado deixou Amazon sem coletar por 5 dias.)
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: amazon leroy dealers google_shopping magalu (2 páginas)..." >> "$LOG"
-python main.py \
+#
+# xvfb-run cria display X virtual pro Chromium. Sem isso, sensor.js do
+# Akamai (Magalu) detecta automação em headless e bloqueia /busca/ → 0
+# produtos. MAGALU_HEADLESS=false força browser "visível" no display
+# virtual — mesma estratégia já usada pro ML (commit ecd9b49).
+# Instalar uma vez: sudo apt-get install -y xvfb
+export MAGALU_HEADLESS=false
+if command -v xvfb-run >/dev/null 2>&1; then
+    XVFB_CMD=(xvfb-run -a --server-args="-screen 0 1366x768x24")
+    XVFB_LABEL="on"
+else
+    # Fallback no-op: `env` sem args só executa o que vem depois.
+    # Evita problemas com array vazio sob set -u em bash antigo.
+    XVFB_CMD=(env)
+    XVFB_LABEL="MISSING"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: xvfb-run não encontrado — Magalu provavelmente falhará (sensor.js Akamai). Instale: sudo apt-get install -y xvfb" >> "$LOG"
+fi
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: amazon leroy dealers google_shopping magalu (2 páginas, xvfb=$XVFB_LABEL)..." >> "$LOG"
+"${XVFB_CMD[@]}" python main.py \
     --platforms amazon leroy dealers google_shopping magalu \
     --pages 2 \
     --priority alta media \
