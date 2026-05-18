@@ -64,7 +64,8 @@ sudo apt-get install -y -qq \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
     libxfixes3 libxrandr2 libgbm1 libasound2 \
-    fonts-liberation libappindicator3-1 xdg-utils
+    fonts-liberation libappindicator3-1 xdg-utils \
+    xvfb  # display X virtual — necessário pro Chromium "visível" no cron headless (Magalu/ML)
 
 # Cria link python3 → python se não existir
 if ! command -v python &>/dev/null; then

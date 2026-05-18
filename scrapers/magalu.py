@@ -23,11 +23,18 @@ Estratégia (Mai/2026, redesign após bypass falho do sensor.js Akamai):
   de 31 keywords × 1-2 páginas, total ~3-6min — aceitável.
 
 Env vars:
-  MAGALU_HEADLESS=false       → browser visível (default true, ajuda muito
-                                no Windows local pra passar pelo sensor.js)
+  MAGALU_HEADLESS=false       → browser visível (default true). REQUIRED
+                                em produção: o sensor.js do Akamai detecta
+                                Chromium headless e mantém _abck em
+                                "challenge" → /busca/ retorna 0 produtos.
+                                Combine com xvfb-run no cron pra display
+                                virtual (ver scripts/collect_*_linux.sh).
   MAGALU_FORCE_CURL=true      → desabilita browser e tenta só curl_cffi
                                 (NÃO funcionará atualmente, deixado pra
                                 futuro se Akamai mudar de comportamento)
+
+Setup VM (uma vez):
+  sudo apt-get install -y xvfb
 """
 
 import json
