@@ -151,6 +151,7 @@ class MagaluScraper(BaseScraper):
         self._pw_context = None        # BrowserContext
         self._pw_page = None           # Page (reusada entre keywords)
         self._browser_mode: bool = True  # True = usa Playwright pra cada busca
+        self._is_cdp: bool = False     # True = conectado a Chrome externo via CDP (não fechar)
 
         # Contador de bloqueios consecutivos pra disparar revalidação de sessão
         # (visita home + interação humana pra sensor.js promover _abck).
@@ -244,62 +245,87 @@ class MagaluScraper(BaseScraper):
             self._impersonate, _DESKTOP_UA_BY_CHROME["chrome124"]
         )
 
-        mode = "visible" if not self._browser_headless else "headless"
-        logger.info(f"[Magalu] Abrindo browser persistente ({mode})...")
-
         try:
             self._pw_handle = sync_playwright().start()
         except Exception as exc:
             logger.error(f"[Magalu] Falha ao iniciar Playwright: {exc}")
             return False
 
-        # Cria perfil persistente — Chrome reusa o mesmo user_data_dir entre
-        # runs. Após a 1ª validação manual visível, o _abck fica salvo aqui
-        # e Akamai libera mais rápido nas próximas execuções.
-        _BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        profile_is_fresh = not any(_BROWSER_PROFILE_DIR.iterdir())
-        logger.info(
-            f"[Magalu] Profile dir: {_BROWSER_PROFILE_DIR} "
-            f"({'NOVO' if profile_is_fresh else 'existente'})"
-        )
-
-        # Tenta Chrome real → msedge → Chromium (em ordem de stealth)
-        channel_used = None
-        launch_args = [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            "--disable-infobars",
-        ]
-        for channel in ("chrome", "msedge", None):
+        # ── Modo CDP: conecta ao Chrome real do usuário via DevTools Protocol ──
+        # Quando MAGALU_CDP_URL está setado (ex: http://localhost:9222), conecta
+        # a um Chrome já aberto pelo usuário com --remote-debugging-port. Usa o
+        # Chrome real + IP residencial + cookies/histórico acumulados de meses
+        # de navegação — combinação que Akamai aceita como "usuário humano".
+        cdp_url = os.getenv("MAGALU_CDP_URL", "").strip()
+        if cdp_url:
+            logger.info(f"[Magalu] Conectando via CDP a {cdp_url} ...")
             try:
-                # launch_persistent_context retorna direto um BrowserContext —
-                # não há objeto Browser separado (context.browser é None).
-                self._pw_context = self._pw_handle.chromium.launch_persistent_context(
-                    user_data_dir=str(_BROWSER_PROFILE_DIR),
-                    headless=self._browser_headless,
-                    channel=channel,
-                    user_agent=ua,
-                    viewport={"width": 1366, "height": 768},
-                    locale="pt-BR",
-                    timezone_id="America/Sao_Paulo",
-                    args=launch_args,
-                )
-                channel_used = channel or "chromium"
-                break
+                self._pw_browser = self._pw_handle.chromium.connect_over_cdp(cdp_url)
             except Exception as exc:
-                logger.debug(f"[Magalu] Falha launch channel={channel}: {exc}")
-                continue
+                logger.error(
+                    f"[Magalu] Falha ao conectar CDP em {cdp_url}: {exc}. "
+                    f"O Chrome está aberto com --remote-debugging-port=9222?"
+                )
+                self._close_persistent_browser()
+                return False
 
-        if self._pw_context is None:
-            logger.error(
-                "[Magalu] Não foi possível iniciar nenhum browser. Rode: "
-                "python -m playwright install chromium"
+            if not self._pw_browser.contexts:
+                logger.error("[Magalu] Chrome CDP não tem nenhum contexto aberto.")
+                self._close_persistent_browser()
+                return False
+            self._pw_context = self._pw_browser.contexts[0]
+            self._is_cdp = True
+            channel_used = "cdp"
+            profile_is_fresh = False
+            logger.info(
+                f"[Magalu] CDP conectado ({len(self._pw_browser.contexts)} ctx, "
+                f"{len(self._pw_context.pages)} page(s) existentes)"
             )
-            self._close_persistent_browser()
-            return False
+        else:
+            mode = "visible" if not self._browser_headless else "headless"
+            logger.info(f"[Magalu] Abrindo browser persistente ({mode})...")
+
+            _BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            profile_is_fresh = not any(_BROWSER_PROFILE_DIR.iterdir())
+            logger.info(
+                f"[Magalu] Profile dir: {_BROWSER_PROFILE_DIR} "
+                f"({'NOVO' if profile_is_fresh else 'existente'})"
+            )
+
+            channel_used = None
+            launch_args = [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--disable-infobars",
+            ]
+            for channel in ("chrome", "msedge", None):
+                try:
+                    self._pw_context = self._pw_handle.chromium.launch_persistent_context(
+                        user_data_dir=str(_BROWSER_PROFILE_DIR),
+                        headless=self._browser_headless,
+                        channel=channel,
+                        user_agent=ua,
+                        viewport={"width": 1366, "height": 768},
+                        locale="pt-BR",
+                        timezone_id="America/Sao_Paulo",
+                        args=launch_args,
+                    )
+                    channel_used = channel or "chromium"
+                    break
+                except Exception as exc:
+                    logger.debug(f"[Magalu] Falha launch channel={channel}: {exc}")
+                    continue
+
+            if self._pw_context is None:
+                logger.error(
+                    "[Magalu] Não foi possível iniciar nenhum browser. Rode: "
+                    "python -m playwright install chromium"
+                )
+                self._close_persistent_browser()
+                return False
 
         # Stealth JS — esconde marcadores de automação do sensor.js
         self._pw_context.add_init_script("""
@@ -418,7 +444,30 @@ class MagaluScraper(BaseScraper):
         return True
 
     def _close_persistent_browser(self) -> None:
-        """Fecha o browser persistente limpando recursos."""
+        """Fecha o browser persistente limpando recursos.
+
+        No modo CDP (conectado a Chrome externo), NÃO fecha contexto/browser —
+        é o Chrome do usuário, deixa aberto pra próximo run.
+        """
+        if self._is_cdp:
+            # CDP: só desconecta; não fecha página, contexto ou browser
+            try:
+                if self._pw_browser:
+                    self._pw_browser.close()  # close() em CDP-browser apenas desconecta
+            except Exception:
+                pass
+            try:
+                if self._pw_handle:
+                    self._pw_handle.stop()
+            except Exception:
+                pass
+            self._pw_page = None
+            self._pw_context = None
+            self._pw_browser = None
+            self._pw_handle = None
+            self._is_cdp = False
+            return
+
         try:
             if self._pw_page:
                 self._pw_page.close()
