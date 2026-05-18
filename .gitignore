@@ -16,6 +16,7 @@ screenshots/
 
 # Sessões de scraper (cookies Akamai validados — gerados em runtime)
 data/magalu_session.json
+data/magalu_chrome_profile/
 utils/sessions/
 
 # Ambiente
