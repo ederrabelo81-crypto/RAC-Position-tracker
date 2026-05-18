@@ -19,9 +19,53 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# --- Auto-elevacao para Admin -----------------------------------------------
+# Register-ScheduledTask exige privilegios administrativos. Se nao estiver
+# rodando como Admin, abre nova janela elevada via UAC.
+$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal   = [Security.Principal.WindowsPrincipal]$currentUser
+$isAdmin     = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isAdmin) {
+    Write-Host ""
+    Write-Host "Este script precisa de privilegios de Administrador." -ForegroundColor Yellow
+    Write-Host "Re-executando com elevacao via UAC..." -ForegroundColor Yellow
+    Write-Host ""
+
+    $argList = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "`"$PSCommandPath`""
+    )
+    if ($Remove) { $argList += "-Remove" }
+
+    try {
+        Start-Process -FilePath "powershell.exe" -ArgumentList $argList -Verb RunAs -Wait
+        exit 0
+    } catch {
+        Write-Host ""
+        Write-Host "ERRO: elevacao UAC negada ou falhou." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "Solucao manual:" -ForegroundColor Yellow
+        Write-Host "  1. Pressione Win + X" -ForegroundColor Gray
+        Write-Host "  2. Clique em 'Terminal (Admin)' ou 'Windows PowerShell (Admin)'" -ForegroundColor Gray
+        Write-Host "  3. Rode novamente:" -ForegroundColor Gray
+        Write-Host "       cd 'C:\Users\Eder Rabelo\Downloads\rac-position-tracker'" -ForegroundColor Gray
+        Write-Host "       PowerShell -ExecutionPolicy Bypass -File scripts\setup_magalu_scheduler.ps1" -ForegroundColor Gray
+        Write-Host ""
+        exit 1
+    }
+}
+
+Write-Host "Executando como Administrador (OK)." -ForegroundColor Green
+Write-Host ""
+
 $BaseDir = "C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
 $StartChromeScript  = Join-Path $BaseDir "scripts\start_chrome_cdp.bat"
 $CollectScript      = Join-Path $BaseDir "scripts\collect_magalu_cdp.bat"
+
+# Usuario que vai executar as tarefas (mesmo logon, runlevel limitado)
+$TaskUser = "$env:USERDOMAIN\$env:USERNAME"
 
 $Tasks = @(
     "RAC_Chrome_CDP_Startup",
@@ -39,6 +83,9 @@ if ($Remove) {
         }
     }
     Write-Host "Tarefas removidas." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Pressione qualquer tecla para fechar esta janela..." -ForegroundColor DarkGray
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 0
 }
 
@@ -52,13 +99,18 @@ if (-not (Test-Path $CollectScript)) {
     exit 1
 }
 
+# Principal: roda como o usuario logado, sem elevacao. Importante:
+# Chrome precisa do user logado para mostrar UI; rodar como SYSTEM
+# nao funciona pra browser visivel.
+$principal = New-ScheduledTaskPrincipal -UserId $TaskUser -LogonType Interactive -RunLevel Limited
+
 # --- 1. Chrome CDP no logon do Windows --------------------------------------
-Write-Host "Registrando: RAC_Chrome_CDP_Startup" -ForegroundColor Cyan
+Write-Host "Registrando: RAC_Chrome_CDP_Startup (usuario: $TaskUser)" -ForegroundColor Cyan
 $action  = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$StartChromeScript`""
-$trigger = New-ScheduledTaskTrigger -AtLogon
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $TaskUser
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "RAC_Chrome_CDP_Startup" `
-    -Action $action -Trigger $trigger -Settings $settings `
+    -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
     -Description "Abre Chrome com CDP na porta 9222 ao logar no Windows" `
     -Force | Out-Null
 
@@ -70,7 +122,7 @@ $trigger = New-ScheduledTaskTrigger -Daily -At "10:00AM"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 Register-ScheduledTask -TaskName "RAC_Magalu_Manha" `
-    -Action $action -Trigger $trigger -Settings $settings `
+    -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
     -Description "Coleta Magalu turno Abertura via CDP - 2 paginas, alta+media" `
     -Force | Out-Null
 
@@ -82,7 +134,7 @@ $trigger = New-ScheduledTaskTrigger -Daily -At "9:00PM"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1)
 Register-ScheduledTask -TaskName "RAC_Magalu_Noite" `
-    -Action $action -Trigger $trigger -Settings $settings `
+    -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
     -Description "Coleta Magalu turno Fechamento via CDP - 1 pagina, alta" `
     -Force | Out-Null
 
@@ -102,3 +154,6 @@ Write-Host "  2. No Chrome que abrir, navegue no Magalu por uns 5 min" -Foregrou
 Write-Host "     (login se quiser, busque por 'ar condicionado') - aquece o perfil" -ForegroundColor Yellow
 Write-Host "  3. Deixe o Chrome aberto" -ForegroundColor Yellow
 Write-Host "  4. Aguarde 10:00 ou 21:00 (ou teste com Start-ScheduledTask)" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Pressione qualquer tecla para fechar esta janela..." -ForegroundColor DarkGray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
