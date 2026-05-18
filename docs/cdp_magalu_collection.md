@@ -21,7 +21,20 @@ O Chrome aberto pelo usuário tem fingerprint 100% legítimo (sem `navigator.web
 
 ## Setup inicial (uma vez)
 
-### 1. Registrar tarefas no Windows Task Scheduler
+### 1. Copiar perfil Chrome para uso CDP
+
+Esse passo copia seu perfil "Eder" para uma pasta separada (`C:\chrome-rac-cdp`) — preserva cookies, extensões, histórico e fingerprint. Depois, o CDP Chrome roda em paralelo ao Chrome normal sem conflito.
+
+```powershell
+cd "C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
+scripts\setup_cdp_profile.bat
+```
+
+**Importante:** o script pede pra fechar todos os Chromes antes de começar (Chrome trava arquivos do perfil enquanto aberto). Copia leva 1-5 min, ~500MB-2GB no disco.
+
+> Se seu perfil "Eder" não estiver no slot `Default`, edite `setup_cdp_profile.bat` e ajuste a variável `SOURCE_PROFILE` (ex: `Profile 1`, `Profile 2`).
+
+### 2. Registrar tarefas no Windows Task Scheduler
 
 Abra **PowerShell como Administrador**:
 
@@ -31,29 +44,21 @@ PowerShell -ExecutionPolicy Bypass -File scripts\setup_magalu_scheduler.ps1
 ```
 
 Cria 3 tarefas:
-- `RAC_Chrome_CDP_Startup` — abre Chrome com CDP no login do Windows
+- `RAC_Chrome_CDP_Startup` — abre Chrome CDP no logon do Windows
 - `RAC_Magalu_Manha` — coleta às 10:00 (Abertura, 2 páginas)
 - `RAC_Magalu_Noite` — coleta às 21:00 (Fechamento, 1 página)
 
-### 2. Aquecer o perfil Chrome
-
-Rode manualmente uma vez:
+### 3. Testar manualmente
 
 ```powershell
-.\scripts\start_chrome_cdp.bat
+scripts\start_chrome_cdp.bat
 ```
 
-Quando o Chrome abrir:
-- Navegue pelo site do Magalu por ~5 minutos
-- Faça login (opcional, mas ajuda)
-- Faça algumas buscas reais: "ar condicionado", "split 12000"
-- Clique em alguns produtos
+O Chrome CDP abre em paralelo ao seu Chrome normal (não conflita). Navegue no Magalu por uns minutos para confirmar que carrega normalmente.
 
-Isso popula cookies e histórico que o Akamai usa pra classificar o browser como "humano confiável".
+### 4. Logout/Login (opcional)
 
-### 3. Deixar o Chrome aberto
-
-Não feche o Chrome. As tarefas agendadas dependem dele estar rodando.
+A tarefa `RAC_Chrome_CDP_Startup` só dispara no próximo logon. Faça logout/login do Windows pra ela rodar (ou continue rodando `start_chrome_cdp.bat` manualmente após cada boot).
 
 ---
 
@@ -132,9 +137,26 @@ Nada a fazer — as tarefas rodam sozinhas às 10:00 e 21:00.
 - Verifique a porta: `curl http://localhost:9222/json/version`
 - Se nada, rode `scripts\start_chrome_cdp.bat`
 
-### "Falha ao conectar CDP: ..."
-- Outra instância do Chrome (sem `--remote-debugging-port`) pode estar bloqueando o profile dir
-- Feche TODOS os Chromes e reabra com `start_chrome_cdp.bat`
+### "Perfil CDP não encontrado em C:\chrome-rac-cdp\Default"
+- Você ainda não rodou o setup inicial do perfil. Execute:
+  ```powershell
+  scripts\setup_cdp_profile.bat
+  ```
+
+### Chrome abre, mas com perfil "vazio" (sem extensões, sem histórico)
+- Significa que está usando a versão antiga do script (perfil isolado em vez de cópia do seu).
+- Atualize o repo (`git pull origin main`) e rode `scripts\setup_cdp_profile.bat` para copiar seu perfil real.
+
+### Chrome abre o site como HTTP em vez de HTTPS
+- Atualize o repo: a URL nas versões antigas não estava entre aspas, o `://` confundia o `cmd.exe`.
+- Confirme que `scripts\start_chrome_cdp.bat` tem `"https://www.magazineluiza.com.br/"` (com aspas).
+
+### Refresh do perfil CDP (após meses de uso)
+Se a cópia ficar muito desatualizada e quiser reiniciar com o perfil atual:
+```powershell
+rmdir /s /q C:\chrome-rac-cdp
+scripts\setup_cdp_profile.bat
+```
 
 ### Coleta retorna 0 produtos mesmo com Chrome aberto
 - Aqueça o perfil mais (5-10 min de navegação real)
