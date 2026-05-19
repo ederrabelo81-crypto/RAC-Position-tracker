@@ -2,46 +2,90 @@
 :: -----------------------------------------------------------------------------
 :: setup_cdp_profile.bat - Copia o perfil Chrome do usuario para uso CDP.
 ::
-:: Executar UMA VEZ antes do primeiro start_chrome_cdp.bat. Copia o perfil
-:: "Eder" (Default) do Chrome do usuario para C:\chrome-rac-cdp, preservando
-:: cookies, extensoes, historico e fingerprint do browser. Apos esta copia,
-:: o CDP Chrome roda em paralelo ao Chrome normal sem conflito de lock.
+:: Executar UMA VEZ antes do primeiro start_chrome_cdp.bat. Detecta automaticamente
+:: em qual slot (Default, Profile 1, Profile 2...) esta o perfil "Eder" lendo o
+:: arquivo Preferences de cada slot. Copia esse perfil para C:\chrome-rac-cdp,
+:: preservando cookies, extensoes, historico e fingerprint do browser.
 ::
 :: Uso:
-::   scripts\setup_cdp_profile.bat
+::   scripts\setup_cdp_profile.bat            -> auto-detecta perfil "Eder"
+::   scripts\setup_cdp_profile.bat "Eder"     -> mesmo padrao
+::   scripts\setup_cdp_profile.bat "Profile 1" -> usa slot especifico (override)
 ::
 :: Re-executar: deleta C:\chrome-rac-cdp antes (apaga sessao acumulada).
 ::   rmdir /s /q C:\chrome-rac-cdp
 :: -----------------------------------------------------------------------------
 
-setlocal
+setlocal enabledelayedexpansion
 
 set "USER_DATA_DIR=C:\Users\Eder Rabelo\AppData\Local\Google\Chrome\User Data"
-set "SOURCE_PROFILE=%USER_DATA_DIR%\Default"
 set "CDP_DATA_DIR=C:\chrome-rac-cdp"
 set "CDP_PROFILE=%CDP_DATA_DIR%\Default"
+set "TARGET_NAME=%~1"
+if "%TARGET_NAME%"=="" set "TARGET_NAME=Eder"
 
 echo ===========================================================
 echo   Setup CDP Profile - Copia perfil Chrome para C:\chrome-rac-cdp
 echo ===========================================================
 echo.
+
+:: Valida que pasta base do Chrome existe
+if not exist "%USER_DATA_DIR%" (
+    echo [ERRO] Pasta do Chrome nao encontrada:
+    echo   %USER_DATA_DIR%
+    echo Chrome esta instalado e ja foi usado pelo menos uma vez?
+    exit /b 1
+)
+
+echo Procurando slot do perfil "%TARGET_NAME%"...
+echo.
+
+:: PowerShell inline: percorre Default, Profile 1, Profile 2... le o Preferences
+:: de cada um e imprime "<slot>" se profile.name == TARGET_NAME.
+:: Output capturado pra variavel SOURCE_SLOT.
+for /f "usebackq delims=" %%S in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$ud = '%USER_DATA_DIR%';" ^
+    "$target = '%TARGET_NAME%';" ^
+    "Get-ChildItem -LiteralPath $ud -Directory ^| Where-Object { $_.Name -match '^(Default^|Profile \d+)$' } ^| ForEach-Object {" ^
+    "  $pref = Join-Path $_.FullName 'Preferences';" ^
+    "  if (Test-Path -LiteralPath $pref) {" ^
+    "    try { $json = Get-Content -LiteralPath $pref -Raw ^| ConvertFrom-Json;" ^
+    "          if ($json.profile.name -eq $target) { Write-Output $_.Name; break } } catch {}" ^
+    "  }" ^
+    "}"`) do (
+    set "SOURCE_SLOT=%%S"
+)
+
+if "%SOURCE_SLOT%"=="" (
+    echo [ERRO] Nenhum slot tem profile.name = "%TARGET_NAME%".
+    echo.
+    echo Perfis encontrados:
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "$ud = '%USER_DATA_DIR%';" ^
+        "Get-ChildItem -LiteralPath $ud -Directory ^| Where-Object { $_.Name -match '^(Default^|Profile \d+)$' } ^| ForEach-Object {" ^
+        "  $pref = Join-Path $_.FullName 'Preferences';" ^
+        "  if (Test-Path -LiteralPath $pref) {" ^
+        "    try { $json = Get-Content -LiteralPath $pref -Raw ^| ConvertFrom-Json;" ^
+        "          Write-Host ('  {0,-12} -> {1}' -f $_.Name, $json.profile.name) } catch {}" ^
+        "  }" ^
+        "}"
+    echo.
+    echo Rode novamente passando o nome correto:
+    echo   scripts\setup_cdp_profile.bat "Nome Do Perfil"
+    exit /b 1
+)
+
+set "SOURCE_PROFILE=%USER_DATA_DIR%\%SOURCE_SLOT%"
+
+echo [OK] Perfil "%TARGET_NAME%" encontrado em: %SOURCE_SLOT%
+echo.
 echo Origem  : %SOURCE_PROFILE%
 echo Destino : %CDP_PROFILE%
 echo.
 
-if not exist "%SOURCE_PROFILE%" (
-    echo [ERRO] Perfil Chrome do usuario nao encontrado em:
-    echo   %SOURCE_PROFILE%
-    echo.
-    echo Verifique se o Chrome esta instalado e ja foi usado pelo menos uma vez.
-    echo Se o perfil "Eder" estiver em outro slot (Profile 1, Profile 2...),
-    echo edite este script e ajuste SOURCE_PROFILE.
-    exit /b 1
-)
-
 if exist "%CDP_PROFILE%" (
     echo [AVISO] Ja existe um perfil CDP em %CDP_PROFILE%.
-    echo Se continuar, ele sera SOBRESCRITO com o conteudo atual do Eder.
+    echo Se continuar, ele sera SOBRESCRITO com o conteudo atual.
     echo Para preservar a sessao acumulada do CDP, cancele agora (Ctrl+C).
     echo.
 )
@@ -57,12 +101,6 @@ echo === Copiando perfil (pode levar 1-5 min dependendo do tamanho) ===
 echo.
 
 :: Robocopy com exclusoes de cache/lock/crashes - ~80%% menor que copia full
-:: /E   = inclui subdiretorios (mesmo vazios)
-:: /XD  = exclui diretorios (cache pesado, nao precisa)
-:: /XF  = exclui arquivos de lock
-:: /R:1 = 1 retry se falhar (lock ainda ativo)
-:: /W:1 = 1 segundo entre retries
-:: /NFL /NDL /NJH /NJS = output mais limpo
 robocopy "%SOURCE_PROFILE%" "%CDP_PROFILE%" /E ^
     /XD "Cache" "Code Cache" "GPUCache" "Service Worker" "Crashpad" ^
         "ShaderCache" "DawnCache" "GrShaderCache" "GraphiteDawnCache" ^
@@ -70,7 +108,6 @@ robocopy "%SOURCE_PROFILE%" "%CDP_PROFILE%" /E ^
     /XF "Singleton*" "lockfile" "LOCK" "*.tmp" ^
     /R:1 /W:1 /NJH /NJS /NDL /NFL
 
-:: Robocopy retorna 0-7 como sucesso (8+ e erro real)
 if errorlevel 8 (
     echo.
     echo [ERRO] Robocopy falhou. Codigo: %errorlevel%
@@ -89,16 +126,12 @@ echo ===========================================================
 echo   Copia concluida com sucesso!
 echo ===========================================================
 echo.
-
-:: Mostra tamanho do perfil copiado
-for /f "tokens=3" %%a in ('dir "%CDP_DATA_DIR%" /-c /s ^| findstr "arquivo(s)"') do set "SIZE=%%a"
-if defined SIZE echo Tamanho do perfil CDP: %SIZE% bytes
-
+echo Slot origem    : %SOURCE_SLOT% (perfil "%TARGET_NAME%")
+echo Salvo em       : %CDP_PROFILE%
 echo.
 echo PROXIMOS PASSOS:
 echo   1. Voce ja pode reabrir seu Chrome normal - sem conflito de lock.
 echo   2. Rode: scripts\start_chrome_cdp.bat
-echo      (abre uma 2a janela Chrome dedicada ao CDP, na porta 9222)
 echo   3. Confirme que o site do Magalu carrega normalmente (HTTPS, sem captcha)
 echo   4. Configure o Task Scheduler: setup_magalu_scheduler.ps1
 echo.
