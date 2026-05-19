@@ -1,0 +1,184 @@
+# =============================================================================
+# setup_cdp_profile.ps1 - Copia o perfil Chrome do usuario para uso CDP.
+#
+# Executar UMA VEZ antes do primeiro start_chrome_cdp.bat. Detecta automaticamente
+# em qual slot (Default, Profile 1, Profile 2...) esta o perfil "Eder" lendo o
+# arquivo Preferences de cada slot. Copia esse perfil para C:\chrome-rac-cdp,
+# preservando cookies, extensoes, historico e fingerprint do browser.
+#
+# Uso:
+#   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1
+#   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -ProfileName "Eder"
+#   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -ProfileName "Lumina"
+#
+# Re-executar: deleta C:\chrome-rac-cdp antes (apaga sessao acumulada):
+#   Remove-Item C:\chrome-rac-cdp -Recurse -Force
+# =============================================================================
+
+param(
+    [string]$ProfileName = "Eder",
+    [string]$UserDataDir = "C:\Users\Eder Rabelo\AppData\Local\Google\Chrome\User Data",
+    [string]$CdpDataDir  = "C:\chrome-rac-cdp"
+)
+
+$ErrorActionPreference = "Stop"
+
+$CdpProfile = Join-Path $CdpDataDir "Default"
+
+Write-Host "===========================================================" -ForegroundColor Cyan
+Write-Host "  Setup CDP Profile - Copia perfil Chrome para uso CDP" -ForegroundColor Cyan
+Write-Host "===========================================================" -ForegroundColor Cyan
+Write-Host ""
+
+# --- Valida pasta base do Chrome -------------------------------------------
+if (-not (Test-Path -LiteralPath $UserDataDir)) {
+    Write-Host "[ERRO] Pasta do Chrome nao encontrada:" -ForegroundColor Red
+    Write-Host "  $UserDataDir" -ForegroundColor Red
+    Write-Host "Chrome esta instalado e ja foi usado pelo menos uma vez?"
+    exit 1
+}
+
+# --- Lista todos os slots de perfil e seus nomes ----------------------------
+Write-Host "Procurando slot do perfil '$ProfileName'..."
+Write-Host ""
+
+$profiles = @()
+Get-ChildItem -LiteralPath $UserDataDir -Directory |
+    Where-Object { $_.Name -match '^(Default|Profile \d+)$' } |
+    ForEach-Object {
+        $pref = Join-Path $_.FullName "Preferences"
+        if (Test-Path -LiteralPath $pref) {
+            try {
+                $json = Get-Content -LiteralPath $pref -Raw | ConvertFrom-Json
+                $profiles += [PSCustomObject]@{
+                    Slot = $_.Name
+                    Name = $json.profile.name
+                    Path = $_.FullName
+                }
+            } catch {
+                # Preferences invalido - ignora silenciosamente
+            }
+        }
+    }
+
+if ($profiles.Count -eq 0) {
+    Write-Host "[ERRO] Nenhum perfil Chrome encontrado em $UserDataDir." -ForegroundColor Red
+    exit 1
+}
+
+# Encontra o match
+$match = $profiles | Where-Object { $_.Name -eq $ProfileName } | Select-Object -First 1
+
+if ($null -eq $match) {
+    Write-Host "[ERRO] Nenhum perfil com nome '$ProfileName' encontrado." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Perfis disponiveis:" -ForegroundColor Yellow
+    $profiles | ForEach-Object {
+        Write-Host ("  {0,-12} -> {1}" -f $_.Slot, $_.Name) -ForegroundColor Gray
+    }
+    Write-Host ""
+    Write-Host "Rode novamente passando o nome correto, ex:" -ForegroundColor Yellow
+    Write-Host "  PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -ProfileName 'Nome Exato'" -ForegroundColor Gray
+    exit 1
+}
+
+$SourceProfile = $match.Path
+
+Write-Host "[OK] Perfil '$ProfileName' encontrado em: $($match.Slot)" -ForegroundColor Green
+Write-Host ""
+Write-Host "Origem  : $SourceProfile"
+Write-Host "Destino : $CdpProfile"
+Write-Host ""
+
+# --- Avisa se ja existe ----------------------------------------------------
+if (Test-Path -LiteralPath $CdpProfile) {
+    Write-Host "[AVISO] Ja existe um perfil CDP em $CdpProfile." -ForegroundColor Yellow
+    Write-Host "Se continuar, sera SOBRESCRITO com o conteudo atual."
+    Write-Host "Para preservar a sessao acumulada do CDP, cancele agora (Ctrl+C)."
+    Write-Host ""
+}
+
+# --- Verifica se Chrome esta aberto ----------------------------------------
+$chromeProcs = Get-Process chrome -ErrorAction SilentlyContinue
+if ($chromeProcs) {
+    Write-Host "[AVISO] Detectados $($chromeProcs.Count) processo(s) Chrome rodando." -ForegroundColor Yellow
+    Write-Host "Chrome trava arquivos do perfil enquanto aberto."
+    Write-Host "Voce quer matar todos os Chromes agora antes de copiar? [S/N]"
+    $resp = Read-Host
+    if ($resp -match '^[Ss]') {
+        Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force
+        Start-Sleep -Seconds 2
+        Write-Host "Chromes fechados." -ForegroundColor Green
+    } else {
+        Write-Host "Continuando com Chrome aberto (alguns arquivos podem nao copiar)..." -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+Write-Host "Pressione qualquer tecla para iniciar a copia (ou Ctrl+C para cancelar)..."
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
+Write-Host ""
+Write-Host "=== Copiando perfil (pode levar 1-5 min dependendo do tamanho) ===" -ForegroundColor Cyan
+Write-Host ""
+
+# --- Robocopy --------------------------------------------------------------
+$excludedDirs = @(
+    "Cache", "Code Cache", "GPUCache", "Service Worker", "Crashpad",
+    "ShaderCache", "DawnCache", "GrShaderCache", "GraphiteDawnCache",
+    "blob_storage", "Storage", "VideoDecodeStats", "Site Characteristics Database"
+)
+$excludedFiles = @("Singleton*", "lockfile", "LOCK", "*.tmp")
+
+$robocopyArgs = @(
+    "`"$SourceProfile`"",
+    "`"$CdpProfile`"",
+    "/E",
+    "/XD"
+) + $excludedDirs.ForEach({"`"$_`""}) + @(
+    "/XF"
+) + $excludedFiles.ForEach({"`"$_`""}) + @(
+    "/R:1", "/W:1", "/NJH", "/NJS", "/NDL", "/NFL"
+)
+
+$proc = Start-Process robocopy -ArgumentList $robocopyArgs -NoNewWindow -PassThru -Wait
+$rc = $proc.ExitCode
+
+# Robocopy retorna 0-7 como sucesso (8+ e erro real)
+if ($rc -ge 8) {
+    Write-Host ""
+    Write-Host "[ERRO] Robocopy falhou. Codigo: $rc" -ForegroundColor Red
+    Write-Host "Verifique se o Chrome esta totalmente fechado e tente de novo."
+    exit 2
+}
+
+# --- Copia Local State (metadata dos perfis) -------------------------------
+$localStateSrc = Join-Path $UserDataDir "Local State"
+$localStateDst = Join-Path $CdpDataDir "Local State"
+if (Test-Path -LiteralPath $localStateSrc) {
+    Copy-Item -LiteralPath $localStateSrc -Destination $localStateDst -Force
+    Write-Host "Local State copiado." -ForegroundColor Gray
+}
+
+# --- Calcula tamanho final -------------------------------------------------
+$totalSize = (Get-ChildItem -LiteralPath $CdpDataDir -Recurse -File -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum).Sum
+$sizeMB = [math]::Round($totalSize / 1MB, 1)
+
+Write-Host ""
+Write-Host "===========================================================" -ForegroundColor Green
+Write-Host "  Copia concluida com sucesso!" -ForegroundColor Green
+Write-Host "===========================================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "Slot origem  : $($match.Slot) (perfil '$ProfileName')"
+Write-Host "Salvo em     : $CdpProfile"
+Write-Host "Tamanho      : $sizeMB MB"
+Write-Host ""
+Write-Host "PROXIMOS PASSOS:" -ForegroundColor Yellow
+Write-Host "  1. Voce ja pode reabrir seu Chrome normal - sem conflito de lock." -ForegroundColor Gray
+Write-Host "  2. Rode: scripts\start_chrome_cdp.bat" -ForegroundColor Gray
+Write-Host "  3. Confirme que o site do Magalu carrega normalmente (HTTPS, sem captcha)" -ForegroundColor Gray
+Write-Host "  4. Configure o Task Scheduler: setup_magalu_scheduler.ps1" -ForegroundColor Gray
+Write-Host ""
+Write-Host "Pressione qualquer tecla para fechar..."
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
