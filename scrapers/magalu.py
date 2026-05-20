@@ -32,6 +32,15 @@ Env vars:
   MAGALU_FORCE_CURL=true      → desabilita browser e tenta só curl_cffi
                                 (NÃO funcionará atualmente, deixado pra
                                 futuro se Akamai mudar de comportamento)
+  MAGALU_CDP_URL=http://...   → conecta a um Chrome real já aberto com
+                                --remote-debugging-port (ver docs/
+                                cdp_magalu_collection.md).
+
+  Modo CDP — anti-detecção: o Playwright stock liga o domínio `Runtime` do
+  CDP, que o sensor.js do Akamai detecta (mantém _abck em "challenge" mesmo
+  num Chrome real). Por isso o scraper prefere o fork `rebrowser-playwright`,
+  que oculta o `Runtime.enable`. Instale com:
+    pip install rebrowser-playwright
 
 Setup VM (uma vez):
   sudo apt-get install -y xvfb
@@ -61,6 +70,36 @@ except ImportError:
 from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
 from utils.text import parse_price
+
+
+# Modo do patch de runtime do rebrowser-playwright. `addBinding` é o recomendado:
+# obtém o execution context via Runtime.addBinding em vez de Runtime.enable, que
+# o sensor.js do Akamai detecta (getter que só dispara com o domínio Runtime do
+# CDP ligado → _abck preso em "challenge"). `setdefault` permite override por env.
+os.environ.setdefault("REBROWSER_PATCHES_RUNTIME_FIX_MODE", "addBinding")
+
+
+def _import_sync_playwright() -> Tuple[Optional[Any], str]:
+    """
+    Resolve `sync_playwright`, preferindo o fork rebrowser-playwright.
+
+    O rebrowser-playwright corrige o vazamento do `Runtime.enable` que o
+    Akamai usa pra detectar automação via CDP — sem ele, o modo CDP é
+    flagado mesmo conectado a um Chrome 100% real.
+
+    Returns:
+        (callable sync_playwright, flavor) ou (None, "") se nenhum instalado.
+    """
+    try:
+        from rebrowser_playwright.sync_api import sync_playwright
+        return sync_playwright, "rebrowser-playwright"
+    except ImportError:
+        pass
+    try:
+        from playwright.sync_api import sync_playwright
+        return sync_playwright, "playwright"
+    except ImportError:
+        return None, ""
 
 
 _ITEMS_PER_PAGE = 60  # Magalu mobile retorna ~60 itens por página
@@ -232,14 +271,25 @@ class MagaluScraper(BaseScraper):
 
         Retorna True se browser está aberto e operacional.
         """
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
+        sync_playwright, pw_flavor = _import_sync_playwright()
+        if sync_playwright is None:
             logger.error(
-                "[Magalu] Playwright não instalado. Execute: pip install playwright "
-                "&& python -m playwright install chromium"
+                "[Magalu] Playwright não instalado. Execute: "
+                "pip install rebrowser-playwright && "
+                "python -m rebrowser_playwright install chromium"
             )
             return False
+        if pw_flavor == "rebrowser-playwright":
+            logger.info(
+                "[Magalu] Playwright: rebrowser-playwright "
+                f"(runtime fix={os.environ['REBROWSER_PATCHES_RUNTIME_FIX_MODE']}) "
+                "— Runtime.enable oculto do sensor.js Akamai"
+            )
+        else:
+            logger.warning(
+                "[Magalu] Playwright stock — modo CDP detectável pelo Akamai "
+                "(Runtime.enable vaza). Instale: pip install rebrowser-playwright"
+            )
 
         ua = _DESKTOP_UA_BY_CHROME.get(
             self._impersonate, _DESKTOP_UA_BY_CHROME["chrome124"]
@@ -327,22 +377,28 @@ class MagaluScraper(BaseScraper):
                 self._close_persistent_browser()
                 return False
 
-        # Stealth JS — esconde marcadores de automação do sensor.js
-        self._pw_context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => false});
-            try { delete navigator.__proto__.webdriver; } catch(_) {}
-            window.chrome = {
-                runtime: { onConnect: {addListener: () => {}}, onMessage: {addListener: () => {}} },
-                loadTimes: () => ({}),
-                csi: () => ({}),
-            };
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => { const a = [1,2,3,4,5]; a.item = () => null; return a; }
-            });
-            Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en-US', 'en']});
-            Object.defineProperty(document, 'hidden', {get: () => false});
-            Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
-        """)
+        # Stealth JS — esconde marcadores de automação do sensor.js.
+        # SÓ no modo launch (Chromium efêmero do Playwright). No modo CDP é
+        # contraproducente: o Chrome real já tem navigator.webdriver,
+        # window.chrome (com .app + funções nativas) e navigator.plugins
+        # legítimos — sobrescrevê-los por stubs JS deixa o fingerprint MAIS
+        # sintético (descritores não-nativos detectáveis), não menos.
+        if not self._is_cdp:
+            self._pw_context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => false});
+                try { delete navigator.__proto__.webdriver; } catch(_) {}
+                window.chrome = {
+                    runtime: { onConnect: {addListener: () => {}}, onMessage: {addListener: () => {}} },
+                    loadTimes: () => ({}),
+                    csi: () => ({}),
+                };
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => { const a = [1,2,3,4,5]; a.item = () => null; return a; }
+                });
+                Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en-US', 'en']});
+                Object.defineProperty(document, 'hidden', {get: () => false});
+                Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
+            """)
 
         # Persistent context já vem com 1 página aberta (about:blank) —
         # reusa em vez de criar nova, pra economizar 1 sinal de automação.

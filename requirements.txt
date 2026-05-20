@@ -1,4 +1,8 @@
 playwright>=1.50.0
+# Fork do Playwright com patch anti-detecção: oculta o Runtime.enable do CDP
+# (o sensor.js do Akamai detecta esse domínio ligado). Usado só por
+# scrapers/magalu.py no modo CDP — demais scrapers seguem no playwright stock.
+rebrowser-playwright>=1.49.0
 requests>=2.31.0
 curl-cffi>=0.6.0
 beautifulsoup4==4.12.3

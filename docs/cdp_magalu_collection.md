@@ -15,7 +15,9 @@
 | GitHub Actions + xvfb + perfil cacheado | ❌ IP datacenter da Azure flagado pelo Akamai |
 | **CDP no Chrome real do usuário** | ✅ Chrome genuíno + IP residencial = aceito |
 
-O Chrome aberto pelo usuário tem fingerprint 100% legítimo (sem `navigator.webdriver`, sem padrões CDP de Playwright). Conectamos via DevTools Protocol e usamos esse Chrome para navegar.
+O Chrome aberto pelo usuário tem fingerprint legítimo (sem `navigator.webdriver`, IP residencial, perfil com histórico real). Conectamos via DevTools Protocol e usamos esse Chrome para navegar.
+
+> ⚠️ **Atenção — o Playwright stock vaza CDP.** Ao conectar via `connect_over_cdp()`, o Playwright liga o domínio `Runtime` do DevTools Protocol. O sensor.js do Akamai detecta isso (getter que só dispara quando o `Runtime` do CDP está serializando pro console) e mantém o `_abck` em `challenge` — mesmo num Chrome 100% real. Por isso o `scrapers/magalu.py` usa o fork **`rebrowser-playwright`**, que obtém o execution context sem o `Runtime.enable`. Sem ele, o modo CDP é flagado e toda `/busca/` retorna 403.
 
 ---
 
@@ -157,6 +159,31 @@ Se a cópia ficar muito desatualizada e quiser reiniciar com o perfil atual:
 rmdir /s /q C:\chrome-rac-cdp
 scripts\setup_cdp_profile.bat
 ```
+
+### Coleta dá 403 / `_abck` fica em `challenge` (mesmo com Chrome real)
+Sintoma no log: `_abck não validou em 25s`, `Busca de calibração suspeita`,
+`_abck status=challenge`, todas as buscas `HTTP 403, len=1075`.
+
+Isso **não** é problema de perfil — revalidar/recopiar o perfil não resolve.
+É o Playwright stock vazando o `Runtime.enable` do CDP. Confira:
+
+```powershell
+# 1. O fork anti-detecção está instalado?
+.venv\Scripts\activate
+python -c "import rebrowser_playwright; print('OK', rebrowser_playwright.__file__)"
+
+# 2. Se der ModuleNotFoundError, instale:
+pip install rebrowser-playwright
+```
+
+No início da coleta o log deve mostrar
+`Playwright: rebrowser-playwright (runtime fix=addBinding)`. Se mostrar
+`Playwright stock — modo CDP detectável`, o fork não está sendo usado.
+
+Teste de confirmação: com o Chrome do `:9222` aberto, abra manualmente
+`https://www.magazineluiza.com.br/busca/ar+condicionado/` numa aba **sem
+rodar o coletor**. Se carregar normal, o bloqueio é da automação (não do
+perfil/IP).
 
 ### Coleta retorna 0 produtos mesmo com Chrome aberto
 - Aqueça o perfil mais (5-10 min de navegação real)
