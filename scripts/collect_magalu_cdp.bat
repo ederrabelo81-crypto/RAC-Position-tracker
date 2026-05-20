@@ -9,10 +9,10 @@
 ::   scripts\collect_magalu_cdp.bat 1            -> 1 pagina (turno noite)
 ::   scripts\collect_magalu_cdp.bat 2 alta       -> 2 paginas, prioridade alta
 ::
-:: Apos a coleta, faz upload automatico do CSV para o Supabase.
+:: O upload para o Supabase e feito pelo proprio main.py durante a coleta.
 :: -----------------------------------------------------------------------------
 
-setlocal enabledelayedexpansion
+setlocal
 
 set "BASE_DIR=C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
 set "PAGES=%~1"
@@ -51,23 +51,7 @@ set "COLLECT_EXIT=%ERRORLEVEL%"
 
 echo.
 echo === Coleta concluida (exit=%COLLECT_EXIT%) ===
-
-:: Upload automatico do CSV mais recente.
-:: IMPORTANTE: usa !VAR! (delayed expansion) em vez de %VAR% porque o cmd
-:: expande %VAR% no PARSE time do bloco if (...), nao em runtime. Sem isso,
-:: LATEST_CSV vira "" no momento do echo/upload mesmo apos o for /f setar.
-if %COLLECT_EXIT% EQU 0 (
-    echo.
-    echo === Upload do CSV para Supabase ===
-    set "LATEST_CSV="
-    for /f "delims=" %%F in ('dir /b /od /a-d "output\rac_monitoramento_*.csv" 2^>nul') do set "LATEST_CSV=output\%%F"
-    if defined LATEST_CSV (
-        echo CSV: !LATEST_CSV!
-        python scripts\upload_csv.py "!LATEST_CSV!"
-    ) else (
-        echo [WARN] Nenhum CSV encontrado em output\
-    )
-)
+echo O upload para o Supabase ja foi feito pelo main.py durante a coleta.
 
 endlocal
 exit /b %COLLECT_EXIT%
