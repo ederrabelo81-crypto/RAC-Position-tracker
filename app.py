@@ -4716,6 +4716,438 @@ def page_price_anomalies() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fase 5 — extração de specs técnicas (BTU, ciclo, voltagem) do nome do produto
+# ---------------------------------------------------------------------------
+
+_BTU_DOTTED_RE = re.compile(r"(\d{1,2})[.\s](\d{3})\s*btus?\b", re.IGNORECASE)
+_BTU_PLAIN_RE  = re.compile(r"\b(\d{4,5})\s*btus?\b", re.IGNORECASE)
+_CICLO_QF_RE   = re.compile(r"\bq[/\s.-]?f\b", re.IGNORECASE)
+_VOLT_110_RE   = re.compile(r"\b1(?:10|27)\s*v\b", re.IGNORECASE)
+_VOLT_220_RE   = re.compile(r"\b220\s*v\b", re.IGNORECASE)
+
+
+def _extract_btu(produto) -> int | None:
+    """Extrai a capacidade em BTU do nome do produto. None se não encontrado."""
+    if not produto or not isinstance(produto, str):
+        return None
+    m = _BTU_DOTTED_RE.search(produto)
+    if m:
+        return int(m.group(1) + m.group(2))
+    m = _BTU_PLAIN_RE.search(produto)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _classify_ciclo(produto) -> str:
+    """Classifica o ciclo (Quente/Frio, Só Frio) a partir do nome do produto."""
+    if not produto or not isinstance(produto, str):
+        return "Não identificado"
+    t = produto.lower()
+    if ("quente" in t and "frio" in t) or _CICLO_QF_RE.search(t):
+        return "Quente/Frio"
+    if "frio" in t:
+        return "Só Frio"
+    return "Não identificado"
+
+
+def _extract_voltagem(produto) -> str | None:
+    """Extrai a voltagem (110V/220V/Bivolt) do nome do produto."""
+    if not produto or not isinstance(produto, str):
+        return None
+    t = produto.lower()
+    if "bivolt" in t or "bi-volt" in t:
+        return "Bivolt"
+    has_110 = bool(_VOLT_110_RE.search(t))
+    has_220 = bool(_VOLT_220_RE.search(t))
+    if has_110 and has_220:
+        return "Bivolt"
+    if has_220:
+        return "220V"
+    if has_110:
+        return "110V"
+    return None
+
+
+def _enrich_specs(df: pd.DataFrame) -> pd.DataFrame:
+    """Adiciona colunas calculadas btu/ciclo a partir do nome do produto."""
+    if df.empty or "produto" not in df.columns:
+        return df
+    df = df.copy()
+    df["btu"]   = df["produto"].map(_extract_btu)
+    df["ciclo"] = df["produto"].map(_classify_ciclo)
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _query_products_history(
+    products: tuple, start_str: str, end_str: str
+) -> pd.DataFrame:
+    """Histórico de coletas para SKUs específicos (cacheado)."""
+    if not products:
+        return pd.DataFrame()
+    return query_coletas(
+        date.fromisoformat(start_str),
+        date.fromisoformat(end_str),
+        products=list(products),
+        limit=50000,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fase 5 — Market Analytics (distribuição de preços + presença por marketplace)
+# ---------------------------------------------------------------------------
+
+def page_market_analytics() -> None:
+    st.title("📊 Market Analytics")
+    st.caption("Distribuição de preços e presença por marketplace ao longo do tempo.")
+
+    with st.sidebar:
+        st.subheader("Filtros")
+        date_range = st.date_input(
+            "Período",
+            value=(date.today() - timedelta(days=30), date.today()),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
+            key="ma_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="ma_brands")
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="ma_platforms")
+        sel_btu = st.multiselect(
+            "Capacidade (BTU)", BTU_OPTIONS,
+            format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
+            key="ma_btu",
+        )
+        sel_ciclo = st.selectbox(
+            "Ciclo", ["Todos", "Só Frio", "Quente/Frio"], key="ma_ciclo",
+        )
+        modo = st.radio(
+            "Modo de visualização",
+            ["Snapshot oficial (último run)", "Todos os runs (auditoria)"],
+            index=0, key="ma_modo",
+        )
+        load_btn = st.button("🔄 Carregar", type="primary", use_container_width=True)
+
+    if not load_btn:
+        st.info("Defina os filtros na barra lateral e clique em **Carregar**.")
+        return
+
+    with st.spinner("Carregando dados..."):
+        df = query_coletas(
+            start_date, end_date,
+            platforms=sel_platforms or None,
+            brands=sel_brands or None,
+            btu_filter=sel_btu or None,
+            limit=50000,
+        )
+
+    if modo.startswith("Snapshot"):
+        df = _filter_latest_run(df)
+
+    if df.empty:
+        st.warning("Nenhum dado encontrado para os filtros selecionados.")
+        return
+
+    df = _enrich_specs(df)
+    if sel_ciclo != "Todos":
+        df = df[df["ciclo"] == sel_ciclo]
+        if df.empty:
+            st.warning(f"Nenhum produto com ciclo '{sel_ciclo}' no período.")
+            return
+
+    tab_dist, tab_presenca = st.tabs(
+        ["💰 Distribuição de Preços", "🏪 Presença por Marketplace"]
+    )
+
+    # ── 5.2 Distribuição de preços por faixa ─────────────────────────────────
+    with tab_dist:
+        df_price = df.dropna(subset=["preco", "data"])
+        df_price = df_price[df_price["preco"] > 0]
+        if df_price.empty:
+            st.warning("Sem dados de preço no período.")
+        else:
+            bins   = [0, 1500, 2000, 2500, 3000, 3500, 4000, 5000, 1e12]
+            labels = ["< 1.5k", "1.5–2k", "2–2.5k", "2.5–3k",
+                      "3–3.5k", "3.5–4k", "4–5k", "> 5k"]
+            df_price = df_price.copy()
+            df_price["faixa"] = pd.cut(df_price["preco"], bins=bins, labels=labels)
+            pivot = (
+                df_price.groupby(["data", "faixa"], observed=False)
+                .size().unstack(fill_value=0)
+            )
+            pivot = pivot.reindex(columns=labels, fill_value=0).sort_index()
+            totals = pivot.sum(axis=1).replace(0, pd.NA)
+            pivot_pct = pivot.div(totals, axis=0).fillna(0) * 100
+            dia_labels = [pd.to_datetime(d).strftime("%d/%m") for d in pivot.index]
+
+            heat = pivot_pct.T
+            heat.columns = dia_labels
+            fig = px.imshow(
+                heat,
+                labels=dict(x="Data", y="Faixa de preço (R$)", color="% ofertas"),
+                color_continuous_scale="Blues",
+                aspect="auto",
+                text_auto=".0f",
+                title="Distribuição de ofertas por faixa de preço (% por dia)",
+            )
+            _apply_chart_style(fig, height=420, hovermode="closest")
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("**Contagem absoluta de ofertas por faixa**")
+            disp = pivot.reset_index()
+            disp["data"] = [pd.to_datetime(d).strftime("%d/%m/%Y") for d in disp["data"]]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+            _csv_download_btn(
+                disp, f"rac_distribuicao_precos_{start_date}_{end_date}.csv",
+                "⬇️ Exportar distribuição", key="ma_dist_csv",
+            )
+
+    # ── 5.3 Presença por marketplace ─────────────────────────────────────────
+    with tab_presenca:
+        if "plataforma" not in df.columns:
+            st.warning("Coluna 'plataforma' indisponível.")
+        else:
+            presence = (
+                df.groupby(["data", "plataforma"], observed=False)
+                .size().reset_index(name="ofertas")
+            )
+            total_dia = presence.groupby("data")["ofertas"].transform("sum")
+            presence["pct"] = (presence["ofertas"] / total_dia * 100).round(1)
+            presence["data"] = pd.to_datetime(presence["data"])
+
+            fig = px.bar(
+                presence, x="data", y="pct", color="plataforma",
+                title="Presença por marketplace (% de ofertas por dia)",
+                labels={"data": "Data", "pct": "% de ofertas",
+                        "plataforma": "Plataforma"},
+            )
+            fig.update_layout(barmode="stack")
+            _apply_chart_style(fig, height=440)
+            st.plotly_chart(fig, use_container_width=True)
+
+            share = df.groupby("plataforma").size().reset_index(name="ofertas")
+            share["% do período"] = (
+                share["ofertas"] / share["ofertas"].sum() * 100
+            ).round(1)
+            share = share.sort_values("ofertas", ascending=False)
+            st.markdown("**Share de ofertas no período**")
+            st.dataframe(share, use_container_width=True, hide_index=True)
+            _csv_download_btn(
+                share, f"rac_presenca_marketplace_{start_date}_{end_date}.csv",
+                "⬇️ Exportar presença", key="ma_pres_csv",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Fase 5 — Ficha do Produto + Comparador
+# ---------------------------------------------------------------------------
+
+def _render_product_sheet(produto: str, start_date: date, end_date: date) -> None:
+    """Renderiza a ficha detalhada de um único SKU."""
+    df = _query_products_history((produto,), str(start_date), str(end_date))
+    if df.empty:
+        st.warning("Sem coletas para este SKU no período selecionado.")
+        return
+
+    df = _enrich_specs(df)
+    df_price = df.dropna(subset=["preco"])
+    df_price = df_price[df_price["preco"] > 0]
+
+    st.subheader(produto)
+
+    # --- Especificações técnicas ---
+    btu_series = df["btu"].dropna()
+    btu_val    = int(btu_series.mode().iloc[0]) if not btu_series.empty else None
+    ciclo_val  = df["ciclo"].mode().iloc[0] if not df["ciclo"].mode().empty else "—"
+    marca_mode = df["marca"].dropna().mode() if "marca" in df.columns else pd.Series([])
+    marca_val  = marca_mode.iloc[0] if not marca_mode.empty else "—"
+    volt_mode  = df["produto"].map(_extract_voltagem).dropna().mode()
+    volt_val   = volt_mode.iloc[0] if not volt_mode.empty else "—"
+
+    spec_cols = st.columns(4)
+    spec_cols[0].metric("Marca", marca_val)
+    spec_cols[1].metric(
+        "Capacidade",
+        f"{btu_val:,} BTU".replace(",", ".") if btu_val else "—",
+    )
+    spec_cols[2].metric("Ciclo", ciclo_val)
+    spec_cols[3].metric("Voltagem", volt_val)
+
+    # --- Contadores ---
+    cnt_cols = st.columns(4)
+    cnt_cols[0].metric("Total de coletas", f"{len(df):,}")
+    cnt_cols[1].metric("Marketplaces", int(df["plataforma"].nunique()))
+    cnt_cols[2].metric(
+        "Sellers",
+        int(df["seller"].nunique()) if "seller" in df.columns else 0,
+    )
+    cnt_cols[3].metric(
+        "Menor preço",
+        _fmt_brl(df_price["preco"].min()) if not df_price.empty else "—",
+    )
+
+    if df_price.empty:
+        st.info("Sem dados de preço para este SKU no período.")
+        return
+
+    st.divider()
+
+    # --- Evolução de preço por marketplace ---
+    agg = df_price.groupby(["data", "plataforma"], as_index=False)["preco"].median()
+    agg["data"] = pd.to_datetime(agg["data"])
+    fig = px.line(
+        agg, x="data", y="preco", color="plataforma", markers=True,
+        title="Evolução de preço por marketplace",
+        labels={"data": "Data", "preco": "Preço (R$)", "plataforma": "Plataforma"},
+    )
+    fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
+    _apply_chart_style(fig, height=420)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- Sellers por marketplace ---
+    if "seller" in df_price.columns:
+        st.markdown("**Sellers por marketplace**")
+        sellers = (
+            df_price.sort_values("data")
+            .groupby(["plataforma", "seller"], as_index=False)
+            .agg(
+                ultimo_preco=("preco", "last"),
+                menor_preco=("preco", "min"),
+                coletas=("preco", "count"),
+            )
+            .sort_values("ultimo_preco")
+        )
+        st.dataframe(
+            sellers, use_container_width=True, hide_index=True,
+            column_config={
+                "plataforma":   st.column_config.TextColumn("Marketplace"),
+                "seller":       st.column_config.TextColumn("Seller"),
+                "ultimo_preco": st.column_config.NumberColumn("Último preço", format="R$ %.2f"),
+                "menor_preco":  st.column_config.NumberColumn("Menor preço", format="R$ %.2f"),
+                "coletas":      st.column_config.NumberColumn("Coletas"),
+            },
+        )
+
+
+def _render_comparator(produtos: tuple, start_date: date, end_date: date) -> None:
+    """Renderiza a comparação lado a lado de 2–4 SKUs."""
+    df = _query_products_history(produtos, str(start_date), str(end_date))
+    if df.empty:
+        st.warning("Sem coletas para os produtos selecionados.")
+        return
+
+    df_price = df.dropna(subset=["preco"])
+    df_price = df_price[df_price["preco"] > 0]
+    if df_price.empty:
+        st.warning("Sem dados de preço para os produtos selecionados.")
+        return
+
+    # --- Evolução sobreposta ---
+    agg = df_price.groupby(["data", "produto"], as_index=False)["preco"].median()
+    agg["data"] = pd.to_datetime(agg["data"])
+    fig = px.line(
+        agg, x="data", y="preco", color="produto", markers=True,
+        title="Evolução de preço comparada (mediana diária)",
+        labels={"data": "Data", "preco": "Preço (R$)", "produto": "Produto"},
+    )
+    fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
+    _apply_chart_style(fig, height=460)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- Menor preço por marketplace ---
+    pivot = df_price.groupby(["produto", "plataforma"])["preco"].min().unstack()
+    st.markdown("**Menor preço por marketplace**")
+    st.dataframe(
+        pivot.style.format("R$ {:.2f}", na_rep="—"),
+        use_container_width=True,
+    )
+
+    # --- Resumo comparativo + diferença percentual ---
+    summary = (
+        df_price.groupby("produto")["preco"]
+        .agg(menor="min", mediana="median", maior="max")
+        .reset_index()
+    )
+    cheapest = summary["menor"].min()
+    summary["dif_%_vs_menor"] = (
+        (summary["menor"] - cheapest) / cheapest * 100
+    ).round(1)
+    summary = summary.sort_values("menor")
+    st.markdown("**Resumo comparativo**")
+    st.dataframe(
+        summary, use_container_width=True, hide_index=True,
+        column_config={
+            "produto":        st.column_config.TextColumn("Produto"),
+            "menor":          st.column_config.NumberColumn("Menor", format="R$ %.2f"),
+            "mediana":        st.column_config.NumberColumn("Mediana", format="R$ %.2f"),
+            "maior":          st.column_config.NumberColumn("Maior", format="R$ %.2f"),
+            "dif_%_vs_menor": st.column_config.NumberColumn("Δ% vs mais barato", format="%.1f%%"),
+        },
+    )
+
+
+def page_product_sheet() -> None:
+    st.title("🗂️ Ficha do Produto")
+    st.caption("Detalhamento técnico e de preços por SKU, com comparador.")
+
+    with st.sidebar:
+        st.subheader("Filtros")
+        date_range = st.date_input(
+            "Período",
+            value=(date.today() - timedelta(days=30), date.today()),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
+            key="ps_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+        sel_brands = st.multiselect(
+            "Marcas (filtra a lista de SKUs)", opts["brands"], key="ps_brands",
+        )
+        sel_btu = st.multiselect(
+            "Capacidade (BTU)", BTU_OPTIONS,
+            format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
+            key="ps_btu",
+        )
+
+    sku_opts = get_sku_options(
+        tuple(sorted(sel_brands)), tuple(sorted(sel_btu)), (),
+    )
+
+    tab_ficha, tab_cmp = st.tabs(["📋 Ficha individual", "⚖️ Comparador"])
+
+    with tab_ficha:
+        if not sku_opts:
+            st.info("Nenhum SKU disponível. Ajuste os filtros na barra lateral.")
+        else:
+            sku = st.selectbox(
+                f"Produto / SKU  ({len(sku_opts)} disponíveis)",
+                sku_opts, key="ps_sku",
+            )
+            if sku:
+                _render_product_sheet(sku, start_date, end_date)
+
+    with tab_cmp:
+        if not sku_opts:
+            st.info("Nenhum SKU disponível. Ajuste os filtros na barra lateral.")
+        else:
+            sel = st.multiselect(
+                "Selecione 2 a 4 produtos para comparar",
+                sku_opts, max_selections=4, key="ps_cmp",
+            )
+            if len(sel) < 2:
+                st.info("Selecione ao menos 2 produtos para comparar.")
+            else:
+                _render_comparator(tuple(sel), start_date, end_date)
+
+
+# ---------------------------------------------------------------------------
 # Page registry & grouped navigation
 # ---------------------------------------------------------------------------
 
@@ -4724,6 +5156,8 @@ PAGES = {
     "🚨 Top Movers":               page_top_movers,
     "📊 Results":                  page_results,
     "📈 Price Evolution":           page_price_evolution,
+    "📊 Market Analytics":         page_market_analytics,
+    "🗂️ Ficha do Produto":         page_product_sheet,
     "🏆 BuyBox Position":          page_buybox_position,
     "📦 Availability":             page_availability,
     "🧠 Competitive Intelligence": page_ci_analysis,
@@ -4741,6 +5175,8 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "🚨 Top Movers",
         "📊 Results",
         "📈 Price Evolution",
+        "📊 Market Analytics",
+        "🗂️ Ficha do Produto",
         "🏆 BuyBox Position",
         "📦 Availability",
         "🧠 Competitive Intelligence",
