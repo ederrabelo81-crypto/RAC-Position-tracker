@@ -3,8 +3,13 @@
 #
 # Cria 3 tarefas:
 #   1. RAC_Chrome_CDP_Startup  - Abre Chrome com CDP no logon do Windows
-#   2. RAC_Magalu_Manha        - Coleta Magalu as 10:00 (turno Abertura)
-#   3. RAC_Magalu_Noite        - Coleta Magalu as 21:00 (turno Fechamento)
+#   2. RAC_Magalu_Manha        - Coleta Magalu as 10:30 (turno Abertura)
+#   3. RAC_Magalu_Noite        - Coleta Magalu as 21:30 (turno Fechamento)
+#
+# Horarios 10:30/21:30 (e nao 10:00/21:00) para nao colidir com a coleta
+# local de Mercado Livre (RAC_Coleta_Manha/Tarde, criadas por install_tasks.bat),
+# que roda as 10:00/21:00 no mesmo PC. Duas coletas Python simultaneas
+# competem por RAM/CPU/rede e atrapalham uma a outra.
 #
 # Uso (PowerShell como Admin):
 #   PowerShell -ExecutionPolicy Bypass -File scripts\setup_magalu_scheduler.ps1
@@ -114,11 +119,11 @@ Register-ScheduledTask -TaskName "RAC_Chrome_CDP_Startup" `
     -Description "Abre Chrome com CDP na porta 9222 ao logar no Windows" `
     -Force | Out-Null
 
-# --- 2. Coleta manha (10:00) ------------------------------------------------
-Write-Host "Registrando: RAC_Magalu_Manha (10:00 diario)" -ForegroundColor Cyan
+# --- 2. Coleta manha (10:30) ------------------------------------------------
+Write-Host "Registrando: RAC_Magalu_Manha (10:30 diario)" -ForegroundColor Cyan
 $action  = New-ScheduledTaskAction -Execute "cmd.exe" `
     -Argument "/c `"$CollectScript`" 2 alta media >> `"$BaseDir\logs\scheduler.log`" 2>&1"
-$trigger = New-ScheduledTaskTrigger -Daily -At "10:00AM"
+$trigger = New-ScheduledTaskTrigger -Daily -At "10:30AM"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 Register-ScheduledTask -TaskName "RAC_Magalu_Manha" `
@@ -126,11 +131,11 @@ Register-ScheduledTask -TaskName "RAC_Magalu_Manha" `
     -Description "Coleta Magalu turno Abertura via CDP - 2 paginas, alta+media" `
     -Force | Out-Null
 
-# --- 3. Coleta noite (21:00) ------------------------------------------------
-Write-Host "Registrando: RAC_Magalu_Noite (21:00 diario)" -ForegroundColor Cyan
+# --- 3. Coleta noite (21:30) ------------------------------------------------
+Write-Host "Registrando: RAC_Magalu_Noite (21:30 diario)" -ForegroundColor Cyan
 $action  = New-ScheduledTaskAction -Execute "cmd.exe" `
     -Argument "/c `"$CollectScript`" 1 alta >> `"$BaseDir\logs\scheduler.log`" 2>&1"
-$trigger = New-ScheduledTaskTrigger -Daily -At "9:00PM"
+$trigger = New-ScheduledTaskTrigger -Daily -At "9:30PM"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1)
 Register-ScheduledTask -TaskName "RAC_Magalu_Noite" `
@@ -153,7 +158,7 @@ Write-Host "  1. Faca LOGOUT/LOGIN do Windows (ou rode start_chrome_cdp.bat agor
 Write-Host "  2. No Chrome que abrir, navegue no Magalu por uns 5 min" -ForegroundColor Yellow
 Write-Host "     (login se quiser, busque por 'ar condicionado') - aquece o perfil" -ForegroundColor Yellow
 Write-Host "  3. Deixe o Chrome aberto" -ForegroundColor Yellow
-Write-Host "  4. Aguarde 10:00 ou 21:00 (ou teste com Start-ScheduledTask)" -ForegroundColor Yellow
+Write-Host "  4. Aguarde 10:30 ou 21:30 (ou teste com Start-ScheduledTask)" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Pressione qualquer tecla para fechar esta janela..." -ForegroundColor DarkGray
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")

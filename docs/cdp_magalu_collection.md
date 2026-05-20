@@ -47,8 +47,13 @@ PowerShell -ExecutionPolicy Bypass -File scripts\setup_magalu_scheduler.ps1
 
 Cria 3 tarefas:
 - `RAC_Chrome_CDP_Startup` — abre Chrome CDP no logon do Windows
-- `RAC_Magalu_Manha` — coleta às 10:00 (Abertura, 2 páginas)
-- `RAC_Magalu_Noite` — coleta às 21:00 (Fechamento, 1 página)
+- `RAC_Magalu_Manha` — coleta às 10:30 (Abertura, 2 páginas)
+- `RAC_Magalu_Noite` — coleta às 21:30 (Fechamento, 1 página)
+
+> Os horários são 10:30/21:30 (e não 10:00/21:00) de propósito: a coleta local
+> de Mercado Livre (`RAC_Coleta_Manha`/`RAC_Coleta_Tarde`, de `install_tasks.bat`)
+> roda às 10:00/21:00 no mesmo PC. O offset de 30 min evita duas coletas Python
+> disputando RAM/CPU/rede ao mesmo tempo.
 
 ### 3. Testar manualmente
 
@@ -68,7 +73,7 @@ A tarefa `RAC_Chrome_CDP_Startup` só dispara no próximo logon. Faça logout/lo
 
 ### Coleta automática (Task Scheduler)
 
-Nada a fazer — as tarefas rodam sozinhas às 10:00 e 21:00.
+Nada a fazer — as tarefas rodam sozinhas às 10:30 e 21:30.
 
 ### Coleta manual
 
@@ -89,8 +94,8 @@ Nada a fazer — as tarefas rodam sozinhas às 10:00 e 21:00.
 ```
 ┌─────────────────────────────────────────┐
 │ Windows Task Scheduler                  │
-│   10:00 → RAC_Magalu_Manha              │
-│   21:00 → RAC_Magalu_Noite              │
+│   10:30 → RAC_Magalu_Manha              │
+│   21:30 → RAC_Magalu_Noite              │
 └────────────────┬────────────────────────┘
                  │
                  ▼
