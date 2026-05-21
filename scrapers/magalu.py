@@ -161,6 +161,24 @@ _AKAMAI_BLOCK_PATTERNS = (
     "ak_bmsc",
 )
 
+# Seletores candidatos do campo de busca — usados pra busca orgânica (digitar
+# no input + Enter) em vez de `page.goto('/busca/...')`. Um goto direto chega
+# ao Akamai com `Sec-Fetch-Site: none` e sem `Referer` — assinatura clássica
+# de bot. Digitar no campo gera uma navegação same-origin com Referer da home.
+_SEARCH_INPUT_SELECTORS = (
+    'input[data-testid="input-search"]',
+    'input[data-testid="search-input"]',
+    'input[type="search"]',
+    'input[name="q"]',
+    'form[role="search"] input',
+    'header input[type="text"]',
+)
+
+# Circuit breaker: após N keywords seguidas 100% bloqueadas, aborta a coleta
+# Magalu inteira em vez de insistir nas ~31 keywords (cada uma ~15-20s de
+# navegação garantidamente bloqueada — ~9min de trabalho inútil por execução).
+_ABORT_AFTER_BLOCKED_KEYWORDS = 5
+
 
 class MagaluScraper(BaseScraper):
     """
@@ -196,6 +214,12 @@ class MagaluScraper(BaseScraper):
         # (visita home + interação humana pra sensor.js promover _abck).
         self._consecutive_blocks: int = 0
         self._blocks_before_reval: int = 3
+
+        # Circuit breaker — aborta a coleta inteira após N keywords seguidas
+        # bloqueadas, evitando ~9min de navegação inútil por execução quando
+        # o Akamai está negando a rota /busca/ de forma persistente.
+        self._blocked_keyword_streak: int = 0
+        self._collection_aborted: bool = False
 
         # Resolução de headless (prioridade: env var > CLI --no-headless > True)
         env_headless = os.getenv("MAGALU_HEADLESS")
@@ -549,37 +573,128 @@ class MagaluScraper(BaseScraper):
         self._pw_browser = None
         self._pw_handle = None
 
+    def _find_search_input(self) -> Optional[Any]:
+        """Retorna o ElementHandle do campo de busca visível, ou None."""
+        if not self._pw_page:
+            return None
+        for sel in _SEARCH_INPUT_SELECTORS:
+            try:
+                el = self._pw_page.query_selector(sel)
+                if el and el.is_visible():
+                    return el
+            except Exception:
+                continue
+        return None
+
+    def _organic_search(self, keyword: str) -> bool:
+        """
+        Executa a busca como um humano: localiza o campo de busca, digita a
+        keyword com cadência realista e tecla Enter.
+
+        Por quê: `page.goto('/busca/...')` chega ao Akamai com
+        `Sec-Fetch-Site: none` e sem `Referer` — assinatura de bot que faz a
+        rota /busca/ pontuar acima do limite e ser negada (a home, mais
+        leniente, passa). Digitar no campo gera uma navegação same-origin
+        com Referer da home, indistinguível de um usuário real.
+
+        Retorna True se a página resultante é uma SERP /busca/.
+        """
+        page = self._pw_page
+        if page is None:
+            return False
+
+        inp = self._find_search_input()
+        if inp is None:
+            # Página atual sem campo de busca (ex: página de bloqueio) —
+            # volta pra home pra recuperar um ponto de partida limpo.
+            try:
+                page.goto(
+                    _MAGALU_DESKTOP_HOME,
+                    wait_until="domcontentloaded",
+                    timeout=30_000,
+                )
+                time.sleep(random.uniform(1.0, 2.0))
+            except Exception as exc:
+                logger.debug(
+                    f"[{self.platform_name}] Organic: home goto falhou: {exc}"
+                )
+                return False
+            inp = self._find_search_input()
+        if inp is None:
+            return False
+
+        try:
+            inp.click()
+            time.sleep(random.uniform(0.3, 0.7))
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Delete")
+            page.keyboard.type(keyword, delay=random.randint(60, 140))
+            time.sleep(random.uniform(0.4, 0.9))
+            page.keyboard.press("Enter")
+            page.wait_for_url("**/busca/**", timeout=20_000)
+            return True
+        except Exception as exc:
+            logger.debug(
+                f"[{self.platform_name}] Busca orgânica de '{keyword}' falhou: {exc}"
+            )
+            return False
+
+    @staticmethod
+    def _extract_akamai_reference(html: str) -> Optional[str]:
+        """Extrai o número de referência da página de bloqueio Akamai, se houver.
+
+        O `Reference #...` codifica qual regra do Bot Manager disparou —
+        logá-lo ajuda a diagnosticar (e abrir suporte com a Magalu/Akamai).
+        """
+        m = re.search(r"Reference[^0-9]{0,12}([0-9][0-9a-fA-F.]+)", html)
+        return m.group(1) if m else None
+
     def _search_via_browser(self, keyword: str, page_num: int) -> Optional[str]:
         """
         Navega pra `/busca/{keyword}` dentro do browser persistente e retorna
-        o HTML renderizado. None se browser não tá aberto/erro.
+        o HTML renderizado. None se browser não tá aberto / tudo bloqueado.
 
-        Tenta domínio mobile primeiro; se bloqueado, tenta desktop como fallback
-        — Akamai às vezes aceita um quando rejeita o outro com o mesmo _abck
-        em estado "challenge".
+        Ordem de tentativas:
+          1. Busca orgânica (digita no campo + Enter) — só page 1; gera
+             navegação same-origin com Referer, bem menos detectável.
+          2. `goto` direto na URL /busca/ mobile, com Referer da home.
+          3. `goto` direto na URL /busca/ desktop, com Referer da home.
         """
         if not self._pw_page:
             return None
 
         slug = quote_plus(keyword.strip())
-        candidates = [
-            (_MAGALU_MOBILE_BASE, _MAGALU_MOBILE_HOME),
-            (_MAGALU_DESKTOP_BASE, _MAGALU_DESKTOP_HOME),
-        ]
 
-        for base, home in candidates:
-            url = f"{base}/busca/{slug}/"
-            if page_num > 1:
-                url += f"?page={page_num}"
+        attempts: List[Tuple[str, Optional[str], Optional[str]]] = []
+        if page_num == 1:
+            attempts.append(("orgânica", None, None))
+        attempts.append(("goto-mobile", _MAGALU_MOBILE_BASE, _MAGALU_MOBILE_HOME))
+        attempts.append(("goto-desktop", _MAGALU_DESKTOP_BASE, _MAGALU_DESKTOP_HOME))
 
-            try:
-                self._pw_page.goto(url, wait_until="domcontentloaded", timeout=40_000)
-            except Exception as exc:
-                logger.warning(
-                    f"[Magalu] Browser goto '{keyword}' p{page_num} em "
-                    f"{base[8:30]}: {exc}"
-                )
-                continue
+        for label, base, home in attempts:
+            if base is None:
+                # Tentativa orgânica (digita no campo de busca).
+                if not self._organic_search(keyword):
+                    continue
+            else:
+                url = f"{base}/busca/{slug}/"
+                if page_num > 1:
+                    url += f"?page={page_num}"
+                try:
+                    # referer=home → Sec-Fetch-Site: same-origin (menos suspeito
+                    # que o goto "cru" sem Referer que o código antigo emitia).
+                    self._pw_page.goto(
+                        url,
+                        wait_until="domcontentloaded",
+                        timeout=40_000,
+                        referer=home,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"[{self.platform_name}] Browser goto '{keyword}' "
+                        f"p{page_num} em {base[8:30]}: {exc}"
+                    )
+                    continue
 
             # Espera produtos aparecerem (sinal de página renderizada com sucesso).
             try:
@@ -603,7 +718,7 @@ class MagaluScraper(BaseScraper):
             try:
                 html = self._pw_page.content()
             except Exception as exc:
-                logger.warning(f"[Magalu] Browser content() erro: {exc}")
+                logger.warning(f"[{self.platform_name}] Browser content() erro: {exc}")
                 continue
 
             blocked = (
@@ -620,19 +735,28 @@ class MagaluScraper(BaseScraper):
             )
 
             if blocked and not has_next_data:
+                ref = self._extract_akamai_reference(html)
+                ref_txt = f", Akamai Ref #{ref}" if ref else ""
                 logger.warning(
-                    f"[Magalu] Browser bloqueio em '{keyword}' p{page_num} "
-                    f"({base[8:30]}, len={len(html):,}) — tentando próximo domínio"
+                    f"[{self.platform_name}] Browser bloqueio em '{keyword}' "
+                    f"p{page_num} via {label} (len={len(html):,}{ref_txt}) "
+                    "— próxima tentativa"
                 )
                 self._dump_block_html(html, f"browser_{keyword}_p{page_num}")
                 continue
 
             if blocked and has_next_data:
                 logger.info(
-                    f"[Magalu] Página marcada bloqueada mas __NEXT_DATA__ presente "
-                    f"em '{keyword}' p{page_num} — tentando extração"
+                    f"[{self.platform_name}] Página marcada bloqueada mas "
+                    f"__NEXT_DATA__ presente em '{keyword}' p{page_num} "
+                    "— tentando extração"
                 )
 
+            if label == "orgânica":
+                logger.info(
+                    f"[{self.platform_name}] '{keyword}' p{page_num} carregada "
+                    "via busca orgânica ✓"
+                )
             return html
 
         return None
@@ -1429,6 +1553,15 @@ class MagaluScraper(BaseScraper):
             )
             return []
 
+        # Circuit breaker — se a coleta já foi abortada por bloqueios
+        # consecutivos, pula a keyword instantaneamente (sem abrir navegação).
+        if self._collection_aborted:
+            logger.debug(
+                f"[{self.platform_name}] Coleta abortada (circuit breaker) — "
+                f"pulando '{keyword}'"
+            )
+            return []
+
         all_records: List[Dict[str, Any]] = []
 
         # Delay curto entre keywords (browser já fica aberto, sem warm-up)
@@ -1450,6 +1583,27 @@ class MagaluScraper(BaseScraper):
 
             if page < page_limit:
                 self._delay(3.0, 6.0)
+
+        # Circuit breaker — conta keywords seguidas sem nenhum produto. Após
+        # _ABORT_AFTER_BLOCKED_KEYWORDS, aborta a coleta Magalu inteira em vez
+        # de gastar ~15-20s por keyword nas ~31 restantes, todas bloqueadas.
+        if all_records:
+            self._blocked_keyword_streak = 0
+        else:
+            self._blocked_keyword_streak += 1
+            if (
+                self._blocked_keyword_streak >= _ABORT_AFTER_BLOCKED_KEYWORDS
+                and not self._collection_aborted
+            ):
+                self._collection_aborted = True
+                logger.error(
+                    f"[{self.platform_name}] Circuit breaker disparado: "
+                    f"{self._blocked_keyword_streak} keywords seguidas 100% "
+                    "bloqueadas pelo Akamai. Abortando a coleta Magalu — as "
+                    "keywords restantes serão puladas. Causa provável: IP ou "
+                    "perfil do Chrome CDP flagado pelo Bot Manager. "
+                    "Ver docs/cdp_magalu_collection.md (seção Troubleshooting)."
+                )
 
         logger.success(
             f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"

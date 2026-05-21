@@ -185,6 +185,35 @@ Teste de confirmação: com o Chrome do `:9222` aberto, abra manualmente
 rodar o coletor**. Se carregar normal, o bloqueio é da automação (não do
 perfil/IP).
 
+### 403 persistente MESMO com `rebrowser-playwright` ativo
+
+Sintoma no log: `Playwright: rebrowser-playwright (runtime fix=addBinding)`
+**e ainda assim** `_abck validado ✓` na home, mas `Busca de calibração
+suspeita (len=1,235)` e toda `/busca/` retorna `len≈1,233` / `HTTP 403`.
+
+Isso é o caso difícil: a home passa, a rota `/busca/` é negada. O fork
+anti-detecção já está em uso, então **não é** o vazamento do `Runtime.enable`.
+Causa provável, em ordem:
+
+1. **IP/perfil flagados** — o Akamai Bot Manager pontua a rota `/busca/` mais
+   estrito que a home. Rode o teste de confirmação acima: se abrir `/busca/`
+   **manualmente** no Chrome `:9222` também der bloqueio, o problema é
+   reputação de IP ou perfil — nenhum ajuste de código resolve. Ações:
+   - Recriar o perfil CDP: `rmdir /s /q C:\chrome-rac-cdp` + `setup_cdp_profile.bat`
+   - Trocar de rede / usar IP residencial diferente
+   - Abrir o Magalu manualmente, navegar 5-10 min, fazer login, resolver
+     qualquer captcha — depois rodar a coleta
+2. **Navegação detectável** — desde Mai/2026 o scraper faz a busca de forma
+   **orgânica** (digita no campo de busca + Enter) em vez de `page.goto`
+   direto. Se o log mostrar `carregada via busca orgânica ✓`, essa parte está
+   funcionando.
+
+O scraper agora tem um **circuit breaker**: após 5 keywords seguidas 100%
+bloqueadas ele aborta a coleta Magalu (log `Circuit breaker disparado`) em vez
+de insistir nas ~31 keywords — a execução falha em ~1min em vez de ~9min.
+O número `Akamai Ref #...` no log identifica qual regra do Bot Manager
+disparou (útil pra abrir suporte).
+
 ### Coleta retorna 0 produtos mesmo com Chrome aberto
 - Aqueça o perfil mais (5-10 min de navegação real)
 - Faça login no Magalu
