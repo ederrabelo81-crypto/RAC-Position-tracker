@@ -198,6 +198,9 @@ python main.py --platforms ml magalu amazon google_shopping leroy dealers --page
 **Logs:** `logs/bot_YYYYMMDD_HHMMSS.log`
 - Rotação a cada 50 MB, retenção de 7 dias
 
+**Screenshots:** `screenshots/` (quando capturados)
+- Imagens da SERP (página de resultados) com posicionamento dos produtos
+
 **HTML de Debug:** `logs/dealer_debug_<nome>_p<N>.html`
 - Salvo automaticamente quando dealer retorna 0 produtos
 
@@ -234,11 +237,28 @@ streamlit run app.py
 # Ou acesse: https://rac-position-tracker-ygnmxhmemn6zwse5rp7uxf.streamlit.app
 ```
 
-**Páginas disponíveis:**
-- **Visão Geral** — métricas agregadas, evolução de preços, posicionamento por plataforma
-- **Análise por Plataforma** — comparativo detalhado entre marketplaces
-- **Análise por Marca** — share de mercado e evolução das marcas monitoradas
-- **🧠 Competitive Intelligence** — relatórios gerados por IA (Claude) com insights competitivos, download em Markdown
+**Páginas — 16 seções de análise e operações:**
+
+**INSIGHTS (9 páginas):**
+- **🏠 Overview** — Métricas agregadas, evolução de preços, tendências
+- **🚨 Top Movers** — Maiores altas/quedas de preço e posicionamento
+- **📊 Results** — Detalhamento completo de coletas com filtros avançados
+- **📈 Price Evolution** — Gráficos de série temporal e análise de volatilidade
+- **📊 Market Analytics** — Share de marcas, posicionamento por plataforma, benchmarking
+- **🗂️ Ficha do Produto** — Página detalhada de um SKU específico com screenshots
+- **🏆 BuyBox Position** — Posicionamento de primeira posição (buybox/destaque)
+- **📦 Availability** — Disponibilidade em estoque por plataforma
+- **🧠 Competitive Intelligence** — Relatórios gerados por IA (Claude) com insights competitivos, download em Markdown
+
+**OPERAÇÕES (4 páginas):**
+- **🚀 Run Collection** — Dispara coleta manual com controle de plataformas e páginas
+- **📧 Email Digest** — Gera e envia relatórios por email em HTML ou texto plano
+- **🔔 Price Anomalies** — Detecta variações suspeitas de preço (>50%)
+- **📂 Import History** — Revisa histórico de importações e CSVs processados
+
+**ADMIN (2 páginas):**
+- **🧹 Data Cleanup** — Limpeza de registros inválidos e normalizações de dados
+- **🔤 Normalize SKUs** — Re-normaliza nomes de produtos em batch
 
 ---
 
@@ -312,12 +332,28 @@ crontab -l
 cd ~/rac-position-tracker && git pull origin main
 ```
 
-### Scripts de Coleta
+### Scripts de Coleta e Monitoramento
 
-| Script | Horário BRT | Plataformas | Prioridade | Páginas |
-|--------|-------------|-------------|------------|---------|
-| `collect_manha_linux.sh` | 10:00 | Todas | alta + media | 2 |
-| `collect_noite_linux.sh` | 21:00 | Todas | alta | 1 |
+| Script | Tipo | Horário BRT | Descrição |
+|--------|------|-------------|-----------|
+| `collect_manha_linux.sh` | Coleta | 10:00 | Todas as plataformas, prioridade alta + media, 2 páginas |
+| `collect_noite_linux.sh` | Coleta | 21:00 | Todas as plataformas, prioridade alta, 1 página |
+| `scripts/daily_status_check.py` | Monitoramento | Diário | Validação de status PASS/FAIL por plataforma; resultado enviado ao Telegram |
+
+**Comandos de Monitoramento:**
+```bash
+# Status de hoje (ambos turnos)
+python scripts/daily_status_check.py
+
+# Apenas um turno
+python scripts/daily_status_check.py --turno Abertura
+python scripts/daily_status_check.py --turno Fechamento
+
+# Data específica (sem notificação)
+python scripts/daily_status_check.py --data 2026-05-14 --no-notify
+```
+
+Saída: Tabela PASS ✅ / FAIL ❌ por plataforma, enviada ao Telegram + exibida no console.
 
 ---
 
@@ -337,60 +373,24 @@ Parâmetros disponíveis: `platforms`, `pages`, `priority`.
 
 ### Keywords (`config.py`)
 
-Lista completa de keywords monitoradas — definidas em `config.py`:
+**31 keywords monitoradas** — definidas em `config.py` com 3 prioridades:
 
-**Head terms genéricos** (prioridade `alta`)
-| Keyword |
-|---------|
-| ar condicionado split |
-| ar condicionado inverter |
-| ar condicionado |
-| ar condicionado split inverter |
+| Categoria | Prioridade | Keywords | Qtd |
+|-----------|-----------|----------|-----|
+| **Head Terms** | `alta` | ar condicionado, ar condicionado split, ar condicionado inverter, ar condicionado split inverter | 4 |
+| **Capacidade BTU** | `alta` | 9k/12k/18k/24k BTUs (com/sem inverter) | 8 |
+| **Midea (Própria)** | `alta` | ar condicionado midea, midea inverter, midea 12000/9000, midea ecomaster, midea airvolution | 6 |
+| **Concorrentes Top** | `alta` | LG (dual inverter), Samsung (windfree) + genéricas | 5 |
+| **Concorrentes Mid** | `media` | Gree, Elgin, Philco, TCL | 4 |
+| **Intenção Compra** | `alta`/`media` | melhor custo benefício, melhor 2026, comprar, em promoção | 4 |
 
-**Capacidade / BTU** (prioridade `alta`)
-| Keyword |
-|---------|
-| ar condicionado 9000 btus |
-| ar condicionado 12000 btus |
-| ar condicionado 18000 btus |
-| ar condicionado 24000 btus |
-| ar condicionado 9000 btus inverter |
-| ar condicionado 12000 btus inverter |
-| split 12000 btus inverter |
-| split 9000 btus inverter |
+**Prioridades:**
+- `alta` — Coleta diária em ambos os turnos (manhã + noite)
+- `media` — Coleta apenas na manhã
+- `baixa` — Opcional, sob demanda
 
-**Marca Midea** (prioridade `alta`)
-| Keyword |
-|---------|
-| ar condicionado midea |
-| midea inverter |
-| midea 12000 btus |
-| ar condicionado midea 12000 |
-| midea ecomaster |
-| midea airvolution |
-
-**Concorrentes** (prioridade `alta` ou `media`)
-| Keyword | Prioridade |
-|---------|-----------|
-| ar condicionado lg | alta |
-| lg dual inverter | alta |
-| ar condicionado lg dual inverter 12000 | alta |
-| ar condicionado samsung | alta |
-| samsung windfree | alta |
-| ar condicionado gree | media |
-| ar condicionado elgin | media |
-| ar condicionado philco | media |
-| ar condicionado tcl | media |
-
-**Intenção de compra / Promoção** (prioridade `alta` ou `media`)
-| Keyword | Prioridade |
-|---------|-----------|
-| melhor ar condicionado custo benefício | alta |
-| melhor ar condicionado 2026 | alta |
-| comprar ar condicionado | media |
-| ar condicionado em promoção | media |
-
-**Total: 34 keywords** | **Prioridades:** `alta` (coleta diária), `media` (manhã), `baixa` (opcional)
+**Marcas monitoradas: 43 marcas**  
+Springer Midea, Midea, Carrier, Elgin, Electrolux, Agratto, Springer, Consul, Daikin, LG, Samsung, Gree, Philco, TCL, Consul, Brastemp, Consul, Fujitsu, Toshiba, Panasonic, Sharp, York, Hitachi, Midea, Compressor, Thermostat, Valvulas, Acessórios, e outras.
 
 ### Filtro de Turno
 
@@ -506,8 +506,30 @@ free -h                    # verificar uso atual
 sudo swapon --show         # confirmar swap ativo
 ```
 
-### Magalu — como funciona o bypass Akamai
-O scraper Python (`scrapers/magalu.py`) usa `curl_cffi` com `impersonate="chrome124"` para replicar o TLS handshake do Chrome real e contornar o Akamai Bot Manager. Fluxo: warm-up na home → extrai `BUILD_ID` do `__NEXT_DATA__` → bate em `_next/data/{BUILD_ID}/busca/{slug}.json`. Se retornar HTTP 403, response < 1 KB ou strings Akamai, a detecção de bloqueio dispara fail-fast com fallback para scraping de HTML. Execute normalmente via `python main.py --platforms magalu`.
+### Magalu — Bypass Akamai com CDP e Circuit Breaker
+O scraper Python (`scrapers/magalu.py`) implementa **CDP mode** (DevTools Protocol) para conectar ao Chrome real do usuário e bypassar `sensor.js` do Akamai:
+
+1. **CDP Mode** — Conecta ao Chrome real via protocolo DevTools (não headless detection)
+2. **Browser Persistente** — Reutiliza perfil Chrome com cookies Akamai acumulados
+3. **Circuit Breaker** — Desativa coleta Magalu por 2h após detecção de bloqueio
+4. **Fallback Orgânico** — Se bloqueado, busca orgânica sem JavaScript renderizado
+
+**Fluxo alternativo (curl_cffi — desativado):**
+- Antes: `impersonate="chrome124"` para TLS JA3/JA4 bypass
+- Agora: apenas fallback se CDP falhar
+
+Para reativar curl_cffi (em caso de CDP issues):
+```python
+# Em scrapers/magalu.py, descomente:
+# MAGALU_USE_CURL_CFFI = True
+```
+
+Variáveis de ambiente:
+```env
+MAGALU_HEADLESS=false          # Force browser visível (debug)
+MAGALU_CDP_PORT=9222           # DevTools port (default: auto)
+MAGALU_CIRCUIT_BREAKER_MINUTES=120  # Repouso após bloqueio
+```
 
 ### Cron não executa na VM Oracle
 ```bash
@@ -526,18 +548,30 @@ crontab -l
 
 ## 📝 Dependências Principais
 
-| Pacote | Finalidade |
-|--------|------------|
-| `playwright>=1.50` | Browser automation com stealth |
-| `beautifulsoup4` | Parsing HTML |
-| `pandas>=2.2` | DataFrames e export CSV |
-| `loguru` | Logging estruturado |
-| `supabase>=2.3` | Upload para banco de dados |
-| `streamlit>=1.35` | Dashboard web |
-| `plotly>=5.20` | Gráficos interativos |
-| `anthropic>=0.40` | Claude API (Competitive Intelligence) |
-| `tenacity` | Retry com backoff |
-| `python-dotenv` | Carregamento de `.env` |
+| Pacote | Versão | Finalidade |
+|--------|--------|------------|
+| `playwright>=1.50` | Latest | Browser automation com stealth JS |
+| `beautifulsoup4` | 4.12+ | Parsing HTML/XML |
+| `pandas>=2.2` | Latest | DataFrames e export CSV |
+| `loguru` | 0.7+ | Logging estruturado com rotação |
+| `supabase>=2.3` | Latest | Client Supabase (upload/queries) |
+| `streamlit>=1.35` | 1.35+ | Dashboard web (16 páginas) |
+| `plotly>=5.20` | 5.20+ | Gráficos interativos |
+| `anthropic>=0.40` | 0.40+ | Claude API 4.x (Competitive Intelligence) |
+| `tenacity` | 8.2+ | Retry automático com backoff exponencial |
+| `python-dotenv` | 1.0+ | Carregamento de variáveis de ambiente |
+| `curl_cffi` | Latest | HTTP requests com TLS impersonation (Magalu bypass) |
+| `rebrowser-playwright` | Latest | Playwright com plugin anti-detecção CDP |
+| `requests` | 2.31+ | HTTP requests (fallback, Algolia) |
+
+**Node.js (Shopee sub-projeto):**
+```json
+{
+  "typescript": "^5.x",
+  "puppeteer": "^22.x",
+  "@types/node": "^20.x"
+}
+```
 
 ---
 
@@ -561,4 +595,19 @@ Desenvolvido para monitoramento competitivo de preços no varejo brasileiro de c
 
 ---
 
-**Versão:** 3.3 | **Última atualização:** Maio 2026
+**Versão:** 3.4 | **Última atualização:** 21 de Maio de 2026
+
+---
+
+## ✅ Validação Operacional — 21/05/2026
+
+### Status de Desenvolvimento
+- ✅ **16 páginas dashboard** operacionais (Insights + Operações + Admin)
+- ✅ **7 scrapers principais** em produção (ML, Amazon, Magalu, Google Shopping, Leroy Merlin, Dealers, Shopee)
+- ✅ **31 keywords** monitoradas continuamente
+- ✅ **43 marcas** rastreadas em tempo real
+- ✅ **Magalu CDP mode** com circuit breaker ativo
+- ✅ **Screenshots SERP** capturados automaticamente
+- ✅ **Daily status check** validando plataformas por turno
+- ✅ **Email Digest & Price Anomalies** para operações
+- ✅ **Competitive Intelligence** com Claude API
