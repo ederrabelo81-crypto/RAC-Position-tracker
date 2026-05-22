@@ -12,14 +12,15 @@ scrapers nem a extensão Claude.
 
 | n8n FAZ | n8n NÃO faz |
 |---------|-------------|
-| Agendar e disparar os scrapers automáticos (`main.py`) | Dirigir a Claude Chrome Extension — ela roda interativa no seu navegador |
-| Dividir a coleta automática por plataforma / prioridade | Extrair produtos do DOM (isso é do scraper / da extensão) |
-| Receber o CSV da coleta manual, validar e subir ao Supabase | Passar por anti-bot (Akamai/PerimeterX) — quem faz isso é `curl_cffi` ou o Chrome real |
-| Notificar PASS/FAIL e o resumo executivo no Telegram | Recalcular marcas / dedup (continua em `utils/`) |
+| Detectar um CSV novo na pasta `output/` e subir ao Supabase | Dirigir a Claude Chrome Extension — ela roda no seu navegador |
+| Validar o cabeçalho da coleta manual antes do upload | Extrair produtos do DOM (isso é do scraper / da extensão) |
+| Notificar PASS/FAIL no Telegram | Passar por anti-bot (Akamai/PerimeterX) — quem faz isso é `curl_cffi` ou o Chrome real |
+| — | Orquestrar os scrapers automáticos da VM Oracle (este n8n roda local, sem acesso à VM) |
 
-Conclusão: o n8n otimiza o caminho **automático** e o **glue** (validação,
-upload, notificação). O passo de IA dentro do navegador continua na extensão —
-e a economia de tokens dele está nos guias `docs/manual_*_collection.md`.
+Conclusão: este n8n roda **self-hosted na máquina local** e cuida do **glue** da
+coleta manual (validar, subir, notificar). O passo de IA dentro do navegador
+continua na extensão — a economia de tokens dele está nos guias
+`docs/manual_*_collection.md`.
 
 ---
 
@@ -27,13 +28,14 @@ e a economia de tokens dele está nos guias `docs/manual_*_collection.md`.
 
 O workflow tem **três gatilhos de entrada independentes**:
 
-### 1. `/coleta` — notificações executivas (já existente)
+### 1. `/coleta` — notificações executivas
 
 `Webhook Coleta` → `Telegram`
 
-Usado por `utils/n8n_notify.py` (`notify_start` / `notify_end`). O `main.py`
-posta `{event, chat_id, message, ...}` e o n8n encaminha a mensagem pronta ao
-Telegram. Nada muda aqui.
+Pensado para `utils/n8n_notify.py` (`notify_start` / `notify_end`). Com o n8n
+rodando **local**, o `main.py` da VM Oracle não alcança este webhook — ele cai
+no envio direto ao Telegram (fallback do próprio `n8n_notify.py`). O nó fica no
+workflow para o caso de você rodar um n8n também na VM.
 
 ### 2. `/coleta-csv` — ingestão da coleta manual (novo)
 
@@ -47,7 +49,7 @@ Webhook Coleta CSV → Validar CSV → Nome Valido ┬─(válido)→ Upload CSV
 | `Webhook Coleta CSV` | Recebe `POST /webhook/coleta-csv` com `{filename, chat_id}` |
 | `Validar CSV` | Valida `filename` contra `^rac_monitoramento_\d{8}_\d{4}_[a-z]+\.csv$` (também evita injeção de shell no passo seguinte) |
 | `Nome Valido` | Bifurca: nome válido segue para o upload; inválido vai direto ao Telegram |
-| `Upload CSV` | Confere que o arquivo existe e tem **19 colunas** no cabeçalho, depois roda `reenviar_csv.py` |
+| `Upload CSV` | Chama `scripts/n8n_upload.py`, que confere se o arquivo existe e tem **19 colunas** no cabeçalho e então sobe via `reenviar_csv.py` |
 | `Montar Resultado` | Lê a saída do upload e classifica **PASS** (`sem discrepâncias`) ou **FAIL** |
 | `Telegram Resultado` / `Telegram Nome Invalido` | Enviam o veredito PASS/FAIL ao chat |
 
@@ -71,21 +73,34 @@ A partir de `Validar CSV` reusa exatamente a cadeia do webhook `/coleta-csv`
 
 ---
 
+## Instalação (n8n self-hosted no Windows)
+
+O workflow roda em um n8n **self-hosted na máquina local** (Windows), junto do
+projeto — porque os nós `Coleta Pronta` (lê a pasta `output/`) e `Upload CSV`
+(roda Python) precisam do shell e do filesystem locais, que o n8n Cloud não
+oferece.
+
+Instalação automatizada (PowerShell como Administrador):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\n8n_setup.ps1
+```
+
+O script instala Node.js + n8n, registra uma tarefa agendada que sobe o n8n no
+logon e inicia o serviço em `http://localhost:5678`.
+
 ## Pré-requisitos
 
-1. **n8n no mesmo host do projeto** — o nó `Upload CSV` roda `reenviar_csv.py`
-   por `Execute Command`. O caminho padrão é `$HOME/rac-position-tracker`; se o
-   projeto estiver em outro lugar, edite o comando do nó `Upload CSV`.
-2. **`output/` e `venv/` acessíveis** a partir desse caminho. O nó usa
-   `./venv/bin/python` e cai para `python3` se o venv não existir.
-3. **Credencial Telegram** `RAC Telegram Bot` (id `1`) configurada no n8n.
-4. **`.env`** com `SUPABASE_URL` e `SUPABASE_KEY` na raiz do projeto.
-5. **Para o upload automático:** no nó `Coleta Pronta`, ajuste o campo `path`
-   para o caminho absoluto da pasta `output/` (padrão
-   `/home/ubuntu/rac-position-tracker/output`).
-6. **Para o upload automático:** `N8N_TELEGRAM_CHAT_ID` precisa estar no
-   ambiente do processo n8n — ou edite o nó `Preparar Upload` e fixe o
-   `chat_id` ali.
+1. **Projeto + `venv/` + `.env`** na máquina local. O nó `Upload CSV` chama
+   `venv\Scripts\python.exe scripts\n8n_upload.py`; o `.env` precisa de
+   `SUPABASE_URL` e `SUPABASE_KEY`.
+2. **Caminho do projeto** — o workflow assume `%USERPROFILE%\rac-position-tracker`.
+   Se o projeto estiver em outro lugar, ajuste o comando do nó `Upload CSV`.
+3. **Credencial Telegram** configurada no n8n e ligada nos nós Telegram.
+4. **Nó `Coleta Pronta`** — ajuste o campo `path` para o caminho absoluto real
+   da pasta `output/` (ex: `C:/Users/SEU_USUARIO/rac-position-tracker/output`).
+5. **`N8N_TELEGRAM_CHAT_ID`** no ambiente do processo n8n — ou fixe o `chat_id`
+   no nó `Preparar Upload`.
 
 Importar/atualizar o workflow: n8n → *Workflows* → *Import from File* →
 `n8n/rac_coleta_monitor.json`.
@@ -134,27 +149,17 @@ Telegram:
 
 ---
 
-## Orquestrar os scrapers automáticos
+## E os scrapers automáticos?
 
-Para tirar a coleta automática do `cron` puro e ganhar visibilidade, adicione
-ao n8n um **Schedule Trigger** ligado a nós `Execute Command`. Divida a carga
-pelos eixos que o `main.py` já suporta — `--platforms` e `--priority` — em vez
-de rodar tudo de uma vez (a VM Oracle tem só 1 GB de RAM):
+Os scrapers automáticos (`main.py`) continuam na VM Oracle, no `cron`, com o
+próprio upload ao Supabase — este n8n local **não** os orquestra (não tem
+acesso ao shell da VM). O n8n aqui cuida só da **ingestão da coleta manual**
+feita pela extensão Claude.
 
-```
-Schedule (10:00 BRT) → Execute: main.py --platforms ml amazon --pages 2 --priority alta media
-                     → Execute: main.py --platforms leroy dealers --pages 2 --priority alta media
-                     → Execute: main.py --platforms magalu --pages 2
-```
-
-Vantagens de dividir no n8n:
-- **Isolamento de falha** — uma plataforma bloqueada não derruba as outras.
-- **Menos pressão de memória** — processos menores e sequenciais na VM de 1 GB.
-- **Retry centralizado** — configure *Retry On Fail* por nó `Execute Command`.
-- **Status por etapa** — cada ramo pode notificar via o webhook `/coleta`.
-
-O `main.py` continua sendo a fonte única da lógica de coleta; o n8n só decide
-*quando*, *em que ordem* e *o que fazer quando falha*.
+Se no futuro você quiser que o n8n também agende e divida os scrapers
+automáticos (por plataforma / prioridade, para isolar falhas), isso exige um
+n8n rodando **na própria VM** — aí valeria um segundo workflow com `Schedule
+Trigger` + `Execute Command`. Fora do escopo deste setup local.
 
 ---
 
