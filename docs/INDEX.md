@@ -31,6 +31,15 @@
 2. Reference: `scrapers/base.py` (BaseScraper interface)
 3. Example: `scrapers/amazon.py` (well-structured marketplace scraper)
 
+### "I need to run a manual collection via the Claude Chrome Extension"
+1. Load the platform guide: `docs/manual_magalu_collection.md`,
+   `docs/manual_shopee_collection.md` or `docs/manual_casasbahia_collection.md`
+2. Each guide has the extraction prompt + the "Economia de tokens" section
+
+### "I need to orchestrate or automate collection with n8n"
+1. Load `docs/n8n_orchestration.md`
+2. Key file: `n8n/rac_coleta_monitor.json` (workflow: notifications + CSV ingestion)
+
 ---
 
 ## Token Cost Estimates
@@ -64,6 +73,10 @@ CLAUDE.md                                  ← Project overview + session protoc
 .claude/templates/                         ← Templates for completions/sessions
 docs/INDEX.md                              ← This file
 docs/QUICK_REFERENCE.md                    ← Fast lookups
+docs/n8n_orchestration.md                  ← n8n workflow: scheduling + CSV ingestion
+docs/manual_magalu_collection.md           ← Magalu collection via Claude Chrome Extension
+docs/manual_shopee_collection.md           ← Shopee collection via Claude Chrome Extension
+docs/manual_casasbahia_collection.md       ← Casas Bahia collection via Claude Chrome Extension
 docs/learnings/scraping-patterns.md        ← CSS selectors, parsing, fallbacks
 docs/learnings/anti-bot-strategies.md      ← Stealth, CAPTCHA, rotation
 docs/learnings/dealer-configs.md           ← Per-dealer reference

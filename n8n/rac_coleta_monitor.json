@@ -33,6 +33,121 @@
           "name": "RAC Telegram Bot"
         }
       }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "coleta-csv",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "a1111111-1111-4111-8111-111111111111",
+      "name": "Webhook Coleta CSV",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 540]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const body = $json.body || {};\nconst filename = String(body.filename || '').trim();\nconst chatId = String(body.chat_id || body.chatId || '').trim();\nconst valid = /^rac_monitoramento_\\d{8}_\\d{4}_[a-z]+\\.csv$/.test(filename);\nreturn { ok: valid, filename: filename, chat_id: chatId, reason: valid ? '' : 'nome de arquivo invalido: ' + filename + ' (esperado rac_monitoramento_AAAAMMDD_HHMM_plataforma.csv)' };"
+      },
+      "id": "a2222222-2222-4222-8222-222222222222",
+      "name": "Validar CSV",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 540]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-nome-valido",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a3333333-3333-4333-8333-333333333333",
+      "name": "Nome Valido",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 540]
+    },
+    {
+      "parameters": {
+        "command": "cd \"$HOME/rac-position-tracker\" 2>/dev/null || { echo \"RAC_FAIL|projeto RAC nao encontrado - ajuste o caminho no node Upload CSV\"; exit 0; }\nF=\"output/{{ $('Validar CSV').item.json.filename }}\"\nif [ ! -f \"$F\" ]; then echo \"RAC_FAIL|arquivo nao encontrado: $F - salve o CSV em output/ antes de chamar o webhook\"; exit 0; fi\nCOLS=$(awk -F';' 'NR==1{print NF; exit}' \"$F\")\nif [ \"$COLS\" != \"19\" ]; then echo \"RAC_FAIL|cabecalho invalido: $COLS colunas (esperado 19)\"; exit 0; fi\nPY=./venv/bin/python\nif [ ! -x \"$PY\" ]; then PY=python3; fi\n\"$PY\" reenviar_csv.py \"$F\" 2>&1"
+      },
+      "id": "a4444444-4444-4444-8444-444444444444",
+      "name": "Upload CSV",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [900, 460]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const out = (String($json.stdout || '') + '\\n' + String($json.stderr || '')).trim();\nconst v = $('Validar CSV').item.json;\nlet status = 'FAIL', detail = '';\nconst fi = out.indexOf('RAC_FAIL|');\nif (fi !== -1) { detail = out.slice(fi + 9).split('\\n')[0].trim(); }\nelse if (out.indexOf('sem discrep') !== -1) { status = 'PASS'; const m = out.match(/Inseridas:\\s*(\\d+)/); detail = (m ? m[1] : '?') + ' registros inseridos no Supabase'; }\nelse if (out.indexOf('Discrep') !== -1) { detail = 'upload concluido com discrepancia - verifique os logs do reenviar_csv.py'; }\nelse { detail = 'resultado nao reconhecido - saida: ' + out.slice(-400); }\nconst icon = status === 'PASS' ? '✅' : '❌';\nconst message = icon + ' <b>Coleta manual - ' + status + '</b>\\n' + v.filename + '\\n' + detail;\nreturn { status: status, detail: detail, message: message, chat_id: v.chat_id };"
+      },
+      "id": "a5555555-5555-4555-8555-555555555555",
+      "name": "Montar Resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 460]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "a6666666-6666-4666-8666-666666666666",
+      "name": "Telegram Resultado",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1340, 460],
+      "credentials": {
+        "telegramApi": {
+          "id": "1",
+          "name": "RAC Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Validar CSV').item.json.chat_id }}",
+        "text": "={{ '❌ <b>Coleta manual - FAIL</b>\\n' + $('Validar CSV').item.json.reason }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "a7777777-7777-4777-8777-777777777777",
+      "name": "Telegram Nome Invalido",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [900, 640],
+      "credentials": {
+        "telegramApi": {
+          "id": "1",
+          "name": "RAC Telegram Bot"
+        }
+      }
     }
   ],
   "connections": {
@@ -41,6 +156,68 @@
         [
           {
             "node": "Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Coleta CSV": {
+      "main": [
+        [
+          {
+            "node": "Validar CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar CSV": {
+      "main": [
+        [
+          {
+            "node": "Nome Valido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nome Valido": {
+      "main": [
+        [
+          {
+            "node": "Upload CSV",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Nome Invalido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload CSV": {
+      "main": [
+        [
+          {
+            "node": "Montar Resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar Resultado": {
+      "main": [
+        [
+          {
+            "node": "Telegram Resultado",
             "type": "main",
             "index": 0
           }
