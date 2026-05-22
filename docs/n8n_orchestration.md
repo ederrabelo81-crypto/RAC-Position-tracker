@@ -25,7 +25,7 @@ e a economia de tokens dele está nos guias `docs/manual_*_collection.md`.
 
 ## Arquitetura do workflow `rac_coleta_monitor.json`
 
-O workflow expõe **dois webhooks independentes**:
+O workflow tem **três gatilhos de entrada independentes**:
 
 ### 1. `/coleta` — notificações executivas (já existente)
 
@@ -54,6 +54,21 @@ Webhook Coleta CSV → Validar CSV → Nome Valido ┬─(válido)→ Upload CSV
 Esse caminho **substitui o passo manual** `python reenviar_csv.py ...` descrito
 no fim dos guias `manual_*_collection.md`.
 
+### 3. `output/` — upload automático (Local File Trigger)
+
+```
+Coleta Pronta → Preparar Upload → Validar CSV → (mesma cadeia do /coleta-csv)
+```
+
+| Nó | Função |
+|----|--------|
+| `Coleta Pronta` | Vigia a pasta `output/`; dispara quando um arquivo novo termina de ser escrito |
+| `Preparar Upload` | Aceita só nomes `rac_monitoramento_AAAAMMDD_HHMM_<plataforma>.csv` e ignora o resto (inclusive os CSVs sem sufixo de plataforma gerados pelo `main.py` automático — evita upload em dobro). Preenche o `chat_id` a partir de `$env.N8N_TELEGRAM_CHAT_ID` |
+
+A partir de `Validar CSV` reusa exatamente a cadeia do webhook `/coleta-csv`
+(valida 19 colunas → `reenviar_csv.py` → Telegram PASS/FAIL). É o modo
+**hands-off**: salvou o CSV em `output/`, o n8n sobe sozinho.
+
 ---
 
 ## Pré-requisitos
@@ -65,6 +80,12 @@ no fim dos guias `manual_*_collection.md`.
    `./venv/bin/python` e cai para `python3` se o venv não existir.
 3. **Credencial Telegram** `RAC Telegram Bot` (id `1`) configurada no n8n.
 4. **`.env`** com `SUPABASE_URL` e `SUPABASE_KEY` na raiz do projeto.
+5. **Para o upload automático:** no nó `Coleta Pronta`, ajuste o campo `path`
+   para o caminho absoluto da pasta `output/` (padrão
+   `/home/ubuntu/rac-position-tracker/output`).
+6. **Para o upload automático:** `N8N_TELEGRAM_CHAT_ID` precisa estar no
+   ambiente do processo n8n — ou edite o nó `Preparar Upload` e fixe o
+   `chat_id` ali.
 
 Importar/atualizar o workflow: n8n → *Workflows* → *Import from File* →
 `n8n/rac_coleta_monitor.json`.
@@ -73,10 +94,24 @@ Importar/atualizar o workflow: n8n → *Workflows* → *Import from File* →
 
 ## Como usar a ingestão da coleta manual
 
+Há **dois modos** — escolha um, não use os dois para o mesmo arquivo (cada
+upload gera um `run_id` novo; subir duas vezes cria um snapshot duplicado).
+
+### Modo A — automático (recomendado)
+
+Com o gatilho `Coleta Pronta` ativo, basta salvar o CSV em `output/`:
+
 1. Rode a coleta na Claude Chrome Extension (ver `docs/manual_<plataforma>_collection.md`).
 2. Salve o CSV em `output/` com encoding UTF-8 BOM e o nome no padrão
    `rac_monitoramento_YYYYMMDD_HHMM_<plataforma>.csv`.
-3. Dispare o webhook em vez de rodar `reenviar_csv.py` na mão:
+3. Pronto — o n8n detecta o arquivo, valida, sobe ao Supabase e notifica no
+   Telegram. Repita para as 3 plataformas; cada CSV é processado sozinho ao
+   aparecer na pasta.
+
+### Modo B — webhook manual
+
+1. Rode a coleta e salve o CSV em `output/` (passos 1–2 acima).
+2. Dispare o webhook em vez de rodar `reenviar_csv.py` na mão:
 
 ```bash
 curl -X POST http://localhost:5678/webhook/coleta-csv \
