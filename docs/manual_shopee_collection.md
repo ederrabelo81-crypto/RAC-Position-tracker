@@ -152,8 +152,10 @@ ENTREGA:
     com 0 produtos.
 ````
 
-> **Coleta parcial:** se a sessão não aguentar as 31 keywords, rode em blocos
-> (1–11, 12–22, 23–31) e junte os CSVs mantendo um único cabeçalho.
+> **Coleta parcial:** se a sessão da extensão não aguentar as 31 keywords de uma
+> vez, rode o prompt em 3 blocos (keywords 1–11, 12–22, 23–31), abrindo uma
+> conversa nova entre cada bloco, e junte os CSVs no final mantendo um único
+> cabeçalho.
 
 ---
 
@@ -169,6 +171,21 @@ Estes ajustes reduzem o consumo de tokens **sem perder qualidade de coleta**:
 | **Preferir o modo de leitura de DOM/texto a screenshots** | Imagens custam muito mais tokens que texto; nome/preço/nota são texto puro | Neutro — só use screenshot se a extração por texto falhar |
 | **Pedir saída só do CSV, sem explicações** (o prompt já faz isso) | Reduz tokens de saída | Neutro |
 | **Conceder permissão só ao domínio da coleta** (shopee.com.br) | Evita a extensão carregar contexto de outras abas | Neutro — apenas escopo |
+
+**Estratégia de blocos — é isto que faz as 31 keywords caberem.** Os "tokens da
+extensão" são o contexto da conversa, não os cookies de sessão do site. Trocar de
+modelo muda custo e qualidade, **não** o tamanho do contexto: o que mantém a
+coleta dentro do limite é dividir as 31 keywords em 3 blocos e abrir uma conversa
+NOVA entre cada bloco (bloco A = 1–11, B = 12–22, C = 23–31). Cada bloco gera seu
+CSV; junte os três no final mantendo um único cabeçalho.
+
+**Modelo da extensão — use o mais capaz.** Se a sua versão da extensão Claude
+permite escolher o modelo, mantenha o modelo mais capaz disponível (Sonnet/Opus)
+para a coleta e **não troque para o Haiku**. A coleta é uma tarefa agêntica —
+navegar, buscar, rolar, distinguir patrocinado de orgânico, casar marca em ordem
+de prioridade — e modelos menores erram mais nesses passos. Cada erro vira um
+retry, que **gasta mais tokens, não menos**. Economize com a estratégia de
+blocos e a seleção de grade, nunca rebaixando o modelo.
 
 Não economize cortando o scroll, pulando keywords ou reduzindo a página coletada:
 isso reduz cobertura, que é o objetivo da coleta.
