@@ -90,7 +90,7 @@
     },
     {
       "parameters": {
-        "command": "cd \"$HOME/rac-position-tracker\" 2>/dev/null || { echo \"RAC_FAIL|projeto RAC nao encontrado - ajuste o caminho no node Upload CSV\"; exit 0; }\nF=\"output/{{ $('Validar CSV').item.json.filename }}\"\nif [ ! -f \"$F\" ]; then echo \"RAC_FAIL|arquivo nao encontrado: $F - salve o CSV em output/ antes de chamar o webhook\"; exit 0; fi\nCOLS=$(awk -F';' 'NR==1{print NF; exit}' \"$F\")\nif [ \"$COLS\" != \"19\" ]; then echo \"RAC_FAIL|cabecalho invalido: $COLS colunas (esperado 19)\"; exit 0; fi\nPY=./venv/bin/python\nif [ ! -x \"$PY\" ]; then PY=python3; fi\n\"$PY\" reenviar_csv.py \"$F\" 2>&1"
+        "command": "\"%USERPROFILE%\\rac-position-tracker\\venv\\Scripts\\python.exe\" \"%USERPROFILE%\\rac-position-tracker\\scripts\\n8n_upload.py\" \"{{ $('Validar CSV').item.json.filename }}\" 2>&1"
       },
       "id": "a4444444-4444-4444-8444-444444444444",
       "name": "Upload CSV",
@@ -152,7 +152,7 @@
     {
       "parameters": {
         "triggerOn": "folder",
-        "path": "/home/ubuntu/rac-position-tracker/output",
+        "path": "C:/Users/SEU_USUARIO/rac-position-tracker/output",
         "events": ["add"],
         "options": {
           "awaitWriteFinish": true
@@ -167,7 +167,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const out = [];\nfor (const item of $input.all()) {\n  const p = String(item.json.path || item.json.fullPath || '');\n  const filename = p.split('/').pop();\n  if (!/^rac_monitoramento_\\d{8}_\\d{4}_[a-z]+\\.csv$/.test(filename)) continue;\n  out.push({ json: { body: { filename: filename, chat_id: String($env.N8N_TELEGRAM_CHAT_ID || '').trim() } } });\n}\nreturn out;"
+        "jsCode": "const out = [];\nfor (const item of $input.all()) {\n  const p = String(item.json.path || item.json.fullPath || '');\n  const filename = p.split(/[\\\\/]/).pop();\n  if (!/^rac_monitoramento_\\d{8}_\\d{4}_[a-z]+\\.csv$/.test(filename)) continue;\n  out.push({ json: { body: { filename: filename, chat_id: String($env.N8N_TELEGRAM_CHAT_ID || '').trim() } } });\n}\nreturn out;"
       },
       "id": "a9999999-9999-4999-8999-999999999999",
       "name": "Preparar Upload",
