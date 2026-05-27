@@ -490,28 +490,35 @@ def _render_familia_sku_filters(sel_brands: list, page_key: str,
 
 
 def _apply_sku_filter_with_expansion(q, skus: list):
-    """Aplica filtro de SKU expandindo para `familia_linha` do catálogo.
+    """Aplica filtro de SKU expandindo para `familia_linha` + voltagem.
 
-    Motivação: a maioria dos nomes coletados não especifica voltagem
-    (ex.: "Ar Condicionado Midea AI Ecomaster 9.000 BTUs Inverter Frio"),
-    então o de-para os classifica como família linha-comercial
-    (`MIDEA-ECOMASTER-9000-F`) sem SKU específico. Além disso, no
-    catálogo a UNIDADE CONDENSADORA (38xxx) e a EVAPORADORA (42xxx)
-    do mesmo conjunto compartilham `familia_linha` — pegar qualquer
-    dos dois deve retornar o mesmo cohort.
+    Regra de negócio: quando o nome coletado não especifica voltagem,
+    assume 220V (default para todas as marcas mapeadas). A coluna
+    `coletas.voltagem_resolvida` reflete isso (110V/220V/BI).
 
-    Estratégia: traduz a lista de SKUs em `familia_linha` correspondente
-    e filtra POR `familia_resolvida` apenas (uma cláusula `IN`, usa
-    índice — sem `OR` custoso que dispara timeout 57014).
+    No catálogo, SKUs do mesmo conjunto comercial (UNIDADE CONDENSADORA
+    38xxx + EVAPORADORA 42xxx) compartilham `familia_linha`. Pegar
+    qualquer um deles deve retornar o mesmo cohort de preços.
+
+    Estratégia: para os SKUs pickados, deriva (familia_linha, voltagem)
+    e filtra por isso. Ex.: SKU 42EZVCA09M5 (Ecomaster 9000 220V) →
+    familia_resolvida='MIDEA-ECOMASTER-9000-F' AND voltagem_resolvida='220V'
+    → retorna 3.790 linhas (todas Ecomaster 9000 220V, incluindo
+    a condensadora 38EZVCA09M5 do mesmo par). Sem `OR` que disparou
+    timeout 57014 no passado.
     """
     cat = get_catalogo()
-    fam_linhas: list = []
-    if not cat.empty and "familia_linha" in cat.columns:
-        fam_linhas = (cat[cat["sku"].isin(skus)]["familia_linha"]
-                      .dropna().unique().tolist())
+    if cat.empty or "familia_linha" not in cat.columns:
+        return q.in_("sku_resolvido", skus)
+    picked = cat[cat["sku"].isin(skus)]
+    fam_linhas = picked["familia_linha"].dropna().unique().tolist()
+    voltagens  = (picked["voltagem"].dropna().unique().tolist()
+                  if "voltagem" in picked.columns else [])
     if fam_linhas:
-        return q.in_("familia_resolvida", fam_linhas)
-    # Fallback: nenhum SKU pickado tem familia_linha → tenta SKU exato
+        q = q.in_("familia_resolvida", fam_linhas)
+        if voltagens:
+            q = q.in_("voltagem_resolvida", voltagens)
+        return q
     return q.in_("sku_resolvido", skus)
 
 
