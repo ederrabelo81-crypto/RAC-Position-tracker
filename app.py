@@ -494,25 +494,25 @@ def _apply_sku_filter_with_expansion(q, skus: list):
 
     Motivação: a maioria dos nomes coletados não especifica voltagem
     (ex.: "Ar Condicionado Midea AI Ecomaster 9.000 BTUs Inverter Frio"),
-    então o de-para os classifica como família genérica (`MIDEA-9000-F`)
-    ou família linha-comercial (`MIDEA-ECOMASTER-9000-F`) — sem SKU
-    confiável. Sem esta expansão, filtrar por SKU retornaria zero linhas.
+    então o de-para os classifica como família linha-comercial
+    (`MIDEA-ECOMASTER-9000-F`) sem SKU específico. Além disso, no
+    catálogo a UNIDADE CONDENSADORA (38xxx) e a EVAPORADORA (42xxx)
+    do mesmo conjunto compartilham `familia_linha` — pegar qualquer
+    dos dois deve retornar o mesmo cohort.
 
-    Expansão: para cada SKU selecionado, busca em produtos_catalogo a
-    `familia_linha` (precomputada) e adiciona OR no PostgREST.
+    Estratégia: traduz a lista de SKUs em `familia_linha` correspondente
+    e filtra POR `familia_resolvida` apenas (uma cláusula `IN`, usa
+    índice — sem `OR` custoso que dispara timeout 57014).
     """
     cat = get_catalogo()
     fam_linhas: list = []
     if not cat.empty and "familia_linha" in cat.columns:
         fam_linhas = (cat[cat["sku"].isin(skus)]["familia_linha"]
                       .dropna().unique().tolist())
-    if not fam_linhas:
-        return q.in_("sku_resolvido", skus)
-    # PostgREST trata vírgula como separador em .or_(); nossos valores
-    # não usam vírgula, mas removemos por segurança.
-    skus_str = ",".join(s.replace(",", "") for s in skus)
-    fams_str = ",".join(f.replace(",", "") for f in fam_linhas)
-    return q.or_(f"sku_resolvido.in.({skus_str}),familia_resolvida.in.({fams_str})")
+    if fam_linhas:
+        return q.in_("familia_resolvida", fam_linhas)
+    # Fallback: nenhum SKU pickado tem familia_linha → tenta SKU exato
+    return q.in_("sku_resolvido", skus)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -2849,13 +2849,17 @@ def page_familia_sku_admin() -> None:
             if st.button("💾 Salvar", key=f"save_{nome}", type="primary"):
                 fam_val = None if nova_familia == "(nenhuma)" else nova_familia
                 sku_val = None if novo_sku == "(nenhum)" else novo_sku
+                # row.get('marca_norm') vem do pandas e pode ser NaN — JSON
+                # serialização do RPC falha com "Out of range float values".
+                marca_raw = row.get("marca_norm")
+                marca_val = None if (marca_raw is None or (isinstance(marca_raw, float) and pd.isna(marca_raw))) else marca_raw
                 try:
                     res = client.rpc("admin_normalizar_nome", {
                         "p_nome":    nome,
                         "p_estado":  novo_estado,
                         "p_familia": fam_val,
                         "p_sku":     sku_val,
-                        "p_marca":   row.get("marca_norm"),
+                        "p_marca":   marca_val,
                     }).execute()
                     payload = res.data if isinstance(res.data, dict) else (res.data[0] if res.data else {})
                     st.success(
