@@ -2663,11 +2663,23 @@ def page_familia_sku_admin() -> None:
     # ── Métricas no topo ─────────────────────────────────────────────────────
     if not depara.empty:
         m = depara["estado"].value_counts().to_dict()
-        cols = st.columns(4)
+        cols = st.columns(5)
         cols[0].metric("MAPEADO",     m.get("MAPEADO", 0))
         cols[1].metric("FORA_ESCOPO", m.get("FORA_ESCOPO", 0))
         cols[2].metric("NAO_AC",      m.get("NAO_AC", 0))
         cols[3].metric("REVISAR",     m.get("REVISAR", 0))
+        with cols[4]:
+            st.write("")  # vertical spacer
+            if st.button("🔄 Atualizar cache de filtros",
+                         help="Refresh da materialized view usada pelo banner e dropdowns globais."):
+                try:
+                    client.rpc("refresh_filter_options").execute()
+                    get_filter_options.clear()
+                    get_cobertura_resolucao.clear()
+                    get_depara.clear()
+                    st.success("Cache atualizado.")
+                except Exception as exc:
+                    st.error(f"Falhou: {exc}")
 
     # ── Filtros para listar nomes ───────────────────────────────────────────
     with st.expander("🔎 Filtros", expanded=True):
