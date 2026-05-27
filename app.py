@@ -461,20 +461,13 @@ def get_cobertura_resolucao() -> dict:
     if client is None:
         return {}
     try:
-        out: dict = {"total": 0, "MAPEADO": 0, "FORA_ESCOPO": 0, "NAO_AC": 0,
-                     "REVISAR": 0, "NULL": 0}
-        for est in _ESTADOS_RESOLVIDOS:
-            r = (client.table("coletas").select("id", count="exact", head=True)
-                 .eq("estado_match", est).execute())
-            out[est] = int(r.count or 0)
-            out["total"] += out[est]
-        r_null = (client.table("coletas").select("id", count="exact", head=True)
-                  .is_("estado_match", "null").execute())
-        out["NULL"] = int(r_null.count or 0)
-        out["total"] += out["NULL"]
-        return out
+        rpc = client.rpc("get_cobertura_resolucao").execute()
+        data = rpc.data if isinstance(rpc.data, dict) else (rpc.data[0] if rpc.data else None)
+        if data:
+            return {k: int(v or 0) for k, v in data.items()}
     except Exception:
-        return {}
+        pass
+    return {}
 
 
 def _render_cobertura_banner() -> None:
@@ -675,6 +668,22 @@ def get_filter_options() -> dict:
     client = _get_supabase()
     if client is None:
         return empty
+    # Caminho rápido: RPC server-side com DISTINCT (evita timeout em ~261k linhas)
+    try:
+        rpc = client.rpc("get_filter_options_fast", {"window_days": 90}).execute()
+        data = rpc.data if isinstance(rpc.data, dict) else (rpc.data[0] if rpc.data else None)
+        if data:
+            raw_brands     = data.get("brands") or []
+            raw_platforms  = data.get("platforms") or []
+            return {
+                "platforms":      sorted({_normalize_platform(p) for p in raw_platforms if p}),
+                "platform_types": sorted(data.get("platform_types") or []),
+                "brands":         sorted({_MARCA_TO_CANONICAL.get(b, b) for b in raw_brands if b}),
+                "keywords":       sorted(data.get("keywords") or []),
+                "sellers":        sorted(data.get("sellers") or []),
+            }
+    except Exception:
+        pass  # cai no fallback paginado abaixo
     try:
         since = str(date.today() - timedelta(days=90))
         all_rows: list = []
@@ -2632,6 +2641,169 @@ def page_normalize_skus():
         "| **Cor** | Omitted when white (default); shown for Preto, etc. |\n"
         "| **Fallback** | Name unchanged when brand or BTU cannot be identified |\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin: Normalização de Família e SKU (fila REVISAR + edição manual)
+# ---------------------------------------------------------------------------
+
+def page_familia_sku_admin() -> None:
+    st.title("🧬 Normalização de Família & SKU")
+    st.caption("Resolve a fila REVISAR e edita o de-para `produtos_depara_nome`. "
+               "Mudanças propagam para `coletas` e `rac_monitoramento` imediatamente.")
+
+    client = _get_supabase()
+    if client is None:
+        st.error("Supabase não conectado.")
+        return
+
+    cat = get_catalogo()
+    depara = get_depara()
+
+    # ── Métricas no topo ─────────────────────────────────────────────────────
+    if not depara.empty:
+        m = depara["estado"].value_counts().to_dict()
+        cols = st.columns(4)
+        cols[0].metric("MAPEADO",     m.get("MAPEADO", 0))
+        cols[1].metric("FORA_ESCOPO", m.get("FORA_ESCOPO", 0))
+        cols[2].metric("NAO_AC",      m.get("NAO_AC", 0))
+        cols[3].metric("REVISAR",     m.get("REVISAR", 0))
+
+    # ── Filtros para listar nomes ───────────────────────────────────────────
+    with st.expander("🔎 Filtros", expanded=True):
+        c1, c2, c3 = st.columns([1, 1, 2])
+        f_estado = c1.multiselect("Estado", _ESTADOS_RESOLVIDOS, default=["REVISAR"])
+        marcas_dispo = sorted(depara["marca_norm"].dropna().unique().tolist()) if not depara.empty else []
+        f_marca = c2.multiselect("Marca normalizada", marcas_dispo)
+        f_busca = c3.text_input("Buscar no nome", placeholder="ex: ecomaster 12000")
+        f_limit = st.slider("Quantos nomes mostrar", 5, 100, 25, step=5)
+
+    if depara.empty:
+        st.info("De-para vazio.")
+        return
+
+    df = depara.copy()
+    if f_estado:
+        df = df[df["estado"].isin(f_estado)]
+    if f_marca:
+        df = df[df["marca_norm"].isin(f_marca)]
+    if f_busca:
+        df = df[df["nome_coletado"].str.contains(f_busca, case=False, na=False, regex=False)]
+
+    st.caption(f"{len(df)} nome(s) no filtro · mostrando {min(len(df), f_limit)}")
+
+    df_view = df.head(f_limit)
+    if df_view.empty:
+        st.warning("Nenhum nome bate com o filtro.")
+        return
+
+    # Opções de família = catálogo + genéricas em uso
+    fams_catalogo = sorted(cat["familia"].dropna().unique().tolist()) if not cat.empty else []
+    fams_genericas = sorted([f for f in depara["familia"].dropna().unique()
+                              if _familia_is_generica(f)])
+    todas_familias = ["(nenhuma)"] + fams_catalogo + fams_genericas
+    skus_catalogo = ["(nenhum)"] + (sorted(cat["sku"].dropna().unique().tolist()) if not cat.empty else [])
+
+    st.divider()
+
+    # ── Editor linha-a-linha ────────────────────────────────────────────────
+    for _, row in df_view.iterrows():
+        nome = row["nome_coletado"]
+        with st.expander(f"**{nome}** · {row['estado']}"
+                          f" · {row.get('marca_norm') or 'marca?'}"
+                          f" · fam={row.get('familia') or '—'}", expanded=False):
+            c1, c2, c3 = st.columns(3)
+            est_atual = row["estado"] if row["estado"] in _ESTADOS_RESOLVIDOS else "REVISAR"
+            novo_estado = c1.selectbox(
+                "Estado", _ESTADOS_RESOLVIDOS,
+                index=_ESTADOS_RESOLVIDOS.index(est_atual),
+                key=f"est_{nome}",
+            )
+            fam_atual = row.get("familia") or "(nenhuma)"
+            fam_idx = todas_familias.index(fam_atual) if fam_atual in todas_familias else 0
+            nova_familia = c2.selectbox(
+                "Família",
+                todas_familias,
+                index=fam_idx,
+                format_func=lambda f: _familia_display(f) if f != "(nenhuma)" else f,
+                key=f"fam_{nome}",
+                disabled=(novo_estado != "MAPEADO"),
+                help="Só usado quando estado=MAPEADO. Genéricas: <MARCA>-<BTU>-<CICLO>",
+            )
+            sku_atual = row.get("sku") or "(nenhum)"
+            sku_idx = skus_catalogo.index(sku_atual) if sku_atual in skus_catalogo else 0
+            novo_sku = c3.selectbox(
+                "SKU do catálogo",
+                skus_catalogo,
+                index=sku_idx,
+                key=f"sku_{nome}",
+                disabled=(novo_estado != "MAPEADO"),
+            )
+
+            # Quantas linhas serão afetadas
+            try:
+                ct_c = client.table("coletas").select("id", count="exact", head=True) \
+                             .eq("produto", nome).execute().count or 0
+                ct_r = client.table("rac_monitoramento").select("id", count="exact", head=True) \
+                             .eq("produto_sku", nome).execute().count or 0
+                st.caption(f"💾 Afetará {ct_c:,} linha(s) em coletas e "
+                           f"{ct_r:,} em rac_monitoramento.".replace(",", "."))
+            except Exception:
+                pass
+
+            if st.button("💾 Salvar", key=f"save_{nome}", type="primary"):
+                fam_val = None if nova_familia == "(nenhuma)" else nova_familia
+                sku_val = None if novo_sku == "(nenhum)" else novo_sku
+                try:
+                    res = client.rpc("admin_normalizar_nome", {
+                        "p_nome":    nome,
+                        "p_estado":  novo_estado,
+                        "p_familia": fam_val,
+                        "p_sku":     sku_val,
+                        "p_marca":   row.get("marca_norm"),
+                    }).execute()
+                    payload = res.data if isinstance(res.data, dict) else (res.data[0] if res.data else {})
+                    st.success(
+                        f"✅ Salvo · coletas atualizadas: {payload.get('coletas_atualizadas', 0)} · "
+                        f"rac_monitoramento: {payload.get('rac_monitoramento_atualizadas', 0)}"
+                    )
+                    # Invalida caches dependentes
+                    get_depara.clear()
+                    get_cobertura_resolucao.clear()
+                    get_familia_options.clear()
+                except Exception as exc:
+                    st.error(f"Erro ao salvar: {exc}")
+
+    st.divider()
+
+    # ── Edição livre por nome (busca + classificação rápida) ───────────────
+    with st.expander("✏️ Classificar nome avulso (não precisa estar na fila)"):
+        nome_livre = st.text_input("Nome coletado exato", key="adm_nome_livre")
+        c1, c2, c3 = st.columns(3)
+        est_livre = c1.selectbox("Estado", _ESTADOS_RESOLVIDOS, key="adm_est_livre")
+        fam_livre = c2.selectbox("Família", todas_familias, key="adm_fam_livre",
+                                 disabled=(est_livre != "MAPEADO"),
+                                 format_func=lambda f: _familia_display(f) if f != "(nenhuma)" else f)
+        sku_livre = c3.selectbox("SKU", skus_catalogo, key="adm_sku_livre",
+                                 disabled=(est_livre != "MAPEADO"))
+        if st.button("Aplicar", key="adm_apply_livre", type="primary",
+                     disabled=not nome_livre.strip()):
+            try:
+                res = client.rpc("admin_normalizar_nome", {
+                    "p_nome":    nome_livre.strip(),
+                    "p_estado":  est_livre,
+                    "p_familia": None if fam_livre == "(nenhuma)" else fam_livre,
+                    "p_sku":     None if sku_livre == "(nenhum)" else sku_livre,
+                    "p_marca":   None,
+                }).execute()
+                payload = res.data if isinstance(res.data, dict) else (res.data[0] if res.data else {})
+                st.success(
+                    f"✅ Aplicado · coletas: {payload.get('coletas_atualizadas', 0)} · "
+                    f"rac_monitoramento: {payload.get('rac_monitoramento_atualizadas', 0)}"
+                )
+                get_depara.clear(); get_cobertura_resolucao.clear(); get_familia_options.clear()
+            except Exception as exc:
+                st.error(f"Erro: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -4847,6 +5019,7 @@ PAGES = {
     "📂 Import History":           page_import_history,
     "🧹 Data Cleanup":             page_data_cleanup,
     "🔤 Normalize SKUs":           page_normalize_skus,
+    "🧬 Família & SKU":            page_familia_sku_admin,
 }
 
 _NAV_GROUPS: dict[str, list[str]] = {
@@ -4870,6 +5043,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
     "ADMIN": [
         "🧹 Data Cleanup",
         "🔤 Normalize SKUs",
+        "🧬 Família & SKU",
     ],
 }
 
