@@ -319,6 +319,185 @@ def _expand_brands(brands: list) -> list:
 _SUPABASE_PAGE = 1000  # PostgREST default server-side max_rows cap
 
 
+# ---------------------------------------------------------------------------
+# Catálogo canônico + de-para de família resolvida
+#
+# Os filtros de Estado/Família/SKU dependem destas duas fontes:
+#   - produtos_catalogo: 241 SKUs RAC High Wall (marca, familia, btu, ciclo)
+#   - produtos_depara_nome: ligação nome_coletado → família/SKU/estado
+# Ambas mudam pouco, então cacheamos por 10 minutos.
+# ---------------------------------------------------------------------------
+
+_ESTADOS_RESOLVIDOS = ["MAPEADO", "FORA_ESCOPO", "NAO_AC", "REVISAR"]
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_catalogo() -> pd.DataFrame:
+    """Carrega produtos_catalogo (241 SKUs RAC High Wall)."""
+    client = _get_supabase()
+    if client is None:
+        return pd.DataFrame()
+    try:
+        resp = client.table("produtos_catalogo").select("*").execute()
+        return pd.DataFrame(resp.data or [])
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_depara() -> pd.DataFrame:
+    """Carrega o de-para nome→família (paginado)."""
+    client = _get_supabase()
+    if client is None:
+        return pd.DataFrame()
+    try:
+        rows: list = []
+        offset = 0
+        while True:
+            resp = (client.table("produtos_depara_nome")
+                    .select("nome_coletado,estado,familia,sku,marca_norm")
+                    .range(offset, offset + _SUPABASE_PAGE - 1)
+                    .execute())
+            if not resp.data:
+                break
+            rows.extend(resp.data)
+            if len(resp.data) < _SUPABASE_PAGE:
+                break
+            offset += _SUPABASE_PAGE
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _familia_marca(familia: str | None) -> str | None:
+    """Extrai a marca normalizada de uma família (real ou genérica)."""
+    if not familia:
+        return None
+    cat = get_catalogo()
+    if not cat.empty and familia in cat["familia"].values:
+        return cat.loc[cat["familia"] == familia, "marca"].iloc[0]
+    # Genérica: <MARCA>-<BTU>-<CICLO>
+    parts = familia.split("-")
+    if len(parts) == 3 and parts[1].isdigit() and parts[2] in ("F", "QF", "Q"):
+        return parts[0]
+    return None
+
+
+def _familia_is_generica(familia: str | None) -> bool:
+    if not familia:
+        return False
+    parts = familia.split("-")
+    return len(parts) == 3 and parts[1].isdigit() and parts[2] in ("F", "QF", "Q")
+
+
+def _familia_display(familia: str | None) -> str:
+    """Rótulo para exibição no multiselect — marca genéricas."""
+    if not familia:
+        return ""
+    return f"{familia} (genérica)" if _familia_is_generica(familia) else familia
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_familia_options(brands: tuple = (), estados: tuple = ()) -> list:
+    """Famílias disponíveis (catálogo + genéricas em uso), filtradas por marca/estado."""
+    depara = get_depara()
+    if depara.empty:
+        return []
+    df = depara[depara["familia"].notna()].copy()
+    if estados:
+        df = df[df["estado"].isin(estados)]
+    if brands:
+        brands_upper = {b.upper() for b in brands}
+        df = df[df["marca_norm"].isin(brands_upper)]
+    fams = sorted(df["familia"].dropna().unique().tolist())
+    return fams
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_sku_resolvido_options(familias: tuple = ()) -> list:
+    """SKUs do catálogo filtrados pelas famílias selecionadas."""
+    cat = get_catalogo()
+    if cat.empty:
+        return []
+    df = cat
+    if familias:
+        df = df[df["familia"].isin(list(familias))]
+    return sorted(df["sku"].dropna().unique().tolist())
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_btu_options_catalogo() -> list:
+    cat = get_catalogo()
+    if cat.empty:
+        return []
+    return sorted(cat["capacidade_btu"].dropna().unique().astype(int).tolist())
+
+
+# ---------------------------------------------------------------------------
+# Global filter accessors p/ filtros novos (estado/família/SKU)
+# Defaults: estado=['MAPEADO']; demais vazios = sem filtro extra
+# ---------------------------------------------------------------------------
+
+def _gf_estados() -> list:
+    return list(st.session_state.get("gf_estados", ["MAPEADO"]))
+
+
+def _gf_familias() -> list:
+    return list(st.session_state.get("gf_familias", []))
+
+
+def _gf_skus_resolvidos() -> list:
+    return list(st.session_state.get("gf_skus_resolvidos", []))
+
+
+def _gf_btu_catalogo() -> list:
+    return list(st.session_state.get("gf_btu_catalogo", []))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_cobertura_resolucao() -> dict:
+    """Conta linhas de coletas por estado_match — usado no banner do topo."""
+    client = _get_supabase()
+    if client is None:
+        return {}
+    try:
+        out: dict = {"total": 0, "MAPEADO": 0, "FORA_ESCOPO": 0, "NAO_AC": 0,
+                     "REVISAR": 0, "NULL": 0}
+        for est in _ESTADOS_RESOLVIDOS:
+            r = (client.table("coletas").select("id", count="exact", head=True)
+                 .eq("estado_match", est).execute())
+            out[est] = int(r.count or 0)
+            out["total"] += out[est]
+        r_null = (client.table("coletas").select("id", count="exact", head=True)
+                  .is_("estado_match", "null").execute())
+        out["NULL"] = int(r_null.count or 0)
+        out["total"] += out["NULL"]
+        return out
+    except Exception:
+        return {}
+
+
+def _render_cobertura_banner() -> None:
+    """Banner do topo: % mapeado + alerta se há REVISAR/NULL pendentes."""
+    c = get_cobertura_resolucao()
+    if not c or c.get("total", 0) == 0:
+        return
+    pct = 100.0 * c.get("MAPEADO", 0) / c["total"]
+    revisar = c.get("REVISAR", 0) + c.get("NULL", 0)
+    cols = st.columns(4)
+    cols[0].metric("Cobertura (MAPEADO)", f"{pct:.1f}%", help="% de linhas em coletas com família resolvida")
+    cols[1].metric("Fora de escopo", f"{c.get('FORA_ESCOPO', 0):,}".replace(",", "."),
+                   help="Marca não-catalogada, janela/portátil/cassete/multi-split, BTU fora do range RAC")
+    cols[2].metric("Não-AC",         f"{c.get('NAO_AC', 0):,}".replace(",", "."),
+                   help="Peças, eletrodomésticos, acessórios, ruído de busca")
+    cols[3].metric("Revisar (fila humana)", f"{revisar:,}".replace(",", "."),
+                   help="Nomes sem classificação confiável — rode scripts/descobrir_nomes_novos.py")
+    if revisar > 0:
+        st.caption(f"💡 {revisar:,} linhas pendentes de classificação — "
+                   "exporte com `python scripts/descobrir_nomes_novos.py` "
+                   "para classificar manualmente.".replace(",", "."))
+
+
 def _filter_latest_run(df: pd.DataFrame) -> pd.DataFrame:
     """
     Filtra o DataFrame para mostrar apenas o último run_id de cada
@@ -426,6 +605,31 @@ def query_coletas(
             for label in product_types:
                 for pat in PRODUCT_TYPE_OPTIONS.get(label, [label]):
                     parts.append(f"produto.ilike.%{pat}%")
+            if parts:
+                q = q.or_(",".join(parts))
+
+        # Camada nova: filtros resolvidos (estado/família/SKU) via session_state.
+        # Default = só MAPEADO. Permite ao usuário ver FORA_ESCOPO/NAO_AC/REVISAR.
+        gf_estados = _gf_estados()
+        if gf_estados:
+            q = q.in_("estado_match", gf_estados)
+        gf_familias = _gf_familias()
+        if gf_familias:
+            q = q.in_("familia_resolvida", gf_familias)
+        gf_skus = _gf_skus_resolvidos()
+        if gf_skus:
+            q = q.in_("sku_resolvido", gf_skus)
+        gf_btu_cat = _gf_btu_catalogo()
+        if gf_btu_cat:
+            # BTUs do catálogo: aceita match contra família genérica <MARCA>-<BTU>-<CICLO>
+            # ou SKU do catálogo com aquela capacidade.
+            cat = get_catalogo()
+            skus_btu = (cat[cat["capacidade_btu"].isin(gf_btu_cat)]["sku"].tolist()
+                        if not cat.empty else [])
+            fams_btu_gen = [f"%-{int(b)}-%" for b in gf_btu_cat]
+            parts = [f"familia_resolvida.like.{p}" for p in fams_btu_gen]
+            if skus_btu:
+                parts.append(f"sku_resolvido.in.({','.join(skus_btu)})")
             if parts:
                 q = q.or_(",".join(parts))
         return q
@@ -648,6 +852,42 @@ def _render_global_filters() -> None:
             placeholder="Selecione marcas…",
             key="gf_brands",
         )
+
+        # --- Filtros resolvidos (Estado / Família / SKU / BTU catálogo) ---
+        st.markdown("**Catálogo RAC**")
+        st.multiselect(
+            "Estado do match",
+            _ESTADOS_RESOLVIDOS,
+            default=["MAPEADO"],
+            help=("MAPEADO = bate com família do catálogo (real ou genérica). "
+                  "FORA_ESCOPO = não-RAC HW (janela/portátil/cassete/multi-split ou marca não-catalogada). "
+                  "NAO_AC = não é ar-condicionado. REVISAR = pendente de classificação humana."),
+            key="gf_estados",
+        )
+        # Cascata: famílias filtradas por marca selecionada e estados ativos
+        _sel_brands_upper = tuple(b.upper() for b in st.session_state.get("gf_brands", []))
+        _sel_estados     = tuple(st.session_state.get("gf_estados", ["MAPEADO"]))
+        _fam_opts        = get_familia_options(_sel_brands_upper, _sel_estados)
+        st.multiselect(
+            "Família", _fam_opts,
+            format_func=_familia_display,
+            placeholder="Todas as famílias do(s) recorte(s) acima",
+            key="gf_familias",
+        )
+        # SKU resolvido (do catálogo) — depende das famílias escolhidas
+        _sku_opts = get_sku_resolvido_options(tuple(st.session_state.get("gf_familias", [])))
+        st.multiselect(
+            "SKU do catálogo", _sku_opts,
+            placeholder="Todos os SKUs das famílias acima",
+            key="gf_skus_resolvidos",
+        )
+        st.multiselect(
+            "Capacidade BTU (catálogo)", get_btu_options_catalogo(),
+            placeholder="Todas as capacidades",
+            format_func=lambda b: f"{int(b):,}".replace(",", "."),
+            key="gf_btu_catalogo",
+        )
+
         st.checkbox("Comparar período anterior", key="gf_compare")
 
         if st.session_state.get("gf_compare"):
@@ -677,6 +917,10 @@ def _render_global_filters() -> None:
                     "end":       str(gf[1]) if len(gf) > 1 else str(date.today()),
                     "platforms": st.session_state.get("gf_platforms", []),
                     "brands":    st.session_state.get("gf_brands", []),
+                    "estados":   st.session_state.get("gf_estados", ["MAPEADO"]),
+                    "familias":  st.session_state.get("gf_familias", []),
+                    "skus_resolvidos": st.session_state.get("gf_skus_resolvidos", []),
+                    "btu_catalogo":    st.session_state.get("gf_btu_catalogo", []),
                 }
                 _save_presets(presets)
                 st.success(f"Salvo: '{preset_name}'")
@@ -697,6 +941,10 @@ def _render_global_filters() -> None:
                     st.session_state["gf_dates"]     = (date.fromisoformat(p["start"]), date.fromisoformat(p["end"]))
                     st.session_state["gf_platforms"] = p.get("platforms", [])
                     st.session_state["gf_brands"]    = p.get("brands", [])
+                    st.session_state["gf_estados"]   = p.get("estados", ["MAPEADO"])
+                    st.session_state["gf_familias"]  = p.get("familias", [])
+                    st.session_state["gf_skus_resolvidos"] = p.get("skus_resolvidos", [])
+                    st.session_state["gf_btu_catalogo"]    = p.get("btu_catalogo", [])
                     st.rerun()
                 except Exception:
                     pass
@@ -4675,4 +4923,5 @@ with st.sidebar:
     st.caption(f"Supabase: {'🟢 conectado' if client_ok else '🔴 desconectado'}")
     st.caption(f"🕐 {date.today().strftime('%d/%m/%Y')}")
 
+_render_cobertura_banner()
 PAGES[st.session_state["_current_page"]]()
