@@ -481,9 +481,38 @@ def _render_familia_sku_filters(sel_brands: list, page_key: str,
         sku_opts,
         placeholder="Todos os SKUs",
         key=f"{page_key}__skus_resolvidos",
-        help="Cascata: lista os SKUs da(s) família(s) selecionada(s).",
+        help="Cascata: lista os SKUs da(s) família(s) selecionada(s). "
+             "O filtro expande para incluir todas as linhas da mesma "
+             "linha comercial+BTU+ciclo (ex.: pegar Ecomaster 9000 220V "
+             "também traz 110V e nomes coletados sem voltagem).",
     )
     return sel_fam, sel_sku
+
+
+def _apply_sku_filter_with_expansion(q, skus: list):
+    """Aplica filtro de SKU expandindo para `familia_linha` do catálogo.
+
+    Motivação: a maioria dos nomes coletados não especifica voltagem
+    (ex.: "Ar Condicionado Midea AI Ecomaster 9.000 BTUs Inverter Frio"),
+    então o de-para os classifica como família genérica (`MIDEA-9000-F`)
+    ou família linha-comercial (`MIDEA-ECOMASTER-9000-F`) — sem SKU
+    confiável. Sem esta expansão, filtrar por SKU retornaria zero linhas.
+
+    Expansão: para cada SKU selecionado, busca em produtos_catalogo a
+    `familia_linha` (precomputada) e adiciona OR no PostgREST.
+    """
+    cat = get_catalogo()
+    fam_linhas: list = []
+    if not cat.empty and "familia_linha" in cat.columns:
+        fam_linhas = (cat[cat["sku"].isin(skus)]["familia_linha"]
+                      .dropna().unique().tolist())
+    if not fam_linhas:
+        return q.in_("sku_resolvido", skus)
+    # PostgREST trata vírgula como separador em .or_(); nossos valores
+    # não usam vírgula, mas removemos por segurança.
+    skus_str = ",".join(s.replace(",", "") for s in skus)
+    fams_str = ",".join(f.replace(",", "") for f in fam_linhas)
+    return q.or_(f"sku_resolvido.in.({skus_str}),familia_resolvida.in.({fams_str})")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -647,7 +676,7 @@ def query_coletas(
         if final_familias:
             q = q.in_("familia_resolvida", final_familias)
         if final_skus:
-            q = q.in_("sku_resolvido", final_skus)
+            q = _apply_sku_filter_with_expansion(q, final_skus)
         gf_btu_cat = _gf_btu_catalogo()
         if gf_btu_cat:
             # BTUs do catálogo: aceita match contra família genérica <MARCA>-<BTU>-<CICLO>
@@ -1087,7 +1116,7 @@ def _overview_data(
         if final_familias:
             q = q.in_("familia_resolvida", final_familias)
         if final_skus:
-            q = q.in_("sku_resolvido", final_skus)
+            q = _apply_sku_filter_with_expansion(q, final_skus)
         return q
 
     try:
