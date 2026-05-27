@@ -454,6 +454,38 @@ def _gf_btu_catalogo() -> list:
     return list(st.session_state.get("gf_btu_catalogo", []))
 
 
+# ---------------------------------------------------------------------------
+# Page-level sidebar helper: filtros de Família e SKU do catálogo
+# Use após renderizar o multiselect de Brands de uma página, passando o
+# `sel_brands` para fazer cascata. Retorna (familias, skus) prontos para
+# passar a query_coletas como `familias_resolvidas` e `skus_resolvidos`.
+# `page_key` distingue as chaves de widget por página (Results, BuyBox, …).
+# ---------------------------------------------------------------------------
+
+def _render_familia_sku_filters(sel_brands: list, page_key: str,
+                                 estados: tuple = ("MAPEADO",)) -> tuple[list, list]:
+    """Renderiza multiselects de Família e SKU; retorna (familias, skus)."""
+    brands_upper = tuple(b.upper() for b in (sel_brands or []))
+    fam_opts = get_familia_options(brands_upper, tuple(estados))
+    sel_fam = st.multiselect(
+        "Família (catálogo)",
+        fam_opts,
+        format_func=_familia_display,
+        placeholder="Todas as famílias",
+        key=f"{page_key}__familias",
+        help="Famílias normalizadas. Cascata: filtra pelas marcas acima.",
+    )
+    sku_opts = get_sku_resolvido_options(tuple(sel_fam))
+    sel_sku = st.multiselect(
+        "SKU do catálogo",
+        sku_opts,
+        placeholder="Todos os SKUs",
+        key=f"{page_key}__skus_resolvidos",
+        help="Cascata: lista os SKUs da(s) família(s) selecionada(s).",
+    )
+    return sel_fam, sel_sku
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def get_cobertura_resolucao() -> dict:
     """Conta linhas de coletas por estado_match — usado no banner do topo."""
@@ -547,6 +579,9 @@ def query_coletas(
     product_types: list[str] | None = None,
     max_position: int | None = None,
     limit: int = 50000,
+    familias_resolvidas: list[str] | None = None,
+    skus_resolvidos: list[str] | None = None,
+    estados_match: list[str] | None = None,
 ) -> pd.DataFrame:
     """Query the coletas table with filters, paginating past the 1000-row cap.
 
@@ -601,17 +636,18 @@ def query_coletas(
             if parts:
                 q = q.or_(",".join(parts))
 
-        # Camada nova: filtros resolvidos (estado/família/SKU) via session_state.
-        # Default = só MAPEADO. Permite ao usuário ver FORA_ESCOPO/NAO_AC/REVISAR.
-        gf_estados = _gf_estados()
-        if gf_estados:
-            q = q.in_("estado_match", gf_estados)
-        gf_familias = _gf_familias()
-        if gf_familias:
-            q = q.in_("familia_resolvida", gf_familias)
-        gf_skus = _gf_skus_resolvidos()
-        if gf_skus:
-            q = q.in_("sku_resolvido", gf_skus)
+        # Camada nova: filtros resolvidos (estado/família/SKU).
+        # Argumentos explícitos da página tomam precedência sobre o
+        # filtro global (sidebar "Filtros Globais"). Default = só MAPEADO.
+        final_estados  = estados_match       if estados_match       is not None else _gf_estados()
+        final_familias = familias_resolvidas if familias_resolvidas is not None else _gf_familias()
+        final_skus     = skus_resolvidos     if skus_resolvidos     is not None else _gf_skus_resolvidos()
+        if final_estados:
+            q = q.in_("estado_match", final_estados)
+        if final_familias:
+            q = q.in_("familia_resolvida", final_familias)
+        if final_skus:
+            q = q.in_("sku_resolvido", final_skus)
         gf_btu_cat = _gf_btu_catalogo()
         if gf_btu_cat:
             # BTUs do catálogo: aceita match contra família genérica <MARCA>-<BTU>-<CICLO>
@@ -1022,6 +1058,8 @@ def _overview_data(
     platforms_tuple: tuple,
     brands_tuple: tuple,
     limit: int = 15000,
+    familias_tuple: tuple = (),
+    skus_resolvidos_tuple: tuple = (),
 ) -> pd.DataFrame:
     """Cached Supabase query for overview / top-movers pages."""
     client = _get_supabase()
@@ -1040,6 +1078,16 @@ def _overview_data(
             q = q.in_("plataforma", _expand_platforms(list(platforms_tuple)))
         if brands_tuple:
             q = q.in_("marca", _expand_brands(list(brands_tuple)))
+        # Filtros novos do catálogo normalizado — explícito tem precedência
+        final_estados  = _gf_estados()
+        final_familias = list(familias_tuple)        if familias_tuple        else _gf_familias()
+        final_skus     = list(skus_resolvidos_tuple) if skus_resolvidos_tuple else _gf_skus_resolvidos()
+        if final_estados:
+            q = q.in_("estado_match", final_estados)
+        if final_familias:
+            q = q.in_("familia_resolvida", final_familias)
+        if final_skus:
+            q = q.in_("sku_resolvido", final_skus)
         return q
 
     try:
@@ -1522,6 +1570,7 @@ def page_results():
         sel_platforms = st.multiselect("Platforms",       opts["platforms"])
         sel_sellers   = st.multiselect("Sellers",         opts["sellers"])
         sel_brands    = st.multiselect("Brands",          opts["brands"])
+        sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "results")
         sel_keywords  = st.multiselect("Keywords",        opts["keywords"])
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
@@ -1584,6 +1633,8 @@ def page_results():
             products=sel_skus or None,
             btu_filter=sel_btu or None,
             product_types=sel_ptype or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
             limit=50000,
         )
 
@@ -1760,6 +1811,7 @@ def page_price_evolution():
 
         sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"], key="evo_tipo")
         sel_brands    = st.multiselect("Brands",    opts["brands"],         key="evo_brands")
+        sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "evo")
         sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="evo_platforms")
         sel_sellers   = st.multiselect("Sellers",   opts["sellers"],        key="evo_sellers")
         sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="evo_keywords")
@@ -1831,6 +1883,8 @@ def page_price_evolution():
             products=sel_skus or None,
             btu_filter=sel_btu or None,
             product_types=sel_ptype or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
             limit=50000,
         )
 
@@ -2849,6 +2903,7 @@ def page_buybox_position():
         sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="bb_platforms")
         sel_sellers   = st.multiselect("Sellers",   opts["sellers"],        key="bb_sellers")
         sel_brands    = st.multiselect("Brands",    opts["brands"],         key="bb_brands")
+        sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "bb")
         sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="bb_keywords")
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
@@ -2906,6 +2961,8 @@ def page_buybox_position():
             products=sel_skus or None,
             btu_filter=sel_btu or None,
             product_types=sel_ptype or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
             # Server-side position cap: prevents a single date from consuming
             # the entire limit when all platforms are selected.
             max_position=top_n,
@@ -3145,6 +3202,7 @@ def page_availability():
         sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="av_platforms")
         sel_sellers   = st.multiselect("Sellers",   opts["sellers"],        key="av_sellers")
         sel_brands    = st.multiselect("Brands",    opts["brands"],         key="av_brands")
+        sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "av")
         sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="av_keywords")
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
@@ -3195,6 +3253,8 @@ def page_availability():
             products=sel_skus or None,
             btu_filter=sel_btu or None,
             product_types=sel_ptype or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
             limit=50000,
         )
 
@@ -4036,6 +4096,7 @@ def page_top_movers() -> None:
                                        default=sel_platforms, key="tm_platforms")
         sel_brands    = st.multiselect("Marcas", opts["brands"],
                                        default=sel_brands, key="tm_brands")
+        sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "tm")
 
         with st.expander("Refinar — Movers", expanded=True):
             min_delta_pct = st.slider("Mín. |Δ preço|%", 0, 50, 5, key="tm_min_delta")
@@ -4056,12 +4117,16 @@ def page_top_movers() -> None:
         )
         return
 
+    _fam_t = tuple(sorted(sel_familias))
+    _sku_t = tuple(sorted(sel_skus_resolvidos))
     with st.spinner("Carregando janela atual…"):
         df_cur = _overview_data(str(start_date), str(end_date),
-                                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)))
+                                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+                                familias_tuple=_fam_t, skus_resolvidos_tuple=_sku_t)
     with st.spinner("Carregando janela de comparação…"):
         df_cmp = _overview_data(str(cmp_start), str(cmp_end),
-                                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)))
+                                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+                                familias_tuple=_fam_t, skus_resolvidos_tuple=_sku_t)
 
     if df_cur.empty or df_cmp.empty:
         st.warning("Uma das janelas não retornou dados. Ajuste as datas ou filtros.")
@@ -4680,6 +4745,7 @@ def page_market_analytics() -> None:
 
         opts = get_filter_options()
         sel_brands    = st.multiselect("Marcas", opts["brands"], key="ma_brands")
+        sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "ma")
         sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="ma_platforms")
         sel_btu = st.multiselect(
             "Capacidade (BTU)", BTU_OPTIONS,
@@ -4706,6 +4772,8 @@ def page_market_analytics() -> None:
             platforms=sel_platforms or None,
             brands=sel_brands or None,
             btu_filter=sel_btu or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
             limit=50000,
         )
 
