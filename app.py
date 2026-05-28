@@ -649,16 +649,19 @@ def query_coletas(
     def _build_q():
         """Fresh filtered query (no cursor yet — added per-page in the loop).
 
-        Ordered by `id desc` (not `data desc`) so we can keyset-paginate via
-        `.lt("id", last_id)`. OFFSET-based pagination on `data desc` causes
-        statement timeouts (57014) past ~40k rows — Postgres has to re-scan
-        the whole prefix on each page. With id-cursor every page is ~10ms.
+        Composite keyset by (data desc, id desc): ordering only by `id desc`
+        forced the planner to backward-scan `coletas_pkey` and filter row by
+        row, blowing through statement_timeout on sparse predicates (e.g.
+        marca=Midea on a 56-day window). With `data desc` as the leading
+        key, the planner picks `idx_coletas_data_turno_plat` and each page
+        stays fast regardless of depth.
         """
         q = (
             client.table("coletas")
             .select("*")
             .gte("data", str(start_date))
             .lte("data", str(end_date))
+            .order("data", desc=True)
             .order("id", desc=True)
         )
         if platforms:
@@ -723,21 +726,30 @@ def query_coletas(
 
     try:
         all_data: list = []
+        last_data: str | None = None
         last_id: int | None = None
         while len(all_data) < limit:
             fetch = min(_SUPABASE_PAGE, limit - len(all_data))
             q = _build_q()
-            if last_id is not None:
-                q = q.lt("id", last_id)
+            if last_data is not None and last_id is not None:
+                # Composite keyset (data, id) < (last_data, last_id) expressed
+                # as a PostgREST or-group: rows from older dates OR rows on
+                # the same date with a smaller id.
+                q = q.or_(
+                    f"data.lt.{last_data},"
+                    f"and(data.eq.{last_data},id.lt.{last_id})"
+                )
             resp = q.limit(fetch).execute()
             if not resp.data:
                 break
             all_data.extend(resp.data)
             if len(resp.data) < fetch:
                 break  # server returned fewer rows than requested → last page
-            last_id = resp.data[-1].get("id")
-            if last_id is None:
-                break  # safety: cursor unusable without id
+            last_row = resp.data[-1]
+            last_data = str(last_row.get("data")) if last_row.get("data") else None
+            last_id = last_row.get("id")
+            if last_data is None or last_id is None:
+                break  # safety: cursor unusable without (data, id)
 
         if not all_data:
             return pd.DataFrame()
@@ -1130,12 +1142,14 @@ def _overview_data(
         return pd.DataFrame()
 
     def _build_q():
-        # Ordered by `id desc` for keyset pagination (see query_coletas).
+        # Composite keyset by (data desc, id desc) — see query_coletas for why
+        # ordering by `id desc` alone causes statement_timeout (57014).
         q = (
             client.table("coletas")
             .select("*")
             .gte("data", start_str)
             .lte("data", end_str)
+            .order("data", desc=True)
             .order("id", desc=True)
         )
         if platforms_tuple:
@@ -1156,20 +1170,26 @@ def _overview_data(
 
     try:
         all_data: list = []
+        last_data: str | None = None
         last_id: int | None = None
         while len(all_data) < limit:
             fetch = min(_SUPABASE_PAGE, limit - len(all_data))
             q = _build_q()
-            if last_id is not None:
-                q = q.lt("id", last_id)
+            if last_data is not None and last_id is not None:
+                q = q.or_(
+                    f"data.lt.{last_data},"
+                    f"and(data.eq.{last_data},id.lt.{last_id})"
+                )
             resp = q.limit(fetch).execute()
             if not resp.data:
                 break
             all_data.extend(resp.data)
             if len(resp.data) < fetch:
                 break
-            last_id = resp.data[-1].get("id")
-            if last_id is None:
+            last_row = resp.data[-1]
+            last_data = str(last_row.get("data")) if last_row.get("data") else None
+            last_id = last_row.get("id")
+            if last_data is None or last_id is None:
                 break
 
         if not all_data:
