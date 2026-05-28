@@ -910,12 +910,27 @@ def query_pricetrack_daily(
         preco = preco.fillna(pd.to_numeric(raw.get("min_price"), errors="coerce"))
         preco = preco.fillna(pd.to_numeric(raw.get("max_price"), errors="coerce"))
 
+        # Canonicalise produto by the catalog SKU when present. PriceTrack
+        # publishes the same SKU under many seller-specific titles (e.g. 342
+        # distinct titles for ~25 SKUs in Midea 9000 BTUs), which would
+        # otherwise blow up the "Unique SKUs" KPI and produce a chart with
+        # one line per listing instead of one line per product.
+        sku_series   = raw.get("sku")
+        title_series = raw.get("title")
+        produto = (
+            sku_series.where(sku_series.notna() & (sku_series.astype(str).str.strip() != ""),
+                             title_series)
+            if sku_series is not None else title_series
+        )
+
         df = pd.DataFrame({
             "data":             pd.to_datetime(raw["collection_date"]).dt.date,
             "turno":            "PriceTrack",
             "plataforma":       raw.get("marketplace"),
             "marca":            raw.get("brand"),
-            "produto":          raw.get("title"),
+            "produto":          produto,
+            "sku":              sku_series,
+            "title":            title_series,
             "preco":            preco,
             "seller":           raw.get("seller"),
             "keyword":          pd.NA,
@@ -969,25 +984,42 @@ def query_price_evolution_data(
         product_types=product_types,
     )
 
-    df_col = query_coletas(
-        start_date, end_date,
-        platforms=platforms,
-        platform_types=platform_types,
-        brands=brands,
-        sellers=sellers,
-        keywords=keywords,
-        products=products,
-        btu_filter=btu_filter,
-        product_types=product_types,
-        familias_resolvidas=familias_resolvidas,
-        skus_resolvidos=skus_resolvidos,
-        limit=limit,
-    )
+    pt_dates = set(df_pt["data"].unique().tolist()) if not df_pt.empty else set()
+
+    # PriceTrack has precedence per date — only hit `coletas` for the dates
+    # not covered. When PT covers the entire window, skip the coletas query
+    # altogether: on ~278k rows with ILIKE filters the planner regularly
+    # blows past the 8s statement_timeout, surfacing a misleading "Erro na
+    # consulta" banner even though the rows would have been dropped anyway.
+    full_range = {
+        start_date + timedelta(days=i)
+        for i in range((end_date - start_date).days + 1)
+    }
+    missing_dates = sorted(full_range - pt_dates)
+
+    if missing_dates:
+        col_start = missing_dates[0]
+        col_end   = missing_dates[-1]
+        df_col = query_coletas(
+            col_start, col_end,
+            platforms=platforms,
+            platform_types=platform_types,
+            brands=brands,
+            sellers=sellers,
+            keywords=keywords,
+            products=products,
+            btu_filter=btu_filter,
+            product_types=product_types,
+            familias_resolvidas=familias_resolvidas,
+            skus_resolvidos=skus_resolvidos,
+            limit=limit,
+        )
+    else:
+        df_col = pd.DataFrame()
 
     if "source" not in df_col.columns and not df_col.empty:
         df_col = df_col.assign(source="coletas")
 
-    pt_dates = set(df_pt["data"].unique().tolist()) if not df_pt.empty else set()
     if pt_dates and not df_col.empty:
         df_col = df_col[~df_col["data"].isin(pt_dates)]
 
@@ -2347,7 +2379,7 @@ def page_price_evolution():
         st.subheader("All records")
         display_cols = [
             c for c in [
-                "data", "turno", "plataforma", "marca", "produto",
+                "data", "turno", "plataforma", "marca", "produto", "title",
                 "posicao_geral", "posicao_organica", "preco",
                 "seller", "keyword", "tag",
             ] if c in df.columns
