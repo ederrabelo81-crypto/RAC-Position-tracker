@@ -37,6 +37,7 @@ class RowCounters:
     invalid_seller: int = 0
     invalid_other: int = 0
     valid: int = 0
+    duplicates_collapsed: int = 0
     inserted: int = 0
     updated: int = 0
     rejected: int = 0
