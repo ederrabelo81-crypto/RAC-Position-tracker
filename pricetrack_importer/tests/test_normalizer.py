@@ -1,5 +1,5 @@
 """Testes do normalizer."""
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -26,13 +26,26 @@ class TestParsePricetrackDate:
         assert parse_pricetrack_date("13/45/26") is None
         assert parse_pricetrack_date("abc") is None
         assert parse_pricetrack_date("") is None
-        assert parse_pricetrack_date("2026-05-27") is None  # ISO não é aceito
 
     def test_none(self):
         assert parse_pricetrack_date(None) is None
 
     def test_ano_70_vira_1970(self):
         assert parse_pricetrack_date("1/1/70") == date(1970, 1, 1)
+
+    def test_iso_aceito_como_defesa_xlsx(self):
+        # xlsx pode chegar como ISO se openpyxl serializar a data antes do parser
+        assert parse_pricetrack_date("2026-05-27") == date(2026, 5, 27)
+
+    def test_datetime_string_aceito(self):
+        # openpyxl `str(datetime)` → "2026-05-27 00:00:00"
+        assert parse_pricetrack_date("2026-05-27 00:00:00") == date(2026, 5, 27)
+
+    def test_objeto_date_passthrough(self):
+        assert parse_pricetrack_date(date(2026, 5, 27)) == date(2026, 5, 27)
+
+    def test_objeto_datetime_passthrough(self):
+        assert parse_pricetrack_date(datetime(2026, 5, 27, 12, 0)) == date(2026, 5, 27)
 
 
 class TestIsPricetrackDate:

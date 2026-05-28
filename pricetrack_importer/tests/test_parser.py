@@ -121,3 +121,34 @@ class TestParserXlsx:
         }
         for r in rows_xlsx:
             assert required_keys.issubset(set(r.keys()))
+
+    def test_xlsx_collection_date_como_datetime_nativo(self, tmp_path):
+        """
+        Regressão: PriceTrack exporta .xlsx com `collectionDate` como data
+        nativa do Excel. openpyxl devolve `datetime` → `str(v)` produz
+        `"2026-05-27 00:00:00"` que NÃO casa com o regex M/D/YY do validator
+        e marca tudo como METADATA (bug observado em 28/05/2026).
+        """
+        import datetime as dt
+
+        openpyxl = pytest.importorskip("openpyxl")
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append([
+            "collectionDate", "brand", "sku", "title",
+            "marketplace", "seller",
+            "MIN PRICE", "AVG PRICE", "MODE PRICE", "MAX PRICE",
+        ])
+        ws.append([
+            dt.datetime(2026, 5, 27), "MIDEA", "38EZVQA12M5",
+            "Ar Condicionado Midea 12000 BTUs",
+            "MERCADO LIVRE", "FRIOPEÇAS",
+            2499.00, 2599.00, 2599.00, 2799.00,
+        ])
+        path = tmp_path / "with_native_date.xlsx"
+        wb.save(path)
+
+        rows = list(parse_file(path))
+        assert len(rows) == 1
+        # Tem que sair no formato M/D/YY pro validator aceitar
+        assert rows[0]["collectionDate"] == "5/27/26"
