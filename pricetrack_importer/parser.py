@@ -22,8 +22,9 @@ Quirks tratados aqui:
 """
 from __future__ import annotations
 
+from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 
 # Ordem oficial das colunas no export
@@ -200,22 +201,29 @@ def _parse_xlsx(path: Path) -> Generator[Dict[str, str], None, None]:
 
     header_idx: Optional[Dict[str, int]] = None
     line_no = 0
+    date_col_pos: Optional[int] = None
     for row in ws.iter_rows(values_only=True):
         line_no += 1
         if row is None:
             continue
-        cells = [
-            ("" if v is None else str(v).strip()) for v in row
-        ]
+        cells = [_xlsx_cell_to_str(v) for v in row]
 
         if header_idx is None:
             mapping = _try_build_header(cells)
             if mapping is not None:
                 header_idx = mapping
+                date_col_pos = mapping.get("collectionDate")
             continue
 
         if all(c == "" for c in cells):
             continue
+
+        # Excel grava `collectionDate` como data nativa → openpyxl devolve
+        # datetime/date. `_xlsx_cell_to_str` já cobre todas as colunas, mas
+        # garantimos aqui o formato M/D/YY que o validator espera, mesmo
+        # quando a célula vier como número serial ou outro tipo exótico.
+        if date_col_pos is not None and 0 <= date_col_pos < len(row):
+            cells[date_col_pos] = _coerce_pricetrack_date(row[date_col_pos])
 
         out: Dict[str, str] = {"_line_no": str(line_no)}
         for col_name, col_pos in header_idx.items():
@@ -223,6 +231,32 @@ def _parse_xlsx(path: Path) -> Generator[Dict[str, str], None, None]:
         yield out
 
     wb.close()
+
+
+def _xlsx_cell_to_str(v: Any) -> str:
+    """
+    Converte célula do openpyxl para string preservando datas no formato
+    M/D/YY que o validator do PriceTrack espera.
+
+    openpyxl com `data_only=True` devolve `datetime`/`date` quando a célula
+    foi gravada como data nativa no Excel. `str()` ingênuo produz
+    `"2026-05-27 00:00:00"`, que NÃO casa com o regex M/D/YY — todas as
+    linhas viram METADATA e nada entra no Supabase.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, datetime):
+        return f"{v.month}/{v.day}/{v.year % 100:02d}"
+    if isinstance(v, date):
+        return f"{v.month}/{v.day}/{v.year % 100:02d}"
+    return str(v).strip()
+
+
+def _coerce_pricetrack_date(v: Any) -> str:
+    """Garante formato M/D/YY para a coluna collectionDate."""
+    if isinstance(v, (datetime, date)):
+        return _xlsx_cell_to_str(v)
+    return str(v).strip() if v is not None else ""
 
 
 def _try_build_header(cells: List[str]) -> Optional[Dict[str, int]]:

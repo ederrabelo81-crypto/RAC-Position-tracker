@@ -18,17 +18,24 @@ from typing import Optional
 # Regex estrita: M/D/YY com 1-2 dígitos em mês e dia, e exatamente 2 dígitos no ano
 _DATE_RE = re.compile(r"^\s*(\d{1,2})/(\d{1,2})/(\d{2})\s*$")
 
+# Formato ISO YYYY-MM-DD (opcional " HH:MM:SS" no caso de datetime stringificado
+# vindo do openpyxl quando o parser não capturou o objeto datetime nativo).
+_ISO_DATE_RE = re.compile(
+    r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]\d{1,2}:\d{1,2}(?::\d{1,2})?(?:\.\d+)?)?\s*$"
+)
 
-def parse_pricetrack_date(raw: str) -> Optional[date]:
+
+def parse_pricetrack_date(raw) -> Optional[date]:
     """
-    Converte data no formato origem M/D/YY para `datetime.date`.
+    Converte data do PriceTrack para `datetime.date`.
 
-    O PriceTrack exporta datas como `5/27/26` (mês/dia/ano com 2 dígitos).
-    Assume que anos 00-69 → 2000-2069 e 70-99 → 1970-1999 (mesma convenção
-    do Python `datetime.strptime("%y")`).
+    Formato canônico do export: `5/27/26` (M/D/YY). Aceita também:
+    - `datetime`/`date` nativos (defesa quando xlsx é parseado tipado);
+    - ISO `2026-05-27` ou datetime stringificado `2026-05-27 00:00:00`
+      (defesa quando o parser não normalizou a célula).
 
-    Args:
-        raw: String bruta da coluna `collectionDate`.
+    Convenção dos anos com 2 dígitos: 00-68 → 2000-2068, 69-99 → 1969-1999
+    (igual `datetime.strptime("%y")`).
 
     Returns:
         `date` parseado ou None se formato inválido.
@@ -36,18 +43,30 @@ def parse_pricetrack_date(raw: str) -> Optional[date]:
     if raw is None:
         return None
 
-    m = _DATE_RE.match(str(raw))
-    if not m:
-        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
 
-    month, day, year_2d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    # Convenção Python: 00-68 → 2000-2068, 69-99 → 1969-1999
-    year_full = 2000 + year_2d if year_2d < 69 else 1900 + year_2d
+    s = str(raw).strip()
 
-    try:
-        return date(year_full, month, day)
-    except ValueError:
-        return None
+    m = _DATE_RE.match(s)
+    if m:
+        month, day, year_2d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        year_full = 2000 + year_2d if year_2d < 69 else 1900 + year_2d
+        try:
+            return date(year_full, month, day)
+        except ValueError:
+            return None
+
+    m_iso = _ISO_DATE_RE.match(s)
+    if m_iso:
+        try:
+            return date(int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3)))
+        except ValueError:
+            return None
+
+    return None
 
 
 def is_pricetrack_date(raw: str) -> bool:
