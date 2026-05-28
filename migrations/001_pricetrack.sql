@@ -50,3 +50,11 @@ CREATE TABLE IF NOT EXISTS pricetrack_import_log (
 
 CREATE INDEX IF NOT EXISTS idx_ptil_source_file ON pricetrack_import_log(source_file);
 CREATE INDEX IF NOT EXISTS idx_ptil_status      ON pricetrack_import_log(status, import_finished DESC);
+
+-- RLS desabilitado para alinhar ao padrão das demais tabelas do projeto
+-- (coletas, rac_monitoramento, etc). Controle de acesso é feito via secret
+-- da SUPABASE_KEY no .env, não via políticas RLS. Se você usar este
+-- repositório em outro ambiente com a anon key exposta publicamente,
+-- adicione políticas antes de habilitar RLS novamente.
+ALTER TABLE pricetrack_daily      DISABLE ROW LEVEL SECURITY;
+ALTER TABLE pricetrack_import_log DISABLE ROW LEVEL SECURITY;

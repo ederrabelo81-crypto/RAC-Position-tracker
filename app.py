@@ -2409,17 +2409,24 @@ def _render_pricetrack_results(results: list[dict]) -> None:
                 st.write("Sem contadores disponíveis.")
                 continue
 
-            cols = st.columns(5)
+            cols = st.columns(6)
             cols[0].metric("Parseou", rows.total_parsed)
             cols[1].metric("Válidas", rows.valid)
-            cols[2].metric("Inseridas", rows.inserted)
-            cols[3].metric("Atualizadas", rows.updated)
-            cols[4].metric("Metadata", rows.metadata_skipped)
+            cols[2].metric("Dedup", rows.duplicates_collapsed)
+            cols[3].metric("Inseridas", rows.inserted)
+            cols[4].metric("Atualizadas", rows.updated)
+            cols[5].metric("Metadata", rows.metadata_skipped)
 
             if rows.invalid_seller or rows.invalid_other:
                 st.caption(
                     f"Rejeitadas: {rows.invalid_seller} seller inválido + "
                     f"{rows.invalid_other} outros."
+                )
+            if rows.duplicates_collapsed:
+                st.caption(
+                    f"🔁 {rows.duplicates_collapsed} linha(s) duplicada(s) "
+                    f"colapsada(s) (mesma chave SKU/seller/marketplace/dia — "
+                    f"última ocorrência venceu)."
                 )
 
             samples = r.get("rejection_samples") or []

@@ -151,7 +151,40 @@ def _process_rows(
         )
         exec_log.rows.valid += 1
 
-    return normalized
+    return _dedupe_by_conflict_key(normalized, exec_log)
+
+
+# Chaves do UNIQUE constraint em pricetrack_daily — devem casar com o SQL
+_CONFLICT_KEYS = (
+    "collection_date",
+    "brand",
+    "sku",
+    "marketplace",
+    "seller",
+)
+
+
+def _dedupe_by_conflict_key(
+    rows: List[Dict[str, object]], exec_log: ExecutionLog
+) -> List[Dict[str, object]]:
+    """
+    Colapsa linhas com mesmo (collection_date, brand, sku, marketplace, seller).
+
+    O export do PriceTrack pode trazer 2+ linhas para o mesmo SKU/seller/dia
+    (ruído de extração na origem). Postgres rejeita o batch inteiro com
+    "ON CONFLICT DO UPDATE cannot affect row a second time" (erro 21000)
+    se o INSERT contém duplicatas, então deduplicamos aqui antes do upsert.
+
+    Política: **última ocorrência vence** (ordem do arquivo). Preços
+    posteriores no arquivo sobrescrevem anteriores.
+    """
+    seen: Dict[tuple, Dict[str, object]] = {}
+    for row in rows:
+        key = tuple(row[k] for k in _CONFLICT_KEYS)
+        if key in seen:
+            exec_log.rows.duplicates_collapsed += 1
+        seen[key] = row
+    return list(seen.values())
 
 
 def _process_one(

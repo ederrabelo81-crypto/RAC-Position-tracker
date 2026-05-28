@@ -58,7 +58,8 @@ class TestPipeline:
 
     def test_contadores_consistentes(self):
         normalized, exec_log = _run_pipeline()
-        # total_parsed = válidas + invalid_seller + invalid_other + metadata_skipped
+        # total_parsed = válidas (pré-dedup) + rejeitadas + metadata
+        # válidas = duplicates_collapsed + len(normalized) (pós-dedup)
         soma = (
             exec_log.rows.valid
             + exec_log.rows.invalid_seller
@@ -66,4 +67,7 @@ class TestPipeline:
             + exec_log.rows.metadata_skipped
         )
         assert soma == exec_log.rows.total_parsed
-        assert exec_log.rows.valid == len(normalized)
+        assert (
+            exec_log.rows.valid
+            == len(normalized) + exec_log.rows.duplicates_collapsed
+        )
