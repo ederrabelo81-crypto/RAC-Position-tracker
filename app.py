@@ -278,7 +278,14 @@ PRODUCT_TYPE_OPTIONS: dict = {
 # ---------------------------------------------------------------------------
 
 def _build_brand_maps() -> tuple:
-    """Build brand normalization maps from config + normalize_product."""
+    """Build brand normalization maps from config + normalize_product.
+
+    Importers (e.g. PriceTrack since 2026-05-24) sometimes write title-case
+    values like "Lg"/"Tcl" alongside the canonical "LG"/"TCL", so we register
+    upper / lower / title / capitalize variants of every known alias to
+    collapse them into a single canonical entry in the UI dropdown and to
+    expand a single user selection back into every DB case variant.
+    """
     try:
         from utils.normalize_product import _BRAND_ALIASES
         from config import BRANDS
@@ -288,11 +295,20 @@ def _build_brand_maps() -> tuple:
     canonical_to_raws: dict = {}
     raw_to_canonical:  dict = {}
 
+    def _register(raw_value: str, canonical: str) -> None:
+        if raw_value in raw_to_canonical:
+            return
+        raw_to_canonical[raw_value] = canonical
+        canonical_to_raws.setdefault(canonical, []).append(raw_value)
+
     for raw_brand in BRANDS:
-        # _BRAND_ALIASES uses lowercase keys
         canonical = _BRAND_ALIASES.get(raw_brand.lower(), raw_brand)
-        canonical_to_raws.setdefault(canonical, []).append(raw_brand)
-        raw_to_canonical[raw_brand] = canonical
+        _register(raw_brand, canonical)
+
+    for alias, canonical in _BRAND_ALIASES.items():
+        for variant in {alias, alias.upper(), alias.lower(),
+                        alias.title(), alias.capitalize()}:
+            _register(variant, canonical)
 
     return canonical_to_raws, raw_to_canonical
 
