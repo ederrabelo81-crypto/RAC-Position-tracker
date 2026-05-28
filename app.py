@@ -5731,8 +5731,8 @@ def _render_product_sheet(produto: str, start_date: date, end_date: date) -> Non
         int(df["seller"].nunique()) if "seller" in df.columns else 0,
     )
     cnt_cols[3].metric(
-        "Menor preço",
-        _fmt_brl(df_price["preco"].min()) if not df_price.empty else "—",
+        "Preço Moda",
+        _fmt_brl(_mode_price(df_price["preco"])) if not df_price.empty else "—",
     )
 
     if df_price.empty:
