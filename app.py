@@ -647,13 +647,19 @@ def query_coletas(
         return pd.DataFrame()
 
     def _build_q():
-        """Fresh filtered query (no range yet — added per-page in the loop)."""
+        """Fresh filtered query (no cursor yet — added per-page in the loop).
+
+        Ordered by `id desc` (not `data desc`) so we can keyset-paginate via
+        `.lt("id", last_id)`. OFFSET-based pagination on `data desc` causes
+        statement timeouts (57014) past ~40k rows — Postgres has to re-scan
+        the whole prefix on each page. With id-cursor every page is ~10ms.
+        """
         q = (
             client.table("coletas")
             .select("*")
             .gte("data", str(start_date))
             .lte("data", str(end_date))
-            .order("data", desc=True)
+            .order("id", desc=True)
         )
         if platforms:
             q = q.in_("plataforma", _expand_platforms(platforms))
@@ -717,16 +723,21 @@ def query_coletas(
 
     try:
         all_data: list = []
-        offset = 0
+        last_id: int | None = None
         while len(all_data) < limit:
             fetch = min(_SUPABASE_PAGE, limit - len(all_data))
-            resp = _build_q().range(offset, offset + fetch - 1).execute()
+            q = _build_q()
+            if last_id is not None:
+                q = q.lt("id", last_id)
+            resp = q.limit(fetch).execute()
             if not resp.data:
                 break
             all_data.extend(resp.data)
             if len(resp.data) < fetch:
                 break  # server returned fewer rows than requested → last page
-            offset += fetch
+            last_id = resp.data[-1].get("id")
+            if last_id is None:
+                break  # safety: cursor unusable without id
 
         if not all_data:
             return pd.DataFrame()
@@ -1119,12 +1130,13 @@ def _overview_data(
         return pd.DataFrame()
 
     def _build_q():
+        # Ordered by `id desc` for keyset pagination (see query_coletas).
         q = (
             client.table("coletas")
             .select("*")
             .gte("data", start_str)
             .lte("data", end_str)
-            .order("data", desc=True)
+            .order("id", desc=True)
         )
         if platforms_tuple:
             q = q.in_("plataforma", _expand_platforms(list(platforms_tuple)))
@@ -1144,16 +1156,21 @@ def _overview_data(
 
     try:
         all_data: list = []
-        offset = 0
+        last_id: int | None = None
         while len(all_data) < limit:
             fetch = min(_SUPABASE_PAGE, limit - len(all_data))
-            resp = _build_q().range(offset, offset + fetch - 1).execute()
+            q = _build_q()
+            if last_id is not None:
+                q = q.lt("id", last_id)
+            resp = q.limit(fetch).execute()
             if not resp.data:
                 break
             all_data.extend(resp.data)
             if len(resp.data) < fetch:
                 break
-            offset += fetch
+            last_id = resp.data[-1].get("id")
+            if last_id is None:
+                break
 
         if not all_data:
             return pd.DataFrame()
