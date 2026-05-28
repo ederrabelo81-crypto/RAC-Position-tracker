@@ -32,12 +32,33 @@ pip install psycopg2-binary openpyxl python-dotenv loguru tqdm pytest
 
 ### 2. `.env` (no root do projeto)
 
+Você pode usar **uma das duas** formas de credencial:
+
+**Opção A — supabase-py (REST, reusa o que o projeto já tem):**
+
+```env
+SUPABASE_URL=https://[YOUR-REF].supabase.co
+SUPABASE_KEY=eyJ...  # service_role key
+```
+
+**Opção B — psycopg2 direto (mais rápido, contagem exata de inserted vs updated):**
+
 ```env
 SUPABASE_DSN=postgresql://postgres:[pwd]@db.[ref].supabase.co:5432/postgres
+```
+
+Outras variáveis opcionais:
+
+```env
 PRICETRACK_IMPORT_DIR=./imports/pricetrack
 PRICETRACK_LOG_DIR=./logs/pricetrack
 PRICETRACK_BATCH_SIZE=1000
 ```
+
+> Se ambos estiverem setados, o DSN é preferido. Se apenas URL+KEY estiver
+> presente, o backend REST é usado automaticamente — porém o
+> `UpsertResult.updated` ficará sempre em 0 (limitação do PostgREST, que
+> não distingue insert de update).
 
 ### 3. Migration
 
