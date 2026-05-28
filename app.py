@@ -790,6 +790,85 @@ def query_coletas(
 _SUPABASE_PAGE_PT = 1000
 
 
+def _collect_pt_skus(
+    products: list[str] | None = None,
+    familias_resolvidas: list[str] | None = None,
+    skus_resolvidos: list[str] | None = None,
+) -> set[str]:
+    """Resolve filtros do dashboard para o conjunto de SKUs do catálogo.
+
+    `pricetrack_daily.sku` guarda o código canônico do catálogo
+    (ex.: ``42EZVCA09M5``). Os filtros que chegam aqui podem vir como:
+    - `products`: nomes free-text vindos do dropdown da coleta (ex.
+      ``"Ar Condicionado Midea AI Ecomaster 9.000 BTUs Inverter Frio"``).
+      Resolvemos via `produtos_depara_nome.nome_coletado`.
+    - `skus_resolvidos`: códigos do catálogo já picados pelo usuário.
+      Expande para outras voltagens/condensadora da mesma `familia_linha`
+      pra manter paridade com `_apply_sku_filter_with_expansion` (coletas).
+    - `familias_resolvidas`: famílias do catálogo (reais ou genéricas).
+      Reais → busca em `produtos_catalogo.familia`. Genéricas (ex.
+      ``MIDEA-ECOMASTER-9000-F``) não existem no catálogo, então caímos
+      no de-para — qualquer linha com aquela família traz o SKU.
+
+    Retorna o conjunto vazio quando nenhum filtro foi passado *e* o
+    chamador precisa decidir se segue sem filtro de SKU.
+    """
+    skus: set[str] = set()
+    cat = get_catalogo()
+    catalog_skus = (
+        set(cat["sku"].astype(str).tolist()) if not cat.empty else set()
+    )
+
+    if skus_resolvidos:
+        if not cat.empty and "familia_linha" in cat.columns:
+            picked = cat[cat["sku"].isin(skus_resolvidos)]
+            fam_linhas = picked["familia_linha"].dropna().unique().tolist()
+            picked_voltagens = (
+                picked["voltagem"].dropna().unique().tolist()
+                if "voltagem" in picked.columns else []
+            )
+            if fam_linhas:
+                pool = cat[cat["familia_linha"].isin(fam_linhas)]
+                # Match `_apply_sku_filter_with_expansion` (coletas): pegar
+                # SKU 220V não deve trazer a versão 110V — voltagem é eixo
+                # de comparação. Se a seleção mistura voltagens (ou nenhuma
+                # foi resolvida), libera tudo na familia_linha.
+                if picked_voltagens and "voltagem" in pool.columns:
+                    pool = pool[pool["voltagem"].isin(picked_voltagens)]
+                skus.update(pool["sku"].astype(str).tolist())
+            else:
+                skus.update(str(s) for s in skus_resolvidos)
+        else:
+            skus.update(str(s) for s in skus_resolvidos)
+
+    if familias_resolvidas:
+        if not cat.empty:
+            matched = cat[cat["familia"].isin(familias_resolvidas)]["sku"]
+            skus.update(matched.astype(str).tolist())
+        depara = get_depara()
+        if not depara.empty:
+            mapped = depara[
+                depara["familia"].isin(familias_resolvidas)
+                & depara["sku"].notna()
+            ]
+            skus.update(mapped["sku"].astype(str).tolist())
+
+    if products:
+        depara = get_depara()
+        if not depara.empty:
+            mapped = depara[
+                depara["nome_coletado"].isin(products)
+                & depara["sku"].notna()
+            ]
+            skus.update(mapped["sku"].astype(str).tolist())
+        # Backward-compat: aceita códigos de SKU passados direto em `products`
+        for p in products:
+            if isinstance(p, str) and p in catalog_skus:
+                skus.add(p)
+
+    return skus
+
+
 def query_pricetrack_daily(
     start_date: date,
     end_date: date,
@@ -799,6 +878,8 @@ def query_pricetrack_daily(
     products: list[str] | None = None,
     btu_filter: list[str] | None = None,
     product_types: list[str] | None = None,
+    familias_resolvidas: list[str] | None = None,
+    skus_resolvidos: list[str] | None = None,
     limit: int = 200000,
 ) -> pd.DataFrame:
     """Query the pricetrack_daily table and remap to the coletas schema.
@@ -813,6 +894,22 @@ def query_pricetrack_daily(
     """
     client = _get_supabase()
     if client is None:
+        return pd.DataFrame()
+
+    # Resolve qualquer filtro de produto / família / SKU vindo da página
+    # para o conjunto canônico de SKUs do catálogo que existe em
+    # `pricetrack_daily.sku`. Antes desta tradução, o filtro tentava
+    # `title.eq` / `sku.eq` com nomes de coletas — pricetrack publica o
+    # mesmo SKU sob dezenas de títulos diferentes por seller, então o
+    # match nunca casava e o df voltava vazio.
+    sku_set = _collect_pt_skus(
+        products=products,
+        familias_resolvidas=familias_resolvidas,
+        skus_resolvidos=skus_resolvidos,
+    )
+    # Filtros pedidos mas resolução vazia → devolve cedo para evitar
+    # puxar a janela inteira sem critério de produto.
+    if (products or familias_resolvidas or skus_resolvidos) and not sku_set:
         return pd.DataFrame()
 
     def _build_q():
@@ -844,17 +941,8 @@ def query_pricetrack_daily(
             parts = [f"seller.ilike.{s}" for s in sellers]
             if parts:
                 q = q.or_(",".join(parts))
-        if products:
-            # products from the SKU multiselect are full product names from
-            # coletas.produto. In pricetrack, the equivalent free-text lives
-            # in `title`. Match either an exact title or sku.
-            parts = []
-            for p in products:
-                p_esc = p.replace(",", "")
-                parts.append(f"title.eq.{p_esc}")
-                parts.append(f"sku.eq.{p_esc}")
-            if parts:
-                q = q.or_(",".join(parts))
+        if sku_set:
+            q = q.in_("sku", sorted(sku_set))
         if btu_filter:
             parts = []
             for btu in btu_filter:
@@ -910,18 +998,34 @@ def query_pricetrack_daily(
         preco = preco.fillna(pd.to_numeric(raw.get("min_price"), errors="coerce"))
         preco = preco.fillna(pd.to_numeric(raw.get("max_price"), errors="coerce"))
 
-        # Canonicalise produto by the catalog SKU when present. PriceTrack
-        # publishes the same SKU under many seller-specific titles (e.g. 342
-        # distinct titles for ~25 SKUs in Midea 9000 BTUs), which would
-        # otherwise blow up the "Unique SKUs" KPI and produce a chart with
-        # one line per listing instead of one line per product.
+        # Canonicalise produto pelo SKU do catálogo: PriceTrack publica
+        # o mesmo SKU sob dezenas de títulos diferentes por seller (342
+        # títulos distintos pra ~25 SKUs em Midea 9000 BTUs), o que
+        # inflaria o cartão "Unique SKUs" e desenharia uma linha por
+        # anúncio em vez de uma por produto. Quando o catálogo tem o
+        # `produto` cadastrado pra esse SKU, usamos o nome amigável
+        # (ex.: "AR CONDICIONADO SPLIT 9000 BTU FRIO AI ECOMASTER ...")
+        # para o gráfico não ficar com códigos crus na legenda; fallback
+        # pro código do SKU e, em último caso, pro título do anúncio.
         sku_series   = raw.get("sku")
         title_series = raw.get("title")
-        produto = (
-            sku_series.where(sku_series.notna() & (sku_series.astype(str).str.strip() != ""),
-                             title_series)
-            if sku_series is not None else title_series
-        )
+        catalog = get_catalogo()
+        sku_to_produto: dict = {}
+        if not catalog.empty and "produto" in catalog.columns:
+            sku_to_produto = dict(zip(
+                catalog["sku"].astype(str),
+                catalog["produto"].astype(str),
+            ))
+        if sku_series is not None:
+            sku_str = sku_series.astype(str)
+            friendly = sku_str.map(sku_to_produto)
+            produto = friendly.where(friendly.notna(), sku_series)
+            produto = produto.where(
+                sku_series.notna() & (sku_str.str.strip() != ""),
+                title_series,
+            )
+        else:
+            produto = title_series
 
         df = pd.DataFrame({
             "data":             pd.to_datetime(raw["collection_date"]).dt.date,
@@ -967,10 +1071,20 @@ def query_price_evolution_data(
     """
     Combined source for the Price Evolution page.
 
-    Precedence rule (requested 2026-05-28): for any date with rows in
-    `pricetrack_daily`, those rows are authoritative and the `coletas`
-    rows of the same date are dropped. Dates without pricetrack data
-    keep their `coletas` rows untouched.
+    Precedence rule (revisada 2026-05-28): pricetrack_daily é fonte de
+    verdade por **(data, SKU do catálogo)**. Para cada par (data, sku)
+    presente em pricetrack, descartamos as linhas de coletas com
+    `(data, sku_resolvido)` idêntico — pricetrack representa sozinho o
+    preço daquele SKU naquele dia. Coletas continua mostrando:
+    - SKUs ainda não cobertos pelo pricetrack (ex.: marca/BTU fora do
+      catálogo importado);
+    - Produtos sem mapping em `produtos_depara_nome` (estado REVISAR /
+      sku_resolvido NULL), que aparecem como linhas independentes.
+
+    A regra anterior era por **data inteira** — quando o pricetrack
+    cobria 12-28/05, derrubava todas as 278k linhas de coletas do
+    período, escondendo produtos que pricetrack não cobre (ex.: o item
+    Ecomaster Quente/Frio que ainda está em REVISAR no de-para).
 
     Returns (df, meta) where meta has counts for the info banner.
     """
@@ -982,24 +1096,41 @@ def query_price_evolution_data(
         products=products,
         btu_filter=btu_filter,
         product_types=product_types,
+        familias_resolvidas=familias_resolvidas,
+        skus_resolvidos=skus_resolvidos,
     )
 
-    pt_dates = set(df_pt["data"].unique().tolist()) if not df_pt.empty else set()
+    pt_pairs: set[tuple] = set()
+    pt_skus:  set[str]   = set()
+    pt_dates: set        = set()
+    if not df_pt.empty and "sku" in df_pt.columns:
+        sku_norm = df_pt["sku"].astype(str).fillna("")
+        pt_pairs = set(zip(df_pt["data"], sku_norm))
+        pt_skus  = {s for s in sku_norm.unique() if s}
+        pt_dates = set(df_pt["data"].unique().tolist())
 
-    # PriceTrack has precedence per date — only hit `coletas` for the dates
-    # not covered. When PT covers the entire window, skip the coletas query
-    # altogether: on ~278k rows with ILIKE filters the planner regularly
-    # blows past the 8s statement_timeout, surfacing a misleading "Erro na
-    # consulta" banner even though the rows would have been dropped anyway.
+    # Coletas continua sendo necessário pra cobrir:
+    # (a) datas sem pricetrack;
+    # (b) SKUs não cobertos pelo pricetrack (mesmo nas datas que ele cobre);
+    # (c) produtos sem sku_resolvido (estado REVISAR), que ficam órfãos
+    #     no merge porque (data, NULL) nunca casa com nenhum par do PT.
+    # Mantemos a heurística antiga "ILIKE em 278k linhas estoura o
+    # statement_timeout de 8s": só pulamos o coletas quando o usuário
+    # NÃO trouxe nenhum filtro narrowing E o pricetrack já cobre a
+    # janela inteira de datas — aí o resultado seria descartado mesmo.
+    has_narrowing_filter = bool(
+        products or skus_resolvidos or familias_resolvidas
+        or brands or sellers or keywords or platforms
+    )
     full_range = {
         start_date + timedelta(days=i)
         for i in range((end_date - start_date).days + 1)
     }
     missing_dates = sorted(full_range - pt_dates)
 
-    if missing_dates:
-        col_start = missing_dates[0]
-        col_end   = missing_dates[-1]
+    if has_narrowing_filter or missing_dates:
+        col_start = missing_dates[0] if missing_dates and not has_narrowing_filter else start_date
+        col_end   = missing_dates[-1] if missing_dates and not has_narrowing_filter else end_date
         df_col = query_coletas(
             col_start, col_end,
             platforms=platforms,
@@ -1017,15 +1148,30 @@ def query_price_evolution_data(
     else:
         df_col = pd.DataFrame()
 
-    if "source" not in df_col.columns and not df_col.empty:
-        df_col = df_col.assign(source="coletas")
+    if not df_col.empty:
+        if "source" not in df_col.columns:
+            df_col = df_col.assign(source="coletas")
+        # Unifica a coluna `sku` entre as duas fontes pra Detail tab e
+        # qualquer agrupamento downstream: PT já traz `sku`; coletas tem
+        # `sku_resolvido` (NULL quando o de-para ainda não mapeou).
+        if "sku_resolvido" in df_col.columns and "sku" not in df_col.columns:
+            df_col = df_col.assign(sku=df_col["sku_resolvido"])
 
-    if pt_dates and not df_col.empty:
-        df_col = df_col[~df_col["data"].isin(pt_dates)]
+    # Precedência por (data, sku_resolvido): pricetrack vence.
+    # Linhas de coletas sem sku_resolvido ficam (NULL ≠ qualquer SKU).
+    if pt_pairs and not df_col.empty and "sku_resolvido" in df_col.columns:
+        skup = df_col["sku_resolvido"].astype("string").fillna("")
+        keys = list(zip(df_col["data"], skup))
+        mask_dup = pd.Series(
+            [k in pt_pairs for k in keys],
+            index=df_col.index,
+        )
+        df_col = df_col[~mask_dup]
 
     if df_pt.empty and df_col.empty:
         return pd.DataFrame(), {"pricetrack_dates": 0, "coletas_dates": 0,
-                                 "pricetrack_rows": 0, "coletas_rows": 0}
+                                 "pricetrack_rows": 0, "coletas_rows": 0,
+                                 "pricetrack_skus": 0}
 
     df = pd.concat([df_pt, df_col], ignore_index=True, sort=False)
     meta = {
@@ -1033,6 +1179,7 @@ def query_price_evolution_data(
         "coletas_dates":    int(df_col["data"].nunique()) if not df_col.empty else 0,
         "pricetrack_rows":  int(len(df_pt)),
         "coletas_rows":     int(len(df_col)),
+        "pricetrack_skus":  len(pt_skus),
     }
     return df, meta
 
@@ -2249,15 +2396,27 @@ def page_price_evolution():
         st.warning("No price data found for the selected filters.")
         return
 
-    # Banner de transparência: indica que PriceTrack tem precedência por data.
+    # Banner de transparência: PriceTrack tem precedência por (data, SKU).
     if evo_meta.get("pricetrack_rows", 0) > 0:
         st.info(
             f"📥 **PriceTrack** cobrindo {evo_meta['pricetrack_dates']} "
-            f"data(s) ({evo_meta['pricetrack_rows']:,} linhas) · "
-            f"**Coletas** preenchendo as demais "
+            f"data(s) e {evo_meta.get('pricetrack_skus', 0)} SKU(s) do catálogo "
+            f"({evo_meta['pricetrack_rows']:,} linhas) · "
+            f"**Coletas** preenchendo SKUs/datas não cobertos "
             f"({evo_meta['coletas_dates']} data(s), "
             f"{evo_meta['coletas_rows']:,} linhas)."
             .replace(",", ".")
+        )
+    elif (sel_skus or sel_skus_resolvidos or sel_familias) and \
+         evo_meta.get("pricetrack_rows", 0) == 0:
+        # Filtro de produto/SKU/família foi aplicado mas o PT não cobre
+        # nenhum dos SKUs resolvidos. Sinaliza pra o usuário não achar
+        # que o filtro tá quebrado.
+        st.warning(
+            "📭 PriceTrack não tem dados para os SKUs filtrados nesta "
+            "janela. Exibindo apenas dados de **Coletas**. "
+            "Verifique se o(s) produto(s) selecionado(s) têm mapeamento "
+            "para SKU do catálogo em `produtos_depara_nome` (estado MAPEADO)."
         )
 
     # --- Summary metrics with enhanced cards ---
@@ -2379,7 +2538,8 @@ def page_price_evolution():
         st.subheader("All records")
         display_cols = [
             c for c in [
-                "data", "turno", "plataforma", "marca", "produto", "title",
+                "data", "source", "turno", "plataforma", "marca", "sku",
+                "produto", "title",
                 "posicao_geral", "posicao_organica", "preco",
                 "seller", "keyword", "tag",
             ] if c in df.columns
