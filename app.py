@@ -5610,9 +5610,14 @@ def page_market_analytics() -> None:
         if df_price.empty:
             st.warning("Sem dados de preço no período.")
         else:
-            bins   = [0, 1500, 2000, 2500, 3000, 3500, 4000, 5000, 1e12]
-            labels = ["< 1.5k", "1.5–2k", "2–2.5k", "2.5–3k",
-                      "3–3.5k", "3.5–4k", "4–5k", "> 5k"]
+            fine_edges  = list(range(1500, 2501, 50))
+            fine_labels = [f"{a}-{b}" for a, b in zip(fine_edges[:-1], fine_edges[1:])]
+            bins   = [0] + fine_edges + [3000, 3500, 4000, 5000, 1e12]
+            labels = (
+                ["< 1500"]
+                + fine_labels
+                + ["2500-3000", "3000-3500", "3500-4000", "4000-5000", "> 5000"]
+            )
             df_price = df_price.copy()
             df_price["faixa"] = pd.cut(df_price["preco"], bins=bins, labels=labels)
             pivot = (
@@ -5634,7 +5639,7 @@ def page_market_analytics() -> None:
                 text_auto=".0f",
                 title="Distribuição de ofertas por faixa de preço (% por dia)",
             )
-            _apply_chart_style(fig, height=420, hovermode="closest")
+            _apply_chart_style(fig, height=820, hovermode="closest")
             st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("**Contagem absoluta de ofertas por faixa**")
