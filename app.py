@@ -140,6 +140,21 @@ def _style_midea_df(df: pd.DataFrame, brand_col: str = "marca"):
     return styler
 
 
+def _mode_price(s: pd.Series) -> float:
+    # Bucketize to R$1 to make mode meaningful on continuous price data;
+    # fall back to median when no bucket repeats (e.g. tiny samples).
+    s_clean = pd.to_numeric(s, errors="coerce").dropna()
+    if s_clean.empty:
+        return float("nan")
+    buckets = s_clean.round(0)
+    counts = buckets.value_counts()
+    if counts.empty or int(counts.iloc[0]) <= 1:
+        return float(s_clean.median())
+    top_count = int(counts.iloc[0])
+    top_buckets = set(counts[counts == top_count].index)
+    return float(s_clean[buckets.isin(top_buckets)].median())
+
+
 def _resolve_screenshot_path(raw) -> Path | None:
     """Resolve uma referência de screenshot armazenada para um Path local.
 
@@ -2031,7 +2046,7 @@ def page_price_evolution():
         st.warning("No records with price data in this range.")
         return
 
-    # Aggregate: median price per (date, group)
+    # Aggregate: modal price per (date, group)
     group_col_map = {
         "Brand":    "marca",
         "Platform": "plataforma",
@@ -2045,9 +2060,10 @@ def page_price_evolution():
 
     agg = (
         df_price
-        .groupby(["data", group_col], as_index=False)["preco"]
-        .median()
-        .rename(columns={"preco": "Median Price (R$)", group_col: group_by})
+        .groupby(["data", group_col])["preco"]
+        .agg(_mode_price)
+        .reset_index()
+        .rename(columns={"preco": "Modal Price (R$)", group_col: group_by})
     )
     agg["data"] = pd.to_datetime(agg["data"])
 
@@ -2061,11 +2077,11 @@ def page_price_evolution():
         fig = px.line(
             agg,
             x="data",
-            y="Median Price (R$)",
+            y="Modal Price (R$)",
             color=group_by,
             color_discrete_map=_cmap,
             markers=True,
-            title=f"Median Price Evolution by {group_by}",
+            title=f"Modal Price Evolution by {group_by}",
             labels={"data": "Date"},
         )
         fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
@@ -2082,14 +2098,14 @@ def page_price_evolution():
             .agg(
                 Count="count",
                 Min="min",
-                Median="median",
+                Mode=_mode_price,
                 Max="max",
                 Avg="mean",
             )
             .round(2)
             .reset_index()
             .rename(columns={group_col: group_by})
-            .sort_values("Median", ascending=True)
+            .sort_values("Mode", ascending=True)
         )
         _summary_styled = (
             _style_midea_df(summary, brand_col=group_by)
@@ -4312,18 +4328,19 @@ def page_overview() -> None:
                 top_brands = df_price["marca"].value_counts().head(6).index.tolist()
                 trend = (
                     df_price[df_price["marca"].isin(top_brands)]
-                    .groupby(["data", "marca"], as_index=False)["preco"]
-                    .median()
-                    .rename(columns={"preco": "Preço Mediano (R$)", "marca": "Marca"})
+                    .groupby(["data", "marca"])["preco"]
+                    .agg(_mode_price)
+                    .reset_index()
+                    .rename(columns={"preco": "Preço Modal (R$)", "marca": "Marca"})
                 )
                 trend["data"] = pd.to_datetime(trend["data"])
-                if trend.empty or trend["Preço Mediano (R$)"].isna().all():
+                if trend.empty or trend["Preço Modal (R$)"].isna().all():
                     raise ValueError("sem dados válidos após agrupamento")
                 fig1 = px.line(
-                    trend, x="data", y="Preço Mediano (R$)", color="Marca",
+                    trend, x="data", y="Preço Modal (R$)", color="Marca",
                     color_discrete_map=_brand_color_map(trend["Marca"]),
                     markers=True,
-                    title="Preço Mediano por Marca",
+                    title="Preço Modal por Marca",
                     labels={"data": "Data"},
                 )
                 fig1.update_traces(line=dict(width=2), marker=dict(size=5))
@@ -4401,8 +4418,8 @@ def page_overview() -> None:
             sorted_dates = sorted(df["data"].unique(), reverse=True)
             if len(sorted_dates) >= 2:
                 d_new, d_old = sorted_dates[0], sorted_dates[1]
-                new_med = df[df["data"] == d_new].dropna(subset=["preco"]).groupby("produto")["preco"].median()
-                old_med = df[df["data"] == d_old].dropna(subset=["preco"]).groupby("produto")["preco"].median()
+                new_med = df[df["data"] == d_new].dropna(subset=["preco"]).groupby("produto")["preco"].agg(_mode_price)
+                old_med = df[df["data"] == d_old].dropna(subset=["preco"]).groupby("produto")["preco"].agg(_mode_price)
                 mv = pd.concat([new_med.rename("novo"), old_med.rename("antigo")], axis=1).dropna()
                 mv["delta_pct"] = (mv["novo"] - mv["antigo"]) / mv["antigo"] * 100
                 mv = mv[mv["delta_pct"].abs() >= 1].sort_values("delta_pct").head(10).reset_index()
@@ -4508,10 +4525,10 @@ def page_top_movers() -> None:
 
     cur_agg = (df_cur.dropna(subset=["preco", "produto"])
                .groupby("produto")["preco"]
-               .agg(preco_atual="median", obs_atual="count").reset_index())
+               .agg(preco_atual=_mode_price, obs_atual="count").reset_index())
     cmp_agg = (df_cmp.dropna(subset=["preco", "produto"])
                .groupby("produto")["preco"]
-               .agg(preco_anterior="median", obs_anterior="count").reset_index())
+               .agg(preco_anterior=_mode_price, obs_anterior="count").reset_index())
 
     movers = cur_agg.merge(cmp_agg, on="produto", how="inner")
     movers = movers[(movers["obs_atual"] >= min_obs) & (movers["obs_anterior"] >= min_obs)]
@@ -4783,15 +4800,15 @@ def page_email_digest() -> None:
         st.warning("No records found in the active window.")
         return
 
-    # ── Top movers — median price per SKU, current vs previous window ─────
+    # ── Top movers — modal price per SKU, current vs previous window ──────
     ups = downs = pd.DataFrame()
     if not df_prev.empty and {"preco", "produto"}.issubset(df_cur.columns):
         cur_agg = (df_cur.dropna(subset=["preco", "produto"])
                    .groupby("produto")["preco"]
-                   .agg(preco_atual="median", obs_atual="count").reset_index())
+                   .agg(preco_atual=_mode_price, obs_atual="count").reset_index())
         prev_agg = (df_prev.dropna(subset=["preco", "produto"])
                     .groupby("produto")["preco"]
-                    .agg(preco_anterior="median", obs_anterior="count")
+                    .agg(preco_anterior=_mode_price, obs_anterior="count")
                     .reset_index())
         movers = cur_agg.merge(prev_agg, on="produto", how="inner")
         movers = movers[(movers["obs_atual"] >= min_records)
@@ -5299,11 +5316,12 @@ def _render_product_sheet(produto: str, start_date: date, end_date: date) -> Non
     st.divider()
 
     # --- Evolução de preço por marketplace ---
-    agg = df_price.groupby(["data", "plataforma"], as_index=False)["preco"].median()
+    agg = (df_price.groupby(["data", "plataforma"])["preco"]
+           .agg(_mode_price).reset_index())
     agg["data"] = pd.to_datetime(agg["data"])
     fig = px.line(
         agg, x="data", y="preco", color="plataforma", markers=True,
-        title="Evolução de preço por marketplace",
+        title="Evolução de preço por marketplace (moda diária)",
         labels={"data": "Data", "preco": "Preço (R$)", "plataforma": "Plataforma"},
     )
     fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
@@ -5349,11 +5367,12 @@ def _render_comparator(produtos: tuple, start_date: date, end_date: date) -> Non
         return
 
     # --- Evolução sobreposta ---
-    agg = df_price.groupby(["data", "produto"], as_index=False)["preco"].median()
+    agg = (df_price.groupby(["data", "produto"])["preco"]
+           .agg(_mode_price).reset_index())
     agg["data"] = pd.to_datetime(agg["data"])
     fig = px.line(
         agg, x="data", y="preco", color="produto", markers=True,
-        title="Evolução de preço comparada (mediana diária)",
+        title="Evolução de preço comparada (moda diária)",
         labels={"data": "Data", "preco": "Preço (R$)", "produto": "Produto"},
     )
     fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
@@ -5371,7 +5390,7 @@ def _render_comparator(produtos: tuple, start_date: date, end_date: date) -> Non
     # --- Resumo comparativo + diferença percentual ---
     summary = (
         df_price.groupby("produto")["preco"]
-        .agg(menor="min", mediana="median", maior="max")
+        .agg(menor="min", moda=_mode_price, maior="max")
         .reset_index()
     )
     cheapest = summary["menor"].min()
@@ -5385,7 +5404,7 @@ def _render_comparator(produtos: tuple, start_date: date, end_date: date) -> Non
         column_config={
             "produto":        st.column_config.TextColumn("Produto"),
             "menor":          st.column_config.NumberColumn("Menor", format="R$ %.2f"),
-            "mediana":        st.column_config.NumberColumn("Mediana", format="R$ %.2f"),
+            "moda":           st.column_config.NumberColumn("Moda", format="R$ %.2f"),
             "maior":          st.column_config.NumberColumn("Maior", format="R$ %.2f"),
             "dif_%_vs_menor": st.column_config.NumberColumn("Δ% vs mais barato", format="%.1f%%"),
         },
