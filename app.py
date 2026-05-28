@@ -790,6 +790,35 @@ def query_coletas(
 _SUPABASE_PAGE_PT = 1000
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _resolve_products_to_skus(products_tuple: tuple[str, ...]) -> list[str]:
+    """Map coletas.produto strings → distinct sku_resolvido values.
+
+    Bridge from the UI's product multiselect (built from coletas.produto)
+    to pricetrack_daily.sku, which uses the canonical catalog SKU. The
+    free-text title in pricetrack never matches the normalized produto in
+    coletas, so we must resolve through this lookup.
+    """
+    if not products_tuple:
+        return []
+    client = _get_supabase()
+    if client is None:
+        return []
+    try:
+        resp = (
+            client.table("coletas")
+            .select("sku_resolvido")
+            .in_("produto", list(products_tuple))
+            .not_.is_("sku_resolvido", "null")
+            .limit(5000)
+            .execute()
+        )
+        skus = {r.get("sku_resolvido") for r in (resp.data or []) if r.get("sku_resolvido")}
+        return sorted(skus)
+    except Exception:
+        return []
+
+
 def query_pricetrack_daily(
     start_date: date,
     end_date: date,
@@ -799,6 +828,7 @@ def query_pricetrack_daily(
     products: list[str] | None = None,
     btu_filter: list[str] | None = None,
     product_types: list[str] | None = None,
+    skus_resolvidos: list[str] | None = None,
     limit: int = 200000,
 ) -> pd.DataFrame:
     """Query the pricetrack_daily table and remap to the coletas schema.
@@ -810,10 +840,28 @@ def query_pricetrack_daily(
     Filters that don't apply (keyword/turno/posições) are silently ignored.
     Marketplace/seller matching is case-insensitive (pricetrack uses
     uppercase; coletas uses title-case).
+
+    `products` (free-text coletas.produto strings) is resolved server-side
+    into `sku_resolvido` values via _resolve_products_to_skus() and then
+    pushed down as `sku IN (...)` — pricetrack.title is raw scraped text
+    and never matches coletas.produto literally, plus a 40+ condition OR
+    on title was triggering Postgres statement_timeout (57014).
     """
     client = _get_supabase()
     if client is None:
         return pd.DataFrame()
+
+    # Resolve products → SKUs (cheap, cached). Merge with any explicitly
+    # provided skus_resolvidos.
+    effective_skus: list[str] = list(skus_resolvidos or [])
+    if products:
+        effective_skus.extend(_resolve_products_to_skus(tuple(sorted(products))))
+        # If the user picked specific products but none resolved, there is
+        # genuinely no pricetrack coverage for that selection — return
+        # empty so the combiner falls back to coletas for those rows.
+        if not effective_skus:
+            return pd.DataFrame()
+    effective_skus = sorted(set(effective_skus))
 
     def _build_q():
         q = (
@@ -832,6 +880,8 @@ def query_pricetrack_daily(
             # variants of every alias, so the pricetrack uppercase values
             # ("MIDEA") are covered when the user picks "Midea".
             q = q.in_("brand", _expand_brands(brands))
+        if effective_skus:
+            q = q.in_("sku", effective_skus)
         if platforms:
             # marketplace is uppercase in pricetrack_daily ("MERCADO LIVRE"),
             # while sel_platforms uses canonical title-case ("Mercado Livre").
@@ -842,17 +892,6 @@ def query_pricetrack_daily(
                 q = q.or_(",".join(parts))
         if sellers:
             parts = [f"seller.ilike.{s}" for s in sellers]
-            if parts:
-                q = q.or_(",".join(parts))
-        if products:
-            # products from the SKU multiselect are full product names from
-            # coletas.produto. In pricetrack, the equivalent free-text lives
-            # in `title`. Match either an exact title or sku.
-            parts = []
-            for p in products:
-                p_esc = p.replace(",", "")
-                parts.append(f"title.eq.{p_esc}")
-                parts.append(f"sku.eq.{p_esc}")
             if parts:
                 q = q.or_(",".join(parts))
         if btu_filter:
@@ -967,6 +1006,7 @@ def query_price_evolution_data(
         products=products,
         btu_filter=btu_filter,
         product_types=product_types,
+        skus_resolvidos=skus_resolvidos,
     )
 
     df_col = query_coletas(
