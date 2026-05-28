@@ -2087,8 +2087,14 @@ def page_import_history():
     st.caption("Upload historical CSV files to Supabase. Duplicates are ignored automatically.")
 
     OUTPUT_DIR = PROJECT_ROOT / "output"
+    PRICETRACK_IMPORT_DIR = PROJECT_ROOT / "imports" / "pricetrack"
 
-    tab_folder, tab_upload = st.tabs(["From output/ folder", "Upload files"])
+    tab_folder, tab_upload, tab_pt_folder, tab_pt_upload = st.tabs([
+        "From output/ folder",
+        "Upload files",
+        "PriceTrack — pasta",
+        "PriceTrack — upload",
+    ])
 
     # --- Tab 1: scan output/ folder ---
     with tab_folder:
@@ -2173,6 +2179,270 @@ def page_import_history():
                         st.success(f"✅ {total_rows:,} records imported. Duplicates ignored.")
                     else:
                         st.error("Upload failed. Check Supabase connection.")
+
+    # --- Tab 3: PriceTrack — pasta imports/pricetrack/ ---
+    with tab_pt_folder:
+        _render_pricetrack_folder_tab(PRICETRACK_IMPORT_DIR)
+
+    # --- Tab 4: PriceTrack — upload manual de .md/.xlsx ---
+    with tab_pt_upload:
+        _render_pricetrack_upload_tab(PRICETRACK_IMPORT_DIR)
+
+
+# ---------------------------------------------------------------------------
+# PriceTrack — helpers de UI para a Import History
+# ---------------------------------------------------------------------------
+
+_PRICETRACK_EXT = (".md", ".xlsx", ".xlsm")
+
+
+def _render_pricetrack_folder_tab(pricetrack_dir):
+    """Tab que escaneia imports/pricetrack/ e importa .md/.xlsx do PriceTrack."""
+    st.markdown(
+        "Escaneia a pasta `imports/pricetrack/` e importa todos os arquivos "
+        "`.md` ou `.xlsx` exportados do **PriceTrack** para a tabela "
+        "`pricetrack_daily`. Reimports são idempotentes (ON CONFLICT)."
+    )
+
+    pricetrack_dir.mkdir(parents=True, exist_ok=True)
+
+    files = sorted(
+        [f for f in pricetrack_dir.iterdir() if f.suffix.lower() in _PRICETRACK_EXT]
+    )
+
+    if not files:
+        st.info(
+            f"Nenhum arquivo `.md` ou `.xlsx` em `imports/pricetrack/`. "
+            f"Faça o export manual do PriceTrack e salve aqui, ou use a tab "
+            f"**PriceTrack — upload**."
+        )
+        return
+
+    preview_rows = []
+    for f in files:
+        try:
+            size_kb = f.stat().st_size / 1024
+        except OSError:
+            size_kb = 0
+        preview_rows.append(
+            {
+                "Arquivo": f.name,
+                "Tipo": f.suffix.lstrip("."),
+                "Tamanho (KB)": f"{size_kb:,.1f}",
+            }
+        )
+    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+    st.caption(f"Total: {len(files)} arquivo(s)")
+
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        force = st.checkbox(
+            "Forçar reimport (mesmo se já importado)",
+            value=False,
+            key="pt_folder_force",
+            help="Sem isto, arquivos já presentes em `pricetrack_import_log` "
+                 "com status SUCCESS são pulados.",
+        )
+    with col_b:
+        dry_run = st.checkbox(
+            "Dry-run (não escreve no Supabase)",
+            value=False,
+            key="pt_folder_dryrun",
+        )
+
+    if st.button("⬆️ Importar todos para Supabase", type="primary", key="pt_folder_btn"):
+        results = []
+        progress = st.progress(0, text="Iniciando...")
+        for i, f in enumerate(files):
+            progress.progress(
+                (i + 1) / len(files), text=f"Importando {f.name}..."
+            )
+            results.append(_run_pricetrack_import(f, dry_run=dry_run, force=force))
+        progress.empty()
+        _render_pricetrack_results(results)
+
+
+def _render_pricetrack_upload_tab(pricetrack_dir):
+    """Tab que aceita upload manual de .md/.xlsx do PriceTrack."""
+    st.markdown(
+        "Faça upload de um ou mais arquivos `.md` ou `.xlsx` do **PriceTrack**. "
+        "Os arquivos são salvos em `imports/pricetrack/` antes da importação."
+    )
+
+    uploaded = st.file_uploader(
+        "Selecione arquivos do PriceTrack",
+        type=["md", "xlsx", "xlsm"],
+        accept_multiple_files=True,
+        help="Markdown table (export 'tableConvert') ou .xlsx nativo do PriceTrack.",
+        key="pt_upload_files",
+    )
+
+    if not uploaded:
+        return
+
+    dry_run = st.checkbox(
+        "Dry-run (não escreve no Supabase)",
+        value=False,
+        key="pt_upload_dryrun",
+    )
+
+    if st.button(
+        f"⬆️ Importar {len(uploaded)} arquivo(s) para Supabase",
+        type="primary",
+        key="pt_upload_btn",
+    ):
+        pricetrack_dir.mkdir(parents=True, exist_ok=True)
+        results = []
+        progress = st.progress(0, text="Iniciando...")
+        for i, uf in enumerate(uploaded):
+            dest = pricetrack_dir / uf.name
+            try:
+                with open(dest, "wb") as fh:
+                    fh.write(uf.getbuffer())
+            except OSError as e:
+                results.append({
+                    "source_file": uf.name,
+                    "status": "FAILED",
+                    "error": f"Falha ao salvar arquivo: {e}",
+                    "rows": None,
+                    "log_path": None,
+                })
+                continue
+            progress.progress(
+                (i + 1) / len(uploaded), text=f"Importando {uf.name}..."
+            )
+            # Upload manual: força reimport (usuário escolheu enviar agora)
+            results.append(_run_pricetrack_import(dest, dry_run=dry_run, force=True))
+        progress.empty()
+        _render_pricetrack_results(results)
+
+
+def _run_pricetrack_import(path, *, dry_run: bool, force: bool) -> dict:
+    """Roda o importer para um arquivo e devolve um dict com o resumo."""
+    from pricetrack_importer.__main__ import _process_one
+
+    log_dir = PROJECT_ROOT / "logs" / "pricetrack"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        exec_log = _process_one(
+            path,
+            dry_run=dry_run,
+            force=force,
+            batch_size=1000,
+            log_dir=log_dir,
+        )
+    except Exception as e:
+        return {
+            "source_file": str(path.name),
+            "status": "FAILED",
+            "error": str(e),
+            "rows": None,
+            "log_path": None,
+            "rejection_samples": [],
+        }
+
+    return {
+        "source_file": str(path.name),
+        "status": exec_log.status,
+        "error": exec_log.error,
+        "rows": exec_log.rows,
+        "rejection_samples": list(exec_log.rejection_samples),
+        "unknown_sellers_count": exec_log.unknown_sellers_count,
+        "log_path": str(log_dir / f"{exec_log.execution_id}.json"),
+        "execution_id": exec_log.execution_id,
+    }
+
+
+def _render_pricetrack_results(results: list[dict]) -> None:
+    """Renderiza um resumo + amostras de rejeição para cada arquivo processado."""
+    if not results:
+        return
+
+    # Agregado no topo
+    total_inserted = 0
+    total_updated = 0
+    total_rejected = 0
+    total_parsed = 0
+    any_failed = False
+    for r in results:
+        if r.get("status") == "FAILED":
+            any_failed = True
+            continue
+        rows = r.get("rows")
+        if rows is None:
+            continue
+        total_inserted += rows.inserted
+        total_updated += rows.updated
+        total_rejected += rows.rejected
+        total_parsed += rows.total_parsed
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Parseadas", f"{total_parsed:,}")
+    c2.metric("Inseridas", f"{total_inserted:,}")
+    c3.metric("Atualizadas", f"{total_updated:,}")
+    c4.metric("Rejeitadas", f"{total_rejected:,}")
+
+    if any_failed:
+        st.error("Alguns arquivos falharam. Detalhes abaixo.")
+    elif total_inserted + total_updated == 0:
+        st.warning(
+            "Nenhuma linha foi escrita no Supabase. Pode ter sido dry-run "
+            "ou todos os arquivos já estavam importados (use **Forçar reimport**)."
+        )
+    else:
+        st.success(
+            f"✅ {total_inserted + total_updated:,} linhas escritas em "
+            f"`pricetrack_daily` (inseridas + atualizadas)."
+        )
+
+    # Detalhe por arquivo
+    for r in results:
+        status_icon = {"SUCCESS": "✓", "FAILED": "✗"}.get(r.get("status", ""), "?")
+        with st.expander(f"{status_icon} {r['source_file']}", expanded=r.get("status") == "FAILED"):
+            if r.get("status") == "FAILED":
+                st.error(r.get("error") or "Falha sem mensagem.")
+                continue
+
+            rows = r.get("rows")
+            if rows is None:
+                st.write("Sem contadores disponíveis.")
+                continue
+
+            cols = st.columns(5)
+            cols[0].metric("Parseou", rows.total_parsed)
+            cols[1].metric("Válidas", rows.valid)
+            cols[2].metric("Inseridas", rows.inserted)
+            cols[3].metric("Atualizadas", rows.updated)
+            cols[4].metric("Metadata", rows.metadata_skipped)
+
+            if rows.invalid_seller or rows.invalid_other:
+                st.caption(
+                    f"Rejeitadas: {rows.invalid_seller} seller inválido + "
+                    f"{rows.invalid_other} outros."
+                )
+
+            samples = r.get("rejection_samples") or []
+            if samples:
+                st.markdown("**Amostras de rejeição (primeiras 10):**")
+                df_rej = pd.DataFrame(samples[:10])
+                st.dataframe(df_rej, use_container_width=True, hide_index=True)
+
+            unknown_n = r.get("unknown_sellers_count", 0)
+            if unknown_n:
+                st.info(
+                    f"📝 {unknown_n} seller(s) sem match no mapa canônico. "
+                    f"Veja `logs/pricetrack/unknown_sellers.log` e considere "
+                    f"expandir `SELLER_CANONICAL` em `pricetrack_importer/seller_map.py`."
+                )
+
+            if r.get("log_path"):
+                st.caption(f"Log JSON: `{r['log_path']}`")
+            if r.get("error") == "ALREADY_IMPORTED_SKIPPED":
+                st.info(
+                    "Arquivo pulado (já importado anteriormente). "
+                    "Marque **Forçar reimport** para sobrescrever."
+                )
 
 
 # ---------------------------------------------------------------------------
