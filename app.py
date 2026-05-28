@@ -787,6 +787,224 @@ def query_coletas(
         return pd.DataFrame()
 
 
+_SUPABASE_PAGE_PT = 1000
+
+
+def query_pricetrack_daily(
+    start_date: date,
+    end_date: date,
+    platforms: list[str] | None = None,
+    brands: list[str] | None = None,
+    sellers: list[str] | None = None,
+    products: list[str] | None = None,
+    btu_filter: list[str] | None = None,
+    product_types: list[str] | None = None,
+    limit: int = 200000,
+) -> pd.DataFrame:
+    """Query the pricetrack_daily table and remap to the coletas schema.
+
+    Returned columns mirror coletas so the rest of the dashboard pipeline
+    works transparently: data, turno, plataforma, marca, produto, preco,
+    seller, keyword, posicao_geral, posicao_organica, tag.
+
+    Filters that don't apply (keyword/turno/posições) are silently ignored.
+    Marketplace/seller matching is case-insensitive (pricetrack uses
+    uppercase; coletas uses title-case).
+    """
+    client = _get_supabase()
+    if client is None:
+        return pd.DataFrame()
+
+    def _build_q():
+        q = (
+            client.table("pricetrack_daily")
+            .select(
+                "collection_date,brand,sku,title,marketplace,seller,"
+                "min_price,avg_price,mode_price,max_price,id"
+            )
+            .gte("collection_date", str(start_date))
+            .lte("collection_date", str(end_date))
+            .order("collection_date", desc=True)
+            .order("id", desc=True)
+        )
+        if brands:
+            # _expand_brands already registers upper/lower/title/capitalize
+            # variants of every alias, so the pricetrack uppercase values
+            # ("MIDEA") are covered when the user picks "Midea".
+            q = q.in_("brand", _expand_brands(brands))
+        if platforms:
+            # marketplace is uppercase in pricetrack_daily ("MERCADO LIVRE"),
+            # while sel_platforms uses canonical title-case ("Mercado Livre").
+            # Build a case-insensitive OR across all variants.
+            variants = _expand_platforms(platforms)
+            parts = [f"marketplace.ilike.{v}" for v in variants]
+            if parts:
+                q = q.or_(",".join(parts))
+        if sellers:
+            parts = [f"seller.ilike.{s}" for s in sellers]
+            if parts:
+                q = q.or_(",".join(parts))
+        if products:
+            # products from the SKU multiselect are full product names from
+            # coletas.produto. In pricetrack, the equivalent free-text lives
+            # in `title`. Match either an exact title or sku.
+            parts = []
+            for p in products:
+                p_esc = p.replace(",", "")
+                parts.append(f"title.eq.{p_esc}")
+                parts.append(f"sku.eq.{p_esc}")
+            if parts:
+                q = q.or_(",".join(parts))
+        if btu_filter:
+            parts = []
+            for btu in btu_filter:
+                parts.append(f"title.ilike.%{btu}%")
+                try:
+                    dotted = f"{int(btu):,}".replace(",", ".")
+                    if dotted != btu:
+                        parts.append(f"title.ilike.%{dotted}%")
+                except ValueError:
+                    pass
+            if parts:
+                q = q.or_(",".join(parts))
+        if product_types:
+            parts = []
+            for label in product_types:
+                for pat in PRODUCT_TYPE_OPTIONS.get(label, [label]):
+                    parts.append(f"title.ilike.%{pat}%")
+            if parts:
+                q = q.or_(",".join(parts))
+        return q
+
+    try:
+        all_data: list = []
+        last_date: str | None = None
+        last_id: int | None = None
+        while len(all_data) < limit:
+            fetch = min(_SUPABASE_PAGE_PT, limit - len(all_data))
+            q = _build_q()
+            if last_date is not None and last_id is not None:
+                q = q.or_(
+                    f"collection_date.lt.{last_date},"
+                    f"and(collection_date.eq.{last_date},id.lt.{last_id})"
+                )
+            resp = q.limit(fetch).execute()
+            if not resp.data:
+                break
+            all_data.extend(resp.data)
+            if len(resp.data) < fetch:
+                break
+            last_row = resp.data[-1]
+            last_date = str(last_row.get("collection_date")) if last_row.get("collection_date") else None
+            last_id = last_row.get("id")
+            if last_date is None or last_id is None:
+                break
+
+        if not all_data:
+            return pd.DataFrame()
+
+        raw = pd.DataFrame(all_data)
+        preco = pd.to_numeric(raw.get("mode_price"), errors="coerce")
+        # Fallback chain for missing mode: avg → min → max
+        preco = preco.fillna(pd.to_numeric(raw.get("avg_price"), errors="coerce"))
+        preco = preco.fillna(pd.to_numeric(raw.get("min_price"), errors="coerce"))
+        preco = preco.fillna(pd.to_numeric(raw.get("max_price"), errors="coerce"))
+
+        df = pd.DataFrame({
+            "data":             pd.to_datetime(raw["collection_date"]).dt.date,
+            "turno":            "PriceTrack",
+            "plataforma":       raw.get("marketplace"),
+            "marca":            raw.get("brand"),
+            "produto":          raw.get("title"),
+            "preco":            preco,
+            "seller":           raw.get("seller"),
+            "keyword":          pd.NA,
+            "posicao_geral":    pd.array([pd.NA] * len(raw), dtype="Int64"),
+            "posicao_organica": pd.array([pd.NA] * len(raw), dtype="Int64"),
+            "tag":              pd.NA,
+            "source":           "pricetrack",
+        })
+        if _MARCA_TO_CANONICAL:
+            df["marca"] = df["marca"].map(
+                lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
+            )
+        return df
+    except Exception as exc:
+        st.warning(f"Erro consultando pricetrack_daily: {exc}")
+        return pd.DataFrame()
+
+
+def query_price_evolution_data(
+    start_date: date,
+    end_date: date,
+    platforms: list[str] | None = None,
+    platform_types: list[str] | None = None,
+    brands: list[str] | None = None,
+    sellers: list[str] | None = None,
+    keywords: list[str] | None = None,
+    products: list[str] | None = None,
+    btu_filter: list[str] | None = None,
+    product_types: list[str] | None = None,
+    familias_resolvidas: list[str] | None = None,
+    skus_resolvidos: list[str] | None = None,
+    limit: int = 50000,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Combined source for the Price Evolution page.
+
+    Precedence rule (requested 2026-05-28): for any date with rows in
+    `pricetrack_daily`, those rows are authoritative and the `coletas`
+    rows of the same date are dropped. Dates without pricetrack data
+    keep their `coletas` rows untouched.
+
+    Returns (df, meta) where meta has counts for the info banner.
+    """
+    df_pt = query_pricetrack_daily(
+        start_date, end_date,
+        platforms=platforms,
+        brands=brands,
+        sellers=sellers,
+        products=products,
+        btu_filter=btu_filter,
+        product_types=product_types,
+    )
+
+    df_col = query_coletas(
+        start_date, end_date,
+        platforms=platforms,
+        platform_types=platform_types,
+        brands=brands,
+        sellers=sellers,
+        keywords=keywords,
+        products=products,
+        btu_filter=btu_filter,
+        product_types=product_types,
+        familias_resolvidas=familias_resolvidas,
+        skus_resolvidos=skus_resolvidos,
+        limit=limit,
+    )
+
+    if "source" not in df_col.columns and not df_col.empty:
+        df_col = df_col.assign(source="coletas")
+
+    pt_dates = set(df_pt["data"].unique().tolist()) if not df_pt.empty else set()
+    if pt_dates and not df_col.empty:
+        df_col = df_col[~df_col["data"].isin(pt_dates)]
+
+    if df_pt.empty and df_col.empty:
+        return pd.DataFrame(), {"pricetrack_dates": 0, "coletas_dates": 0,
+                                 "pricetrack_rows": 0, "coletas_rows": 0}
+
+    df = pd.concat([df_pt, df_col], ignore_index=True, sort=False)
+    meta = {
+        "pricetrack_dates": len(pt_dates),
+        "coletas_dates":    int(df_col["data"].nunique()) if not df_col.empty else 0,
+        "pricetrack_rows":  int(len(df_pt)),
+        "coletas_rows":     int(len(df_col)),
+    }
+    return df, meta
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def get_filter_options() -> dict:
     """Fetch distinct values for filter dropdowns (last 90 days), paginated."""
@@ -1976,7 +2194,7 @@ def page_price_evolution():
         return
 
     with st.spinner("Loading data..."):
-        df = query_coletas(
+        df, evo_meta = query_price_evolution_data(
             start_date,
             end_date,
             platforms=sel_platforms or None,
@@ -1998,6 +2216,17 @@ def page_price_evolution():
     if df.empty or "preco" not in df.columns:
         st.warning("No price data found for the selected filters.")
         return
+
+    # Banner de transparência: indica que PriceTrack tem precedência por data.
+    if evo_meta.get("pricetrack_rows", 0) > 0:
+        st.info(
+            f"📥 **PriceTrack** cobrindo {evo_meta['pricetrack_dates']} "
+            f"data(s) ({evo_meta['pricetrack_rows']:,} linhas) · "
+            f"**Coletas** preenchendo as demais "
+            f"({evo_meta['coletas_dates']} data(s), "
+            f"{evo_meta['coletas_rows']:,} linhas)."
+            .replace(",", ".")
+        )
 
     # --- Summary metrics with enhanced cards ---
     st.markdown("""
