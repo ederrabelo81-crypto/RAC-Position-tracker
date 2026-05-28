@@ -18,3 +18,5 @@ anthropic>=0.40.0
 # Screenshots (opcional — usado quando ENABLE_SCREENSHOTS=True)
 Pillow>=10.0.0
 filelock>=3.13.0
+# Leitor de .xlsx (PriceTrack uploads via Streamlit Import History)
+openpyxl>=3.1.0
