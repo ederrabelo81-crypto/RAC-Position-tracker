@@ -91,6 +91,8 @@ PLATFORM_NAME_MAP: Dict[str, str] = {
     "magalu":          "Magalu",
     "google_shopping": "Google Shopping",
     "leroy":           "Leroy Merlin",
+    "casasbahia":      "Casas Bahia",
+    "shopee":          "Shopee",
 }
 
 # Thresholds: (min_abertura, min_fechamento, critical)
@@ -100,6 +102,8 @@ PLATFORM_THRESHOLDS: Dict[str, Tuple[int, int, bool]] = {
     "Magalu":           (400, 300,  True),
     "Google Shopping":  (200, 200,  False),  # roda só Fechamento normalmente
     "Leroy Merlin":     (200, 200,  True),
+    "Casas Bahia":      (100, 50,   False),  # VTEX API + warm-up Akamai
+    "Shopee":           (50,  30,   False),  # best-effort sem proxy — não-crítica
 }
 
 # Dealers: cada um tem uma keyword (o nome do site) e poucos itens por turno.
