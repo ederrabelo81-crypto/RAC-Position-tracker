@@ -1,0 +1,4 @@
+# Ignora arquivos de export baixados (podem ter centenas de MB cada)
+*.ndjson.gz
+*.ndjson
+*.gz
