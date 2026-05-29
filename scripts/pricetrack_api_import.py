@@ -26,7 +26,7 @@ import os
 import sys
 import time
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -132,6 +132,20 @@ def parse_ndjson_gz(path: Path) -> pd.DataFrame:
     return pd.DataFrame(records) if records else pd.DataFrame()
 
 
+# Candidatos de nome de coluna (lowercase) por campo lógico.
+# O NDJSON do export pode usar grafias diferentes do schema OpenAPI.
+_PRICE_FIELDS = (
+    "spotprice", "spot_price", "pixprice", "pix_price", "price",
+    "forwardprice", "forward_price", "saleprice", "sale_price",
+    "preco", "preco_avista", "valor",
+)
+_BRAND_FIELDS = ("brand", "productbrand", "product_brand", "marca")
+_SKU_FIELDS = ("sku", "productsku", "product_sku", "sku_code", "codigo", "cod")
+_TITLE_FIELDS = ("productname", "product_name", "title", "name", "produto", "titulo")
+_MARKETPLACE_FIELDS = ("marketplace", "market", "loja_marketplace")
+_SELLER_FIELDS = ("seller", "vendedor", "store", "loja")
+
+
 def _mode(series: pd.Series) -> float:
     m = series.dropna().mode()
     if len(m) > 0:
@@ -140,58 +154,83 @@ def _mode(series: pd.Series) -> float:
     return float(v.mean()) if len(v) > 0 else 0.0
 
 
+def _pick_text(df: pd.DataFrame, lookup: Dict[str, str],
+               candidates: Tuple[str, ...], default: str = "") -> pd.Series:
+    """Devolve a primeira coluna textual encontrada (case-insensitive)."""
+    for cand in candidates:
+        if cand in lookup:
+            return df[lookup[cand]].fillna(default).astype(str).str.strip()
+    return pd.Series([default] * len(df), index=df.index, dtype="object")
+
+
+def _pick_price(df: pd.DataFrame, lookup: Dict[str, str]) -> pd.Series:
+    """Combina os candidatos de preço, preenchendo nulos com o próximo campo."""
+    price = pd.Series([float("nan")] * len(df), index=df.index, dtype="float64")
+    for cand in _PRICE_FIELDS:
+        if cand in lookup:
+            col = pd.to_numeric(df[lookup[cand]], errors="coerce")
+            price = price.fillna(col)
+    return price
+
+
 def aggregate_offers(df: pd.DataFrame, collection_date: str) -> pd.DataFrame:
     """
     Agrega ofertas brutas para o formato daily (min/avg/mode/max por grupo).
 
-    Grupo: (collection_date, brand, sku, productName, marketplace, seller).
-    Preço usado: spotPrice; fallback para pixPrice se spotPrice nulo.
+    Grupo: (collection_date, brand, sku, title, marketplace, seller).
+    Resolve nomes de campo de forma case-insensitive com múltiplos candidatos,
+    pois o NDJSON do bulk export pode divergir do schema OpenAPI.
+
+    Filtro único: descarta apenas linhas sem preço válido (> 0). brand/sku/
+    title vazios são mantidos (a tabela aceita string vazia) — melhor importar
+    com identificador parcial do que perder a oferta.
+
+    Em caso de zero linhas válidas, loga as colunas do arquivo e um registro
+    de exemplo para diagnóstico do schema real.
     """
     if df.empty:
         return pd.DataFrame()
 
-    # Normaliza nomes de colunas para lowercase sem espaços
-    df.columns = [c.strip() for c in df.columns]
+    df.columns = [str(c).strip() for c in df.columns]
+    lookup = {c.lower(): c for c in df.columns}
 
-    # Escolhe coluna de preço
-    if "spotPrice" in df.columns:
-        df["_price"] = pd.to_numeric(df["spotPrice"], errors="coerce")
-    else:
-        df["_price"] = pd.Series(dtype=float)
+    price = _pick_price(df, lookup)
+    n_with_price = int(price.notna().sum())
 
-    if "pixPrice" in df.columns:
-        pix = pd.to_numeric(df["pixPrice"], errors="coerce")
-        df["_price"] = df["_price"].fillna(pix)
+    work = pd.DataFrame({
+        "_price": price,
+        "brand": _pick_text(df, lookup, _BRAND_FIELDS).str.upper(),
+        "sku": _pick_text(df, lookup, _SKU_FIELDS),
+        "title": _pick_text(df, lookup, _TITLE_FIELDS),
+        "marketplace": _pick_text(df, lookup, _MARKETPLACE_FIELDS),
+        "seller": _pick_text(df, lookup, _SELLER_FIELDS),
+    })
 
-    # Descarta linhas sem preço ou sem identificadores chave
-    for col in ("brand", "sku", "marketplace", "seller"):
-        if col not in df.columns:
-            df[col] = ""
+    before = len(work)
+    work = work.dropna(subset=["_price"])
+    work = work[work["_price"] > 0]
+    dropped_no_price = before - len(work)
 
-    title_col = "productName" if "productName" in df.columns else "title"
-    if title_col not in df.columns:
-        df["_title"] = ""
-    else:
-        df["_title"] = df[title_col].fillna("").astype(str).str.strip()
-
-    df = df.dropna(subset=["_price"])
-    df = df[df["_price"] > 0]
-
-    if df.empty:
+    if work.empty:
+        logger.warning(
+            f"{collection_date} — 0 linhas válidas após filtro de preço.\n"
+            f"  Preço presente em {n_with_price:,}/{before:,} ofertas.\n"
+            f"  Colunas no arquivo ({len(df.columns)}): {list(df.columns)}"
+        )
+        sample = df.iloc[0].to_dict()
+        logger.warning(
+            f"{collection_date} — registro de exemplo:\n"
+            f"{json.dumps(sample, ensure_ascii=False, default=str)[:2000]}"
+        )
         return pd.DataFrame()
 
-    df["_brand"] = df["brand"].fillna("").astype(str).str.strip().str.upper()
-    df["_sku"] = df["sku"].fillna("").astype(str).str.strip()
-    df["_marketplace"] = df["marketplace"].fillna("").astype(str).str.strip()
-    df["_seller"] = df["seller"].fillna("").astype(str).str.strip()
-
-    # Remove linhas sem brand, sku ou marketplace
-    df = df[(df["_brand"] != "") & (df["_sku"] != "") & (df["_marketplace"] != "")]
-
-    group_cols = ["_brand", "_sku", "_title", "_marketplace", "_seller"]
+    logger.debug(
+        f"{collection_date} — preço presente em {n_with_price:,}/{before:,} ofertas; "
+        f"{dropped_no_price:,} descartadas sem preço"
+    )
 
     agg = (
-        df.groupby(group_cols)["_price"]
+        work.groupby(["brand", "sku", "title", "marketplace", "seller"])["_price"]
         .agg(
             min_price="min",
             avg_price="mean",
@@ -202,18 +241,10 @@ def aggregate_offers(df: pd.DataFrame, collection_date: str) -> pd.DataFrame:
     )
 
     agg["collection_date"] = collection_date
-    agg["seller_canonical"] = agg["_seller"].apply(normalize_seller)
+    agg["seller_canonical"] = agg["seller"].apply(normalize_seller)
     agg["source_file"] = f"api-{collection_date}"
 
-    return agg.rename(
-        columns={
-            "_brand": "brand",
-            "_sku": "sku",
-            "_title": "title",
-            "_marketplace": "marketplace",
-            "_seller": "seller",
-        }
-    )[[
+    return agg[[
         "collection_date", "brand", "sku", "title",
         "marketplace", "seller", "seller_canonical",
         "min_price", "avg_price", "mode_price", "max_price",
@@ -221,29 +252,77 @@ def aggregate_offers(df: pd.DataFrame, collection_date: str) -> pd.DataFrame:
     ]]
 
 
+def inspect_file(path: Path) -> None:
+    """Imprime o schema real de um arquivo NDJSON.gz já baixado (diagnóstico)."""
+    if not path.exists():
+        available = sorted(_DOWNLOAD_DIR.glob("offers-*.ndjson.gz"))
+        print(f"Arquivo não encontrado: {path}")
+        if available:
+            print("\nArquivos disponíveis:")
+            for p in available:
+                print(f"  {p.name}")
+        else:
+            print(f"Nenhum arquivo em {_DOWNLOAD_DIR}")
+        return
+
+    df = parse_ndjson_gz(path)
+    print(f"Arquivo: {path}")
+    print(f"Total de registros: {len(df):,}")
+    if df.empty:
+        return
+
+    print(f"\nColunas ({len(df.columns)}):")
+    for c in df.columns:
+        non_null = int(df[c].notna().sum())
+        sample_val = df[c].dropna().iloc[0] if non_null > 0 else "—"
+        sample_str = str(sample_val)[:50]
+        print(f"  {c:28s} | {non_null:>8,} preenchidos | ex: {sample_str}")
+
+    print("\n--- Primeiro registro (JSON) ---")
+    print(json.dumps(df.iloc[0].to_dict(), ensure_ascii=False, indent=2, default=str))
+
+
 # ── Supabase ────────────────────────────────────────────────────────────────
 
+_CLIENT = None
+
+
 def _supabase_client():
+    """Cria (e memoiza) o cliente Supabase reutilizado em todo o script."""
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
     if not url or not key:
         raise EnvironmentError("SUPABASE_URL e SUPABASE_KEY não configurados no .env")
-    return create_client(url, key)
+    _CLIENT = create_client(url, key)
+    return _CLIENT
 
 
-def get_existing_dates(dry_run: bool = False) -> Set[str]:
-    """Retorna datas já presentes em pricetrack_daily."""
+def date_exists(collection_date: str, dry_run: bool = False) -> bool:
+    """
+    Verifica se uma data já tem linhas em pricetrack_daily.
+
+    Faz uma query pontual `limit(1)` por data — exato e barato, evitando o
+    bug do `select` global (PostgREST devolve no máx. 1000 linhas por padrão,
+    o que fazia a contagem de datas existentes ficar incorreta).
+    """
     if dry_run or not _HAS_SUPABASE:
-        return set()
+        return False
     try:
         client = _supabase_client()
-        resp = client.table(_TABLE).select("collection_date").execute()
-        dates = {row["collection_date"] for row in resp.data}
-        logger.info(f"Supabase: {len(dates)} datas já importadas")
-        return dates
+        resp = (
+            client.table(_TABLE)
+            .select("id")
+            .eq("collection_date", collection_date)
+            .limit(1)
+            .execute()
+        )
+        return len(resp.data) > 0
     except Exception as e:
-        logger.warning(f"Não foi possível consultar datas existentes: {e}")
-        return set()
+        logger.warning(f"Não foi possível verificar {collection_date} no banco: {e}")
+        return False
 
 
 def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
@@ -279,10 +358,11 @@ def log_import(
         return
     try:
         client = _supabase_client()
+        now_iso = datetime.now(timezone.utc).isoformat()
         client.table(_LOG_TABLE).insert({
             "source_file": source_file,
-            "import_started": datetime.utcnow().isoformat(),
-            "import_finished": datetime.utcnow().isoformat(),
+            "import_started": now_iso,
+            "import_finished": now_iso,
             "rows_total": rows_total,
             "rows_inserted": rows_inserted,
             "rows_updated": 0,
@@ -467,28 +547,34 @@ def run(
     progress = load_progress()
 
     done_set: Set[str] = set(progress["completed"]) | set(progress["skipped"])
-    if not force:
-        existing = get_existing_dates(dry_run=dry_run)
-        done_set |= existing
 
-    # Gera lista de datas a processar
+    # Gera lista de datas a processar. A checagem no banco é por data
+    # (limit 1), evitando o bug de paginação do select global.
     dates_to_process: List[str] = []
+    skipped_existing = 0
     cur = start
     while cur <= end:
         ds = cur.isoformat()
-        if ds not in done_set or force:
+        if force:
+            dates_to_process.append(ds)
+        elif ds in done_set:
+            skipped_existing += 1
+        elif date_exists(ds, dry_run=dry_run):
+            skipped_existing += 1
+        else:
             dates_to_process.append(ds)
         cur += timedelta(days=1)
 
     total = len(dates_to_process)
-    logger.info(f"Datas a importar: {total} ({start} → {end})")
+    logger.info(
+        f"Datas a importar: {total} ({start} → {end}); "
+        f"{skipped_existing} já no banco/progresso"
+    )
     if total == 0:
         logger.success("Nada a importar — tudo já está no banco.")
         return
 
-    # Processa em lotes de `concurrent` (respeita limite de 3 exports simultâneos)
     stats = {"completed": 0, "failed": 0, "no_data": 0, "total_rows": 0}
-    batch_size = min(concurrent, _MAX_CONCURRENT)
 
     for i, ds in enumerate(dates_to_process, 1):
         logger.info(f"[{i}/{total}] Processando {ds} ...")
@@ -559,7 +645,19 @@ def main() -> None:
         choices=[1, 2, 3],
         help="Exports concorrentes (máx 3). Padrão: 3",
     )
+    parser.add_argument(
+        "--inspect",
+        action="store_true",
+        help="Inspeciona o schema do arquivo NDJSON.gz já baixado para a data "
+             "--start (não baixa nada) e sai. Use para descobrir os nomes "
+             "reais dos campos.",
+    )
     args = parser.parse_args()
+
+    # ── Modo inspeção: dump do schema de um arquivo já baixado ────────────
+    if args.inspect:
+        inspect_file(_DOWNLOAD_DIR / f"offers-{args.start}.ndjson.gz")
+        return
 
     # ── Configura logger ──────────────────────────────────────────────────
     log_path = _PROJECT_ROOT / "logs" / f"pricetrack_api_import_{date.today()}.log"
