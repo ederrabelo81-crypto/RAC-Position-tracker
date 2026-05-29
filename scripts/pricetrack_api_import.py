@@ -646,8 +646,14 @@ def run(
             progress["completed"].append(ds)
             stats["completed"] += 1
             stats["total_rows"] += rows
-        elif result in ("no_data", "empty"):
+        elif result == "no_data":
+            # 409 da API: data genuinamente sem coleta — não tenta de novo
             progress["skipped"].append(ds)
+            stats["no_data"] += 1
+        elif result == "empty":
+            # 0 linhas após filtro/parse — pode ser bug ou categoria ausente;
+            # NÃO marca como skipped para permitir reprocessamento automático
+            progress["failed"].append(ds)
             stats["no_data"] += 1
         elif result == "failed":
             progress["failed"].append(ds)
