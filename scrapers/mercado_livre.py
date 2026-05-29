@@ -344,6 +344,10 @@ class MLScraper(BaseScraper):
                     seller = el.get_text(strip=True)
                     break
 
+            # --- tipo de seller: presença do selo de loja oficial ---
+            is_official = bool(item.select_one(".ui-search-official-store-label"))
+            tipo_seller = "Loja Oficial" if is_official else "3P"
+
             # --- fulfillment ---
             fulfillment = self._is_fulfillment(item)
 
@@ -380,6 +384,8 @@ class MLScraper(BaseScraper):
                 position_sponsored=pos_sponsored,
                 price_float=price,
                 seller=seller,
+                buy_box_seller=seller,
+                tipo_seller=tipo_seller,
                 is_fulfillment=fulfillment,
                 rating=rating,
                 review_count=review_count,

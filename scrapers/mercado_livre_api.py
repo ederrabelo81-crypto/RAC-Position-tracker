@@ -202,6 +202,17 @@ class MLAPIScraper(BaseScraper):
         seller_info = item.get("seller") or {}
         seller_name = seller_info.get("nickname") or None
 
+        # Tipo de seller: official_store_id != null → Loja Oficial (1P/marca).
+        # caso contrário, vendedor 3P comum do marketplace.
+        official_store = item.get("official_store_id")
+        tipo_seller = "Loja Oficial" if official_store else "3P"
+
+        # Reputação do seller (quando a busca traz seller.seller_reputation)
+        reputation = (seller_info.get("seller_reputation") or {})
+        reputacao_seller = (
+            reputation.get("level_id") or reputation.get("power_seller_status") or None
+        )
+
         # Fulfillment: logistic_type="fulfillment" = Mercado Envios Full
         shipping       = item.get("shipping") or {}
         is_fulfillment = shipping.get("logistic_type") == "fulfillment"
@@ -225,6 +236,9 @@ class MLAPIScraper(BaseScraper):
             position_sponsored=None,
             price_float=float(price) if price is not None else None,
             seller=seller_name,
+            buy_box_seller=seller_name,
+            tipo_seller=tipo_seller,
+            reputacao_seller=reputacao_seller,
             is_fulfillment=is_fulfillment,
             rating=float(rating) if rating is not None else None,
             review_count=int(review_count) if review_count is not None else None,
