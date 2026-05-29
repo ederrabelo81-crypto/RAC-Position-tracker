@@ -50,6 +50,38 @@
 **Right:** `seen_titles_this_page` set in `_parse_results_dom()` + `_deduplicate()` key is (platform, title) WITHOUT position. Positions reatributed after dedup.
 **Files:** `scrapers/dealers.py`
 
+## 8b. Casas Bahia — Session curl_cffi nova por request (warm-up perdido)
+
+**Wrong:** Criar uma `_cffi_requests.Session()` nova dentro de cada GET de API.
+**Why:** O Akamai vincula o cookie `_abck` à sessão TLS que o emitiu. O warm-up
+na home só serve se a chamada de API seguinte reusar a MESMA session com os
+cookies frescos. Session nova por request descarta o warm-up → 403/HTML.
+**Right:** `_get_warmed_session()` cria UMA session, injeta cookies manuais
+(opcional), faz GET na home (Akamai emite `_abck`/`bm_sz`/`ak_bmsc`) e cacheia
+por ~10min. Todas as chamadas de API reusam essa session.
+**Files:** `scrapers/casas_bahia.py` `_get_warmed_session()`, `_vtex_cffi_search()`
+
+## 8c. Shopee — API v4 sem sessão/proxy (90309999)
+
+**Wrong:** Bater na API v4 sem cookies ou de IP de datacenter e esperar dados.
+**Why:** error=90309999 = anti-fraude; falta o header `af-ac-enc-dat` (gerado
+pela JS) e/ou o IP é datacenter (marcado antes do fingerprint).
+**Right:** Carregar sessão capturada (`session_grabber.py --site shopee`:
+cookies `SPC_*`+`csrftoken`), replay via curl_cffi (impersonate chrome124),
+throttle 3-7s/página. É **best-effort sem proxy BR** — re-capturar sessão
+periodicamente. `captcha_hit=True` aborta keywords restantes.
+**Files:** `scrapers/shopee.py` `_fetch_page()`, `_log_api_error()`
+
+## 9. Insights de buy box — usar `_build_record` novos campos
+
+**Wrong:** Continuar só com `seller`/`price` ao adicionar um scraper.
+**Why:** O foco agora é buy box/seller. `_build_record` aceita `buy_box_seller`,
+`qtd_sellers`, `tipo_seller`, `reputacao_seller`; o DB tem essas colunas
+(migration 003) e o upload degrada gracioso se faltarem.
+**Right:** Preencher os campos de insight quando a plataforma os expõe (VTEX
+`sellers[]`, official_store_id do ML, is_official_shop da Shopee, etc.).
+**Files:** `scrapers/base.py` `_build_record()`, `utils/supabase_client.py` `_COLUMN_MAP`
+
 ## 8. Amazon Seller Field Captures Rating
 
 **Wrong:** Use `.a-size-small.a-color-base` selector for seller name.

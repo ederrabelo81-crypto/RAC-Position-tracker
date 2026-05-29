@@ -18,10 +18,10 @@ RAC-Position-tracker/
 │   ├── magalu.py              # MagaluScraper — Magazine Luiza (nm-* design + Radware)
 │   ├── google_shopping.py     # GoogleShoppingScraper — Google Shopping PLAs
 │   ├── leroy_merlin.py        # LeroyMerlinScraper — Algolia API direct
-│   ├── shopee.py              # ShopeeScraper — ⏸️ stand-by (auth needed)
-│   ├── casas_bahia.py         # CasasBahiaScraper — ⏸️ stand-by (Akamai WAF)
+│   ├── shopee.py              # ShopeeScraper — API v4 + sessão (curl_cffi, best-effort)
+│   ├── casas_bahia.py         # CasasBahiaScraper — VTEX IS + warm-up Akamai (sellers[])
 │   ├── fast_shop.py           # FastShopScraper — ⏸️ stand-by
-│   └── dealers.py             # DealerScraper — 13 dealers (VTEX/WooCommerce/custom)
+│   └── dealers.py             # DealerScraper — ⏸️ fora do foco (ACTIVE_PLATFORMS off)
 │
 ├── utils/
 │   ├── text.py                # parse_price, parse_rating, parse_review_count, normalize_text
@@ -63,7 +63,9 @@ all_records → DataFrame → CSV (output/)
 - `_launch()` — Playwright start, Chrome→msedge→Chromium fallback, stealth JS
 - `_close()` — Clean browser shutdown
 - `_rotate_browser()` — Close + relaunch with new User-Agent (Radware mitigation)
-- `_build_record()` — Standardized dict for DataFrame row
+- `_build_record()` — Standardized dict for DataFrame row. Foco Mai/2026:
+  campos de insight `buy_box_seller`, `qtd_sellers`, `tipo_seller`,
+  `reputacao_seller`, `Patrocinado?` (preço é secundário)
 - `_random_delay()`, `_human_scroll()`, `_wait_for_network_idle()`
 
 ### DealerScraper (scrapers/dealers.py)
