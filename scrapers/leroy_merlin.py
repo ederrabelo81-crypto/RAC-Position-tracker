@@ -543,6 +543,8 @@ class LeroyMerlinScraper(BaseScraper):
                 )
 
             seller = self._extract_algolia_seller(hit)
+            # 1P = sortimento próprio Leroy; qualquer outro = 3P marketplace
+            tipo_seller = "1P" if (seller or "").strip() == "Leroy Merlin" else "3P"
 
             rating = (
                 hit.get("rating")
@@ -571,6 +573,8 @@ class LeroyMerlinScraper(BaseScraper):
                 position_sponsored=None,
                 price_float=price_float,
                 seller=seller,
+                buy_box_seller=seller,
+                tipo_seller=tipo_seller,
                 is_fulfillment=False,
                 rating=float(rating) if rating else None,
                 review_count=int(review_count) if review_count else None,

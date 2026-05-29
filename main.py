@@ -49,6 +49,7 @@ from scrapers.magalu import MagaluScraper
 from scrapers.casas_bahia import CasasBahiaScraper
 from scrapers.google_shopping import GoogleShoppingScraper
 from scrapers.leroy_merlin import LeroyMerlinScraper
+from scrapers.shopee import ShopeeScraper
 from scrapers.fast_shop import FastShopScraper
 from scrapers.dealers import DealerScraper, DEALER_CONFIGS
 
@@ -62,6 +63,7 @@ SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
     "casasbahia":     CasasBahiaScraper,
     "google_shopping": GoogleShoppingScraper,
     "leroy":          LeroyMerlinScraper,
+    "shopee":         ShopeeScraper,
     "fast":           FastShopScraper,
     "dealers":        DealerScraper,
 }
@@ -89,12 +91,19 @@ COLUMN_ORDER = [
     "Posição Orgânica",
     "Posição Patrocinada",
     "Posição Geral",
-    "Preço (R$)",
+    "Patrocinado?",
+    # ── Insights de buy box / seller (foco principal — Mai/2026) ──
+    "Buy Box Seller",
+    "Qtd Sellers",
+    "Tipo Seller",
+    "Reputação Seller",
     "Seller / Vendedor",
     "Fulfillment?",
     "Avaliação",
     "Qtd Avaliações",
     "Tag Destaque",
+    # ── Preço: campo secundário ──
+    "Preço (R$)",
     "URL Produto",
     "Screenshot Busca",
     "Screenshot Produto",
@@ -163,6 +172,7 @@ def _export_csv(records: List[Dict[str, Any]], output_dir: str) -> Path:
     df["Preço (R$)"]     = pd.to_numeric(df["Preço (R$)"], errors="coerce")
     df["Avaliação"]      = pd.to_numeric(df["Avaliação"], errors="coerce")
     df["Qtd Avaliações"] = pd.to_numeric(df["Qtd Avaliações"], errors="coerce").astype("Int64")
+    df["Qtd Sellers"]    = pd.to_numeric(df["Qtd Sellers"], errors="coerce").astype("Int64")
 
     # encoding utf-8-sig → Excel abre corretamente no Brasil
     df.to_csv(filepath, index=False, encoding="utf-8-sig", sep=";")
@@ -513,8 +523,8 @@ def demo() -> None:
 
         # Exibe primeiras linhas no terminal
         df = pd.DataFrame(records)[[
-            "Marca Monitorada", "Produto / SKU", "Preço (R$)",
-            "Posição Orgânica", "Posição Patrocinada", "Fulfillment?",
+            "Marca Monitorada", "Produto / SKU", "Posição Geral",
+            "Buy Box Seller", "Tipo Seller", "Qtd Sellers", "Preço (R$)",
         ]]
         logger.info(f"\n{df.head(10).to_string(index=False)}")
     else:

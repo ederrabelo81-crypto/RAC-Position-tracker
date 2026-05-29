@@ -1,19 +1,24 @@
 """
-config.py — Configurações globais do bot de monitoramento de preços.
+config.py — Configurações globais do bot de inteligência competitiva RAC.
 
-Status das plataformas (validado em produção — Mai/2026):
+FOCO (a partir de Mai/2026): buy box, sellers e insights de competição.
+  Preço continua coletado, porém como campo SECUNDÁRIO. O protagonista agora
+  é quem vence a buy box, quantos sellers competem, tipo/reputação do seller,
+  share of shelf por marca/seller e orgânico vs patrocinado.
+
+Plataformas monitoradas (7) — dealers/varejistas especializados saíram do foco:
   ✅ Mercado Livre   — funcional (popup de CEP tratado automaticamente)
-  ✅ Amazon          — funcional
-  ✅ Magalu          — Python + curl_cffi (Akamai bypass via TLS chrome impersonation)
-                       Sem browser; bate em _next/data JSON do Next.js.
-                       Substitui o scraper Puppeteer (magalu_shopee/) bloqueado.
-  ✅ Google Shopping — funcional
-  ✅ Leroy Merlin    — funcional (Algolia API, preço via averagePromotionalPrice)
+  ✅ Amazon          — buy box via "Vendido por" / "Enviado por"
+  ✅ Magalu          — Python + curl_cffi/browser (Akamai); seller 1P vs 3P
+  ✅ Google Shopping — merchants/ofertas por produto
+  ✅ Leroy Merlin    — Algolia API (1P Leroy vs 3P marketplace)
+  ✅ Casas Bahia     — VTEX intelligent-search API + warm-up de cookies Akamai;
+                       array sellers[] expõe vencedor da buy box (sellerDefault)
+  🟡 Shopee          — API v4 (search_items) + sessão capturada; flags
+                       is_official_shop (Mall) e is_preferred_plus_seller.
+                       BEST-EFFORT: instável sem proxy residencial BR; sessão
+                       expira em horas → re-capturar com session_grabber.
   ⏸️  Fast Shop       — bloqueio total (PerimeterX bloqueia API + browser timeout)
-  ⏸️  Casas Bahia    — em stand by (WAF Akamai, requer sessão via session_grabber)
-
-Shopee continua no projeto Node.js/TypeScript em magalu_shopee/ (sessão
-autenticada). Magalu retornou ao Python via curl_cffi.
 """
 
 import os
@@ -96,13 +101,14 @@ PRIORITY_FILTER: Optional[List[str]] = None  # ex: ["alta"] para coletas rápida
 # ---------------------------------------------------------------------------
 ACTIVE_PLATFORMS = {
     "ml":             True,   # ✅ Mercado Livre — funcional
-    "amazon":         True,   # ✅ Amazon — extração de seller corrigida
-    "magalu":         True,   # ✅ Magalu — Python+curl_cffi (Akamai bypass via TLS impersonation)
-    "casasbahia":     False,  # ⏸️  Casas Bahia — em stand by
-    "google_shopping":True,   # ✅ Google Shopping — limpeza de título corrigida
-    "leroy":          True,   # ✅ Leroy Merlin — funcional (Algolia API)
+    "amazon":         True,   # ✅ Amazon — buy box via "Vendido por"
+    "magalu":         True,   # ✅ Magalu — Python+curl_cffi/browser (Akamai bypass)
+    "casasbahia":     True,   # ✅ Casas Bahia — VTEX IS API + warm-up Akamai (sellers[])
+    "google_shopping":True,   # ✅ Google Shopping — merchants/ofertas por produto
+    "leroy":          True,   # ✅ Leroy Merlin — Algolia API (1P vs 3P marketplace)
+    "shopee":         True,   # 🟡 Shopee — API v4 + sessão (best-effort, instável sem proxy)
     "fast":           False,  # ⏸️  Fast Shop — bloqueio total (PerimeterX + browser timeout)
-    "dealers":        True,   # ✅ Dealers/varejistas especializados
+    "dealers":        False,  # ⏸️  Dealers — fora do foco (insights de marketplace)
 }
 
 # ---------------------------------------------------------------------------

@@ -131,6 +131,10 @@ class CasasBahiaScraper(BaseScraper):
     def __init__(self, headless: bool = True) -> None:
         super().__init__(headless=headless)
         self._captured_products: List[Dict] = []
+        # Session curl_cffi aquecida (cookies Akamai). Reaproveitada entre
+        # keywords; o Akamai valida o _abck por ~30min, renovamos a cada 10min.
+        self._cffi_session: Optional[Any] = None
+        self._cffi_session_ts: float = 0.0
 
     # ------------------------------------------------------------------
     # URL
@@ -143,6 +147,79 @@ class CasasBahiaScraper(BaseScraper):
         if page > 1:
             url += f"&page={page}"
         return url
+
+    # ------------------------------------------------------------------
+    # Warm-up de sessão Akamai (curl_cffi)
+    # ------------------------------------------------------------------
+
+    _SESSION_MAX_AGE_SEC = 10 * 60  # renova cookies Akamai a cada 10min
+
+    def _get_warmed_session(self) -> Optional[Any]:
+        """
+        Retorna uma session curl_cffi com cookies Akamai válidos.
+
+        Passos (mesma técnica que destrava Magalu/Casas Bahia na camada TLS):
+          1. Cria session com impersonation chrome124 (JA3/JA4 do Chrome real).
+          2. Injeta cookies de sessão manual (session_grabber.py), se existirem.
+          3. GET na home → Akamai emite _abck/bm_sz/ak_bmsc na MESMA session.
+          4. Cacheia a session por ~10min (evita warm-up a cada keyword).
+
+        Returns:
+            Session aquecida, ou None se curl_cffi indisponível.
+        """
+        if not _HAS_CURL_CFFI:
+            return None
+
+        now = time.time()
+        if self._cffi_session is not None and (now - self._cffi_session_ts) < self._SESSION_MAX_AGE_SEC:
+            return self._cffi_session
+
+        session = _cffi_requests.Session()
+
+        # Cookies de sessão manual (opcional) — Akamai libera mais fácil com sessão real
+        try:
+            from utils.session_grabber import load_session
+            session_cookies = load_session("casasbahia") or []
+            for c in session_cookies:
+                domain = c.get("domain", "casasbahia.com.br").lstrip(".")
+                session.cookies.set(c["name"], c["value"], domain=domain)
+            if session_cookies:
+                logger.info(
+                    f"[{self.platform_name}] Sessão manual aplicada "
+                    f"({len(session_cookies)} cookies)"
+                )
+        except Exception:
+            pass
+
+        # Warm-up: GET na home para o Akamai emitir cookies frescos
+        try:
+            warm_headers = {
+                "User-Agent": _VTEX_HEADERS["User-Agent"],
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": _VTEX_HEADERS["Accept-Language"],
+                "Upgrade-Insecure-Requests": "1",
+            }
+            resp = session.get(
+                _VTEX_BASE, headers=warm_headers,
+                impersonate="chrome124", timeout=_API_TIMEOUT,
+            )
+            akamai_cookies = [
+                n for n in ("_abck", "bm_sz", "ak_bmsc", "bm_sv", "AKA_A2")
+                if n in session.cookies
+            ]
+            logger.info(
+                f"[{self.platform_name}] Warm-up home: HTTP {resp.status_code} | "
+                f"cookies Akamai: {', '.join(akamai_cookies) or 'nenhum'}"
+            )
+            # Pequena pausa humana entre warm-up e API
+            time.sleep(1.5)
+        except Exception as exc:
+            logger.warning(f"[{self.platform_name}] Warm-up falhou: {exc}")
+            # Mesmo sem warm-up, tenta usar a session (pode ter cookies manuais)
+
+        self._cffi_session = session
+        self._cffi_session_ts = now
+        return session
 
     # ------------------------------------------------------------------
     # Estratégia 0: VTEX API via curl_cffi (TLS fingerprint real do Chrome)
@@ -167,40 +244,16 @@ class CasasBahiaScraper(BaseScraper):
         to_idx   = page_offset + _ITEMS_PER_PAGE - 1
         encoded  = quote_plus(keyword)
 
-        # Carrega cookies de sessão manual (session_grabber.py).
-        # Akamai pode liberar baseado em cookies de sessão válida do browser.
-        session_cookies = []
-        try:
-            from utils.session_grabber import load_session
-            session_cookies = load_session("casasbahia")
-            if session_cookies:
-                logger.info(
-                    f"[{self.platform_name}] Usando sessão salva para API curl_cffi "
-                    f"({len(session_cookies)} cookies)"
-                )
-        except Exception:
-            pass
+        # Reutiliza UMA session em toda a busca: o warm-up na home faz o Akamai
+        # emitir cookies frescos (_abck/bm_sz/ak_bmsc) que precisam viajar junto
+        # com a chamada de API seguinte. Criar uma session nova por request (bug
+        # anterior) descartava esses cookies → 403/HTML. Mesma técnica do Magalu.
+        cffi_session = self._get_warmed_session()
+        if cffi_session is None:
+            return []
 
         def _cffi_get(url: str, params: dict) -> Optional[object]:
-            """Helper: GET com curl_cffi + cookies de sessão + content-type guard."""
-            cffi_session = _cffi_requests.Session()
-            if session_cookies:
-                # Remove o ponto inicial do domínio: ".casasbahia.com.br" → "casasbahia.com.br"
-                # curl_cffi/httpx não envia cookies com domínio ".xxx" para "www.xxx"
-                # da mesma forma que os browsers fazem — removendo o ponto corrige isso.
-                for c in session_cookies:
-                    domain = c.get("domain", "casasbahia.com.br").lstrip(".")
-                    cffi_session.cookies.set(c["name"], c["value"], domain=domain)
-                # Log de cookies Akamai aplicados (diagnóstico)
-                akamai_present = [
-                    c["name"] for c in session_cookies
-                    if c["name"] in ("AKA_A2", "ak_bmsc", "bm_sz", "bm_sv", "akavpau_wwwcasasbahia")
-                ]
-                if akamai_present:
-                    logger.info(
-                        f"[{self.platform_name}] Cookies Akamai aplicados: "
-                        f"{', '.join(akamai_present)}"
-                    )
+            """Helper: GET com curl_cffi na session aquecida + content-type guard."""
             resp = cffi_session.get(
                 url, headers=_VTEX_HEADERS, params=params,
                 impersonate="chrome124", timeout=_API_TIMEOUT,
@@ -396,6 +449,58 @@ class CasasBahiaScraper(BaseScraper):
 
         self._page.on("response", handle_response)
 
+    @staticmethod
+    def _classify_seller(seller_name: Optional[str], seller_id: Optional[str]) -> str:
+        """Classifica seller VTEX da Casas Bahia em 1P (próprio) vs 3P (marketplace)."""
+        name = (seller_name or "").strip().lower()
+        if seller_id and str(seller_id) == "1":
+            return "1P"
+        if any(t in name for t in ("casas bahia", "casasbahia", "via varejo", "grupo casas bahia")):
+            return "1P"
+        return "3P" if name else "1P"
+
+    def _extract_vtex_sellers(self, prod: Dict) -> Dict[str, Any]:
+        """
+        Extrai buy box e competição de sellers do produto VTEX.
+
+        Estrutura VTEX: prod["items"][i]["sellers"][j] tem sellerName, sellerId,
+        sellerDefault (bool) e commertialOffer.Price/IsAvailable. O seller com
+        sellerDefault=True é o vencedor da buy box; o total de sellers distintos
+        com oferta disponível é a competição na listagem.
+
+        Returns dict: buy_box_seller, qtd_sellers, tipo_seller, price_float.
+        """
+        buy_box_name: Optional[str] = None
+        buy_box_id: Optional[str] = None
+        buy_box_price: Optional[float] = None
+        distinct_sellers: set = set()
+
+        for item in (prod.get("items") or []):
+            for seller in (item.get("sellers") or []):
+                offer = seller.get("commertialOffer") or {}
+                available = offer.get("IsAvailable", True)
+                sid = seller.get("sellerId")
+                sname = seller.get("sellerName")
+                if available and (sid or sname):
+                    distinct_sellers.add(str(sid or sname))
+                # Buy box = sellerDefault; fallback para o primeiro disponível
+                if seller.get("sellerDefault") or buy_box_name is None:
+                    if available or buy_box_name is None:
+                        buy_box_name = sname or buy_box_name
+                        buy_box_id = sid or buy_box_id
+                        price = offer.get("Price") or offer.get("ListPrice")
+                        try:
+                            buy_box_price = float(str(price)) if price else buy_box_price
+                        except (ValueError, TypeError):
+                            pass
+
+        return {
+            "buy_box_seller": buy_box_name or "Casas Bahia",
+            "qtd_sellers": len(distinct_sellers) or None,
+            "tipo_seller": self._classify_seller(buy_box_name, buy_box_id),
+            "price_float": buy_box_price,
+        }
+
     def _parse_api_products(
         self,
         keyword: str,
@@ -407,20 +512,15 @@ class CasasBahiaScraper(BaseScraper):
         records = []
         for idx, prod in enumerate(source):
             title = prod.get("productName") or prod.get("name") or prod.get("title")
-            price_val = prod.get("price")
-            try:
-                offer = (
-                    prod.get("items", [{}])[0]
-                    .get("sellers", [{}])[0]
-                    .get("commertialOffer", {})
-                )
-                price_val = price_val or offer.get("Price") or offer.get("ListPrice")
-            except (IndexError, KeyError, TypeError):
-                pass
-            try:
-                price_float = float(str(price_val)) if price_val else None
-            except (ValueError, TypeError):
-                price_float = None
+
+            sellers_info = self._extract_vtex_sellers(prod)
+            price_float = sellers_info["price_float"]
+            if price_float is None:
+                # Fallback para o campo price simples (IS endpoint às vezes traz)
+                try:
+                    price_float = float(str(prod.get("price"))) if prod.get("price") else None
+                except (ValueError, TypeError):
+                    price_float = None
 
             pos = page_offset + idx + 1
             records.append(self._build_record(
@@ -431,7 +531,10 @@ class CasasBahiaScraper(BaseScraper):
                 position_organic=pos,
                 position_sponsored=None,
                 price_float=price_float,
-                seller="Casas Bahia",
+                seller=sellers_info["buy_box_seller"],
+                buy_box_seller=sellers_info["buy_box_seller"],
+                qtd_sellers=sellers_info["qtd_sellers"],
+                tipo_seller=sellers_info["tipo_seller"],
                 is_fulfillment=False,
                 rating=None,
                 review_count=None,

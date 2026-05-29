@@ -1,28 +1,40 @@
 # RAC Position Tracker — Development Guidelines & Standards
 
-> **Project:** RAC Price Monitor — Retail Analytics & Competitive Intelligence  
-> **Domain:** E-commerce price scraping & competitive intelligence for air conditioning market in Brazil  
+> **Project:** RAC Position Tracker — Retail Analytics & Competitive Intelligence  
+> **Domain:** Buy box, sellers & competitive insights for the air conditioning market in Brazil  
 > **Stack:** Python 3.10+, Playwright, curl_cffi, BeautifulSoup, Pandas, Supabase, Streamlit  
-> **Sub-projeto:** `magalu_shopee/` — Node.js/TypeScript + Puppeteer (apenas Shopee — sessão autenticada)  
+> **Sub-projeto:** `magalu_shopee/` — Node.js/TypeScript + Puppeteer (Shopee — fallback)  
 > **Status:** ✅ Production | Oracle Cloud VM (Brazil East) + GitHub Actions (manual backup)
 
 ---
 
-## ⚠️ Magalu — Voltou pra Python (Mai/2026)
+## 🎯 Foco da coleta (Mai/2026): Buy Box & Sellers, não preço
 
-O scraper Node.js+Puppeteer parou de funcionar quando Magalu trocou o Bot
-Manager pra Akamai com detecção JA3/JA4. **Solução:** scraper Python novo
-em `scrapers/magalu.py` usando `curl_cffi` com TLS chrome impersonation —
-mesma técnica que destrava Casas Bahia. Sem browser, sem Puppeteer.
+O protagonista da coleta deixou de ser **preço** e passou a ser **competição
+por buy box e inteligência de sellers**. Preço continua coletado, porém como
+campo secundário. Campos de insight em todo registro: `Buy Box Seller`,
+`Qtd Sellers`, `Tipo Seller`, `Reputação Seller`, `Patrocinado?`.
+
+**7 plataformas (dealers saíram do foco):** Mercado Livre, Amazon, Google
+Shopping, Magalu, Casas Bahia, Shopee, Leroy Merlin. APIs JSON são preferidas
+ao DOM — expõem o array de sellers e o vencedor da buy box diretamente.
 
 ```bash
-# Magalu agora roda no projeto Python principal
-python main.py --platforms magalu --pages 2
+# Coleta padrão (todas as 7 plataformas ativas em ACTIVE_PLATFORMS)
+python main.py --platforms all --pages 2
 
-# Shopee continua no Node.js (requer sessão autenticada)
-cd magalu_shopee
-node_modules/.bin/ts-node src/index.ts --platforms shopee --pages 2
+# Plataformas individuais
+python main.py --platforms casasbahia --pages 1   # VTEX IS + warm-up Akamai
+python main.py --platforms shopee --pages 1        # API v4 (requer sessão)
+python main.py --platforms magalu --pages 2        # curl_cffi/browser
+
+# Shopee — capturar sessão antes (cookies SPC_*/csrftoken expiram em horas)
+python utils/session_grabber.py --site shopee
 ```
+
+### Magalu — automatizado (não mais via extensão Chrome)
+`scrapers/magalu.py` (curl_cffi + browser persistente, Akamai bypass) é o
+caminho oficial. Roda sem intervenção via `python main.py --platforms magalu`.
 
 Como funciona o `scrapers/magalu.py`:
 1. `curl_cffi` com `impersonate="chrome124"` (replica TLS handshake do Chrome real)
@@ -719,23 +731,26 @@ python scripts/fix_turno.py --confirm             # Fix inverted turno
 python utils/supabase_client.py                   # Run cleanup functions
 ```
 
-### Platform Status (Mai 2026 — smoke test 03/05/2026)
+### Platform Status (foco buy box/seller — Mai 2026)
+
+> Dealers saíram do foco (marketplaces apenas). Preço é secundário.
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Mercado Livre | ✅ | 16-22 sellers/keyword; 22-42s/keyword |
-| Amazon | ✅ | Seller via "Vendido por"; 26-31s/keyword |
-| Leroy Merlin | ✅ | Algolia API; 10-11s/keyword; 15 3P seller IDs não resolvidos (404 VTEX) |
-| Dealers (Frigelar) | ✅ | JSON-LD + VTEX + DOM fallback; 30 itens / 108s |
-| Google Shopping | ⚠️ | reCAPTCHA em headless; funciona com delays 25-45s em coletas reais |
-| Magalu | ✅ Python | `scrapers/magalu.py` — curl_cffi + Next.js `_next/data` JSON (Mai/2026, Akamai bypass via TLS impersonation chrome124) |
-| Shopee | 🟢 Node.js | Permanece em `magalu_shopee/` (Puppeteer + sessão autenticada) |
-| Dealers (CentralAr) | ❌ | Parado desde 26/04 — diagnóstico pendente (Sprint 1) |
-| Dealers (Eletrozema) | ❌ | Parado desde 26/04 — causa comum com CentralAr (VTEX IO) |
-| Dealers (Dufrio) | ❌ | Parado desde 29/04 — diagnóstico pendente (Sprint 1) |
-| Dealers (PoloAr, Climario, FrioPecas, Leveros, WebContinental) | ❌ | Parados 20-31 dias — Sprint 2 |
-| Casas Bahia | ⏸️ | Akamai WAF |
+| Mercado Livre | ✅ | Buy box + Loja Oficial; browser (default) ou `MLAPIScraper` (API oficial, requer `ML_APP_ID`/`ML_APP_SECRET`) |
+| Amazon | ✅ | Buy box via "Vendido por"; `Qtd Sellers` de "X ofertas"; 1P vs 3P |
+| Leroy Merlin | ✅ | Algolia API; 1P vs 3P marketplace |
+| Google Shopping | ⚠️ | reCAPTCHA em headless; `Qtd Sellers` = nº de lojas comparando |
+| Magalu | ✅ Python | `scrapers/magalu.py` — curl_cffi/browser persistente (Akamai); seller 1P vs 3P. **Automatizado** (substitui coleta manual via extensão Chrome) |
+| Casas Bahia | ✅ | `scrapers/casas_bahia.py` — VTEX intelligent-search + **warm-up de cookies Akamai** (session curl_cffi persistente); `sellers[]` → buy box (`sellerDefault`) |
+| Shopee | 🟡 Python | `scrapers/shopee.py` — API v4 + sessão capturada (curl_cffi). **Best-effort** sem proxy BR; flags Mall/Preferred+. Node em `magalu_shopee/` fica como fallback |
 | Fast Shop | ⏸️ | PerimeterX total block |
+| Dealers | ⏸️ | Fora do foco — `ACTIVE_PLATFORMS["dealers"]=False` |
+
+**Bloqueios Shopee/Casas Bahia:** causa raiz é o IP de datacenter (Oracle/GH
+Actions marcado pelo Akamai/anti-bot antes do fingerprint). Maior ganho =
+proxy residencial/móvel BR. Sem proxy: Casas Bahia destrava via warm-up; Shopee
+fica instável (re-capturar sessão com `session_grabber.py --site shopee`).
 
 ### Common Issues & Solutions
 
@@ -750,11 +765,17 @@ python utils/supabase_client.py                   # Run cleanup functions
 
 ### CSV Output Columns
 
+> **Foco (Mai/2026):** buy box, sellers e insights. Preço agora é **secundário**.
+> Colunas novas: `Patrocinado?`, `Buy Box Seller`, `Qtd Sellers`, `Tipo Seller`,
+> `Reputação Seller`. DB: `docs/migrations/003_add_buybox_seller_columns.sql`.
+
 ```
 Data; Turno; Horário; Analista; Plataforma; Tipo Plataforma;
-Keyword Buscada; Categoria Keyword; Marca Monitorada; Produto/SKU;
-Posição Orgânica; Posição Patrocinada; Posição Geral; Preço (R$);
-Seller/Vendedor; Fulfillment?; Avaliação; Qtd Avaliações; Tag Destaque
+Keyword Buscada; Categoria Keyword; Marca Monitorada; Produto / SKU;
+Posição Orgânica; Posição Patrocinada; Posição Geral; Patrocinado?;
+Buy Box Seller; Qtd Sellers; Tipo Seller; Reputação Seller;
+Seller / Vendedor; Fulfillment?; Avaliação; Qtd Avaliações; Tag Destaque;
+Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto
 ```
 
 ### Token Cost Estimates (for AI assistants)

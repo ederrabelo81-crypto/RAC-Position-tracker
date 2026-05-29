@@ -1359,6 +1359,13 @@ class MagaluScraper(BaseScraper):
                 pos_organic, pos_sponsored = organic_counter, None
 
             seller = self._extract_seller(prod) or "Magalu"
+            # Tipo de seller: sortimento próprio Magalu (1P) vs parceiro
+            # do marketplace (3P). Magalu marca o 1P como "Magalu"/"magazineluiza".
+            _seller_lc = seller.strip().lower()
+            tipo_seller = (
+                "1P" if _seller_lc in ("magalu", "magazine luiza", "magazineluiza")
+                else "3P"
+            )
 
             rating_val = self._deep_get(prod, "rating", "score")
             if rating_val is None:
@@ -1385,6 +1392,8 @@ class MagaluScraper(BaseScraper):
                 position_sponsored=pos_sponsored,
                 price_float=price,
                 seller=seller,
+                buy_box_seller=seller,
+                tipo_seller=tipo_seller,
                 is_fulfillment=False,
                 rating=rating_f,
                 review_count=review_i,

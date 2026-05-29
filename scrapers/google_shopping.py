@@ -352,6 +352,27 @@ class GoogleShoppingScraper(BaseScraper):
 
         return None
 
+    _RE_MERCHANTS = re.compile(
+        r"(\d+)\s*\+?\s*(?:lojas?|ofertas?|vendedores?)", re.IGNORECASE
+    )
+
+    @classmethod
+    def _extract_merchants_count(cls, item: Tag) -> Optional[int]:
+        """
+        Nº de lojas/ofertas comparando o mesmo produto.
+
+        Google exibe textos como "em 12 lojas", "Comparar preços de 8+ lojas"
+        ou "+5 ofertas". Procura o primeiro padrão numérico no texto do card.
+        """
+        text = item.get_text(" ", strip=True)
+        m = cls._RE_MERCHANTS.search(text)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
+        return None
+
     # ------------------------------------------------------------------
     # Debug dump
     # ------------------------------------------------------------------
@@ -424,6 +445,10 @@ class GoogleShoppingScraper(BaseScraper):
             if not seller:
                 empty_seller_count += 1
 
+            # Nº de lojas comparando o mesmo produto (insight de competição).
+            # Google mostra "em N lojas" / "Comparar preços de N+ lojas" / "+N ofertas".
+            qtd_sellers = self._extract_merchants_count(item)
+
             # Rating
             rating = None
             for rating_sel in _SELECTORS["rating_candidates"]:
@@ -470,6 +495,8 @@ class GoogleShoppingScraper(BaseScraper):
                 position_sponsored=None,
                 price_float=price_raw,  # price_raw já é float aqui
                 seller=seller,
+                buy_box_seller=seller,
+                qtd_sellers=qtd_sellers,
                 is_fulfillment=False,
                 rating=rating,
                 review_count=review_count,

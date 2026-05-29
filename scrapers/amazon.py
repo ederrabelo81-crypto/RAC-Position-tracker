@@ -184,6 +184,30 @@ class AmazonScraper(BaseScraper):
         return None
 
     @staticmethod
+    def _classify_seller(seller: Optional[str]) -> str:
+        """Amazon 1P (vendido pela Amazon) vs 3P (marketplace de terceiros)."""
+        name = (seller or "").strip().lower()
+        if not name or "amazon" in name:
+            return "1P"
+        return "3P"
+
+    @staticmethod
+    def _extract_offers_count(item: Tag) -> Optional[int]:
+        """
+        Conta ofertas concorrentes na buy box a partir de "X ofertas a partir de"
+        / "X novos" / "X de R$..." na linha do resultado.
+        """
+        for el in item.find_all(["span", "a"]):
+            t = el.get_text(" ", strip=True).lower()
+            m = re.search(r"(\d+)\s*(?:nova?s?\s*)?ofertas?", t)
+            if m:
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    pass
+        return None
+
+    @staticmethod
     def _extract_url(item: Tag) -> Optional[str]:
         """Extrai a URL do PDP. Hrefs da Amazon são relativos — prefixa o domínio."""
         for sel in _SELECTORS["url_candidates"]:
@@ -265,6 +289,8 @@ class AmazonScraper(BaseScraper):
             price = self._extract_price(item)
 
             seller = self._extract_seller(item) or "Amazon"
+            qtd_sellers = self._extract_offers_count(item)
+            tipo_seller = self._classify_seller(seller)
 
             fulfillment = bool(item.select_one(_SELECTORS["fulfillment"]))
 
@@ -293,6 +319,9 @@ class AmazonScraper(BaseScraper):
                 position_sponsored=pos_sponsored,
                 price_float=price,
                 seller=seller,
+                buy_box_seller=seller,
+                qtd_sellers=qtd_sellers,
+                tipo_seller=tipo_seller,
                 is_fulfillment=fulfillment,
                 rating=rating,
                 review_count=review_count,
