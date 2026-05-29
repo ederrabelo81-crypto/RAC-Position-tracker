@@ -57,6 +57,12 @@ _COLUMN_MAP = {
     "Posição Orgânica":     "posicao_organica",
     "Posição Patrocinada":  "posicao_patrocinada",
     "Posição Geral":        "posicao_geral",
+    "Patrocinado?":         "patrocinado",
+    # ── Insights de buy box / seller (foco principal — Mai/2026) ──
+    "Buy Box Seller":       "buy_box_seller",
+    "Qtd Sellers":          "qtd_sellers",
+    "Tipo Seller":          "tipo_seller",
+    "Reputação Seller":     "reputacao_seller",
     "Preço (R$)":           "preco",
     "Seller / Vendedor":    "seller",
     "Fulfillment?":         "fulfillment",
@@ -72,12 +78,17 @@ _COLUMN_MAP = {
 # Colunas adicionadas posteriormente ao schema — podem não existir em bancos
 # ainda não migrados. Se o upsert falhar por coluna ausente, o upload remove
 # essas chaves e tenta novamente (degradação graciosa).
-_OPTIONAL_DEST_COLS = {"url_produto", "screenshot_busca", "screenshot_produto"}
+_OPTIONAL_DEST_COLS = {
+    "url_produto", "screenshot_busca", "screenshot_produto",
+    # Adicionadas na migration 003 (foco buy box/seller)
+    "patrocinado", "buy_box_seller", "qtd_sellers", "tipo_seller", "reputacao_seller",
+}
 
 # Colunas numéricas — None em vez de NaN para o Postgres
-_INT_COLS   = {"posicao_organica", "posicao_patrocinada", "posicao_geral", "qtd_avaliacoes"}
+_INT_COLS   = {"posicao_organica", "posicao_patrocinada", "posicao_geral",
+               "qtd_avaliacoes", "qtd_sellers"}
 _FLOAT_COLS = {"preco", "avaliacao"}
-_BOOL_COLS  = {"fulfillment"}
+_BOOL_COLS  = {"fulfillment", "patrocinado"}
 
 
 def _get_client() -> Optional["Client"]:

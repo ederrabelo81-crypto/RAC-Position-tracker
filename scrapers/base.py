@@ -477,11 +477,26 @@ class BaseScraper(ABC):
         url_produto: Optional[str] = None,
         screenshot_busca: Optional[str] = None,
         screenshot_produto: Optional[str] = None,
+        # ── Foco em insights (Mai/2026): buy box, sellers, competição ──
+        buy_box_seller: Optional[str] = None,
+        qtd_sellers: Optional[int] = None,
+        tipo_seller: Optional[str] = None,
+        reputacao_seller: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Monta um dicionário compatível com as colunas do DataFrame de saída.
 
         Aceita preço como string bruta OU float já parseado.
+
+        Campos de insight (foco principal a partir de Mai/2026):
+            buy_box_seller:   seller que vence a oferta principal (buy box) do produto.
+            qtd_sellers:      nº de sellers/ofertas competindo na mesma listagem.
+            tipo_seller:      classificação do seller — ex: "1P", "3P", "Loja Oficial",
+                              "Shopee Mall", "Preferred+".
+            reputacao_seller: nota/nível de reputação do seller quando disponível
+                              (ex: "MercadoLíder Platinum", "green", "4.8").
+
+        Preço continua coletado, porém como campo secundário.
         """
         from utils.text import parse_price
 
@@ -514,12 +529,19 @@ class BaseScraper(ABC):
             "Posição Orgânica":    position_organic,
             "Posição Patrocinada": position_sponsored,
             "Posição Geral":       position_general,
-            "Preço (R$)":          price_float,
+            "Patrocinado?":        "Sim" if position_sponsored else "Não",
+            # ── Insights de buy box / seller (foco principal) ──
+            "Buy Box Seller":      normalize_text(buy_box_seller) or normalize_text(seller),
+            "Qtd Sellers":         qtd_sellers,
+            "Tipo Seller":         normalize_text(tipo_seller),
+            "Reputação Seller":    normalize_text(reputacao_seller),
             "Seller / Vendedor":   normalize_text(seller),
             "Fulfillment?":        "Sim" if is_fulfillment else "Não",
             "Avaliação":           rating,
             "Qtd Avaliações":      review_count,
             "Tag Destaque":        normalize_text(tag_destaque),
+            # ── Preço: secundário a partir de Mai/2026 ──
+            "Preço (R$)":          price_float,
             "URL Produto":         url_produto,
             "Screenshot Busca":    screenshot_busca,
             "Screenshot Produto":  screenshot_produto,
