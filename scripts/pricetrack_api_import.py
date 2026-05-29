@@ -133,17 +133,26 @@ def parse_ndjson_gz(path: Path) -> pd.DataFrame:
 
 
 # Candidatos de nome de coluna (lowercase) por campo lógico.
-# O NDJSON do export pode usar grafias diferentes do schema OpenAPI.
+# O NDJSON do export usa snake_case (spot_price, pix_price) enquanto o
+# schema OpenAPI documenta camelCase (spotPrice, pixPrice). Ambas as
+# grafias estão listadas para robustez.
 _PRICE_FIELDS = (
-    "spotprice", "spot_price", "pixprice", "pix_price", "price",
-    "forwardprice", "forward_price", "saleprice", "sale_price",
+    "spot_price", "spotprice",
+    "pix_price", "pixprice",
+    "price", "forward_price", "forwardprice",
+    "sale_price", "saleprice",
     "preco", "preco_avista", "valor",
 )
 _BRAND_FIELDS = ("brand", "productbrand", "product_brand", "marca")
 _SKU_FIELDS = ("sku", "productsku", "product_sku", "sku_code", "codigo", "cod")
-_TITLE_FIELDS = ("productname", "product_name", "title", "name", "produto", "titulo")
+_TITLE_FIELDS = ("product_name", "productname", "title", "name", "produto", "titulo")
 _MARKETPLACE_FIELDS = ("marketplace", "market", "loja_marketplace")
 _SELLER_FIELDS = ("seller", "vendedor", "store", "loja")
+_CATEGORY_FIELDS = ("category", "categoria", "product_category", "productcategory")
+
+# Categorias de ar condicionado aceitas (uppercase, comparação exata).
+# Configurável via --categories na CLI.
+DEFAULT_CATEGORIES: List[str] = ["AR CONDICIONADO"]
 
 
 def _mode(series: pd.Series) -> float:
@@ -173,27 +182,67 @@ def _pick_price(df: pd.DataFrame, lookup: Dict[str, str]) -> pd.Series:
     return price
 
 
-def aggregate_offers(df: pd.DataFrame, collection_date: str) -> pd.DataFrame:
+def aggregate_offers(
+    df: pd.DataFrame,
+    collection_date: str,
+    categories: Optional[List[str]] = None,
+) -> pd.DataFrame:
     """
-    Agrega ofertas brutas para o formato daily (min/avg/mode/max por grupo).
+    Filtra por categoria e agrega ofertas para o formato daily.
 
     Grupo: (collection_date, brand, sku, title, marketplace, seller).
-    Resolve nomes de campo de forma case-insensitive com múltiplos candidatos,
-    pois o NDJSON do bulk export pode divergir do schema OpenAPI.
+    Resolve nomes de campo de forma case-insensitive para lidar com
+    snake_case do NDJSON vs camelCase do schema OpenAPI.
 
-    Filtro único: descarta apenas linhas sem preço válido (> 0). brand/sku/
-    title vazios são mantidos (a tabela aceita string vazia) — melhor importar
-    com identificador parcial do que perder a oferta.
+    Filtros aplicados em ordem:
+      1. Categoria (campo `category`) — default: AR CONDICIONADO
+      2. Preço válido (> 0)
 
-    Em caso de zero linhas válidas, loga as colunas do arquivo e um registro
-    de exemplo para diagnóstico do schema real.
+    brand/sku/title vazios são mantidos — melhor importar com identificador
+    parcial do que perder a oferta.
     """
     if df.empty:
         return pd.DataFrame()
 
+    df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
     lookup = {c.lower(): c for c in df.columns}
 
+    # ── 1. Filtro de categoria ────────────────────────────────────────────
+    allowed = [c.upper().strip() for c in (categories or DEFAULT_CATEGORIES)]
+    cat_col_orig = None
+    for cand in _CATEGORY_FIELDS:
+        if cand in lookup:
+            cat_col_orig = lookup[cand]
+            break
+
+    total_raw = len(df)
+    if cat_col_orig:
+        cat_series = df[cat_col_orig].fillna("").astype(str).str.strip().str.upper()
+        df = df[cat_series.isin(allowed)]
+        n_after_cat = len(df)
+        logger.info(
+            f"{collection_date} — filtro de categoria {allowed}: "
+            f"{n_after_cat:,}/{total_raw:,} linhas mantidas"
+        )
+    else:
+        n_after_cat = total_raw
+        logger.warning(
+            f"{collection_date} — coluna de categoria não encontrada; "
+            f"importando todas as {total_raw:,} linhas (sem filtro de categoria)"
+        )
+
+    if df.empty:
+        logger.warning(
+            f"{collection_date} — nenhuma oferta para categorias {allowed}. "
+            f"Verifique o valor exato com --inspect e ajuste --categories."
+        )
+        return pd.DataFrame()
+
+    # Reconstrói lookup após filtro
+    lookup = {c.lower(): c for c in df.columns}
+
+    # ── 2. Preço ─────────────────────────────────────────────────────────
     price = _pick_price(df, lookup)
     n_with_price = int(price.notna().sum())
 
@@ -214,7 +263,7 @@ def aggregate_offers(df: pd.DataFrame, collection_date: str) -> pd.DataFrame:
     if work.empty:
         logger.warning(
             f"{collection_date} — 0 linhas válidas após filtro de preço.\n"
-            f"  Preço presente em {n_with_price:,}/{before:,} ofertas.\n"
+            f"  Preço presente em {n_with_price:,}/{before:,} ofertas de AC.\n"
             f"  Colunas no arquivo ({len(df.columns)}): {list(df.columns)}"
         )
         sample = df.iloc[0].to_dict()
@@ -225,7 +274,7 @@ def aggregate_offers(df: pd.DataFrame, collection_date: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     logger.debug(
-        f"{collection_date} — preço presente em {n_with_price:,}/{before:,} ofertas; "
+        f"{collection_date} — preço presente em {n_with_price:,}/{before:,} ofertas AC; "
         f"{dropped_no_price:,} descartadas sem preço"
     )
 
@@ -280,6 +329,14 @@ def inspect_file(path: Path) -> None:
 
     print("\n--- Primeiro registro (JSON) ---")
     print(json.dumps(df.iloc[0].to_dict(), ensure_ascii=False, indent=2, default=str))
+
+    # Mostra distribuição de categorias (muito útil para confirmar o filtro)
+    for cat_col in ("category", "categoria", "product_category"):
+        if cat_col in df.columns:
+            print(f"\n--- Categorias presentes ({cat_col}) ---")
+            for cat, cnt in df[cat_col].value_counts().items():
+                print(f"  {cat:40s} {cnt:>8,}")
+            break
 
 
 # ── Supabase ────────────────────────────────────────────────────────────────
@@ -408,6 +465,7 @@ def _process_date(
     dry_run: bool,
     no_upload: bool,
     progress: Dict,
+    categories: Optional[List[str]] = None,
 ) -> Tuple[str, int]:
     """
     Executa o ciclo completo para uma data:
@@ -495,16 +553,16 @@ def _process_date(
         rows_raw = len(df_raw)
         logger.info(f"{collection_date} — {rows_raw:,} ofertas brutas")
 
-        df_agg = aggregate_offers(df_raw, collection_date)
+        df_agg = aggregate_offers(df_raw, collection_date, categories=categories)
         if df_agg.empty:
-            logger.warning(f"{collection_date} — zero linhas após agregação")
+            logger.warning(f"{collection_date} — zero linhas após filtro+agregação")
             log_import(f"api-{collection_date}", rows_raw, 0, rows_raw, "PARTIAL")
             return "empty", 0
 
         rows_agg = len(df_agg)
         rows_rejected = rows_raw - rows_agg
-        logger.info(f"{collection_date} — {rows_agg:,} linhas após agregação "
-                    f"({rows_rejected:,} descartadas sem preço/sku)")
+        logger.info(f"{collection_date} — {rows_agg:,} linhas AC agregadas "
+                    f"({rows_rejected:,} descartadas: outras categorias ou sem preço)")
 
     except Exception as e:
         logger.error(f"{collection_date} — erro no parse: {e}")
@@ -542,6 +600,7 @@ def run(
     force: bool = False,
     no_upload: bool = False,
     concurrent: int = _MAX_CONCURRENT,
+    categories: Optional[List[str]] = None,
 ) -> None:
     _DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     progress = load_progress()
@@ -579,7 +638,9 @@ def run(
     for i, ds in enumerate(dates_to_process, 1):
         logger.info(f"[{i}/{total}] Processando {ds} ...")
 
-        result, rows = _process_date(token, ds, dry_run, no_upload, progress)
+        result, rows = _process_date(
+            token, ds, dry_run, no_upload, progress, categories=categories
+        )
 
         if result in ("completed", "downloaded", "dry_run"):
             progress["completed"].append(ds)
@@ -652,7 +713,19 @@ def main() -> None:
              "--start (não baixa nada) e sai. Use para descobrir os nomes "
              "reais dos campos.",
     )
+    parser.add_argument(
+        "--categories",
+        nargs="+",
+        default=DEFAULT_CATEGORIES,
+        metavar="CAT",
+        help=(
+            "Categorias a importar (case-insensitive, separadas por espaço). "
+            f"Padrão: {DEFAULT_CATEGORIES}. "
+            "Ex: --categories 'AR CONDICIONADO' CLIMATIZACAO"
+        ),
+    )
     args = parser.parse_args()
+    categories = [c.upper().strip() for c in args.categories]
 
     # ── Modo inspeção: dump do schema de um arquivo já baixado ────────────
     if args.inspect:
@@ -700,6 +773,7 @@ def main() -> None:
     logger.info(f"  Upload:  {not args.no_upload}")
     logger.info(f"  Arquivos: {_DOWNLOAD_DIR}")
     logger.info(f"  Seller map: {'sim' if _HAS_SELLER_MAP else 'fallback'}")
+    logger.info(f"  Categorias: {categories}")
     if not _HAS_SUPABASE and not args.no_upload:
         logger.warning("supabase-py não instalado — use --no-upload ou instale: pip install supabase")
 
@@ -711,6 +785,7 @@ def main() -> None:
         force=args.force,
         no_upload=args.no_upload,
         concurrent=args.concurrent,
+        categories=categories,
     )
 
 
