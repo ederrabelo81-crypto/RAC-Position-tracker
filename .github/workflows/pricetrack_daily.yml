@@ -1,0 +1,121 @@
+name: PriceTrack Daily Import
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Importa diariamente os preços do PriceTrack (fonte de verdade Midea) para a
+# tabela Supabase `pricetrack_daily`, que o dashboard Streamlit já lê com
+# precedência por data sobre a tabela `coletas`.
+#
+# O script scripts/pricetrack_api_import.py já é incremental e idempotente:
+#   • --end default = ontem
+#   • date_exists() pula datas já presentes no banco (sem --force)
+#   • upsert ON CONFLICT em pricetrack_daily
+# Logo, este workflow só precisa disparar o comando uma vez por dia.
+#
+# Schedule (UTC):
+#   14:00 UTC = 11:00 BRT  → importa a coleta de ONTEM (já fechada no PriceTrack)
+#
+# Variáveis obrigatórias (Settings → Secrets and variables → Actions):
+#   PRICETRACK_API_KEY  —  token da API do PriceTrack (Configurações → API)
+#   SUPABASE_URL        —  URL do projeto Supabase
+#   SUPABASE_KEY        —  chave de serviço (service_role)
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '0 14 * * *'   # 11:00 BRT — importa o dia anterior
+  workflow_dispatch:
+    inputs:
+      start:
+        description: 'Data inicial YYYY-MM-DD (vazio = ontem). Use para backfill.'
+        required: false
+        default: ''
+      end:
+        description: 'Data final YYYY-MM-DD (vazio = ontem)'
+        required: false
+        default: ''
+      force:
+        description: 'Reimportar datas já presentes no banco (true/false)'
+        required: false
+        default: 'false'
+
+env:
+  PYTHON_VERSION: '3.11'
+  TZ: America/Sao_Paulo
+
+# Evita dois imports concorrentes gravando na mesma tabela
+concurrency:
+  group: pricetrack-daily
+  cancel-in-progress: false
+
+jobs:
+  import:
+    name: Import PriceTrack → Supabase
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # ── 2. Python ──────────────────────────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      # ── 3. Dependências (subset — sem Playwright/browser) ──────────────────
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests pandas supabase python-dotenv loguru
+
+      # ── 4. Parâmetros do run (schedule vs. manual) ─────────────────────────
+      - name: Set run parameters
+        id: params
+        run: |
+          YESTERDAY=$(date -u -d 'yesterday' +%F)
+          START="${{ github.event.inputs.start }}"
+          END="${{ github.event.inputs.end }}"
+          FORCE="${{ github.event.inputs.force }}"
+
+          # Defaults: ambos = ontem (import incremental do dia anterior)
+          START="${START:-$YESTERDAY}"
+          END="${END:-$YESTERDAY}"
+
+          FORCE_FLAG=""
+          if [ "$FORCE" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+
+          echo "start=$START"           >> "$GITHUB_OUTPUT"
+          echo "end=$END"               >> "$GITHUB_OUTPUT"
+          echo "force_flag=$FORCE_FLAG" >> "$GITHUB_OUTPUT"
+
+          echo "=== Parâmetros do import ==="
+          echo "  Start: $START"
+          echo "  End  : $END"
+          echo "  Force: ${FORCE:-false}"
+
+      # ── 5. Import PriceTrack → Supabase ────────────────────────────────────
+      - name: Run PriceTrack API import
+        env:
+          PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python scripts/pricetrack_api_import.py \
+            --start "${{ steps.params.outputs.start }}" \
+            --end "${{ steps.params.outputs.end }}" \
+            ${{ steps.params.outputs.force_flag }}
+
+      # ── 6. Salva logs como artefato ────────────────────────────────────────
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pricetrack-import-logs-${{ github.run_id }}
+          path: logs/pricetrack_api_import_*.log
+          retention-days: 14
+          if-no-files-found: ignore
