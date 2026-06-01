@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Instala (ou atualiza) a entrada de cron do import diário do PriceTrack na VM.
 # Horário em UTC; Brasil = UTC-3 (sem horário de verão desde 2019).
-#   11:00 BRT → 14:00 UTC  (espelha o GitHub Actions pricetrack_daily.yml)
+#   06:00 BRT → 09:00 UTC  (espelha o GitHub Actions pricetrack_daily.yml)
 #
 # Uso:
 #   bash scripts/setup_pricetrack_cron.sh          # instala
@@ -20,7 +20,7 @@ chmod +x "$IMPORT_SCRIPT"
 # Marcador para identificar a linha gerenciada por este script
 MARKER="# RAC-pricetrack-cron"
 
-CRON_IMPORT="0 14 * * * $IMPORT_SCRIPT $MARKER"
+CRON_IMPORT="0 9 * * * $IMPORT_SCRIPT $MARKER"
 
 remove_entries() {
     crontab -l 2>/dev/null | grep -v "$MARKER" | crontab -
@@ -49,7 +49,7 @@ else
     install_entries
     echo ""
     echo "Import PriceTrack agendado:"
-    echo "  Diário: 11:00 BRT (14:00 UTC) → importa a coleta do dia anterior para pricetrack_daily"
+    echo "  Diário: 06:00 BRT (09:00 UTC) → importa a coleta do dia anterior para pricetrack_daily"
     echo ""
     echo "Pré-requisito: PRICETRACK_API_KEY + SUPABASE_URL + SUPABASE_KEY no $PROJECT_DIR/.env"
     echo "Log: $PROJECT_DIR/logs/cron_pricetrack.log"

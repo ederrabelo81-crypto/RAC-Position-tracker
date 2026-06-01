@@ -12,7 +12,7 @@ name: PriceTrack Daily Import
 # Logo, este workflow só precisa disparar o comando uma vez por dia.
 #
 # Schedule (UTC):
-#   14:00 UTC = 11:00 BRT  → importa a coleta de ONTEM (já fechada no PriceTrack)
+#   09:00 UTC = 06:00 BRT  → importa a coleta de ONTEM (já fechada no PriceTrack)
 #
 # Variáveis obrigatórias (Settings → Secrets and variables → Actions):
 #   PRICETRACK_API_KEY  —  token da API do PriceTrack (Configurações → API)
@@ -22,7 +22,7 @@ name: PriceTrack Daily Import
 
 on:
   schedule:
-    - cron: '0 14 * * *'   # 11:00 BRT — importa o dia anterior
+    - cron: '0 9 * * *'    # 06:00 BRT — importa o dia anterior
   workflow_dispatch:
     inputs:
       start:
