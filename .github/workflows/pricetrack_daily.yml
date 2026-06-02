@@ -110,6 +110,21 @@ jobs:
             --end "${{ steps.params.outputs.end }}" \
             ${{ steps.params.outputs.force_flag }}
 
+      # ── 5b. Auto-heal: preenche buracos dos últimos 14 dias (só agendado) ──
+      # Evita que falhas transitórias da API deixem datas faltando no histórico
+      # (ex.: 14/01, 18-20/02, 05/05, 08/05 — gaps detectados em 02/06/2026).
+      - name: Heal recent gaps
+        if: github.event_name == 'schedule'
+        env:
+          PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          GAP_START=$(date -u -d '14 days ago' +%F)
+          GAP_END=$(date -u -d 'yesterday' +%F)
+          python scripts/pricetrack_api_import.py \
+            --start "$GAP_START" --end "$GAP_END" --gaps-only
+
       # ── 6. Salva logs como artefato ────────────────────────────────────────
       - name: Upload logs
         if: always()
