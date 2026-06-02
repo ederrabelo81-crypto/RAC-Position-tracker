@@ -320,6 +320,20 @@ class ShopeeScraper(BaseScraper):
         keyword_category_map: dict,
         page_limit: int = MAX_PAGES,
     ) -> List[Dict[str, Any]]:
+        """Busca um termo na Shopee via API v4 (search_items) + sessão capturada.
+
+        Best-effort: depende de cookies SPC_* válidos (expiram em horas) e é
+        instável sem proxy residencial BR. Extrai ``shop_name``, o tipo (Shopee
+        Mall / Preferred+) e a reputação da loja quando presentes.
+
+        Args:
+            keyword: termo de busca.
+            keyword_category_map: mapa keyword → categoria (para o registro).
+            page_limit: nº máximo de páginas a coletar.
+
+        Returns:
+            Lista de registros normalizados (um por anúncio).
+        """
         if not _HAS_CURL_CFFI:
             logger.warning(
                 f"[{self.platform_name}] curl_cffi não instalado — coleta provavelmente "

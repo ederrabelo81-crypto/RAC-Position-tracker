@@ -39,7 +39,7 @@ def main():
     print("  RAC — Limpeza de Dados no Supabase")
     print("=" * 60)
 
-    from utils.supabase_client import delete_invalid_from_supabase
+    from utils.supabase_maintenance import delete_invalid_from_supabase
 
     if args.dry_run:
         print("\n[dry-run] Varrendo sem deletar...\n")

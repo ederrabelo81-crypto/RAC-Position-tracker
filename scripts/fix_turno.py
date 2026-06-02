@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from utils.supabase_client import fix_inverted_turno_in_supabase
+from utils.supabase_maintenance import fix_inverted_turno_in_supabase
 
 if __name__ == "__main__":
     confirm = "--confirm" in sys.argv

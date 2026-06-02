@@ -3124,7 +3124,7 @@ def page_data_cleanup():
 
     if scan_btn:
         with st.spinner("Scanning Supabase… this may take a moment for large datasets."):
-            from utils.supabase_client import delete_invalid_from_supabase
+            from utils.supabase_maintenance import delete_invalid_from_supabase
             result = delete_invalid_from_supabase(dry_run=True)
 
         st.session_state["cleanup_scan"] = result
@@ -3150,7 +3150,7 @@ def page_data_cleanup():
             st.warning("Run a scan first to confirm there are invalid records.")
         else:
             with st.spinner("Deleting invalid records…"):
-                from utils.supabase_client import delete_invalid_from_supabase
+                from utils.supabase_maintenance import delete_invalid_from_supabase
                 result = delete_invalid_from_supabase(dry_run=False)
 
             if result["errors"] == 0:
@@ -3193,7 +3193,7 @@ def page_data_cleanup():
 
     if price_scan_btn:
         with st.spinner("Scanning for suspicious prices… this may take a moment."):
-            from utils.supabase_client import scan_fix_bad_prices_in_supabase
+            from utils.supabase_maintenance import scan_fix_bad_prices_in_supabase
             price_result = scan_fix_bad_prices_in_supabase(dry_run=True)
         st.session_state["price_scan"] = price_result
 
@@ -3227,7 +3227,7 @@ def page_data_cleanup():
             st.warning("Run a price scan first to confirm there are records to remove.")
         else:
             with st.spinner(f"Deleting {scan['suspicious']:,} records with bad prices…"):
-                from utils.supabase_client import scan_fix_bad_prices_in_supabase
+                from utils.supabase_maintenance import scan_fix_bad_prices_in_supabase
                 price_result = scan_fix_bad_prices_in_supabase(dry_run=False)
             if price_result["errors"] == 0:
                 st.success(
@@ -3308,7 +3308,7 @@ def page_normalize_skus():
     # ── Scan (dry-run) ──
     if scan_btn:
         with st.spinner("Scanning Supabase… this may take a moment for large datasets."):
-            from utils.supabase_client import normalize_all_products_in_supabase
+            from utils.supabase_maintenance import normalize_all_products_in_supabase
             result = normalize_all_products_in_supabase(dry_run=True, preview_limit=30)
         st.session_state["norm_scan"] = result
 
@@ -3344,7 +3344,7 @@ def page_normalize_skus():
             st.warning("Run a scan first and confirm there are records to update.")
         else:
             with st.spinner(f"Updating {scan['changed']:,} records…"):
-                from utils.supabase_client import normalize_all_products_in_supabase
+                from utils.supabase_maintenance import normalize_all_products_in_supabase
                 result = normalize_all_products_in_supabase(dry_run=False)
 
             upd  = result["updated"]
@@ -3398,7 +3398,7 @@ def page_normalize_skus():
 
     if brand_scan_btn:
         with st.spinner("Scanning brand variants…"):
-            from utils.supabase_client import normalize_brands_in_supabase
+            from utils.supabase_maintenance import normalize_brands_in_supabase
             brand_result = normalize_brands_in_supabase(dry_run=True)
         st.session_state["brand_scan"] = brand_result
 
@@ -3435,7 +3435,7 @@ def page_normalize_skus():
             st.warning("Run a scan first to confirm there are records to update.")
         else:
             with st.spinner(f"Normalizing {total_to_fix:,} brand records…"):
-                from utils.supabase_client import normalize_brands_in_supabase
+                from utils.supabase_maintenance import normalize_brands_in_supabase
                 brand_result = normalize_brands_in_supabase(dry_run=False)
             if brand_result["errors"] == 0:
                 st.success(
@@ -3487,7 +3487,7 @@ def page_normalize_skus():
 
     if rebrand_scan_btn:
         with st.spinner("Scanning 'Desconhecida' records…"):
-            from utils.supabase_client import recalculate_unknown_brands_in_supabase
+            from utils.supabase_maintenance import recalculate_unknown_brands_in_supabase
             rebrand_result = recalculate_unknown_brands_in_supabase(dry_run=True)
         st.session_state["rebrand_scan"] = rebrand_result
 
@@ -3526,7 +3526,7 @@ def page_normalize_skus():
             st.warning("Execute o scan primeiro para confirmar os registros a atualizar.")
         else:
             with st.spinner(f"Atualizando {to_fix:,} registros…"):
-                from utils.supabase_client import recalculate_unknown_brands_in_supabase
+                from utils.supabase_maintenance import recalculate_unknown_brands_in_supabase
                 rebrand_result = recalculate_unknown_brands_in_supabase(dry_run=False)
             if rebrand_result["errors"] == 0:
                 st.success(
@@ -3573,7 +3573,7 @@ def page_normalize_skus():
 
     if plat_scan_btn:
         with st.spinner("Scanning platform/seller variants…"):
-            from utils.supabase_client import normalize_platforms_sellers_in_supabase
+            from utils.supabase_maintenance import normalize_platforms_sellers_in_supabase
             plat_result = normalize_platforms_sellers_in_supabase(dry_run=True)
         st.session_state["plat_scan"] = plat_result
 
@@ -3618,7 +3618,7 @@ def page_normalize_skus():
             st.warning("Run a scan first to confirm there are records to update.")
         else:
             with st.spinner(f"Normalizing {total_to_fix:,} records…"):
-                from utils.supabase_client import normalize_platforms_sellers_in_supabase
+                from utils.supabase_maintenance import normalize_platforms_sellers_in_supabase
                 plat_result = normalize_platforms_sellers_in_supabase(dry_run=False)
             if plat_result["errors"] == 0:
                 st.success(
