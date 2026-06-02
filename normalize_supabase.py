@@ -48,7 +48,7 @@ def main():
     print("  RAC — Normalização de Nomes de Produto no Supabase")
     print("=" * 70)
 
-    from utils.supabase_client import normalize_all_products_in_supabase
+    from utils.supabase_maintenance import normalize_all_products_in_supabase
 
     if args.dry_run:
         print("\n[dry-run] Varrendo sem gravar…\n")
