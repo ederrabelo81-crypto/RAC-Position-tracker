@@ -2945,6 +2945,153 @@ def _render_pricetrack_results(results: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Page — Data Health (cobertura/preenchimento dos campos por plataforma)
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _query_health(window_days: int) -> pd.DataFrame:
+    """Amostra recente com colunas mínimas para análise de cobertura.
+
+    Seleciona só os campos necessários (não `*`) e pagina sem o cap de 50k do
+    query_coletas. Cacheado por 10 min — é um painel de monitoramento, não
+    precisa ser tempo real.
+    """
+    client = _get_supabase()
+    if client is None:
+        return pd.DataFrame()
+    since = str(date.today() - timedelta(days=max(window_days, 1) - 1))
+    cols = ("data,plataforma,buy_box_seller,tipo_seller,qtd_sellers,"
+            "seller,preco,patrocinado")
+    rows: list = []
+    offset = 0
+    try:
+        while True:
+            resp = (
+                client.table("coletas").select(cols)
+                .gte("data", since)
+                .order("data", desc=True)
+                .range(offset, offset + _SUPABASE_PAGE - 1)
+                .execute()
+            )
+            if not resp.data:
+                break
+            rows.extend(resp.data)
+            if len(resp.data) < _SUPABASE_PAGE:
+                break
+            offset += _SUPABASE_PAGE
+            if offset > 400_000:  # trava de segurança
+                break
+    except Exception as exc:
+        st.error(f"Consulta de health falhou: {exc}")
+        return pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["data"] = pd.to_datetime(df["data"]).dt.date
+    return df
+
+
+def page_data_health() -> None:
+    st.title("🩺 Data Health")
+    st.caption(
+        "Cobertura e preenchimento dos campos por plataforma. Detecta coleta "
+        "quebrada ou campo de buy box vazio antes que vire dias de buraco."
+    )
+
+    with st.sidebar:
+        st.subheader("Filtros")
+        window = st.slider("Janela (dias)", 1, 7, 2, key="dh_window")
+
+    with st.spinner("Carregando amostra recente…"):
+        df = _query_health(window)
+
+    if df.empty:
+        st.warning("Sem dados recentes ou Supabase desconectado.")
+        return
+
+    # Campos-chave a monitorar (coluna no DB → rótulo)
+    key_cols = {
+        "buy_box_seller": "Buy Box",
+        "tipo_seller":    "Tipo Seller",
+        "qtd_sellers":    "Qtd Sellers",
+        "seller":         "Seller",
+        "preco":          "Preço",
+        "patrocinado":    "Patrocinado",
+    }
+
+    last_seen = df.groupby("plataforma")["data"].max()
+    today = date.today()
+
+    rows = []
+    for plat, g in df.groupby("plataforma"):
+        row = {
+            "Plataforma":     plat,
+            "Registros":      len(g),
+            "Última coleta":  last_seen[plat].strftime("%d/%m"),
+            "Dias s/ coleta": (today - last_seen[plat]).days,
+        }
+        for col, label in key_cols.items():
+            row[label] = round(g[col].notna().mean() * 100) if col in g.columns else None
+        rows.append(row)
+    cov = pd.DataFrame(rows).sort_values("Registros", ascending=False)
+
+    # ── Alertas ────────────────────────────────────────────────────────────────
+    stale = cov[cov["Dias s/ coleta"] >= 2]["Plataforma"].tolist()
+    no_bb = cov[cov["Buy Box"].fillna(0) == 0]["Plataforma"].tolist()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Plataformas no período", cov["Plataforma"].nunique())
+    c2.metric("Sem coleta ≥ 2 dias", len(stale))
+    c3.metric("Buy box vazio (0%)", len(no_bb))
+
+    if stale:
+        st.warning(f"⏳ Sem coleta há ≥ 2 dias: {', '.join(stale)}")
+    if no_bb:
+        st.warning(f"🚫 Buy box 0% no período: {', '.join(no_bb)}")
+
+    st.divider()
+
+    # ── Heatmap de cobertura ─────────────────────────────────────────────────
+    pct_cols = list(key_cols.values())
+    heat = cov.set_index("Plataforma")[pct_cols]
+    fig = px.imshow(
+        heat, text_auto=True, aspect="auto",
+        color_continuous_scale="RdYlGn", zmin=0, zmax=100,
+        labels=dict(x="Campo", y="Plataforma", color="% preenchido"),
+        title="Cobertura de campos por plataforma (%)",
+    )
+    _apply_chart_style(fig, height=max(380, 26 * len(cov)), hovermode="closest")
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(cov, use_container_width=True, hide_index=True)
+    _csv_download_btn(
+        cov, f"rac_data_health_{today}.csv", "⬇️ Exportar cobertura", key="dh_csv",
+    )
+
+    # ── Tendência diária de preenchimento de buy box ─────────────────────────
+    if "buy_box_seller" in df.columns:
+        st.markdown("**Preenchimento diário de buy box (%) — plataformas de foco**")
+        trend = (
+            df.assign(bb=df["buy_box_seller"].notna())
+            .groupby(["data", "plataforma"], as_index=False)["bb"].mean()
+        )
+        trend["bb"] = (trend["bb"] * 100).round(0)
+        trend["data"] = pd.to_datetime(trend["data"])
+        focus = ["Mercado Livre", "Amazon", "Leroy Merlin",
+                 "Casas Bahia", "Shopee", "Magalu"]
+        trend = trend[trend["plataforma"].isin(focus)]
+        if not trend.empty:
+            fig2 = px.line(
+                trend, x="data", y="bb", color="plataforma", markers=True,
+                title="% de linhas com buy_box_seller por dia",
+                labels={"data": "Data", "bb": "% buy box", "plataforma": "Plataforma"},
+                color_discrete_sequence=_CHART_COLORS,
+            )
+            _apply_chart_style(fig2, height=400)
+            st.plotly_chart(fig2, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
 # Page 5 — Data Cleanup
 # ---------------------------------------------------------------------------
 
@@ -6217,6 +6364,7 @@ PAGES = {
     "📧 Email Digest":             page_email_digest,
     "🔔 Price Anomalies":          page_price_anomalies,
     "📂 Import History":           page_import_history,
+    "🩺 Data Health":              page_data_health,
     "🧹 Data Cleanup":             page_data_cleanup,
     "🔤 Normalize SKUs":           page_normalize_skus,
     "🧬 Família & SKU":            page_familia_sku_admin,
@@ -6240,6 +6388,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "📧 Email Digest",
         "🔔 Price Anomalies",
         "📂 Import History",
+        "🩺 Data Health",
     ],
     "ADMIN": [
         "🧹 Data Cleanup",
