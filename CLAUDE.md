@@ -411,6 +411,8 @@ wip
 ### Pull Request Guidelines
 
 **PR Title:** Follow conventional commit format  
+**PR review state:** Sempre abrir/deixar PRs como **ready for review** (não draft).
+Preferência do mantenedor (Jun/2026) — vale para todas as sessões.  
 **PR Description Template:**
 
 ```markdown
