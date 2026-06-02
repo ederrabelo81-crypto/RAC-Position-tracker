@@ -233,6 +233,77 @@ def _expand_platforms(platforms: list[str]) -> list[str]:
         expanded.update(variants)
     return sorted(expanded)
 
+
+# ---------------------------------------------------------------------------
+# PriceTrack ↔ coletas platform names
+#
+# O PriceTrack publica o marketplace em CAIXA ALTA com espaços
+# ("MERCADO LIVRE", "MAGAZINE LUIZA"); as coletas usam o nome canônico
+# ("Mercado Livre", "Magalu"). Sem reconciliar isso, (a) o filtro de
+# plataforma no PriceTrack não casa (ex.: "Magalu" nunca bate em
+# "MAGAZINE LUIZA", então o preço do PriceTrack é ignorado) e (b) o merge
+# duplica o mesmo marketplace em duas categorias nos gráficos agrupados
+# por plataforma. Mapa explícito p/ os casos que `.title()` não resolve;
+# o restante cai no fallback title-case + `_normalize_platform`.
+# ---------------------------------------------------------------------------
+_PT_TO_CANONICAL_PLATFORM = {
+    # 7 marketplaces no foco
+    "MERCADO LIVRE":  "Mercado Livre",
+    "AMAZON":         "Amazon",
+    "MAGAZINE LUIZA": "Magalu",
+    "CASAS BAHIA":    "Casas Bahia",
+    "LEROY MERLIN":   "Leroy Merlin",
+    "SHOPEE":         "Shopee",
+    # dealers (fora do foco, mas presentes nas coletas — evita split)
+    "FERREIRA COSTA": "FerreiraCosta",
+    "WEB CONTINENTAL": "WebContinental",
+    "CENTRAL AR":     "CentralAr",
+    "POLO AR":        "PoloAr",
+    "FRIOPEÇAS":      "FrioPecas",
+    "CLIMA RIO":      "Climario",
+    "G BARBOSA":      "GBarbosa",
+    "ADIAS":          "ADias",
+    "AR CERTO":       "ArCerto",
+    "FRIGELAR":       "Frigelar",
+    "DUFRIO":         "Dufrio",
+    "LEVEROS":        "Leveros",
+    "BEMOL":          "Bemol",
+    "FUJIOKA":        "Fujioka",
+}
+
+# Inverso (canônico → variantes do PriceTrack) para o filtro de plataforma.
+_CANONICAL_TO_PT_PLATFORM: dict[str, list[str]] = {}
+for _pt_name, _canon in _PT_TO_CANONICAL_PLATFORM.items():
+    _CANONICAL_TO_PT_PLATFORM.setdefault(_canon, []).append(_pt_name)
+
+
+def _normalize_pt_platform(raw) -> str | None:
+    """Marketplace do PriceTrack (CAIXA ALTA) → nome canônico das coletas."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    mapped = _PT_TO_CANONICAL_PLATFORM.get(s.upper())
+    if mapped:
+        return mapped
+    # Fallback: title-case ("CARREFOUR" → "Carrefour") + correção de typos.
+    return _normalize_platform(s.title())
+
+
+def _pt_platform_match_values(platforms: list[str]) -> list[str]:
+    """Valores crus do PriceTrack a casar para as plataformas canônicas dadas.
+
+    Cobre o nome em CAIXA ALTA mapeado (ex.: "Magalu" → "MAGAZINE LUIZA"),
+    além do próprio nome em upper como rede de segurança ("AMAZON").
+    """
+    out: set[str] = set()
+    for p in platforms:
+        out.update(_CANONICAL_TO_PT_PLATFORM.get(p, []))
+        out.add(p.upper())
+        out.add(p)
+    return sorted(out)
+
 # ---------------------------------------------------------------------------
 # Supabase client (cached — one connection per session)
 # ---------------------------------------------------------------------------
@@ -931,11 +1002,12 @@ def query_pricetrack_daily(
             # ("MIDEA") are covered when the user picks "Midea".
             q = q.in_("brand", _expand_brands(brands))
         if platforms:
-            # marketplace is uppercase in pricetrack_daily ("MERCADO LIVRE"),
-            # while sel_platforms uses canonical title-case ("Mercado Livre").
-            # Build a case-insensitive OR across all variants.
-            variants = _expand_platforms(platforms)
-            parts = [f"marketplace.ilike.{v}" for v in variants]
+            # marketplace is uppercase in pricetrack_daily ("MERCADO LIVRE",
+            # "MAGAZINE LUIZA"), while sel_platforms uses canonical names
+            # ("Mercado Livre", "Magalu"). Map each canonical name to its
+            # PriceTrack raw value(s) so the filter actually matches.
+            parts = [f"marketplace.ilike.{v}"
+                     for v in _pt_platform_match_values(platforms)]
             if parts:
                 q = q.or_(",".join(parts))
         if sellers:
@@ -1031,7 +1103,8 @@ def query_pricetrack_daily(
         df = pd.DataFrame({
             "data":             pd.to_datetime(raw["collection_date"]).dt.date,
             "turno":            "PriceTrack",
-            "plataforma":       raw.get("marketplace"),
+            "plataforma":       raw["marketplace"].map(_normalize_pt_platform)
+                                if "marketplace" in raw.columns else pd.NA,
             "marca":            raw.get("brand"),
             "produto":          produto,
             "sku":              sku_series,
@@ -1622,6 +1695,47 @@ def _overview_data(
         return df
     except Exception:
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _price_data(
+    start_str: str,
+    end_str: str,
+    platforms_tuple: tuple,
+    brands_tuple: tuple,
+    limit: int = 15000,
+    familias_tuple: tuple = (),
+    skus_resolvidos_tuple: tuple = (),
+) -> pd.DataFrame:
+    """Fonte canônica de **preço** — precedência PriceTrack.
+
+    Espelha a assinatura de `_overview_data`, mas a fonte é
+    `query_price_evolution_data`: o PriceTrack é a verdade por (data, SKU)
+    e as coletas Python só preenchem marcas/produtos/datas que o PriceTrack
+    ainda não cobre.
+
+    Use SEMPRE que a métrica exibida for **preço** (médias, variação,
+    anomalias, evolução, distribuição). Para contagens de volume / registros
+    / presença, continue usando `_overview_data` (coletas cru) — o PriceTrack
+    agrega por seller e distorceria contagens de ofertas.
+
+    Returns:
+        DataFrame com colunas no schema de coletas (data, plataforma, marca,
+        produto, preco, seller, sku, ...). A coluna `source` indica a origem
+        de cada linha ("pricetrack" ou "coletas").
+    """
+    familias = list(familias_tuple) or _gf_familias() or None
+    skus     = list(skus_resolvidos_tuple) or _gf_skus_resolvidos() or None
+    df, _ = query_price_evolution_data(
+        date.fromisoformat(start_str),
+        date.fromisoformat(end_str),
+        platforms=list(platforms_tuple) or None,
+        brands=list(brands_tuple) or None,
+        familias_resolvidas=familias,
+        skus_resolvidos=skus,
+        limit=limit,
+    )
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -4915,6 +5029,58 @@ def _ci_build_payload(df: pd.DataFrame) -> str:
     return "\n\n".join(sections)
 
 
+def _ci_pricetrack_block(
+    start_date: date,
+    end_date: date,
+    platforms: list[str],
+    brands: list[str],
+) -> str:
+    """Bloco de PREÇO autoritativo (PriceTrack) para o contexto da IA.
+
+    Regra do projeto: o preço é sempre do PriceTrack — as coletas só cobrem
+    marcas/produtos que o PriceTrack ainda não tem. As seções de
+    posicionamento (BRAND/SELLER/KEYWORD/BUY BOX) trazem `preco` das coletas
+    apenas como contexto do anúncio que ocupa a posição; este bloco é a
+    fonte de verdade de preço e deve ser preferido em qualquer afirmação
+    sobre nível/variação de preço.
+    """
+    dfp = _price_data(
+        str(start_date), str(end_date),
+        tuple(sorted(platforms)), tuple(sorted(brands)),
+    )
+    if dfp.empty or "preco" not in dfp.columns:
+        return ""
+    dfp = dfp.dropna(subset=["preco"])
+    dfp = dfp[dfp["preco"] > 0]
+    if dfp.empty:
+        return ""
+
+    agg = (
+        dfp.groupby(["data", "plataforma", "marca"], dropna=False)
+        .agg(
+            ofertas=("preco", "count"),
+            preco_min=("preco", "min"),
+            preco_modal=("preco", _mode_price),
+            preco_medio=("preco", "mean"),
+            preco_max=("preco", "max"),
+        )
+        .reset_index()
+    )
+
+    src_note = ""
+    if "source" in dfp.columns:
+        n_pt  = int((dfp["source"] == "pricetrack").sum())
+        n_col = int((dfp["source"] != "pricetrack").sum())
+        src_note = (
+            f"\n(Origem: {n_pt:,} linhas PriceTrack + {n_col:,} linhas "
+            f"coletas-fallback para SKUs/datas que o PriceTrack não cobre.)"
+        )
+    return (
+        "=== PREÇO AUTORITATIVO (PriceTrack — fonte de verdade de preço) ==="
+        + src_note + "\n" + agg.to_csv(sep=";", index=False)
+    )
+
+
 def page_ci_analysis() -> None:
     st.title("🧠 Competitive Intelligence")
     st.caption("Análise competitiva gerada por IA com base nos dados de monitoramento de posicionamento.")
@@ -5059,6 +5225,23 @@ def page_ci_analysis() -> None:
         data_payload = _ci_build_payload(df)
         payload_mode = "dados brutos" if len(df) <= _CI_MAX_RAW else "dados pré-processados"
 
+        # Bloco de preço autoritativo (PriceTrack). As seções de posicionamento
+        # acima carregam `preco` das coletas só como contexto do anúncio;
+        # qualquer análise de PREÇO deve usar este bloco.
+        with st.spinner("Carregando preço autoritativo (PriceTrack)…"):
+            pt_block = _ci_pricetrack_block(
+                start_date, end_date, sel_platforms, sel_brands
+            )
+        price_guidance = (
+            "\n\nIMPORTANTE — FONTE DE PREÇO: use o bloco "
+            "'PREÇO AUTORITATIVO (PriceTrack)' abaixo como fonte de verdade "
+            "para qualquer afirmação sobre nível ou variação de preço. Os "
+            "campos de preço nas seções de posicionamento refletem apenas o "
+            "anúncio que ocupava a posição e não devem guiar conclusões de "
+            "preço.\n\n" + pt_block
+            if pt_block else ""
+        )
+
         user_msg = (
             f"Analise os seguintes dados de monitoramento de posicionamento RAC coletados em {dates_str}.\n\n"
             f"Total de registros: {len(df):,}\n"
@@ -5068,6 +5251,7 @@ def page_ci_analysis() -> None:
             f"Modo de análise solicitado: {compare_mode}\n"
             f"Formato dos dados: {payload_mode}\n\n"
             f"DADOS (separador ponto-e-vírgula):\n{data_payload}"
+            f"{price_guidance}"
         )
 
         with st.spinner(f"Analisando {len(df):,} registros… (pode levar 30–90 s)"):
@@ -5126,7 +5310,13 @@ def page_overview() -> None:
     st.divider()
 
     with st.spinner("Carregando dados…"):
-        df = _overview_data(
+        # `df` (coletas) é a base para contagens de volume/registros/presença.
+        # `dfp` (precedência PriceTrack) é a fonte de tudo que for **preço**.
+        df  = _overview_data(
+            str(start_date), str(end_date),
+            tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+        )
+        dfp = _price_data(
             str(start_date), str(end_date),
             tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
         )
@@ -5140,11 +5330,16 @@ def page_overview() -> None:
 
     # Comparison window
     compare_on = _gf_compare()
-    df_cmp = pd.DataFrame()
+    df_cmp  = pd.DataFrame()
+    dfp_cmp = pd.DataFrame()
     if compare_on:
         cmp_start, cmp_end = _gf_cmp_dates()
         with st.spinner("Carregando período de comparação…"):
-            df_cmp = _overview_data(
+            df_cmp  = _overview_data(
+                str(cmp_start), str(cmp_end),
+                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+            )
+            dfp_cmp = _price_data(
                 str(cmp_start), str(cmp_end),
                 tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
             )
@@ -5156,15 +5351,17 @@ def page_overview() -> None:
     n_brands   = df["marca"].nunique()        if "marca"      in df.columns else 0
     n_skus     = df["produto"].nunique()      if "produto"    in df.columns else 0
 
-    midea_mask = df["marca"].str.contains("Midea", case=False, na=False) if "marca" in df.columns else pd.Series(False, index=df.index)
-    avg_midea  = df.loc[midea_mask, "preco"].mean() if "preco" in df.columns else None
+    # Preço sempre do PriceTrack (dfp); contagens do coletas (df).
+    midea_mask = dfp["marca"].str.contains("Midea", case=False, na=False) if ("marca" in dfp.columns and not dfp.empty) else pd.Series(False, index=dfp.index)
+    avg_midea  = dfp.loc[midea_mask, "preco"].mean() if ("preco" in dfp.columns and not dfp.empty) else None
 
     delta_records = None
     delta_price   = None
     if compare_on and not df_cmp.empty:
         delta_records = f"{n_records - len(df_cmp):+,}"
-        midea_cmp_mask = df_cmp["marca"].str.contains("Midea", case=False, na=False) if "marca" in df_cmp.columns else pd.Series(False, index=df_cmp.index)
-        avg_cmp = df_cmp.loc[midea_cmp_mask, "preco"].mean() if "preco" in df_cmp.columns else None
+    if compare_on and not dfp_cmp.empty:
+        midea_cmp_mask = dfp_cmp["marca"].str.contains("Midea", case=False, na=False) if "marca" in dfp_cmp.columns else pd.Series(False, index=dfp_cmp.index)
+        avg_cmp = dfp_cmp.loc[midea_cmp_mask, "preco"].mean() if "preco" in dfp_cmp.columns else None
         if avg_midea and avg_cmp and avg_cmp > 0:
             delta_price = f"{(avg_midea - avg_cmp) / avg_cmp * 100:+.1f}%"
 
@@ -5194,7 +5391,7 @@ def page_overview() -> None:
     # Chart 1 — Price trend by brand
     with col_l:
         st.subheader("Tendência de Preço por Marca")
-        df_price = df.dropna(subset=["preco", "data", "marca"]) if all(c in df.columns for c in ["preco", "data", "marca"]) else pd.DataFrame()
+        df_price = dfp.dropna(subset=["preco", "data", "marca"]) if (not dfp.empty and all(c in dfp.columns for c in ["preco", "data", "marca"])) else pd.DataFrame()
         if not df_price.empty:
             try:
                 top_brands = df_price["marca"].value_counts().head(6).index.tolist()
@@ -5286,12 +5483,12 @@ def page_overview() -> None:
     with col_r2:
         st.subheader("Top Movers (últimas 48h)")
         req_cols = {"preco", "data", "produto"}
-        if req_cols.issubset(df.columns):
-            sorted_dates = sorted(df["data"].unique(), reverse=True)
+        if not dfp.empty and req_cols.issubset(dfp.columns):
+            sorted_dates = sorted(dfp["data"].unique(), reverse=True)
             if len(sorted_dates) >= 2:
                 d_new, d_old = sorted_dates[0], sorted_dates[1]
-                new_med = df[df["data"] == d_new].dropna(subset=["preco"]).groupby("produto")["preco"].agg(_mode_price)
-                old_med = df[df["data"] == d_old].dropna(subset=["preco"]).groupby("produto")["preco"].agg(_mode_price)
+                new_med = dfp[dfp["data"] == d_new].dropna(subset=["preco"]).groupby("produto")["preco"].agg(_mode_price)
+                old_med = dfp[dfp["data"] == d_old].dropna(subset=["preco"]).groupby("produto")["preco"].agg(_mode_price)
                 mv = pd.concat([new_med.rename("novo"), old_med.rename("antigo")], axis=1).dropna()
                 mv["delta_pct"] = (mv["novo"] - mv["antigo"]) / mv["antigo"] * 100
                 mv = mv[mv["delta_pct"].abs() >= 1].sort_values("delta_pct").head(10).reset_index()
@@ -5331,7 +5528,8 @@ def page_overview() -> None:
 
 def page_top_movers() -> None:
     st.title("🚨 Top Movers")
-    st.caption("SKUs com maior variação de preço entre duas janelas temporais.")
+    st.caption("SKUs com maior variação de preço entre duas janelas temporais. "
+               "Preço: PriceTrack (fallback coletas onde o PriceTrack não cobre).")
 
     start_date, end_date = _gf_dates()
     cmp_start, cmp_end   = _gf_cmp_dates()
@@ -5379,13 +5577,13 @@ def page_top_movers() -> None:
     _fam_t = tuple(sorted(sel_familias))
     _sku_t = tuple(sorted(sel_skus_resolvidos))
     with st.spinner("Carregando janela atual…"):
-        df_cur = _overview_data(str(start_date), str(end_date),
-                                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
-                                familias_tuple=_fam_t, skus_resolvidos_tuple=_sku_t)
+        df_cur = _price_data(str(start_date), str(end_date),
+                             tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+                             familias_tuple=_fam_t, skus_resolvidos_tuple=_sku_t)
     with st.spinner("Carregando janela de comparação…"):
-        df_cmp = _overview_data(str(cmp_start), str(cmp_end),
-                                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
-                                familias_tuple=_fam_t, skus_resolvidos_tuple=_sku_t)
+        df_cmp = _price_data(str(cmp_start), str(cmp_end),
+                             tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+                             familias_tuple=_fam_t, skus_resolvidos_tuple=_sku_t)
 
     if df_cur.empty or df_cmp.empty:
         st.warning("Uma das janelas não retornou dados. Ajuste as datas ou filtros.")
@@ -5665,8 +5863,12 @@ def page_email_digest() -> None:
         return
 
     with st.spinner("Building digest…"):
-        df_cur  = _overview_data(str(window_start), str(window_end), (), ())
-        df_prev = _overview_data(str(prev_start), str(prev_end), (), ())
+        # Contagens / BuyBox vêm das coletas (posicao_geral só existe lá);
+        # o cálculo de movers de **preço** usa a precedência PriceTrack.
+        df_cur   = _overview_data(str(window_start), str(window_end), (), ())
+        df_prev  = _overview_data(str(prev_start), str(prev_end), (), ())
+        dfp_cur  = _price_data(str(window_start), str(window_end), (), ())
+        dfp_prev = _price_data(str(prev_start), str(prev_end), (), ())
 
     if df_cur.empty:
         st.warning("No records found in the active window.")
@@ -5674,11 +5876,11 @@ def page_email_digest() -> None:
 
     # ── Top movers — modal price per SKU, current vs previous window ──────
     ups = downs = pd.DataFrame()
-    if not df_prev.empty and {"preco", "produto"}.issubset(df_cur.columns):
-        cur_agg = (df_cur.dropna(subset=["preco", "produto"])
+    if not dfp_prev.empty and {"preco", "produto"}.issubset(dfp_cur.columns):
+        cur_agg = (dfp_cur.dropna(subset=["preco", "produto"])
                    .groupby("produto")["preco"]
                    .agg(preco_atual=_mode_price, obs_atual="count").reset_index())
-        prev_agg = (df_prev.dropna(subset=["preco", "produto"])
+        prev_agg = (dfp_prev.dropna(subset=["preco", "produto"])
                     .groupby("produto")["preco"]
                     .agg(preco_anterior=_mode_price, obs_anterior="count")
                     .reset_index())
@@ -5704,9 +5906,11 @@ def page_email_digest() -> None:
         buybox = df_cur[df_cur["posicao_geral"].notna()
                         & (df_cur["posicao_geral"] <= buybox_max_pos)].copy()
 
+    # brand_map alimenta as tabelas de movers → usa a mesma fonte (dfp_cur)
+    # para que as chaves `produto` casem com os movers do PriceTrack.
     brand_map: dict = {}
-    if "marca" in df_cur.columns:
-        brand_map = (df_cur.dropna(subset=["produto"])
+    if not dfp_cur.empty and "marca" in dfp_cur.columns:
+        brand_map = (dfp_cur.dropna(subset=["produto"])
                      .groupby("produto")["marca"]
                      .agg(lambda s: (s.dropna().mode().iat[0]
                                      if not s.dropna().mode().empty else "—"))
@@ -5789,7 +5993,9 @@ def page_price_anomalies() -> None:
         "Detects per-SKU price changes between two consecutive days. Any "
         "product whose mean price moved by at least the threshold is "
         "reported. The same logic runs daily on a cron via "
-        "`send_anomalies.py` (Replit Scheduled Deployments)."
+        "`send_anomalies.py` (Replit Scheduled Deployments). "
+        "Prices come from PriceTrack (Python collections only fill brands/"
+        "products PriceTrack does not cover)."
     )
 
     with st.sidebar:
@@ -5815,8 +6021,8 @@ def page_price_anomalies() -> None:
     prev_day = target_day - timedelta(days=1)
 
     with st.spinner("Loading price records…"):
-        df_today = _overview_data(str(target_day), str(target_day), (), ())
-        df_prev  = _overview_data(str(prev_day), str(prev_day), (), ())
+        df_today = _price_data(str(target_day), str(target_day), (), ())
+        df_prev  = _price_data(str(prev_day), str(prev_day), (), ())
 
     def _agg(df):
         if df.empty or not {"preco", "produto"}.issubset(df.columns):
@@ -5971,15 +6177,22 @@ def _enrich_specs(df: pd.DataFrame) -> pd.DataFrame:
 def _query_products_history(
     products: tuple, start_str: str, end_str: str
 ) -> pd.DataFrame:
-    """Histórico de coletas para SKUs específicos (cacheado)."""
+    """Histórico de preço por SKU (cacheado), com precedência PriceTrack.
+
+    Fonte é `query_price_evolution_data`: o PriceTrack é a verdade de preço
+    por (data, SKU) e as coletas Python só preenchem produtos/datas que o
+    PriceTrack ainda não cobre. A ficha do produto e o comparador são
+    centrados em preço, então toda a página segue a regra de preço.
+    """
     if not products:
         return pd.DataFrame()
-    return query_coletas(
+    df, _ = query_price_evolution_data(
         date.fromisoformat(start_str),
         date.fromisoformat(end_str),
         products=list(products),
         limit=50000,
     )
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -5988,7 +6201,8 @@ def _query_products_history(
 
 def page_market_analytics() -> None:
     st.title("📊 Market Analytics")
-    st.caption("Distribuição de preços e presença por marketplace ao longo do tempo.")
+    st.caption("Distribuição de preços (fonte: PriceTrack, fallback coletas) e "
+               "presença por marketplace (volume de ofertas das coletas) ao longo do tempo.")
 
     with st.sidebar:
         st.subheader("Filtros")
@@ -6026,7 +6240,18 @@ def page_market_analytics() -> None:
         return
 
     with st.spinner("Carregando dados..."):
+        # `df` (coletas) → presença/volume de ofertas por marketplace.
         df = query_coletas(
+            start_date, end_date,
+            platforms=sel_platforms or None,
+            brands=sel_brands or None,
+            btu_filter=sel_btu or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
+            limit=50000,
+        )
+        # `dfp` (precedência PriceTrack) → distribuição de **preços**.
+        dfp, _ = query_price_evolution_data(
             start_date, end_date,
             platforms=sel_platforms or None,
             brands=sel_brands or None,
@@ -6037,16 +6262,23 @@ def page_market_analytics() -> None:
         )
 
     if modo.startswith("Snapshot"):
-        df = _filter_latest_run(df)
+        # Em dfp, as linhas do PriceTrack não têm run_id e são preservadas;
+        # apenas as linhas de coletas (fallback) são reduzidas ao último run.
+        df  = _filter_latest_run(df)
+        dfp = _filter_latest_run(dfp)
 
-    if df.empty:
+    if df.empty and dfp.empty:
         st.warning("Nenhum dado encontrado para os filtros selecionados.")
         return
 
-    df = _enrich_specs(df)
+    df  = _enrich_specs(df)
+    dfp = _enrich_specs(dfp)
     if sel_ciclo != "Todos":
-        df = df[df["ciclo"] == sel_ciclo]
-        if df.empty:
+        if not df.empty:
+            df = df[df["ciclo"] == sel_ciclo]
+        if not dfp.empty:
+            dfp = dfp[dfp["ciclo"] == sel_ciclo]
+        if df.empty and dfp.empty:
             st.warning(f"Nenhum produto com ciclo '{sel_ciclo}' no período.")
             return
 
@@ -6054,9 +6286,9 @@ def page_market_analytics() -> None:
         ["💰 Distribuição de Preços", "🏪 Presença por Marketplace"]
     )
 
-    # ── 5.2 Distribuição de preços por faixa ─────────────────────────────────
+    # ── 5.2 Distribuição de preços por faixa (preço do PriceTrack) ───────────
     with tab_dist:
-        df_price = df.dropna(subset=["preco", "data"])
+        df_price = dfp.dropna(subset=["preco", "data"]) if not dfp.empty else pd.DataFrame(columns=["preco", "data"])
         df_price = df_price[df_price["preco"] > 0]
         if df_price.empty:
             st.warning("Sem dados de preço no período.")
@@ -6175,7 +6407,7 @@ def _render_product_sheet(produto: str, start_date: date, end_date: date) -> Non
 
     # --- Contadores ---
     cnt_cols = st.columns(4)
-    cnt_cols[0].metric("Total de coletas", f"{len(df):,}")
+    cnt_cols[0].metric("Registros de preço", f"{len(df):,}")
     cnt_cols[1].metric("Marketplaces", int(df["plataforma"].nunique()))
     cnt_cols[2].metric(
         "Sellers",
