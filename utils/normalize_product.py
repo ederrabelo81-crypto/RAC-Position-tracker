@@ -269,8 +269,10 @@ def _extract_btus_value(text: str) -> Optional[int]:
     t = text.lower()
     # Handle "18 000" (space as thousands separator)
     t = re.sub(r'(\d{2,3})\s(\d{3})\b', r'\1\2', t)
-    # Remove dots used as thousands separators (e.g. "12.000")
-    t_nodot = re.sub(r'(\d+)\.(\d{3})\b', r'\1\2', t)
+    # Remove dots used as thousands separators (e.g. "12.000"). Lookahead por
+    # não-dígito (em vez de \b) também cobre o caso colado "12.000btu" comum em
+    # marketplaces — "0"+"b" não forma fronteira de palavra, então \b falhava.
+    t_nodot = re.sub(r'(\d+)\.(\d{3})(?=\D|$)', r'\1\2', t)
 
     # Pattern 1: explicit BTU/BTUs/BTU-H suffix
     m = re.search(r'(\d{4,6})\s*(?:btus?|btu[/\-]?h)', t_nodot)

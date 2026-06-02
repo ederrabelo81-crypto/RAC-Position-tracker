@@ -9,11 +9,15 @@ coletas.produto, classifica em:
     NAO_AC        — não é ar-condicionado (peças, geladeira, climatizador, etc.)
     REVISAR       — não foi possível classificar com confiança → fila humana
 
-Famílias genéricas (quando marca catalogada mas linha comercial não detectada)
-têm o formato <MARCA>-<BTU>-<CICLO>, ex.: MIDEA-12000-F, LG-9000-QF.
+A classificação de marca/BTU/ciclo é delegada a `utils.depara_resolver`
+(primitivas robustas de `utils.normalize_product`); este script mantém apenas
+os guardas NAO_AC (não é AC) e FORA_TIPO (janela/cassete/portátil/36k+), que
+rodam ANTES do matcher forte.
 
-Nunca inventa SKU: 'sku' só é preenchido quando a linha comercial detectada
-casa unicamente com 1 SKU do catálogo.
+Famílias genéricas (quando marca catalogada mas linha comercial não detectada)
+têm o formato <MARCA>-<BTU>-<CICLO>, ex.: MIDEA-12000-F, LG-9000-QF. Quando o
+catálogo tem uma única linha para (marca, BTU, ciclo), a família genérica é
+promovida à `familia_linha` exata. Nunca inventa SKU (mantém-se NULL).
 
 REQUISITOS:
     pip install supabase python-dotenv
@@ -35,72 +39,21 @@ from typing import Optional
 
 from loguru import logger
 
+_PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+sys.path.insert(0, str(_PROJECT_ROOT))
+
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent.parent / ".env")
+    load_dotenv(_PROJECT_ROOT / ".env")
 except ImportError:
     pass
 
-try:
-    from supabase import create_client, Client
-except ImportError:
-    logger.error("Falta `supabase`. Instale com: pip install supabase python-dotenv")
-    sys.exit(1)
+from utils.depara_resolver import CatalogFamilias, resolve_depara
 
+# `supabase` é importado preguiçosamente em main()/load_catalog_familias: as
+# funções puras deste módulo (classify, guardas regex) não dependem de rede e
+# precisam ser importáveis sem o pacote instalado (ex.: testes, reuso).
 
-# ---------------------------------------------------------------------------
-# Normalização de marca (DB raw value → canonical UPPER)
-# ---------------------------------------------------------------------------
-MARCA_NORM = {
-    "springer midea": "MIDEA", "midea carrier": "MIDEA",
-    "springer": "MIDEA",       "midea": "MIDEA",
-    "lg": "LG", "samsung": "SAMSUNG", "electrolux": "ELECTROLUX",
-    "elgin": "ELGIN", "philco": "PHILCO", "gree": "GREE", "tcl": "TCL",
-    "agratto": "AGRATTO", "hisense": "HISENSE",
-    # Fora do catálogo:
-    "carrier": "CARRIER", "consul": "CONSUL", "daikin": "DAIKIN",
-    "fujitsu": "FUJITSU", "hitachi": "HITACHI", "haier": "HAIER",
-    "york": "YORK", "eos": "EOS", "hq": "HQ", "aiwa": "AIWA",
-    "vix": "VIX", "rheem": "RHEEM", "kian": "KIAN",
-    "britânia": "BRITANIA", "britania": "BRITANIA",
-    "equation": "EQUATION", "delonghi": "DELONGHI",
-    "aufit": "AUFIT", "komeco": "KOMECO",
-}
-
-MARCAS_CATALOGO = {
-    "MIDEA","LG","SAMSUNG","ELECTROLUX","ELGIN",
-    "PHILCO","GREE","TCL","AGRATTO","HISENSE",
-}
-
-MARCAS_FORA_ESCOPO = {
-    "DAIKIN","FUJITSU","HITACHI","HAIER","YORK","EOS","HQ","AIWA","CONSUL",
-    "VIX","RHEEM","KIAN","BRITANIA","EQUATION","DELONGHI","CARRIER",
-    "AUFIT","KOMECO","CHIGO","FONTAINE",
-}
-
-# Padrões para detectar marca pelo nome (quando marca_monitorada=Desconhecida)
-BRAND_FROM_NAME = [
-    (r"\baiwa\b",     "AIWA"),
-    (r"\bdaikin\b",   "DAIKIN"),
-    (r"\bfujitsu\b",  "FUJITSU"),
-    (r"\bhitachi\b",  "HITACHI"),
-    (r"\bhaier\b",    "HAIER"),
-    (r"\bequation\b", "EQUATION"),
-    (r"\bfontaine\b", "FONTAINE"),
-    (r"brit[âa]nia",  "BRITANIA"),
-    (r"\bdelonghi\b", "DELONGHI"),
-    (r"\bcarrier\b",  "CARRIER"),
-    (r"\bconsul\b",   "CONSUL"),
-    (r"\bchigo\b",    "CHIGO"),
-    (r"\bkomeco\b",   "KOMECO"),
-    (r"\bhq\b",       "HQ"),
-    (r"\bvix\b",      "VIX"),
-    (r"\bkian\b",     "KIAN"),
-    (r"\beos\b",      "EOS"),
-    (r"\baufit\b",    "AUFIT"),
-    (r"\brheem\b",    "RHEEM"),
-    (r"\byork\b",     "YORK"),
-]
 
 # Não-AC: peças automotivas, eletrodomésticos, acessórios, climatizadores
 NAO_AC_REGEX = [
@@ -124,6 +77,12 @@ NAO_AC_REGEX = [
         r"\bserpentina\b|\bcontrole\b|\bh[aá]lite\b|\borganizador\b|\bcarregador\b",
         r"\bprotetor\b|\bcapa\b|\bsuporte\b",
         r"\bunidade condensadora\b|\bhigienizador\b|\bmanifold\b|\bmangueira\b",
+        # Componentes/peças avulsas que carregam marca+BTU (não são a unidade):
+        r"\bcondensadora?\b|\bevaporadora\b|\bcompressor\b|\bturbina\b",
+        r"\bplaca\b|\bgabinete\b|\bbobina\b|\bfus[íi]vel\b|\btermistor\b",
+        r"\bjunta\b|\btransformador\b|\bpressostato\b|\bdifusor\b|\bdefletor\b",
+        r"\binversor\b|\bbomba\b\s*dreno|\bdreno\b|\bman[ôo]metro\b|\bcoxim",
+        r"\bauto[\s-]?transformador\b|\bcaixa\b.*\bpassagem\b",
     ]
 ]
 
@@ -143,112 +102,87 @@ FORA_TIPO_REGEX = [
     ]
 ]
 
-BTU_REGEX = re.compile(
-    r"\b(9\.000|9000|9k|12\.000|12000|12k|18\.000|18000|18k|22\.000|22000|22k|24\.000|24000|24k|30\.000|30000|30k)\b",
-    re.IGNORECASE,
-)
-BTU_MAP = {
-    "9.000": 9000, "9000": 9000, "9k": 9000,
-    "12.000": 12000, "12000": 12000, "12k": 12000,
-    "18.000": 18000, "18000": 18000, "18k": 18000,
-    "22.000": 22000, "22000": 22000, "22k": 22000,
-    "24.000": 24000, "24000": 24000, "24k": 24000,
-    "30.000": 30000, "30000": 30000, "30k": 30000,
-}
+def load_catalog_familias(client: "Client") -> CatalogFamilias:
+    """
+    Carrega do catálogo o mapa (marca, BTU, ciclo_code) → {familia_linha}.
 
-# Linhas comerciais por marca (linha mais específica primeiro)
-LINHAS = [
-    ("MIDEA",    "AI ECOMASTER",        r"\bai\s+ecomaster\b|\bi[\- ]ecomaster\b"),
-    ("MIDEA",    "AIRVOLUTION CONNECT", r"airvolution\s+connect"),
-    ("MIDEA",    "AIRVOLUTION LITE",    r"airvolution\s+lite"),
-    ("MIDEA",    "AI AIRVOLUTION",      r"ai\s+airvolution"),
-    ("MIDEA",    "AIRVOLUTION",         r"airvolution"),
-    ("MIDEA",    "XTREME SAVE CONNECT", r"xtreme\s+save\s+connect"),
-    ("MIDEA",    "XTREME SAVE",         r"xtreme\s+save"),
-    ("MIDEA",    "BLACK EDITION",       r"black\s+edition"),
-    ("LG",       "DUAL INVERTER VOICE", r"dual\s*inverter.*\bvoice\b|\bai\s+voice\b"),
-    ("LG",       "DUAL INVERTER COMPACT", r"dual\s*inverter.*\bcompact\b|compact\s*\+?ai|\+ai"),
-    ("LG",       "DUAL INVERTER ARTCOOL", r"dual\s*inverter.*artcool|\bartcool\b"),
-    ("LG",       "DUAL INVERTER",       r"dual\s*inverter"),
-    ("SAMSUNG",  "WINDFREE AI",         r"wind\s*free\s*ai|windfree\s*ai|wfree\s*ai"),
-    ("SAMSUNG",  "WINDFREE BLACK",      r"wind\s*free.*black|wfree.*black"),
-    ("SAMSUNG",  "WINDFREE",            r"wind\s*free|windfree|wfree"),
-    ("ELECTROLUX","COLOR ADAPT",        r"color\s*adapt|colour\s*adapt"),
-    ("ELECTROLUX","TRIPLE PROTECTION",  r"triple\s*protection"),
-    ("ELGIN",    "ECO INVERTER II",     r"eco\s*inverter\s*(ii|2)"),
-    ("ELGIN",    "ECO INVERTER",        r"eco\s*inverter"),
-    ("ELGIN",    "ECO DREAM",           r"eco\s*dream"),
-    ("TCL",      "T-PRO 2.0",           r"t[\s-]?pro\s*2"),
-    ("TCL",      "ELITE GV",            r"elite\s*gv"),
-    ("TCL",      "ELITE",               r"\belite\b"),
-    ("TCL",      "FREE COOLER",         r"free\s*cooler"),
-    ("TCL",      "FRESHIN",             r"fresh\s*in|freshin"),
-    ("GREE",     "G-TOP",               r"g[\s-]?top"),
-    ("GREE",     "G-DIAMOND",           r"g[\s-]?diamond"),
-    ("GREE",     "G-CLASSIC",           r"g[\s-]?classic"),
-    ("GREE",     "G-PRIME",             r"g[\s-]?prime"),
-    ("PHILCO",   "INVERTER PLUS",       r"inverter\s*plus"),
-    ("AGRATTO",  "LIV TOP",             r"liv\s*top"),
-    ("AGRATTO",  "FIT TOP",             r"fit\s*top"),
-    ("AGRATTO",  "ZEN TOP",             r"zen\s*top"),
-    ("HISENSE",  "CONNECT",             r"hisense.*connect|connect.*hisense"),
-]
-LINHAS_COMPILED = [(m, l, re.compile(r, re.IGNORECASE)) for m, l, r in LINHAS]
+    Usado por `resolve_depara` para promover a família genérica à linha exata
+    do catálogo quando há apenas uma linha possível para o trio. `ciclo` do
+    catálogo ("FRIO"/"QUENTE/FRIO") é reduzido ao código curto ("F"/"QF").
+    """
+    _CICLO_CODE = {"FRIO": "F", "QUENTE/FRIO": "QF", "QUENTE": "Q"}
+    familias: CatalogFamilias = {}
+    offset, page = 0, 1000
+    while True:
+        resp = (client.table("produtos_catalogo")
+                .select("marca,capacidade_btu,ciclo,familia_linha")
+                .not_.is_("familia_linha", "null")
+                .range(offset, offset + page - 1)
+                .execute())
+        if not resp.data:
+            break
+        for row in resp.data:
+            marca = row.get("marca")
+            btu = row.get("capacidade_btu")
+            ciclo = _CICLO_CODE.get((row.get("ciclo") or "").upper())
+            fam = row.get("familia_linha")
+            if not (marca and btu and ciclo and fam):
+                continue
+            familias.setdefault((marca, int(btu), ciclo), set()).add(fam)
+        if len(resp.data) < page:
+            break
+        offset += page
+    return familias
 
 
-def normalize_marca(raw: Optional[str], nome: str) -> Optional[str]:
-    if raw:
-        norm = MARCA_NORM.get(raw.strip().lower())
-        if norm:
-            return norm
-    for pat, brand in BRAND_FROM_NAME:
-        if re.search(pat, nome, re.IGNORECASE):
-            return brand
-    return None
+def load_catalog_btus(client: "Client") -> set[int]:
+    """Conjunto de capacidades (BTU) presentes no catálogo (para gate de escopo)."""
+    btus: set[int] = set()
+    offset, page = 0, 1000
+    while True:
+        resp = (client.table("produtos_catalogo")
+                .select("capacidade_btu")
+                .not_.is_("capacidade_btu", "null")
+                .range(offset, offset + page - 1)
+                .execute())
+        if not resp.data:
+            break
+        for row in resp.data:
+            try:
+                btus.add(int(row["capacidade_btu"]))
+            except (TypeError, ValueError, KeyError):
+                continue
+        if len(resp.data) < page:
+            break
+        offset += page
+    return btus
 
 
-def classify(nome: str, marca_raw: Optional[str]) -> dict:
-    """Retorna dict com keys: estado, familia, sku, marca_norm."""
-    marca = normalize_marca(marca_raw, nome)
-    out = {"estado": "REVISAR", "familia": None, "sku": None, "marca_norm": marca}
+def classify(
+    nome: str,
+    marca_raw: Optional[str],
+    catalog_familias: Optional[CatalogFamilias] = None,
+    catalog_btus: Optional[set[int]] = None,
+) -> dict:
+    """
+    Classifica um nome coletado em estado/familia/sku/marca_norm.
 
+    Guardas NAO_AC e FORA_TIPO (janela/cassete/portátil/36k+) rodam primeiro;
+    o restante (marca/BTU/ciclo + catálogo) é delegado a `resolve_depara`.
+    """
     if any(p.search(nome) for p in NAO_AC_REGEX):
-        out["estado"] = "NAO_AC"
-        return out
+        return {"estado": "NAO_AC", "familia": None, "sku": None, "marca_norm": None}
 
     if any(p.search(nome) for p in FORA_TIPO_REGEX):
-        out["estado"] = "FORA_ESCOPO"
-        return out
+        return {"estado": "FORA_ESCOPO", "familia": None, "sku": None, "marca_norm": None}
 
-    if marca in MARCAS_FORA_ESCOPO:
-        out["estado"] = "FORA_ESCOPO"
-        return out
-
-    if marca not in MARCAS_CATALOGO:
-        # marca desconhecida e nenhum padrão fora-escopo bateu → REVISAR
-        return out
-
-    btu_m = BTU_REGEX.search(nome)
-    btu = BTU_MAP.get(btu_m.group(1).lower()) if btu_m else None
-
-    nome_low = nome.lower()
-    if re.search(r"quente[\s/]*(e\s*)?frio|quente\s*/\s*frio|\bq\s*/\s*f\b|\bqf\b", nome_low):
-        ciclo = "QF"
-    elif re.search(r"\bfrio\b", nome_low):
-        ciclo = "F"
-    elif re.search(r"\bquente\b", nome_low):
-        ciclo = "Q"
-    else:
-        ciclo = None
-
-    if btu is None or ciclo is None:
-        return out  # REVISAR
-
-    out["estado"] = "MAPEADO"
-    out["familia"] = f"{marca}-{btu}-{ciclo}"
-    # A resolução de família específica (linha comercial → catalog.familia)
-    # acontece via SQL após inserir, para usar joins eficientes.
-    return out
+    res = resolve_depara(nome, marca_raw, catalog_familias, catalog_btus)
+    return {
+        "estado": res.estado,
+        "familia": res.familia,
+        "sku": res.sku,
+        "marca_norm": res.marca_norm,
+    }
 
 
 def main():
@@ -258,13 +192,27 @@ def main():
     ap.add_argument("--no-write", action="store_true", help="Não escreve no DB; só classifica e exporta CSV")
     args = ap.parse_args()
 
+    try:
+        from supabase import create_client
+    except ImportError:
+        logger.error("Falta `supabase`. Instale com: pip install supabase python-dotenv")
+        sys.exit(1)
+
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     if not url or not key:
         logger.error("SUPABASE_URL/SUPABASE_KEY não configurados no .env")
         sys.exit(1)
 
-    client: Client = create_client(url, key)
+    client = create_client(url, key)
+
+    logger.info("Carregando catálogo (famílias + capacidades)…")
+    catalog_familias = load_catalog_familias(client)
+    catalog_btus = load_catalog_btus(client)
+    logger.info(
+        f"Catálogo: {len(catalog_familias)} combos (marca, BTU, ciclo); "
+        f"{len(catalog_btus)} capacidades."
+    )
 
     # Coleta nomes distintos das duas tabelas
     logger.info("Buscando nomes distintos em rac_monitoramento e coletas…")
@@ -292,7 +240,10 @@ def main():
             offset += page
 
     logger.info(f"Coletados {len(nomes)} nomes distintos. Classificando…")
-    classificados = [{"nome_coletado": n, **classify(n, b)} for n, b in nomes.items()]
+    classificados = [
+        {"nome_coletado": n, **classify(n, b, catalog_familias, catalog_btus)}
+        for n, b in nomes.items()
+    ]
 
     if not args.no_write:
         logger.info("Fazendo UPSERT em produtos_depara_nome (lotes de 500)…")
