@@ -4,3 +4,8 @@ dist/
 data/*.csv
 logs/*.log
 *.js.map
+
+# Sessões de scraper — cookies/tokens sensíveis (SPC_*, csrftoken).
+# Geradas em runtime via capture-session.ts; NUNCA versionar.
+sessions/*.json
+shopee_chrome.json

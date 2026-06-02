@@ -771,7 +771,8 @@ def query_coletas(
 
         df = pd.DataFrame(all_data)
         df["data"] = pd.to_datetime(df["data"]).dt.date
-        for col in ["posicao_organica", "posicao_patrocinada", "posicao_geral", "qtd_avaliacoes"]:
+        for col in ["posicao_organica", "posicao_patrocinada", "posicao_geral",
+                    "qtd_avaliacoes", "qtd_sellers"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
         for col in ["preco", "avaliacao"]:
@@ -1609,7 +1610,8 @@ def _overview_data(
 
         df = pd.DataFrame(all_data)
         df["data"] = pd.to_datetime(df["data"]).dt.date
-        for col in ["posicao_organica", "posicao_patrocinada", "posicao_geral", "qtd_avaliacoes"]:
+        for col in ["posicao_organica", "posicao_patrocinada", "posicao_geral",
+                    "qtd_avaliacoes", "qtd_sellers"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
         for col in ["preco", "avaliacao"]:
@@ -3689,6 +3691,13 @@ def page_buybox_position():
         "Quem está em posição #1 para cada produto/plataforma? "
         "Analise quais marcas e sellers dominam o topo das buscas."
     )
+    st.info(
+        "ℹ️ Esta página usa a **posição orgânica/geral ≤ N** como *proxy* de buy box "
+        "(funciona para todas as plataformas). Para o **vencedor real da buy box** "
+        "(campo `buy_box_seller`, mix 1P/3P e nº de sellers competindo), veja a página "
+        "**👑 Share of Buy Box**.",
+        icon="ℹ️",
+    )
 
     # --- Sidebar filters ---
     with st.sidebar:
@@ -3902,17 +3911,33 @@ def page_buybox_position():
     with tab_timeline:
         st.subheader("BuyBox wins over time")
 
-        group_opts = ["Brand", "Platform"]
+        group_opts = ["Brand", "Platform", "Seller (Buy Box)"]
         group_choice = st.radio(
             "Group by", group_opts, horizontal=True, key="bb_grp"
         )
-        group_col = "marca" if group_choice == "Brand" else "plataforma"
+        group_col = {
+            "Brand": "marca",
+            "Platform": "plataforma",
+            "Seller (Buy Box)": "buy_box_seller",
+        }[group_choice]
+
+        df_grp = df_top
+        if group_col == "buy_box_seller" and "buy_box_seller" in df_top.columns:
+            df_grp = df_top[
+                df_top["buy_box_seller"].notna()
+                & (df_top["buy_box_seller"].astype(str).str.strip() != "")
+            ]
+            if df_grp.empty:
+                st.info(
+                    "Nenhuma plataforma no filtro atual expõe `buy_box_seller`. "
+                    "Tente ML, Amazon ou Leroy num período recente."
+                )
 
         if group_col not in df_top.columns or "data" not in df_top.columns:
             st.info("Required columns not available.")
-        else:
+        elif not df_grp.empty:
             timeline = (
-                df_top
+                df_grp
                 .groupby(["data", group_col], as_index=False)
                 .size()
                 .rename(columns={"size": "BuyBox wins", group_col: group_choice})
@@ -3943,7 +3968,8 @@ def page_buybox_position():
             c for c in [
                 "data", "turno", "plataforma", "marca", "produto",
                 "posicao_geral", "posicao_organica", "posicao_patrocinada",
-                "preco", "seller", "keyword", "tag",
+                "preco", "seller", "buy_box_seller", "tipo_seller", "qtd_sellers",
+                "keyword", "tag",
             ] if c in df_top.columns
         ]
 
@@ -3976,6 +4002,257 @@ def page_buybox_position():
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Page — Share of Buy Box (vencedor REAL da buy box, via campo buy_box_seller)
+# ---------------------------------------------------------------------------
+
+def page_share_of_buybox() -> None:
+    st.title("👑 Share of Buy Box")
+    st.caption(
+        "Quem vence a oferta principal (buy box) de cada produto — por seller, "
+        "tipo (1P/3P/Loja Oficial) e nível de competição. Baseado no campo real "
+        "`buy_box_seller`, não em posição de busca."
+    )
+
+    with st.sidebar:
+        st.subheader("Filtros")
+        date_range = st.date_input(
+            "Período",
+            value=(date.today() - timedelta(days=14), date.today()),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
+            key="sbb_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=14)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="sbb_platforms")
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="sbb_brands")
+        sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "sbb")
+        modo = st.radio(
+            "Modo de visualização",
+            ["Snapshot oficial (último run)", "Todos os runs (auditoria)"],
+            index=0, key="sbb_modo",
+        )
+        load_btn = st.button("🔄 Carregar Buy Box", type="primary", use_container_width=True)
+
+    if not load_btn:
+        st.info("Defina os filtros na barra lateral e clique em **Carregar Buy Box**.")
+        st.caption(
+            "💡 Plataformas que hoje expõem o vencedor da buy box: **Mercado Livre, "
+            "Amazon, Leroy Merlin** (e Casas Bahia / Shopee / Magalu quando a coleta "
+            "não está bloqueada). A coleta de buy box começou no fim de Maio/2026."
+        )
+        return
+
+    with st.spinner("Carregando dados…"):
+        df = query_coletas(
+            start_date, end_date,
+            platforms=sel_platforms or None,
+            brands=sel_brands or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
+            limit=50000,
+        )
+
+    if modo.startswith("Snapshot"):
+        df = _filter_latest_run(df)
+
+    if df.empty or "buy_box_seller" not in df.columns:
+        st.warning("Nenhum dado com informação de buy box para os filtros selecionados.")
+        return
+
+    # Mantém só linhas com vencedor real da buy box
+    bb = df[
+        df["buy_box_seller"].notna()
+        & (df["buy_box_seller"].astype(str).str.strip() != "")
+    ].copy()
+
+    if bb.empty:
+        st.warning(
+            "As plataformas/períodos selecionados não têm `buy_box_seller` preenchido. "
+            "Tente Mercado Livre, Amazon ou Leroy Merlin num período recente."
+        )
+        cov = (
+            df.assign(tem_bb=df["buy_box_seller"].notna())
+            .groupby("plataforma")["tem_bb"].mean().mul(100).round(0)
+            .reset_index().rename(columns={"tem_bb": "% com buy box", "plataforma": "Plataforma"})
+            .sort_values("% com buy box", ascending=False)
+        )
+        st.markdown("**Cobertura de buy box por plataforma no período:**")
+        st.dataframe(cov, use_container_width=True, hide_index=True)
+        return
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    n_records   = len(bb)
+    n_sellers   = bb["buy_box_seller"].nunique()
+    n_products  = bb["produto"].nunique()   if "produto"   in bb.columns else 0
+    n_platforms = bb["plataforma"].nunique() if "plataforma" in bb.columns else 0
+
+    share_1p = None
+    if "tipo_seller" in bb.columns:
+        tipo = bb["tipo_seller"].fillna("").astype(str).str.strip()
+        non_empty = tipo.ne("")
+        if non_empty.any():
+            first_party = tipo.str.contains("1P|Loja Oficial|Mall", case=False, regex=True)
+            share_1p = first_party.sum() / non_empty.sum() * 100
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Registros c/ buy box", f"{n_records:,}")
+    c2.metric("Sellers distintos", f"{n_sellers:,}")
+    c3.metric("Produtos", f"{n_products:,}")
+    c4.metric("Plataformas", str(n_platforms))
+    c5.metric(
+        "Share 1P / Oficial",
+        f"{share_1p:.0f}%" if share_1p is not None else "—",
+        help="% de buy box vencida por 1P / Loja Oficial / Mall (campo Tipo Seller)",
+    )
+    st.divider()
+
+    tab_seller, tab_tipo, tab_comp, tab_timeline, tab_detail = st.tabs(
+        ["👑 Share por Seller", "🏷️ Mix 1P/3P", "⚔️ Competição",
+         "📅 Timeline", "📋 Detalhe"]
+    )
+
+    # ── Tab 1: Share por seller ─────────────────────────────────────────────
+    with tab_seller:
+        wins = (
+            bb.groupby("buy_box_seller", as_index=False).size()
+            .rename(columns={"size": "Buy box wins", "buy_box_seller": "Seller"})
+            .sort_values("Buy box wins", ascending=False)
+        )
+        wins["Share (%)"] = (wins["Buy box wins"] / wins["Buy box wins"].sum() * 100).round(1)
+
+        col_chart, col_table = st.columns([2, 1])
+        with col_chart:
+            top = wins.head(15)
+            fig = px.bar(
+                top, x="Buy box wins", y="Seller", orientation="h",
+                color="Seller", color_discrete_sequence=_CHART_COLORS,
+                text="Share (%)", title="Top sellers por buy box vencida",
+            )
+            fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+            fig.update_layout(showlegend=False,
+                              yaxis={"categoryorder": "total ascending"})
+            _apply_chart_style(fig, height=480, hovermode="closest")
+            st.plotly_chart(fig, use_container_width=True)
+        with col_table:
+            st.dataframe(wins, use_container_width=True, hide_index=True, height=480)
+        _csv_download_btn(
+            wins, f"rac_share_buybox_seller_{start_date}_{end_date}.csv",
+            "⬇️ Exportar share por seller", key="sbb_seller_csv",
+        )
+
+    # ── Tab 2: Mix 1P / 3P (tipo_seller) ────────────────────────────────────
+    with tab_tipo:
+        has_tipo = (
+            "tipo_seller" in bb.columns
+            and not bb["tipo_seller"].fillna("").astype(str).str.strip().eq("").all()
+        )
+        if not has_tipo:
+            st.info("Nenhuma plataforma no filtro preenche `tipo_seller` (hoje: ML e Amazon).")
+        else:
+            tdf = bb[bb["tipo_seller"].notna()
+                     & (bb["tipo_seller"].astype(str).str.strip() != "")]
+            mix = (
+                tdf.groupby(["plataforma", "tipo_seller"], as_index=False).size()
+                .rename(columns={"size": "Buy box wins"})
+            )
+            fig = px.bar(
+                mix, x="plataforma", y="Buy box wins", color="tipo_seller",
+                barmode="stack", title="Buy box por tipo de seller e plataforma",
+                color_discrete_sequence=_CHART_COLORS,
+                labels={"plataforma": "Plataforma", "tipo_seller": "Tipo Seller"},
+            )
+            _apply_chart_style(fig, height=440)
+            st.plotly_chart(fig, use_container_width=True)
+
+            overall = (
+                tdf.groupby("tipo_seller", as_index=False).size()
+                .rename(columns={"size": "Buy box wins", "tipo_seller": "Tipo Seller"})
+                .sort_values("Buy box wins", ascending=False)
+            )
+            overall["Share (%)"] = (
+                overall["Buy box wins"] / overall["Buy box wins"].sum() * 100
+            ).round(1)
+            st.dataframe(overall, use_container_width=True, hide_index=True)
+
+    # ── Tab 3: Competição (qtd_sellers) ─────────────────────────────────────
+    with tab_comp:
+        has_qtd = "qtd_sellers" in bb.columns and not bb["qtd_sellers"].dropna().empty
+        if not has_qtd:
+            st.info(
+                "`qtd_sellers` quase não é coletado hoje (apenas Amazon e Google "
+                "Shopping). Para ML/Leroy exigiria extrair o nº de ofertas por "
+                "listagem no scraper — ver página 🩺 Data Health."
+            )
+        else:
+            comp = bb.dropna(subset=["qtd_sellers"])
+            by_plat = (
+                comp.groupby("plataforma", as_index=False)["qtd_sellers"].mean()
+                .rename(columns={"qtd_sellers": "Média de sellers/listagem"})
+                .sort_values("Média de sellers/listagem", ascending=False)
+            )
+            by_plat["Média de sellers/listagem"] = by_plat["Média de sellers/listagem"].round(1)
+            fig = px.bar(
+                by_plat, x="plataforma", y="Média de sellers/listagem",
+                color="plataforma", color_discrete_sequence=_CHART_COLORS,
+                title="Competição média por listagem (nº de sellers)",
+            )
+            fig.update_layout(showlegend=False)
+            _apply_chart_style(fig, height=420)
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                "Mais sellers por listagem = buy box mais disputada — útil para "
+                "priorizar onde defender/atacar preço."
+            )
+
+    # ── Tab 4: Timeline (troca de dono da buy box) ──────────────────────────
+    with tab_timeline:
+        if "data" not in bb.columns:
+            st.info("Coluna 'data' indisponível.")
+        else:
+            top_sellers = bb["buy_box_seller"].value_counts().head(8).index.tolist()
+            tl = (
+                bb[bb["buy_box_seller"].isin(top_sellers)]
+                .groupby(["data", "buy_box_seller"], as_index=False).size()
+                .rename(columns={"size": "Buy box wins", "buy_box_seller": "Seller"})
+            )
+            tl["data"] = pd.to_datetime(tl["data"])
+            fig = px.line(
+                tl, x="data", y="Buy box wins", color="Seller", markers=True,
+                title="Evolução do share de buy box (top 8 sellers)",
+                labels={"data": "Data"}, color_discrete_sequence=_CHART_COLORS,
+            )
+            fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
+            _apply_chart_style(fig, height=460)
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Cruzamentos entre linhas indicam troca de dono da buy box no agregado.")
+
+    # ── Tab 5: Detalhe ──────────────────────────────────────────────────────
+    with tab_detail:
+        cols = [c for c in [
+            "data", "turno", "plataforma", "marca", "produto",
+            "buy_box_seller", "tipo_seller", "qtd_sellers", "preco",
+            "posicao_geral", "keyword",
+        ] if c in bb.columns]
+        st.dataframe(
+            bb[cols].sort_values(["data", "plataforma"], ascending=[False, True]),
+            use_container_width=True, height=500,
+            column_config={
+                "data":          st.column_config.DateColumn("Data"),
+                "preco":         st.column_config.NumberColumn("Preço (R$)", format="R$ %.2f"),
+                "qtd_sellers":   st.column_config.NumberColumn("Qtd Sellers"),
+                "posicao_geral": st.column_config.NumberColumn("Posição"),
+            },
+        )
+        _csv_download_btn(
+            bb[cols], f"rac_buybox_detalhe_{start_date}_{end_date}.csv",
+            "⬇️ Exportar detalhe", key="sbb_detail_csv",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -4373,6 +4650,7 @@ REGRAS DE ANÁLISE:
 8. Tags de destaque relevantes: "MAIS VENDIDO", "OFERTA IMPERDÍVEL", "RECOMENDADO", "Escolha", "Oferta", "Menor preço em 365 dias"
 9. Se houver dados de mais de um dia, incluir análise D/D (dia a dia) com tendências
 10. Manter linguagem em PORTUGUÊS BRASILEIRO, usar termos do mercado em inglês quando padrão (sell-in, sell-out, Buy Box, ROAS, etc.)
+11. BUY BOX (foco principal): quando os campos "Buy Box Seller", "Tipo Seller" e "Qtd Sellers" estiverem preenchidos, priorizar a análise de share of buy box — qual seller vence a oferta principal por produto/plataforma, o mix 1P vs 3P/Loja Oficial (Tipo Seller) e o nível de competição (Qtd Sellers). Sinalizar trocas de dono da buy box entre dias. Nem toda plataforma expõe esses campos; analisar onde houver dado e não inferir buy box a partir de posição quando o campo real estiver ausente.
 
 OUTPUT: Relatório completo em Markdown. Sem blocos de código. Sem introduções genéricas. Começar direto com o título do relatório."""
 
@@ -4387,8 +4665,13 @@ _CI_COL_MAP = {
     "posicao_organica":   "Posição Orgânica",
     "posicao_patrocinada":"Posição Patrocinada",
     "posicao_geral":      "Posição Geral",
+    "patrocinado":        "Patrocinado?",
     "preco":              "Preço (R$)",
     "seller":             "Seller / Vendedor",
+    # Foco buy box / seller (Mai/2026) — colunas que antes não chegavam à IA
+    "buy_box_seller":     "Buy Box Seller",
+    "qtd_sellers":        "Qtd Sellers",
+    "tipo_seller":        "Tipo Seller",
     "tag":                "Tag Destaque",
 }
 _CI_MAX_RAW = 20_000  # Above this, send pre-aggregated tables instead of raw CSV
@@ -4418,6 +4701,27 @@ def _ci_build_payload(df: pd.DataFrame) -> str:
         min_price=("preco", "min"),
     ).reset_index()
     sections.append("=== BRAND SUMMARY ===\n" + brand_agg.to_csv(sep=";", index=False))
+
+    # 1b. Buy box share — seller vencedor real (quando a plataforma expõe).
+    # Este é o foco da coleta desde Mai/2026; antes não chegava à IA.
+    if "buy_box_seller" in df.columns:
+        bb_df = df[
+            df["buy_box_seller"].notna()
+            & (df["buy_box_seller"].astype(str).str.strip() != "")
+        ]
+        if not bb_df.empty:
+            group_cols = ["data", "plataforma", "buy_box_seller"]
+            if "tipo_seller" in bb_df.columns:
+                group_cols.append("tipo_seller")
+            bb_agg = bb_df.groupby(group_cols, dropna=False).agg(
+                buy_box_wins=("buy_box_seller", "count"),
+                marcas=("marca", "nunique"),
+                avg_price=("preco", "mean"),
+            ).reset_index()
+            sections.append(
+                "=== BUY BOX SHARE (seller vencedor) ===\n"
+                + bb_agg.to_csv(sep=";", index=False)
+            )
 
     # 2. Seller analysis (ML only)
     ml_df = df[df["plataforma"].str.contains("Mercado Livre|ML", case=False, na=False)]
@@ -5906,6 +6210,7 @@ PAGES = {
     "📊 Market Analytics":         page_market_analytics,
     "🗂️ Ficha do Produto":         page_product_sheet,
     "🏆 BuyBox Position":          page_buybox_position,
+    "👑 Share of Buy Box":         page_share_of_buybox,
     "📦 Availability":             page_availability,
     "🧠 Competitive Intelligence": page_ci_analysis,
     "🚀 Run Collection":           page_run_collection,
@@ -5926,6 +6231,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "📊 Market Analytics",
         "🗂️ Ficha do Produto",
         "🏆 BuyBox Position",
+        "👑 Share of Buy Box",
         "📦 Availability",
         "🧠 Competitive Intelligence",
     ],
