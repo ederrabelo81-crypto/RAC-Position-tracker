@@ -58,6 +58,22 @@ _BRAND_TO_NORM: Dict[str, str] = {
     "Rheem": "RHEEM", "Vix": "VIX", "York": "YORK", "EOS": "EOS", "HQ": "HQ",
 }
 
+# Marcas de AC reconhecidamente FORA do catálogo que `_identify_brand` (de
+# normalize_product) não detecta pelo nome. Espelha o BRAND_FROM_NAME do
+# classificador antigo para não regredir a fila: sem isto, nomes Aiwa/Chigo/
+# Fontaine/etc. caem em REVISAR em vez de FORA_ESCOPO.
+_EXTRA_FORA_BRANDS = [
+    (re.compile(r"\baiwa\b", re.IGNORECASE), "AIWA"),
+    (re.compile(r"\bequation\b", re.IGNORECASE), "EQUATION"),
+    (re.compile(r"\bfontaine\b", re.IGNORECASE), "FONTAINE"),
+    (re.compile(r"\bdelonghi\b", re.IGNORECASE), "DELONGHI"),
+    (re.compile(r"\bchigo\b", re.IGNORECASE), "CHIGO"),
+    (re.compile(r"\bkian\b", re.IGNORECASE), "KIAN"),
+    (re.compile(r"\beos\b", re.IGNORECASE), "EOS"),
+    (re.compile(r"\bvix\b", re.IGNORECASE), "VIX"),
+    (re.compile(r"\bhq\b", re.IGNORECASE), "HQ"),
+]
+
 # Tipo do mapa de famílias do catálogo injetado em `resolve_depara`:
 #   (marca_norm, btu, ciclo_code) → conjunto de `familia_linha` não-nulas.
 CatalogFamilias = Dict[Tuple[str, int, str], Set[str]]
@@ -167,6 +183,13 @@ def resolve_depara(
 
     brand_title = _identify_brand(nome, marca_raw)
     if not brand_title:
+        # Marcas de AC fora do catálogo que o detector principal não conhece.
+        for pat, mnorm in _EXTRA_FORA_BRANDS:
+            if pat.search(nome):
+                return DeParaResult(
+                    "FORA_ESCOPO", None, None, mnorm, "alta",
+                    f"marca AC fora do catálogo ({mnorm})",
+                )
         return DeParaResult(
             "REVISAR", None, None, None, "baixa", "marca não identificada"
         )

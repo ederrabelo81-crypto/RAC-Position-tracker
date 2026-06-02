@@ -120,6 +120,19 @@ class TestForaEscopo:
         assert r.estado == "FORA_ESCOPO"
         assert r.marca_norm == "BRITANIA"
 
+    def test_extra_non_catalog_brands_not_in_normalize_product(self):
+        # Marcas que _identify_brand não conhece, mas o classificador antigo
+        # tratava como FORA_ESCOPO — não devem regredir para REVISAR.
+        for nome, marca in [
+            ("Ar Condicionado Split Aiwa 12000 BTUs Frio", "AIWA"),
+            ("Ar Condicionado 9.000 Btus Quente E Frio Split Chigo", "CHIGO"),
+            ("Ar Condicionado Split 9.000 Btus Fontaine Frio FCST9F", "FONTAINE"),
+            ("Ar Condicionado Split 24000 Btus Master Inverter EOS 220V", "EOS"),
+        ]:
+            r = resolve_depara(nome)
+            assert r.estado == "FORA_ESCOPO", nome
+            assert r.marca_norm == marca, nome
+
 
 class TestRevisar:
     def test_no_brand_stays_revisar(self):
