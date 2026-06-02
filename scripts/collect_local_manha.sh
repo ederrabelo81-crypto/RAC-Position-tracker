@@ -47,4 +47,8 @@ if [ $EXIT_PYTHON -ne 0 ]; then
     exit 1
 fi
 
+# Resolução/normalização pós-coleta (de-para + produto_normalizado v2)
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Resolução/normalização (resolver_diario.py)..." >> "$LOG"
+python scripts/resolver_diario.py >> "$LOG" 2>&1
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Coleta manhã LOCAL concluída com sucesso ===" >> "$LOG"

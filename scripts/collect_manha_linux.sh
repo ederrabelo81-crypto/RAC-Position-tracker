@@ -87,6 +87,12 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python concluído (exit=$PYTHON_EXIT)" >> "
 
 EXIT_CODE=$PYTHON_EXIT
 
+# 2b. Resolução/normalização pós-coleta: de-para (estado/familia/sku) +
+# produto_normalizado v2 (catálogo p/ as 10 marcas + Python p/ as demais ~20).
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Resolução/normalização (resolver_diario.py)..." >> "$LOG"
+python scripts/resolver_diario.py >> "$LOG" 2>&1
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Resolução concluída (exit=$?)" >> "$LOG"
+
 # 3. Validação de status — consulta Supabase, envia status PASS/FAIL no Telegram
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Validação diária..." >> "$LOG"
 python scripts/daily_status_check.py --turno Abertura >> "$LOG" 2>&1
