@@ -21,12 +21,21 @@ fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Iniciando coleta manhã LOCAL ===" >> "$LOG"
 
-# ── Python: magalu + amazon + leroy + dealers ──────────────────────────────
+# ── Python: magalu + amazon + leroy + dealers + casasbahia (+ shopee) ──────
 cd "$PROJECT_DIR"
 source .venv/bin/activate
 set -a; source .env; set +a
+# Casas Bahia (curl_cffi + warm-up Akamai) expõe buy box via sellers[].
+# Shopee só roda se houver sessão capturada (cookies SPC_*/csrftoken expiram).
+PLATFORMS="magalu amazon leroy dealers casasbahia"
+if [ -f "$PROJECT_DIR/utils/sessions/shopee.json" ]; then
+    PLATFORMS="$PLATFORMS shopee"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Shopee: sessão encontrada — incluída na coleta" >> "$LOG"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Shopee: sem sessão — pulando (python utils/session_grabber.py --site shopee)" >> "$LOG"
+fi
 python main.py \
-    --platforms magalu amazon leroy dealers \
+    --platforms $PLATFORMS \
     --pages 2 \
     --priority alta media \
     >> "$LOG" 2>&1
@@ -37,5 +46,9 @@ if [ $EXIT_PYTHON -ne 0 ]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Coleta manhã LOCAL concluída com erros (python=$EXIT_PYTHON) ===" >> "$LOG"
     exit 1
 fi
+
+# Resolução/normalização pós-coleta (de-para + produto_normalizado v2)
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Resolução/normalização (resolver_diario.py)..." >> "$LOG"
+python scripts/resolver_diario.py >> "$LOG" 2>&1
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Coleta manhã LOCAL concluída com sucesso ===" >> "$LOG"

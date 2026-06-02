@@ -7,8 +7,10 @@ name: RAC Price Collection
 #   13:00 UTC = 10:00 BRT  → turno Abertura  (2 páginas, alta+media)
 #   00:00 UTC = 21:00 BRT  → turno Fechamento (1 página, alta)
 #
-# Plataformas: magalu, google_shopping, amazon, leroy, dealers
+# Plataformas: magalu, google_shopping, amazon, leroy, dealers, casasbahia
 # ML excluído: IPs de datacenter GitHub são bloqueados pelo Mercado Livre.
+# Casas Bahia (VTEX IS + warm-up Akamai) destrava de datacenter e expõe buy box.
+# Shopee fica fora do CI: exige sessão SPC_*/csrftoken capturada (não há no runner).
 #
 # Magalu usa MAGALU_HEADLESS=false + xvfb (display virtual) para bypassar
 # o sensor.js do Akamai. O perfil Chrome é cacheado entre runs para
@@ -28,7 +30,7 @@ on:
       platforms:
         description: 'Plataformas separadas por espaço'
         required: false
-        default: 'magalu google_shopping amazon leroy dealers'
+        default: 'magalu google_shopping amazon leroy dealers casasbahia'
       pages:
         description: 'Páginas por keyword (1–5)'
         required: false
@@ -69,7 +71,7 @@ jobs:
               PAGES="1"
               PRIORITY="alta"
             fi
-            PLATFORMS="magalu google_shopping amazon leroy dealers"
+            PLATFORMS="magalu google_shopping amazon leroy dealers casasbahia"
           else
             TURNO="Manual"
             PLATFORMS="${{ github.event.inputs.platforms }}"

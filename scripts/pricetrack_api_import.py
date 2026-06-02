@@ -601,6 +601,7 @@ def run(
     no_upload: bool = False,
     concurrent: int = _MAX_CONCURRENT,
     categories: Optional[List[str]] = None,
+    gaps_only: bool = False,
 ) -> None:
     _DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     progress = load_progress()
@@ -614,15 +615,23 @@ def run(
     cur = start
     while cur <= end:
         ds = cur.isoformat()
-        if force:
+        # gaps_only: ignora o progress.json e confia só na verdade do banco
+        # (date_exists) — preenche exatamente os buracos do intervalo.
+        if force and not gaps_only:
             dates_to_process.append(ds)
-        elif ds in done_set:
+        elif not gaps_only and ds in done_set:
             skipped_existing += 1
         elif date_exists(ds, dry_run=dry_run):
             skipped_existing += 1
         else:
             dates_to_process.append(ds)
         cur += timedelta(days=1)
+
+    if gaps_only:
+        logger.info(
+            f"[gaps-only] {len(dates_to_process)} data(s) ausente(s) em "
+            f"[{start} → {end}]: {', '.join(dates_to_process) or 'nenhuma'}"
+        )
 
     total = len(dates_to_process)
     logger.info(
@@ -699,6 +708,12 @@ def main() -> None:
         "--force",
         action="store_true",
         help="Reimporta datas já presentes no banco",
+    )
+    parser.add_argument(
+        "--gaps-only",
+        action="store_true",
+        help="Detecta e importa SOMENTE as datas ausentes no banco no intervalo "
+             "(ignora o progress.json). Use para preencher buracos do histórico.",
     )
     parser.add_argument(
         "--no-upload",
@@ -792,6 +807,7 @@ def main() -> None:
         no_upload=args.no_upload,
         concurrent=args.concurrent,
         categories=categories,
+        gaps_only=args.gaps_only,
     )
 
 

@@ -58,9 +58,23 @@ else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: xvfb-run não encontrado — Magalu provavelmente falhará (sensor.js Akamai). Instale: sudo apt-get install -y xvfb" >> "$LOG"
 fi
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: amazon leroy dealers google_shopping magalu (2 páginas, xvfb=$XVFB_LABEL)..." >> "$LOG"
+# Casas Bahia (VTEX intelligent-search + warm-up de cookies Akamai, curl_cffi)
+# destrava mesmo de IP de datacenter — entra no grupo estável e expõe buy box
+# (sellers[] → sellerDefault). Shopee (API v4) só roda se houver sessão
+# capturada: cookies SPC_*/csrftoken expiram em horas; sem sessão a coleta
+# falha e só gera ruído. Captura: python utils/session_grabber.py --site shopee
+PLATFORMS="amazon leroy dealers casasbahia google_shopping magalu"
+SHOPEE_SESSION="$PROJECT_DIR/utils/sessions/shopee.json"
+if [ -f "$SHOPEE_SESSION" ]; then
+    PLATFORMS="$PLATFORMS shopee"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Shopee: sessão encontrada — incluída na coleta" >> "$LOG"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Shopee: sem sessão ($SHOPEE_SESSION) — pulando (capture com: python utils/session_grabber.py --site shopee)" >> "$LOG"
+fi
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: $PLATFORMS (2 páginas, xvfb=$XVFB_LABEL)..." >> "$LOG"
 "${XVFB_CMD[@]}" python main.py \
-    --platforms amazon leroy dealers google_shopping magalu \
+    --platforms $PLATFORMS \
     --pages 2 \
     --priority alta media \
     >> "$LOG" 2>&1
@@ -72,6 +86,12 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python concluído (exit=$PYTHON_EXIT)" >> "
 # permanece apenas para Shopee (requer sessão autenticada).
 
 EXIT_CODE=$PYTHON_EXIT
+
+# 2b. Resolução/normalização pós-coleta: de-para (estado/familia/sku) +
+# produto_normalizado v2 (catálogo p/ as 10 marcas + Python p/ as demais ~20).
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Resolução/normalização (resolver_diario.py)..." >> "$LOG"
+python scripts/resolver_diario.py >> "$LOG" 2>&1
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Resolução concluída (exit=$?)" >> "$LOG"
 
 # 3. Validação de status — consulta Supabase, envia status PASS/FAIL no Telegram
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Validação diária..." >> "$LOG"
