@@ -812,6 +812,20 @@ class LeroyMerlinScraper(BaseScraper):
         keyword_category_map: dict,
         page_limit: int = MAX_PAGES,
     ) -> List[Dict[str, Any]]:
+        """Busca um termo no Leroy Merlin via API Algolia.
+
+        Intercepta o XHR do Algolia e classifica cada hit como 1P (sortimento
+        próprio Leroy) ou 3P (marketplace), preenchendo ``buy_box_seller`` e
+        ``tipo_seller``.
+
+        Args:
+            keyword: termo de busca.
+            keyword_category_map: mapa keyword → categoria (para o registro).
+            page_limit: nº máximo de páginas a coletar.
+
+        Returns:
+            Lista de registros normalizados (um por hit do Algolia).
+        """
         all_records: List[Dict[str, Any]] = []
         self._setup_xhr_intercept()
 

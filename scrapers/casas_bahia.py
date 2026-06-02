@@ -676,6 +676,20 @@ class CasasBahiaScraper(BaseScraper):
         keyword_category_map: dict,
         page_limit: int = MAX_PAGES,
     ) -> List[Dict[str, Any]]:
+        """Busca um termo na Casas Bahia via API VTEX intelligent-search.
+
+        Usa sessão curl_cffi com warm-up de cookies Akamai e intercepta o XHR
+        da busca; do array ``sellers[]`` extrai o vencedor da buy box
+        (``sellerDefault``), o nº de sellers e o tipo (1P/3P).
+
+        Args:
+            keyword: termo de busca.
+            keyword_category_map: mapa keyword → categoria (para o registro).
+            page_limit: nº máximo de páginas a coletar.
+
+        Returns:
+            Lista de registros normalizados (um por oferta).
+        """
         all_records: List[Dict[str, Any]] = []
         self._setup_xhr_intercept()
 
