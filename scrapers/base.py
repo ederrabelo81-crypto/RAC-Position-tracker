@@ -35,7 +35,7 @@ from config import (
 )
 from utils.brands import extract_brand
 from utils.text import get_turno, infer_keyword_category, normalize_text, now_brt
-from utils.normalize_product import normalize_product_name
+from utils.normalize_product import normalize_product_name, normalize_product_name_v2
 
 
 class BaseScraper(ABC):
@@ -514,6 +514,9 @@ class BaseScraper(ABC):
 
         brand = extract_brand(title_clean)
         product_name = normalize_product_name(title_clean, brand)
+        # v2 canonical (UPPERCASE, SKU-anchored). Parte descritiva apenas —
+        # voltagem/SKU são anexados depois pela resolução de-para (catálogo).
+        product_name_v2 = normalize_product_name_v2(title_clean, brand)
 
         return {
             "Data":                now.strftime("%Y-%m-%d"),
@@ -526,6 +529,7 @@ class BaseScraper(ABC):
             "Categoria Keyword":   infer_keyword_category(keyword, keyword_category_map),
             "Marca Monitorada":    brand,
             "Produto / SKU":       product_name,
+            "Produto Normalizado": product_name_v2,
             "Posição Orgânica":    position_organic,
             "Posição Patrocinada": position_sponsored,
             "Posição Geral":       position_general,

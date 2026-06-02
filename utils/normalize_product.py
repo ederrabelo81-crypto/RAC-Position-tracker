@@ -258,8 +258,13 @@ def _format_btus(value: int) -> str:
     return _BTU_NORMALIZED.get(value, f"{value:,.0f} BTUs".replace(",", "."))
 
 
-def _extract_btus(text: str) -> Optional[str]:
-    """Extract and normalize BTU value from raw product text."""
+def _extract_btus_value(text: str) -> Optional[int]:
+    """
+    Extract the raw integer BTU value (e.g. 12000) from product text.
+
+    Shared core used by both `_extract_btus` (legacy formatted output) and the
+    v2 canonical formatter, which needs the bare integer ("12000 BTU").
+    """
     # Normalize: remove thousands separator and lowercase
     t = text.lower()
     # Handle "18 000" (space as thousands separator)
@@ -272,29 +277,35 @@ def _extract_btus(text: str) -> Optional[str]:
     if m:
         val = int(m.group(1))
         if 7000 <= val <= 70000:
-            return _format_btus(val)
+            return val
 
     # Pattern 2: "12k", "9K", "18 k"
     m = re.search(r'(\d{1,3})\s*k\b', t_nodot)
     if m:
         val = int(m.group(1)) * 1000
         if 7000 <= val <= 70000:
-            return _format_btus(val)
+            return val
 
     # Pattern 3: bare 4-6 digit number adjacent to AC context
     m = re.search(r'(\d{4,6})\s*(?:frio|quente|inverter|split|btu)', t_nodot)
     if m:
         val = int(m.group(1))
         if 7000 <= val <= 70000:
-            return _format_btus(val)
+            return val
 
     # Pattern 4: standalone 4-6 digit number that looks like BTUs
     for m in re.finditer(r'\b(\d{4,6})\b', t_nodot):
         val = int(m.group(1))
         if val in _BTU_NORMALIZED:
-            return _format_btus(val)
+            return val
 
     return None
+
+
+def _extract_btus(text: str) -> Optional[str]:
+    """Extract and normalize BTU value from raw product text (formatted)."""
+    val = _extract_btus_value(text)
+    return _format_btus(val) if val is not None else None
 
 
 def _identify_brand(raw_name: str, raw_brand: Optional[str]) -> Optional[str]:
@@ -447,3 +458,87 @@ def normalize_product_name(
         parts.append(color)
 
     return ' '.join(parts)
+
+
+# ---------------------------------------------------------------------------
+# v2 canonical format (Jun/2026) — SKU-anchored, UPPERCASE
+#
+#   AR CONDICIONADO {FORMA} {BTU} BTU {CICLO} {LINHA} - {TIPO} - {MARCA}
+#                   [ - {VOLTAGEM}] [ - {SKU}]
+#
+# Exemplo (com SKU/voltagem resolvidos do catálogo):
+#   AR CONDICIONADO SPLIT 12000 BTU FRIO AI ECOMASTER - INVERTER - MIDEA - 220V - 42EZVCA12M5
+#
+# `voltagem` e `sku` só entram quando o produto é cravado num SKU único do
+# catálogo (resolução de-para). Quando ausentes, os trechos finais são
+# OMITIDOS — nunca inventamos voltagem/SKU.
+# ---------------------------------------------------------------------------
+
+_TYPE_DISPLAY: dict = {'Inverter': 'INVERTER', 'On/Off': 'ON/OFF'}
+_CYCLE_DISPLAY: dict = {'Frio': 'FRIO', 'Quente/Frio': 'QUENTE/FRIO'}
+# Forma de instalação → palavra após "AR CONDICIONADO". Hi-Wall (default) = SPLIT.
+_FORM_DISPLAY: dict = {
+    'Piso-Teto':   'PISO-TETO',
+    'Cassete':     'CASSETE',
+    'Janela':      'JANELA',
+    'Portátil':    'PORTATIL',
+    'Multi Split': 'MULTI SPLIT',
+}
+
+
+def normalize_product_name_v2(
+    raw_name: Optional[str],
+    raw_brand: Optional[str] = None,
+    sku: Optional[str] = None,
+    voltagem: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Normaliza um nome de AC para o formato canônico v2 (SKU-anchored, UPPERCASE):
+
+        AR CONDICIONADO {FORMA} {BTU} BTU {CICLO} {LINHA} - {TIPO} - {MARCA}
+                        [ - {VOLTAGEM}] [ - {SKU}]
+
+    Args:
+        raw_name:  Título cru do scraper.
+        raw_brand: Marca já extraída (pode ser 'Desconhecida'). Opcional.
+        sku:       SKU do catálogo, quando cravado (resolução de-para). Opcional.
+        voltagem:  Voltagem do catálogo (ex.: '220V'), quando cravada. Opcional.
+
+    Returns:
+        String no formato v2, ou None quando marca/BTU não são identificáveis
+        (o caller mantém o nome cru — nenhum dado é perdido).
+
+    A parte descritiva (marca/linha/BTU/tipo/ciclo) é derivada do título; já
+    `voltagem`/`sku` vêm do catálogo e só são anexados quando informados.
+    """
+    if not raw_name:
+        return None
+
+    name_lower = raw_name.lower()
+
+    brand = _identify_brand(raw_name, raw_brand)
+    if not brand:
+        return None  # marca desconhecida → mantém cru
+
+    btus = _extract_btus_value(raw_name)
+    if not btus:
+        return None  # sem BTU → mantém cru
+
+    line = _identify_line(name_lower, brand)
+    ac_type = _identify_type(name_lower, line)
+    cycle = _identify_cycle(name_lower)
+    form = _identify_form(name_lower)
+
+    forma_word = _FORM_DISPLAY.get(form, 'SPLIT')
+
+    head = f"AR CONDICIONADO {forma_word} {btus} BTU {_CYCLE_DISPLAY[cycle]}"
+    if line:
+        head += f" {line.upper()}"
+
+    segments = [head, _TYPE_DISPLAY[ac_type], brand.upper()]
+    if voltagem:
+        segments.append(str(voltagem).strip().upper())
+    if sku:
+        segments.append(str(sku).strip().upper())
+
+    return " - ".join(segments)

@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 from utils.text import is_valid_product
-from utils.normalize_product import normalize_product_name
+from utils.normalize_product import normalize_product_name, normalize_product_name_v2
 
 # Carrega .env da raiz do projeto (pai de utils/)
 try:
@@ -54,6 +54,7 @@ _COLUMN_MAP = {
     "Categoria Keyword":    "categoria",
     "Marca Monitorada":     "marca",
     "Produto / SKU":        "produto",
+    "Produto Normalizado":  "produto_normalizado",
     "Posição Orgânica":     "posicao_organica",
     "Posição Patrocinada":  "posicao_patrocinada",
     "Posição Geral":        "posicao_geral",
@@ -82,6 +83,8 @@ _OPTIONAL_DEST_COLS = {
     "url_produto", "screenshot_busca", "screenshot_produto",
     # Adicionadas na migration 003 (foco buy box/seller)
     "patrocinado", "buy_box_seller", "qtd_sellers", "tipo_seller", "reputacao_seller",
+    # Adicionada na migration 004 (formato canônico v2 SKU-anchored)
+    "produto_normalizado",
 }
 
 # Colunas numéricas — None em vez de NaN para o Postgres
@@ -172,6 +175,16 @@ def _map_record(record: Dict[str, Any]) -> Dict[str, Any]:
         normalized = normalize_product_name(row["produto"], row.get("marca"))
         if normalized:
             row["produto"] = normalized[:500]
+
+    # Canonical v2 (UPPERCASE, SKU-anchored). Só a parte descritiva aqui —
+    # voltagem/SKU são anexados pela resolução de-para. Live scraping já
+    # preenche "Produto Normalizado" em _build_record; CSV imports caem aqui.
+    if row.get("produto_normalizado") is None:
+        base_name = record.get("Produto / SKU") or row.get("produto")
+        if base_name:
+            v2 = normalize_product_name_v2(base_name, row.get("marca"))
+            if v2:
+                row["produto_normalizado"] = v2[:500]
 
     return row
 
