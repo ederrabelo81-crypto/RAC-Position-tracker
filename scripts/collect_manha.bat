@@ -1,8 +1,9 @@
 @echo off
 :: RAC Price Collector — Coleta Manha (10:00 BRT)
-:: Plataformas: ML (Playwright — IP residencial necessario)
+:: Plataformas: ML + Shopee (Playwright/curl_cffi — IP residencial necessario)
 :: Prioridade: alta + media | Paginas: 2
-:: Oracle VM ja cuida de: google_shopping, amazon, leroy, dealers, magalu
+:: Oracle VM ja cuida de: google_shopping, amazon, leroy, dealers, magalu, casasbahia
+:: Shopee roda aqui (IP residencial BR + sessao capturada localmente)
 
 setlocal
 set "BASE_DIR=C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
@@ -20,9 +21,18 @@ if not exist ".venv\Scripts\activate.bat" (
 )
 call .venv\Scripts\activate.bat
 
-:: ── Python: ML ───────────────────────────────────────────────────────────────
-echo [%DATE% %TIME%] Python: ml (2 paginas, alta+media)... >> "%LOG%"
-python main.py --platforms ml --pages 2 --priority alta media >> "%LOG%" 2>&1
+:: ── Python: ML (+ Shopee se houver sessao capturada) ─────────────────────────
+:: Shopee (API v4) precisa da sessao SPC_*/csrftoken — capture com:
+::   python utils\session_grabber.py --site shopee
+set "PLATFORMS=ml"
+if exist "%BASE_DIR%\utils\sessions\shopee.json" (
+    set "PLATFORMS=%PLATFORMS% shopee"
+    echo [%DATE% %TIME%] Shopee: sessao encontrada - incluida na coleta >> "%LOG%"
+) else (
+    echo [%DATE% %TIME%] Shopee: sem sessao - pulando >> "%LOG%"
+)
+echo [%DATE% %TIME%] Python: %PLATFORMS% (2 paginas, alta+media)... >> "%LOG%"
+python main.py --platforms %PLATFORMS% --pages 2 --priority alta media >> "%LOG%" 2>&1
 echo [%DATE% %TIME%] Python concluido (exit=%ERRORLEVEL%) >> "%LOG%"
 
 echo [%DATE% %TIME%] === Coleta manha concluida === >> "%LOG%"

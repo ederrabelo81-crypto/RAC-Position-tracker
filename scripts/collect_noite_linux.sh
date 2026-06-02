@@ -58,9 +58,20 @@ else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: xvfb-run não encontrado — Magalu provavelmente falhará (sensor.js Akamai). Instale: sudo apt-get install -y xvfb" >> "$LOG"
 fi
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: amazon leroy dealers google_shopping magalu (1 página, xvfb=$XVFB_LABEL)..." >> "$LOG"
+# Casas Bahia entra no grupo estável (curl_cffi + warm-up Akamai, expõe buy box).
+# Shopee só roda se houver sessão capturada (cookies expiram em horas).
+PLATFORMS="amazon leroy dealers casasbahia google_shopping magalu"
+SHOPEE_SESSION="$PROJECT_DIR/utils/sessions/shopee.json"
+if [ -f "$SHOPEE_SESSION" ]; then
+    PLATFORMS="$PLATFORMS shopee"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Shopee: sessão encontrada — incluída na coleta" >> "$LOG"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Shopee: sem sessão ($SHOPEE_SESSION) — pulando (capture com: python utils/session_grabber.py --site shopee)" >> "$LOG"
+fi
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python: $PLATFORMS (1 página, xvfb=$XVFB_LABEL)..." >> "$LOG"
 "${XVFB_CMD[@]}" python main.py \
-    --platforms amazon leroy dealers google_shopping magalu \
+    --platforms $PLATFORMS \
     --pages 1 \
     --priority alta \
     >> "$LOG" 2>&1
