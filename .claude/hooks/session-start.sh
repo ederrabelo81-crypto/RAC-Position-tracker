@@ -16,10 +16,11 @@ cd "${CLAUDE_PROJECT_DIR:-.}"
 # Idempotente: pip install pode rodar várias vezes sem efeito colateral.
 python -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
 
-# Container Debian: PyJWT vem do apt sem RECORD e o pip não consegue
-# desinstalá-lo quando o supabase puxa uma versão mais nova. Sombreia com uma
-# cópia gerenciada pelo pip antes do install principal.
-python -m pip install --quiet --ignore-installed PyJWT >/dev/null 2>&1 || true
+# Container Debian: PyJWT/cryptography vêm do apt e quebram quando o supabase
+# puxa versões novas — o cryptography do sistema espera um _cffi_backend que não
+# existe no Python do pip (pyo3 panic). Sombreia o trio com cópias gerenciadas
+# pelo pip, consistentes entre si, antes do install principal.
+python -m pip install --quiet --ignore-installed PyJWT cffi cryptography >/dev/null 2>&1 || true
 
 python -m pip install --quiet -r requirements_app.txt pytest >/dev/null 2>&1
 
