@@ -1,0 +1,34 @@
+-- Migração 005 — Índice para acelerar a página BuyBox Position no dashboard.
+--
+-- Contexto (Jun/2026): a página `🏆 BuyBox Position` consulta `coletas` com
+-- `posicao_geral <= N` (default N=1) num intervalo de datas, ordenando por
+-- (data DESC, id DESC). A paginação por cursor composto fetcha em blocos de
+-- 1000 linhas. Para um mês cheio (~260k linhas em `coletas`), apenas ~7.5k
+-- batem o filtro `posicao_geral <= 1 AND estado_match = 'MAPEADO'`.
+--
+-- Sem índice cobrindo `posicao_geral`, o planner escolhe
+-- `idx_coletas_data_turno_plat` (ordenado por data) e faz Index Scan
+-- Backward + filtro inline para `posicao_geral` e `estado_match`. O cursor
+-- `(data, id) < (last_data, last_id)` vira um predicado adicional, mas o
+-- planner ainda varre todas as linhas da janela até encontrar 1000 que
+-- batam. EXPLAIN ANALYZE confirma:
+--
+--   - Página 1 (sem cursor):       67 ms  (43k linhas filtradas)
+--   - Página 7 (cursor profundo):  10.5 s (235k linhas filtradas) → 57014
+--
+-- O statement_timeout do Supabase (8s authenticated) corta a consulta no
+-- 7º bloco, retornando erro 57014 e zerando o DataFrame. Resultado visível
+-- ao usuário: "No data found for the selected filters" mesmo havendo dados.
+--
+-- Solução: índice composto liderado por `posicao_geral`. Como posicao_geral
+-- tem cardinalidade baixa (1..50, com ~5-8k linhas/valor por mês), o
+-- planner pode fazer seek direto em `posicao_geral <= N` e percorrer uma
+-- stream já ordenada por (data DESC, id DESC). A condição do cursor vira
+-- range na própria varredura do índice — sem mais "filter then sort".
+--
+-- Aplicação:
+--   psql "$SUPABASE_DB_URL" -f docs/migrations/005_buybox_position_index.sql
+-- ou via Supabase SQL Editor / MCP apply_migration.
+
+CREATE INDEX IF NOT EXISTS idx_coletas_posicao_data_id
+    ON coletas (posicao_geral, data DESC, id DESC);
