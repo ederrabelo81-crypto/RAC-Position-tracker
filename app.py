@@ -5526,10 +5526,128 @@ def page_overview() -> None:
 # Page: Top Movers — Price movement between two windows
 # ---------------------------------------------------------------------------
 
+# Confidence threshold (in raw records) below which a SKU's Δ% is flagged as
+# low-sample. ~2 days of presence at the median offer count for popular SKUs.
+_TM_LOW_SAMPLE = 14
+
+
+def _streamlit_supports_linechart() -> bool:
+    """LineChartColumn is available since Streamlit 1.23."""
+    cc = getattr(st, "column_config", None)
+    return cc is not None and hasattr(cc, "LineChartColumn")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _pt_top_movers_data(
+    start_str: str,
+    end_str_exclusive: str,
+    platforms_tuple: tuple,
+    brands_tuple: tuple,
+    familias_tuple: tuple,
+    skus_resolvidos_tuple: tuple,
+    limit: int = 300000,
+) -> pd.DataFrame:
+    """Paginated read of `pricetrack_daily` over the half-open `[start, end)`.
+
+    Top Movers reads pricetrack_daily exclusively to preserve the
+    `(sku, marketplace, seller, collection_date)` granularity guarantee.
+    Mixing in coletas would double-count rows the PT already covers.
+
+    Returns raw columns (sku, brand, title, marketplace, seller,
+    seller_canonical, min_price, avg_price, mode_price, collection_date).
+    """
+    client = _get_supabase()
+    if client is None:
+        return pd.DataFrame()
+
+    sku_set = _collect_pt_skus(
+        familias_resolvidas=list(familias_tuple) or None,
+        skus_resolvidos=list(skus_resolvidos_tuple) or None,
+    )
+    if (familias_tuple or skus_resolvidos_tuple) and not sku_set:
+        return pd.DataFrame()
+
+    try:
+        end_inclusive = (
+            date.fromisoformat(end_str_exclusive) - timedelta(days=1)
+        ).isoformat()
+    except ValueError:
+        return pd.DataFrame()
+    if end_inclusive < start_str:
+        return pd.DataFrame()
+
+    def _build_q():
+        q = (
+            client.table("pricetrack_daily")
+            .select(
+                "collection_date,sku,brand,title,marketplace,"
+                "seller,seller_canonical,min_price,avg_price,mode_price,id"
+            )
+            .gte("collection_date", start_str)
+            .lte("collection_date", end_inclusive)
+            .order("collection_date", desc=True)
+            .order("id", desc=True)
+        )
+        if brands_tuple:
+            q = q.in_("brand", _expand_brands(list(brands_tuple)))
+        if platforms_tuple:
+            parts = [
+                f"marketplace.ilike.{v}"
+                for v in _pt_platform_match_values(list(platforms_tuple))
+            ]
+            if parts:
+                q = q.or_(",".join(parts))
+        if sku_set:
+            q = q.in_("sku", sorted(sku_set))
+        return q
+
+    try:
+        all_rows: list = []
+        last_date: str | None = None
+        last_id: int | None = None
+        while len(all_rows) < limit:
+            fetch = min(_SUPABASE_PAGE_PT, limit - len(all_rows))
+            q = _build_q()
+            if last_date is not None and last_id is not None:
+                q = q.or_(
+                    f"collection_date.lt.{last_date},"
+                    f"and(collection_date.eq.{last_date},id.lt.{last_id})"
+                )
+            resp = q.limit(fetch).execute()
+            if not resp.data:
+                break
+            all_rows.extend(resp.data)
+            if len(resp.data) < fetch:
+                break
+            last_row = resp.data[-1]
+            last_date = (
+                str(last_row.get("collection_date"))
+                if last_row.get("collection_date") else None
+            )
+            last_id = last_row.get("id")
+            if last_date is None or last_id is None:
+                break
+
+        if not all_rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(all_rows)
+        df["collection_date"] = pd.to_datetime(df["collection_date"]).dt.date
+        for col in ("min_price", "avg_price", "mode_price"):
+            df[col] = pd.to_numeric(df.get(col), errors="coerce")
+        return df
+    except Exception as exc:
+        st.warning(f"Erro consultando pricetrack_daily: {exc}")
+        return pd.DataFrame()
+
+
 def page_top_movers() -> None:
     st.title("🚨 Top Movers")
-    st.caption("SKUs com maior variação de preço entre duas janelas temporais. "
-               "Preço: PriceTrack (fallback coletas onde o PriceTrack não cobre).")
+    st.caption(
+        "SKUs com maior variação de preço entre duas janelas temporais. "
+        "Fonte: `pricetrack_daily` (granularidade garantida: 1 linha por "
+        "SKU × marketplace × seller × dia). Janelas meio-abertas `[ini, fim)`."
+    )
 
     start_date, end_date = _gf_dates()
     cmp_start, cmp_end   = _gf_cmp_dates()
@@ -5538,15 +5656,37 @@ def page_top_movers() -> None:
 
     with st.sidebar:
         st.subheader("Configuração")
-        dr = st.date_input("Janela atual", value=(start_date, end_date),
-                           max_value=date.today(), format="DD/MM/YYYY", key="tm_dates")
+        dr = st.date_input(
+            "Janela atual", value=(start_date, end_date),
+            max_value=date.today(), format="DD/MM/YYYY", key="tm_dates",
+            help="Intervalo meio-aberto `[ini, fim)`: a data final NÃO é incluída.",
+        )
         start_date = dr[0] if len(dr) > 0 else start_date
         end_date   = dr[1] if len(dr) > 1 else end_date
 
-        cr = st.date_input("Janela de comparação", value=(cmp_start, cmp_end),
-                           max_value=date.today(), format="DD/MM/YYYY", key="tm_cmp_dates")
-        cmp_start = cr[0] if len(cr) > 0 else cmp_start
-        cmp_end   = cr[1] if len(cr) > 1 else cmp_end
+        mirror = st.checkbox(
+            "Espelhar duração da janela atual",
+            value=False, key="tm_mirror",
+            help=(
+                "Recalcula a janela de comparação para ter exatamente o mesmo "
+                "nº de dias da atual, terminando no início da atual: "
+                "`cmp = [atual_ini - duração, atual_ini)`."
+            ),
+        )
+        if mirror:
+            duration = max((end_date - start_date).days, 1)
+            cmp_end   = start_date
+            cmp_start = start_date - timedelta(days=duration)
+
+        cr = st.date_input(
+            "Janela de comparação", value=(cmp_start, cmp_end),
+            max_value=date.today(), format="DD/MM/YYYY",
+            key="tm_cmp_dates", disabled=mirror,
+            help="Intervalo meio-aberto `[ini, fim)`: a data final NÃO é incluída.",
+        )
+        if not mirror:
+            cmp_start = cr[0] if len(cr) > 0 else cmp_start
+            cmp_end   = cr[1] if len(cr) > 1 else cmp_end
 
         opts = get_filter_options()
         sel_platforms = st.multiselect("Plataformas", opts["platforms"],
@@ -5556,59 +5696,174 @@ def page_top_movers() -> None:
         sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "tm")
 
         with st.expander("Refinar — Movers", expanded=True):
+            price_metric = st.radio(
+                "Preço de referência",
+                ["Moda", "Mínimo", "Médio"],
+                index=0, key="tm_price_metric", horizontal=True,
+                help=(
+                    "Coluna usada como preço por registro antes da mediana por janela.\n\n"
+                    "• **Moda** → `mode_price` (fallback `avg_price` → `min_price`)\n"
+                    "• **Mínimo** → `min_price` (proxy Buy Box)\n"
+                    "• **Médio** → `avg_price`"
+                ),
+            )
             min_delta_pct = st.slider("Mín. |Δ preço|%", 0, 50, 5, key="tm_min_delta")
             direction = st.radio(
                 "Direção",
                 ["Ambos ▲▼", "Apenas altas ▲", "Apenas quedas ▼"],
                 key="tm_direction",
             )
-            min_obs = st.number_input("Mín. obs. por janela", 1, 20, 2, key="tm_min_obs")
+            min_registros = st.number_input(
+                "Mín. registros por janela", min_value=1, max_value=5000,
+                value=30, step=5, key="tm_min_registros",
+                help=(
+                    "Remove SKUs cujo `MIN(registros_ant, registros_atual)` < "
+                    "limiar. **Registros** é COUNT(*) bruto na janela "
+                    "(1 linha por SKU×marketplace×seller×dia)."
+                ),
+            )
+            both_windows = st.checkbox(
+                "Apenas SKUs presentes nas duas janelas",
+                value=True, key="tm_both_windows",
+                help="Exclui SKUs com registros=0 em qualquer janela (evita Δ% infinito).",
+            )
 
-        load_btn = st.button("🔄 Calcular Movers", type="primary", use_container_width=True)
+        load_btn = st.button("🔄 Calcular Movers", type="primary",
+                             use_container_width=True)
+
+    # Half-open semantic: user picks (ini, fim) → window = [ini, fim).
+    # The picked fim date is EXCLUDED; the boundary belongs to a single window.
+    cur_lo, cur_hi = start_date, end_date
+    cmp_lo, cmp_hi = cmp_start, cmp_end
+    cur_dur = (cur_hi - cur_lo).days
+    cmp_dur = (cmp_hi - cmp_lo).days
+
+    badge = (
+        f"📐 Janela atual: **{cur_lo} → {cur_hi}** ({cur_dur}d) · "
+        f"Comparação: **{cmp_lo} → {cmp_hi}** ({cmp_dur}d)"
+    )
+    if cur_dur != cmp_dur and cur_dur > 0 and cmp_dur > 0:
+        badge += " · ⚠️ tamanhos diferentes — comparação não simétrica"
+    st.caption(badge)
 
     if not load_btn:
         st.info(
             "Configure as **janelas temporais** na barra lateral e clique em "
-            "**Calcular Movers**. Apenas SKUs com ≥ N observações em **ambas** as "
-            "janelas são incluídos para evitar falsos positivos."
+            "**Calcular Movers**. Intervalos são meio-abertos `[ini, fim)` — "
+            "a data final NÃO é incluída, então a fronteira pertence a uma "
+            "única janela."
         )
         return
 
-    _fam_t = tuple(sorted(sel_familias))
-    _sku_t = tuple(sorted(sel_skus_resolvidos))
-    with st.spinner("Carregando janela atual…"):
-        df_cur = _price_data(str(start_date), str(end_date),
-                             tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
-                             familias_tuple=_fam_t, skus_resolvidos_tuple=_sku_t)
-    with st.spinner("Carregando janela de comparação…"):
-        df_cmp = _price_data(str(cmp_start), str(cmp_end),
-                             tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
-                             familias_tuple=_fam_t, skus_resolvidos_tuple=_sku_t)
-
-    if df_cur.empty or df_cmp.empty:
-        st.warning("Uma das janelas não retornou dados. Ajuste as datas ou filtros.")
+    if cur_dur <= 0 or cmp_dur <= 0:
+        st.warning("Cada janela precisa cobrir ao menos 1 dia (fim > ini).")
         return
 
-    if not {"preco", "produto"}.issubset(df_cur.columns):
-        st.warning("Colunas 'preco' ou 'produto' ausentes nos dados.")
+    _fam_t  = tuple(sorted(sel_familias))
+    _sku_t  = tuple(sorted(sel_skus_resolvidos))
+    _plat_t = tuple(sorted(sel_platforms))
+    _brand_t = tuple(sorted(sel_brands))
+
+    # Single PT query over the UNION of both windows + (no gap) → also covers
+    # the sparkline series. The intermediate days when the two windows are
+    # non-adjacent are cheap to ignore in pandas.
+    union_lo = min(cur_lo, cmp_lo)
+    union_hi = max(cur_hi, cmp_hi)
+    with st.spinner("Carregando pricetrack_daily…"):
+        df = _pt_top_movers_data(
+            str(union_lo), str(union_hi),
+            _plat_t, _brand_t, _fam_t, _sku_t,
+        )
+
+    if df.empty:
+        st.warning(
+            "Nenhum registro em `pricetrack_daily` para os filtros/período. "
+            "Confira marcas, plataformas e a janela."
+        )
         return
 
-    cur_agg = (df_cur.dropna(subset=["preco", "produto"])
-               .groupby("produto")["preco"]
-               .agg(preco_atual=_mode_price, obs_atual="count").reset_index())
-    cmp_agg = (df_cmp.dropna(subset=["preco", "produto"])
-               .groupby("produto")["preco"]
-               .agg(preco_anterior=_mode_price, obs_anterior="count").reset_index())
+    df = df.dropna(subset=["sku"]).copy()
+    df["sku"] = df["sku"].astype(str)
+    if df.empty:
+        st.warning("Sem SKUs válidos no recorte.")
+        return
 
-    movers = cur_agg.merge(cmp_agg, on="produto", how="inner")
-    movers = movers[(movers["obs_atual"] >= min_obs) & (movers["obs_anterior"] >= min_obs)]
+    # Pick the price column per the user's metric. "Moda" cascades to
+    # avg→min so partially-published rows still contribute (matches the
+    # existing fallback chain in query_pricetrack_daily).
+    if price_metric == "Mínimo":
+        df["_preco"] = df["min_price"]
+    elif price_metric == "Médio":
+        df["_preco"] = df["avg_price"]
+    else:
+        df["_preco"] = (
+            df["mode_price"].fillna(df["avg_price"]).fillna(df["min_price"])
+        )
+
+    # Offer identity = marketplace + canonical seller (fallback raw seller).
+    seller_id = df["seller_canonical"].where(
+        df["seller_canonical"].notna() & (df["seller_canonical"].astype(str) != ""),
+        df["seller"],
+    )
+    df["_offer"] = df["marketplace"].astype(str) + "|" + seller_id.astype(str)
+
+    cur_mask = (df["collection_date"] >= cur_lo) & (df["collection_date"] < cur_hi)
+    cmp_mask = (df["collection_date"] >= cmp_lo) & (df["collection_date"] < cmp_hi)
+
+    def _agg(window_df: pd.DataFrame, suffix: str) -> pd.DataFrame:
+        # Median over the chosen price column is robust to outliers — spread_pct
+        # confirms heavy dispersion across sellers on the same SKU.
+        if window_df.empty:
+            return pd.DataFrame(columns=[
+                "sku", f"preco_{suffix}", f"registros_{suffix}",
+                f"ofertas_{suffix}", f"dias_{suffix}",
+            ])
+        priced = window_df.dropna(subset=["_preco"])
+        g = window_df.groupby("sku", sort=False)
+        g_priced = priced.groupby("sku", sort=False) if not priced.empty else None
+        out = pd.DataFrame({
+            f"registros_{suffix}": g.size(),
+            f"ofertas_{suffix}":   g["_offer"].nunique(),
+            f"dias_{suffix}":      g["collection_date"].nunique(),
+        })
+        out[f"preco_{suffix}"] = (
+            g_priced["_preco"].median() if g_priced is not None else pd.NA
+        )
+        return out.reset_index()
+
+    cur_agg = _agg(df[cur_mask], "atual")
+    cmp_agg = _agg(df[cmp_mask], "anterior")
+
+    if cur_agg.empty and cmp_agg.empty:
+        st.warning("Nenhuma janela retornou registros após o recorte.")
+        return
+
+    join_how = "inner" if both_windows else "outer"
+    movers = cur_agg.merge(cmp_agg, on="sku", how=join_how)
+    for col in ("registros_atual", "registros_anterior",
+                "ofertas_atual", "ofertas_anterior",
+                "dias_atual", "dias_anterior"):
+        if col in movers.columns:
+            movers[col] = movers[col].fillna(0).astype("Int64")
+
+    # Confidence filter: MIN(registros) ≥ user threshold.
+    min_reg = movers[["registros_atual", "registros_anterior"]].min(axis=1).fillna(0)
+    movers = movers[min_reg >= int(min_registros)]
 
     if movers.empty:
-        st.warning(f"Nenhum SKU com ≥ {min_obs} observações em ambas as janelas.")
+        st.warning(
+            f"Nenhum SKU com ≥ {int(min_registros)} registros em ambas as janelas. "
+            "Reduza o limiar ou amplie as janelas."
+        )
         return
 
     movers["delta_abs"] = movers["preco_atual"] - movers["preco_anterior"]
-    movers["delta_pct"] = movers["delta_abs"] / movers["preco_anterior"] * 100
+    movers["delta_pct"] = (
+        movers["delta_abs"] / movers["preco_anterior"].replace(0, pd.NA) * 100
+    )
+
+    # Drop rows where Δ% can't be computed (missing price in either window).
+    movers = movers.dropna(subset=["delta_pct"])
 
     if direction == "Apenas altas ▲":
         movers = movers[movers["delta_pct"] > 0]
@@ -5617,63 +5872,191 @@ def page_top_movers() -> None:
     movers = movers[movers["delta_pct"].abs() >= min_delta_pct]
 
     if movers.empty:
-        st.warning(f"Nenhum SKU com variação ≥ {min_delta_pct}% após aplicar os filtros.")
+        st.warning(f"Nenhum SKU com variação ≥ {min_delta_pct}% após filtros.")
         return
 
-    movers = movers.sort_values("delta_pct", key=abs, ascending=False).reset_index(drop=True)
+    movers = movers.sort_values(
+        "delta_pct", key=lambda s: s.abs(), ascending=False
+    ).reset_index(drop=True)
 
-    # ── KPI cards ─────────────────────────────────────────────────────────────
+    # Friendly product name from catalog (sku → produto); fallback to title.
+    catalog = get_catalogo()
+    if not catalog.empty and {"sku", "produto"}.issubset(catalog.columns):
+        sku_to_produto = dict(zip(
+            catalog["sku"].astype(str), catalog["produto"].astype(str)
+        ))
+    else:
+        sku_to_produto = {}
+    first_title = (df.dropna(subset=["title"])
+                     .groupby("sku")["title"].first().to_dict())
+    movers["produto"] = movers["sku"].map(
+        lambda s: sku_to_produto.get(s) or first_title.get(s) or s
+    )
+
+    # Low-sample marker (independent of the user filter): visual cue when
+    # MIN(registros) < confidence threshold (~2 days of presence).
+    movers["confianca"] = (
+        movers[["registros_atual", "registros_anterior"]]
+        .min(axis=1).fillna(0).astype(int)
+        .map(lambda n: "⚠️" if n < _TM_LOW_SAMPLE else "")
+    )
+
+    # ── KPI cards ────────────────────────────────────────────────────────────
     n_up   = int((movers["delta_pct"] > 0).sum())
     n_down = int((movers["delta_pct"] < 0).sum())
     biggest = movers.iloc[0]
-
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("SKUs em movimento", str(len(movers)))
     c2.metric("▲ Altas",  str(n_up))
     c3.metric("▼ Quedas", str(n_down))
     c4.metric("Maior salto", f"{biggest['delta_pct']:+.1f}%",
-              delta=biggest["produto"][:30])
+              delta=str(biggest["produto"])[:30])
 
     st.divider()
 
-    # ── Bar chart (top 20) ─────────────────────────────────────────────────────
+    # ── Bar chart (top 20) ───────────────────────────────────────────────────
     top20 = movers.head(20).copy().sort_values("delta_pct")
-    top20["SKU"] = top20["produto"].str[:45]
+    top20["SKU_label"] = top20["produto"].astype(str).str[:45]
     fig = px.bar(
-        top20, x="delta_pct", y="SKU", orientation="h",
+        top20, x="delta_pct", y="SKU_label", orientation="h",
         color="delta_pct",
         color_continuous_scale=["#ef4444", "#fbbf24", "#059669"],
         color_continuous_midpoint=0,
         title=(
-            f"Top 20 Movers — {start_date.strftime('%d/%m')}→{end_date.strftime('%d/%m')}"
-            f" vs {cmp_start.strftime('%d/%m')}→{cmp_end.strftime('%d/%m')}"
+            f"Top 20 Movers — {cur_lo.strftime('%d/%m')}→{cur_hi.strftime('%d/%m')}"
+            f" vs {cmp_lo.strftime('%d/%m')}→{cmp_hi.strftime('%d/%m')}"
         ),
-        labels={"delta_pct": "Variação %"},
+        labels={"delta_pct": "Variação %", "SKU_label": "SKU"},
     )
     fig.update_coloraxes(showscale=False)
     _apply_chart_style(fig, height=max(350, len(top20) * 28 + 100))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    # ── Detail table ───────────────────────────────────────────────────────────
+    # ── Sparkline series (intra-window daily median) ────────────────────────
+    spark_lo = min(cur_lo, cmp_lo)
+    spark_hi = max(cur_hi, cmp_hi)
+    spark_days = [spark_lo + timedelta(days=i)
+                  for i in range((spark_hi - spark_lo).days)]
+    spark_map: dict[str, list] = {}
+    if spark_days:
+        spark_src_mask = (
+            (df["collection_date"] >= spark_lo)
+            & (df["collection_date"] < spark_hi)
+            & df["sku"].isin(movers["sku"])
+        )
+        spark_df = (
+            df[spark_src_mask].dropna(subset=["_preco"])
+              .groupby(["sku", "collection_date"])["_preco"]
+              .median().reset_index()
+        )
+        if not spark_df.empty:
+            pivot = (spark_df.pivot(index="sku", columns="collection_date",
+                                    values="_preco")
+                              .reindex(columns=spark_days))
+            # Forward-fill so missing days draw a flat segment instead of a
+            # vertical gap that would collapse the chart to a single dot.
+            pivot = pivot.ffill(axis=1).bfill(axis=1)
+            for sku, row in pivot.iterrows():
+                spark_map[str(sku)] = [
+                    float(v) if pd.notna(v) else None for v in row.tolist()
+                ]
+    movers["tendencia"] = movers["sku"].map(spark_map)
+    movers["tendencia"] = movers["tendencia"].apply(
+        lambda v: v if isinstance(v, list) else []
+    )
+
+    # ── Detail table ─────────────────────────────────────────────────────────
     st.subheader("Tabela Detalhada")
-    display = movers[["produto", "preco_anterior", "preco_atual", "delta_abs",
-                       "delta_pct", "obs_anterior", "obs_atual"]].copy()
-    display.columns = ["Produto / SKU", "Preço Anterior (R$)", "Preço Atual (R$)",
-                       "Δ R$", "Δ %", "Obs. (anterior)", "Obs. (atual)"]
+    st.caption(
+        "Por janela: **Registros** = COUNT(*) bruto · "
+        "**Ofertas** = marketplace × seller únicos · "
+        "**Dias** = nº de datas com presença. "
+        f"⚠️ marca amostras pequenas (MIN(registros) < {_TM_LOW_SAMPLE})."
+    )
+
+    display_cols = [
+        "confianca", "produto", "sku",
+        "preco_anterior", "preco_atual", "delta_abs", "delta_pct",
+        "tendencia",
+        "ofertas_anterior", "ofertas_atual",
+        "registros_anterior", "registros_atual",
+        "dias_anterior", "dias_atual",
+    ]
+    display = movers.reindex(columns=display_cols).copy()
+    display.columns = [
+        "⚠️", "Produto", "SKU",
+        "Preço Anterior (R$)", "Preço Atual (R$)", "Δ R$", "Δ %",
+        "Tendência",
+        "Ofertas (ant)", "Ofertas (atual)",
+        "Registros (ant)", "Registros (atual)",
+        "Dias (ant)", "Dias (atual)",
+    ]
+
+    column_config = {
+        "Preço Anterior (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
+        "Preço Atual (R$)":    st.column_config.NumberColumn(format="R$ %.2f"),
+        "Δ R$":                st.column_config.NumberColumn(format="R$ %.2f"),
+        "Δ %":                 st.column_config.NumberColumn(format="%.1f%%"),
+        "⚠️": st.column_config.TextColumn(
+            help=(
+                f"⚠️ = MIN(registros_ant, registros_atual) < {_TM_LOW_SAMPLE} "
+                "(amostra baixa — Δ% pouco confiável)."
+            ),
+            width="small",
+        ),
+        "Produto": st.column_config.TextColumn(width="large"),
+        "SKU":     st.column_config.TextColumn(width="small"),
+        "Ofertas (ant)":   st.column_config.NumberColumn(format="%d"),
+        "Ofertas (atual)": st.column_config.NumberColumn(format="%d"),
+        "Registros (ant)":   st.column_config.NumberColumn(format="%d"),
+        "Registros (atual)": st.column_config.NumberColumn(format="%d"),
+        "Dias (ant)":   st.column_config.NumberColumn(format="%d"),
+        "Dias (atual)": st.column_config.NumberColumn(format="%d"),
+    }
+    if _streamlit_supports_linechart():
+        column_config["Tendência"] = st.column_config.LineChartColumn(
+            help=(
+                f"Mediana diária do preço ({price_metric.lower()}) ao longo "
+                "da união das duas janelas. Forward-fill nos dias sem dado."
+            ),
+        )
+    else:
+        # Graceful fallback when LineChartColumn isn't available — render an
+        # arrow marker so the column still conveys direction without breaking
+        # the table layout.
+        def _arrow(vals):
+            nums = [v for v in (vals or []) if v is not None]
+            if len(nums) < 2:
+                return "▬"
+            if nums[-1] > nums[0]:
+                return "▲"
+            if nums[-1] < nums[0]:
+                return "▼"
+            return "▬"
+        display["Tendência"] = display["Tendência"].apply(_arrow)
+        column_config["Tendência"] = st.column_config.TextColumn(
+            width="small",
+            help="LineChartColumn indisponível — exibindo tendência geral.",
+        )
+
     st.dataframe(
         display,
-        use_container_width=True,
-        height=420,
-        column_config={
-            "Preço Anterior (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
-            "Preço Atual (R$)":    st.column_config.NumberColumn(format="R$ %.2f"),
-            "Δ R$":                st.column_config.NumberColumn(format="R$ %.2f"),
-            "Δ %":                 st.column_config.NumberColumn(format="%.1f%%"),
-        },
+        use_container_width=True, height=460,
+        column_config=column_config, hide_index=True,
     )
+
+    # CSV export: collapse sparkline list into a compact "x;y;z" string so
+    # Excel doesn't choke on Python list repr. Semicolon-delimited rows +
+    # UTF-8 BOM (project convention) handled by _csv_download_btn.
+    export = display.copy()
+    if "Tendência" in export.columns:
+        export["Tendência"] = export["Tendência"].apply(
+            lambda v: " ".join(f"{x:.2f}" for x in v if x is not None)
+            if isinstance(v, list) else (str(v) if v is not None else "")
+        )
     _csv_download_btn(
-        display,
-        f"rac_top_movers_{start_date}_{end_date}_vs_{cmp_start}_{cmp_end}.csv",
+        export,
+        f"rac_top_movers_{cur_lo}_{cur_hi}_vs_{cmp_lo}_{cmp_hi}.csv",
         "⬇️ Exportar Top Movers CSV",
         key="tm_export",
     )
