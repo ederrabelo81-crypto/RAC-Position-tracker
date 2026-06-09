@@ -5725,7 +5725,13 @@ def page_top_movers() -> None:
             both_windows = st.checkbox(
                 "Apenas SKUs presentes nas duas janelas",
                 value=True, key="tm_both_windows",
-                help="Exclui SKUs com registros=0 em qualquer janela (evita Δ% infinito).",
+                help=(
+                    "**Ligado** (padrão): inner join — só SKUs em ambas as "
+                    "janelas, Δ% sempre definido.\n\n"
+                    "**Desligado**: outer join — inclui SKUs novos ou "
+                    "descontinuados (Δ% em branco). Use com Direção "
+                    "*Ambos ▲▼* para vê-los."
+                ),
             )
 
         load_btn = st.button("🔄 Calcular Movers", type="primary",
@@ -5840,19 +5846,37 @@ def page_top_movers() -> None:
 
     join_how = "inner" if both_windows else "outer"
     movers = cur_agg.merge(cmp_agg, on="sku", how=join_how)
+
+    # Confidence filter, applied BEFORE fillna so NaN (absent window in the
+    # outer-join case) can be distinguished from "0 records in a present
+    # window" (which can't actually happen — SKUs with no rows are absent
+    # from the per-window agg entirely). Without this distinction the
+    # `both_windows=False` toggle is neutralized: one-window SKUs would
+    # always fail `MIN(registros) >= threshold` because the missing side
+    # collapses to 0.
+    if both_windows:
+        keep = movers[["registros_atual", "registros_anterior"]] \
+                  .min(axis=1) >= int(min_registros)
+    else:
+        cur_ok = movers["registros_atual"].isna() | (
+            movers["registros_atual"] >= int(min_registros)
+        )
+        cmp_ok = movers["registros_anterior"].isna() | (
+            movers["registros_anterior"] >= int(min_registros)
+        )
+        keep = cur_ok & cmp_ok
+    movers = movers[keep]
+
     for col in ("registros_atual", "registros_anterior",
                 "ofertas_atual", "ofertas_anterior",
                 "dias_atual", "dias_anterior"):
         if col in movers.columns:
             movers[col] = movers[col].fillna(0).astype("Int64")
 
-    # Confidence filter: MIN(registros) ≥ user threshold.
-    min_reg = movers[["registros_atual", "registros_anterior"]].min(axis=1).fillna(0)
-    movers = movers[min_reg >= int(min_registros)]
-
     if movers.empty:
+        scope = "ambas as janelas" if both_windows else "ao menos uma janela presente"
         st.warning(
-            f"Nenhum SKU com ≥ {int(min_registros)} registros em ambas as janelas. "
+            f"Nenhum SKU com ≥ {int(min_registros)} registros em {scope}. "
             "Reduza o limiar ou amplie as janelas."
         )
         return
@@ -5862,14 +5886,22 @@ def page_top_movers() -> None:
         movers["delta_abs"] / movers["preco_anterior"].replace(0, pd.NA) * 100
     )
 
-    # Drop rows where Δ% can't be computed (missing price in either window).
-    movers = movers.dropna(subset=["delta_pct"])
+    # When the toggle is on, every retained row has both prices defined; drop
+    # rows where Δ% can't be computed defensively. When it's off, keep
+    # one-window SKUs (NaN Δ%) so the toggle has a visible effect — they show
+    # up with blank Δ% and the present window's price filled in.
+    if both_windows:
+        movers = movers.dropna(subset=["delta_pct"])
 
     if direction == "Apenas altas ▲":
         movers = movers[movers["delta_pct"] > 0]
     elif direction == "Apenas quedas ▼":
         movers = movers[movers["delta_pct"] < 0]
-    movers = movers[movers["delta_pct"].abs() >= min_delta_pct]
+    # Preserve NaN Δ% (one-window SKUs) through the magnitude filter so they
+    # remain visible when `both_windows=False` and direction is "Ambos".
+    movers = movers[
+        (movers["delta_pct"].abs() >= min_delta_pct) | movers["delta_pct"].isna()
+    ]
 
     if movers.empty:
         st.warning(f"Nenhum SKU com variação ≥ {min_delta_pct}% após filtros.")
