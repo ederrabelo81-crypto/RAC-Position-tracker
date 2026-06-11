@@ -5207,8 +5207,10 @@ def page_reputacao() -> None:
     # ── Tab 3: buy box win-rate por reputação do seller ─────────────────────
     with tab_rep:
         st.info(
-            "Cobertura limitada: hoje `reputacao_seller` vem principalmente de "
-            "ML (API oficial) e Shopee — confira a página 🩺 Data Health."
+            "Cobertura limitada: `reputacao_seller` só é preenchida pela coleta "
+            "complementar via API oficial do ML (`python main.py --platforms "
+            "ml_api`, requer ML_APP_ID/ML_APP_SECRET) e pela Shopee — confira "
+            "a página 🩺 Data Health."
         )
         if not {"reputacao_seller", "buy_box_seller"} <= set(df.columns):
             st.warning("Colunas de reputação/buy box indisponíveis no schema.")
@@ -5352,8 +5354,9 @@ def page_sov_patrocinado() -> None:
     if not load_btn:
         st.info("Defina os filtros na barra lateral e clique em **Carregar SoV**.")
         st.caption(
-            "💡 Plataformas com ads hoje: Amazon (AMS) e Magalu (HEROs); ML é "
-            "100% orgânico. A cobertura real está na página 🩺 Data Health."
+            "💡 Plataformas com ads: ML (Product Ads — extração corrigida em "
+            "Jun/2026), Amazon (AMS) e Magalu (HEROs). A cobertura real por "
+            "plataforma está na página 🩺 Data Health."
         )
         return
 
@@ -5382,8 +5385,9 @@ def page_sov_patrocinado() -> None:
 
     if not bool(spon.any()):
         st.warning(
-            "Nenhum anúncio patrocinado no período/filtros. Plataformas 100% "
-            "orgânicas (ex: ML) não geram dados aqui — veja 🩺 Data Health."
+            "Nenhum anúncio patrocinado no período/filtros. Confira a cobertura "
+            "de `patrocinado` por plataforma na página 🩺 Data Health — coleta "
+            "quebrada aparece lá como 0% (caso do ML até Jun/2026)."
         )
         return
 
@@ -5640,7 +5644,7 @@ CONTEXTO DA EMPRESA:
 - Benchmark de preço: Lite 100%, Airvolution 105%, Ecomaster 113%
 - Segmentação BTU: 9K (~34-38%), 12K (~46-50% = dominante), 18K (~9-10%), 24K (~6%)
 - Sellers-chave no ML: WebContinental, ClimaRio, Dufrio, Centralar.com, Leveros, Midea Store, Engage Eletro, Bwinx, Bagatoli, Friopeças, Comprebel
-- Plataformas com ads (patrocinado): Amazon (AMS) e Magalu (HEROs). ML é 100% orgânico.
+- Plataformas com ads (patrocinado): Mercado Livre (Product Ads/DCA), Amazon (AMS) e Magalu (HEROs).
 - ROAS benchmarks: DCA (ML) ≥35x, AMS (Amazon) ≥8x
 
 ESTRUTURA DO RELATÓRIO (seguir exatamente esta estrutura):
