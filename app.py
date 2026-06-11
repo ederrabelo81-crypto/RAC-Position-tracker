@@ -4303,9 +4303,9 @@ def page_share_of_buybox() -> None:
     if not load_btn:
         st.info("Defina os filtros na barra lateral e clique em **Carregar Buy Box**.")
         st.caption(
-            "💡 Plataformas que hoje expõem o vencedor da buy box: **Mercado Livre, "
-            "Amazon, Leroy Merlin** (e Casas Bahia / Shopee / Magalu quando a coleta "
-            "não está bloqueada). A coleta de buy box começou no fim de Maio/2026."
+            "💡 A cobertura de `buy_box_seller` varia por plataforma e scraper — "
+            "consulte a matriz campo × plataforma na página 🩺 Data Health. "
+            "A coleta de buy box começou no fim de Maio/2026."
         )
         return
 
@@ -4335,7 +4335,8 @@ def page_share_of_buybox() -> None:
     if bb.empty:
         st.warning(
             "As plataformas/períodos selecionados não têm `buy_box_seller` preenchido. "
-            "Tente Mercado Livre, Amazon ou Leroy Merlin num período recente."
+            "Veja quais plataformas entregam o campo na página 🩺 Data Health e "
+            "tente um período recente."
         )
         cov = (
             df.assign(tem_bb=df["buy_box_seller"].notna())
@@ -4414,7 +4415,11 @@ def page_share_of_buybox() -> None:
             and not bb["tipo_seller"].fillna("").astype(str).str.strip().eq("").all()
         )
         if not has_tipo:
-            st.info("Nenhuma plataforma no filtro preenche `tipo_seller` (hoje: ML e Amazon).")
+            st.info(
+                "Nenhum registro com `tipo_seller` preenchido nos filtros/período "
+                "selecionados. A cobertura varia por plataforma e scraper — veja a "
+                "matriz campo × plataforma na página 🩺 Data Health."
+            )
         else:
             tdf = bb[bb["tipo_seller"].notna()
                      & (bb["tipo_seller"].astype(str).str.strip() != "")]
@@ -4446,9 +4451,9 @@ def page_share_of_buybox() -> None:
         has_qtd = "qtd_sellers" in bb.columns and not bb["qtd_sellers"].dropna().empty
         if not has_qtd:
             st.info(
-                "`qtd_sellers` quase não é coletado hoje (apenas Amazon e Google "
-                "Shopping). Para ML/Leroy exigiria extrair o nº de ofertas por "
-                "listagem no scraper — ver página 🩺 Data Health."
+                "Nenhum registro com `qtd_sellers` preenchido nos filtros/período "
+                "selecionados. A cobertura varia por plataforma e scraper — veja a "
+                "matriz campo × plataforma na página 🩺 Data Health."
             )
         else:
             comp = bb.dropna(subset=["qtd_sellers"])
