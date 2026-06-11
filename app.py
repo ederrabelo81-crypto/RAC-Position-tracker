@@ -5733,6 +5733,7 @@ REGRAS DE ANÁLISE:
 9. Se houver dados de mais de um dia, incluir análise D/D (dia a dia) com tendências
 10. Manter linguagem em PORTUGUÊS BRASILEIRO, usar termos do mercado em inglês quando padrão (sell-in, sell-out, Buy Box, ROAS, etc.)
 11. BUY BOX (foco principal): quando os campos "Buy Box Seller", "Tipo Seller" e "Qtd Sellers" estiverem preenchidos, priorizar a análise de share of buy box — qual seller vence a oferta principal por produto/plataforma, o mix 1P vs 3P/Loja Oficial (Tipo Seller) e o nível de competição (Qtd Sellers). Sinalizar trocas de dono da buy box entre dias. Nem toda plataforma expõe esses campos; analisar onde houver dado e não inferir buy box a partir de posição quando o campo real estiver ausente.
+12. REPUTAÇÃO & AVALIAÇÕES: quando os campos "Avaliação", "Qtd Avaliações", "Reputação Seller" e "Fulfillment?" estiverem presentes, analisar (a) o gap de avaliação média Midea/MCJV vs principais concorrentes por plataforma, ponderando pelo volume de reviews; (b) a correlação entre reputação do seller e fulfillment × vitória de buy box (seção BUY BOX × REPUTAÇÃO quando disponível). A cobertura desses campos varia por plataforma (reputação vem principalmente de ML-API e Shopee); NUNCA inferir avaliação, reputação ou fulfillment quando o campo estiver ausente — declarar explicitamente "sem dados" para a plataforma.
 
 OUTPUT: Relatório completo em Markdown. Sem blocos de código. Sem introduções genéricas. Começar direto com o título do relatório."""
 
@@ -5754,6 +5755,11 @@ _CI_COL_MAP = {
     "buy_box_seller":     "Buy Box Seller",
     "qtd_sellers":        "Qtd Sellers",
     "tipo_seller":        "Tipo Seller",
+    # Reputação & avaliações (Jun/2026)
+    "avaliacao":          "Avaliação",
+    "qtd_avaliacoes":     "Qtd Avaliações",
+    "reputacao_seller":   "Reputação Seller",
+    "fulfillment":        "Fulfillment?",
     "tag":                "Tag Destaque",
 }
 _CI_MAX_RAW = 20_000  # Above this, send pre-aggregated tables instead of raw CSV
@@ -5828,6 +5834,53 @@ def _ci_build_payload(df: pd.DataFrame) -> str:
             min_price=("preco", "min"),
         ).reset_index()
         sections.append("=== KEYWORD PERFORMANCE (ML) ===\n" + kw_agg.to_csv(sep=";", index=False))
+
+    # 3b. Reputação & avaliações — groupby (plataforma, marca)
+    rep_kwargs: dict = {}
+    if "avaliacao" in df.columns:
+        rep_kwargs["aval_media"] = ("avaliacao", "mean")
+    if "qtd_avaliacoes" in df.columns:
+        rep_kwargs["total_reviews"] = ("qtd_avaliacoes", "sum")
+    if "fulfillment" in df.columns:
+        rep_kwargs["pct_fulfillment"] = (
+            "fulfillment", lambda s: s.fillna(False).astype(bool).mean() * 100
+        )
+    if rep_kwargs:
+        rep_agg = df.groupby(["plataforma", "marca"], dropna=False).agg(
+            registros=("plataforma", "size"), **rep_kwargs
+        ).reset_index()
+        for col in ("aval_media", "pct_fulfillment"):
+            if col in rep_agg.columns:
+                rep_agg[col] = rep_agg[col].round(2)
+        sections.append(
+            "=== REPUTAÇÃO & AVALIAÇÕES (plataforma × marca) ===\n"
+            + rep_agg.to_csv(sep=";", index=False)
+        )
+
+    # 3c. Win-rate de buy box por reputação do seller (ML-API / Shopee)
+    if {"buy_box_seller", "reputacao_seller"} <= set(df.columns):
+        rep_bb = df[
+            df["buy_box_seller"].notna()
+            & (df["buy_box_seller"].astype(str).str.strip() != "")
+            & df["reputacao_seller"].notna()
+            & (df["reputacao_seller"].astype(str).str.strip() != "")
+        ]
+        if not rep_bb.empty:
+            rep_bb_agg = rep_bb.groupby(
+                ["plataforma", "reputacao_seller"], dropna=False
+            ).agg(
+                buy_box_wins=("buy_box_seller", "count"),
+                sellers=("buy_box_seller", "nunique"),
+            ).reset_index()
+            rep_bb_agg["share_plataforma_pct"] = (
+                rep_bb_agg["buy_box_wins"]
+                / rep_bb_agg.groupby("plataforma")["buy_box_wins"].transform("sum")
+                * 100
+            ).round(1)
+            sections.append(
+                "=== BUY BOX × REPUTAÇÃO DO SELLER ===\n"
+                + rep_bb_agg.to_csv(sep=";", index=False)
+            )
 
     # 4. Tags distribution
     tag_df = df[df["tag"].notna() & (df["tag"] != "")]
