@@ -186,7 +186,7 @@ def aggregate_offers(
     df: pd.DataFrame,
     collection_date: str,
     categories: Optional[List[str]] = None,
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, Dict[str, int]]:
     """
     Filtra por categoria e agrega ofertas para o formato daily.
 
@@ -197,12 +197,20 @@ def aggregate_offers(
     Filtros aplicados em ordem:
       1. Categoria (campo `category`) — default: AR CONDICIONADO
       2. Preço válido (> 0)
+      3. SKU presente — linhas sem `sku` não reconciliam com o catálogo
+         (join PT × coletas) e são rejeitadas, espelhando o validador do
+         importador manual (MISSING_FIELD/sku). Roadmap §3 item 9.
 
-    brand/sku/title vazios são mantidos — melhor importar com identificador
+    brand/title vazios são mantidos — melhor importar com identificador
     parcial do que perder a oferta.
+
+    Returns:
+        Tupla (df_agregado, rejeições) onde rejeições é um breakdown
+        {motivo: nº de linhas} para o rejection_log do import.
     """
+    rejections: Dict[str, int] = {}
     if df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), rejections
 
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
@@ -221,6 +229,8 @@ def aggregate_offers(
         cat_series = df[cat_col_orig].fillna("").astype(str).str.strip().str.upper()
         df = df[cat_series.isin(allowed)]
         n_after_cat = len(df)
+        if total_raw - n_after_cat:
+            rejections["OUT_OF_CATEGORY"] = total_raw - n_after_cat
         logger.info(
             f"{collection_date} — filtro de categoria {allowed}: "
             f"{n_after_cat:,}/{total_raw:,} linhas mantidas"
@@ -237,7 +247,7 @@ def aggregate_offers(
             f"{collection_date} — nenhuma oferta para categorias {allowed}. "
             f"Verifique o valor exato com --inspect e ajuste --categories."
         )
-        return pd.DataFrame()
+        return pd.DataFrame(), rejections
 
     # Reconstrói lookup após filtro
     lookup = {c.lower(): c for c in df.columns}
@@ -259,6 +269,8 @@ def aggregate_offers(
     work = work.dropna(subset=["_price"])
     work = work[work["_price"] > 0]
     dropped_no_price = before - len(work)
+    if dropped_no_price:
+        rejections["NO_PRICE"] = dropped_no_price
 
     if work.empty:
         logger.warning(
@@ -271,12 +283,30 @@ def aggregate_offers(
             f"{collection_date} — registro de exemplo:\n"
             f"{json.dumps(sample, ensure_ascii=False, default=str)[:2000]}"
         )
-        return pd.DataFrame()
+        return pd.DataFrame(), rejections
 
     logger.debug(
         f"{collection_date} — preço presente em {n_with_price:,}/{before:,} ofertas AC; "
         f"{dropped_no_price:,} descartadas sem preço"
     )
+
+    # ── 3. SKU obrigatório (roadmap §3 item 9) ───────────────────────────
+    # Sem sku a linha não resolve no catálogo (produtos_depara_nome) e o
+    # cruzamento PriceTrack × coletas nunca acontece — entraria como ruído
+    # permanente. Rejeita e registra no rejection_log para auditoria.
+    before_sku = len(work)
+    work = work[work["sku"].str.strip() != ""]
+    dropped_no_sku = before_sku - len(work)
+    if dropped_no_sku:
+        rejections["MISSING_SKU"] = dropped_no_sku
+        logger.warning(
+            f"{collection_date} — {dropped_no_sku:,} oferta(s) sem SKU "
+            f"rejeitada(s) (não reconciliam com o catálogo)"
+        )
+
+    if work.empty:
+        logger.warning(f"{collection_date} — 0 linhas válidas após filtro de SKU.")
+        return pd.DataFrame(), rejections
 
     agg = (
         work.groupby(["brand", "sku", "title", "marketplace", "seller"])["_price"]
@@ -298,7 +328,7 @@ def aggregate_offers(
         "marketplace", "seller", "seller_canonical",
         "min_price", "avg_price", "mode_price", "max_price",
         "source_file",
-    ]]
+    ]], rejections
 
 
 def inspect_file(path: Path) -> None:
@@ -553,10 +583,19 @@ def _process_date(
         rows_raw = len(df_raw)
         logger.info(f"{collection_date} — {rows_raw:,} ofertas brutas")
 
-        df_agg = aggregate_offers(df_raw, collection_date, categories=categories)
+        df_agg, rejections = aggregate_offers(
+            df_raw, collection_date, categories=categories
+        )
+        rejection_log = [
+            {"reason": reason, "rows": count}
+            for reason, count in sorted(rejections.items())
+        ]
         if df_agg.empty:
             logger.warning(f"{collection_date} — zero linhas após filtro+agregação")
-            log_import(f"api-{collection_date}", rows_raw, 0, rows_raw, "PARTIAL")
+            log_import(
+                f"api-{collection_date}", rows_raw, 0, rows_raw, "PARTIAL",
+                rejection_log=rejection_log,
+            )
             return "empty", 0
 
         rows_agg = len(df_agg)
@@ -584,6 +623,7 @@ def _process_date(
         rows_inserted=inserted,
         rows_rejected=rows_rejected,
         status="SUCCESS" if inserted > 0 else "PARTIAL",
+        rejection_log=rejection_log,
         dry_run=dry_run,
     )
     logger.success(f"{collection_date} — {inserted:,} linhas inseridas")
