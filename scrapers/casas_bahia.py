@@ -450,14 +450,21 @@ class CasasBahiaScraper(BaseScraper):
         self._page.on("response", handle_response)
 
     @staticmethod
-    def _classify_seller(seller_name: Optional[str], seller_id: Optional[str]) -> str:
-        """Classifica seller VTEX da Casas Bahia em 1P (próprio) vs 3P (marketplace)."""
+    def _classify_seller(seller_name: Optional[str], seller_id: Optional[str]) -> Optional[str]:
+        """Classifica seller VTEX da Casas Bahia em 1P (próprio) vs 3P (marketplace).
+
+        Retorna None quando não há NENHUM dado de seller (payload sem
+        ``sellers[]``): dado desconhecido não pode ser contado como vitória 1P.
+        """
         name = (seller_name or "").strip().lower()
+        if not name and not seller_id:
+            return None
         if seller_id and str(seller_id) == "1":
             return "1P"
         if any(t in name for t in ("casas bahia", "casasbahia", "via varejo", "grupo casas bahia")):
             return "1P"
-        return "3P" if name else "1P"
+        # VTEX: sellerId "1" é a casa; qualquer outro id/nome é marketplace.
+        return "3P"
 
     def _extract_vtex_sellers(self, prod: Dict) -> Dict[str, Any]:
         """
@@ -494,8 +501,10 @@ class CasasBahiaScraper(BaseScraper):
                         except (ValueError, TypeError):
                             pass
 
+        # Payload sem sellers[] → buy box desconhecida (None), NÃO vitória 1P
+        # da casa. O caller decide o que mostrar no campo display `seller`.
         return {
-            "buy_box_seller": buy_box_name or "Casas Bahia",
+            "buy_box_seller": buy_box_name,
             "qtd_sellers": len(distinct_sellers) or None,
             "tipo_seller": self._classify_seller(buy_box_name, buy_box_id),
             "price_float": buy_box_price,
@@ -523,7 +532,7 @@ class CasasBahiaScraper(BaseScraper):
                     price_float = None
 
             pos = page_offset + idx + 1
-            records.append(self._build_record(
+            record = self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
                 title=title,
@@ -531,7 +540,9 @@ class CasasBahiaScraper(BaseScraper):
                 position_organic=pos,
                 position_sponsored=None,
                 price_float=price_float,
-                seller=sellers_info["buy_box_seller"],
+                # Display: na vitrine da Casas Bahia o anúncio é exibido pela
+                # casa mesmo sem sellers[] no payload.
+                seller=sellers_info["buy_box_seller"] or "Casas Bahia",
                 buy_box_seller=sellers_info["buy_box_seller"],
                 qtd_sellers=sellers_info["qtd_sellers"],
                 tipo_seller=sellers_info["tipo_seller"],
@@ -539,7 +550,13 @@ class CasasBahiaScraper(BaseScraper):
                 rating=None,
                 review_count=None,
                 tag_destaque=None,
-            ))
+            )
+            if sellers_info["buy_box_seller"] is None:
+                # _build_record cai para `seller` quando buy_box_seller=None;
+                # aqui o dado é desconhecido (payload sem sellers[]) e não pode
+                # virar vitória fantasma da casa no share of buy box.
+                record["Buy Box Seller"] = None
+            records.append(record)
         return records
 
     # ------------------------------------------------------------------
