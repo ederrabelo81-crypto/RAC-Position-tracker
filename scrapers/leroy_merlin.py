@@ -757,6 +757,10 @@ class LeroyMerlinScraper(BaseScraper):
                 position_sponsored=None,
                 price_raw=price_el.get_text(strip=True) if price_el else None,
                 seller="Leroy Merlin",
+                # No fallback DOM não há array de sellers da Algolia — o grid
+                # renderizado é sempre sortimento próprio Leroy (1P).
+                buy_box_seller="Leroy Merlin",
+                tipo_seller="1P",
                 is_fulfillment=False,
                 rating=parse_rating(rating_el.get_text() if rating_el else None),
                 review_count=parse_review_count(review_el.get_text() if review_el else None),
