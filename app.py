@@ -3075,6 +3075,7 @@ def _query_health(window_days: int) -> pd.DataFrame:
         return pd.DataFrame()
     since = str(date.today() - timedelta(days=max(window_days, 1) - 1))
     cols = ("data,plataforma,buy_box_seller,tipo_seller,qtd_sellers,"
+            "reputacao_seller,avaliacao,fulfillment,posicao_patrocinada,"
             "seller,preco,patrocinado")
     rows: list = []
     offset = 0
@@ -3123,14 +3124,19 @@ def page_data_health() -> None:
         st.warning("Sem dados recentes ou Supabase desconectado.")
         return
 
-    # Campos-chave a monitorar (coluna no DB → rótulo)
+    # Campos-chave a monitorar (coluna no DB → rótulo). Esta matriz é a fonte
+    # de verdade do que cada scraper entrega — nada de listas hardcoded.
     key_cols = {
-        "buy_box_seller": "Buy Box",
-        "tipo_seller":    "Tipo Seller",
-        "qtd_sellers":    "Qtd Sellers",
-        "seller":         "Seller",
-        "preco":          "Preço",
-        "patrocinado":    "Patrocinado",
+        "buy_box_seller":      "Buy Box",
+        "tipo_seller":         "Tipo Seller",
+        "qtd_sellers":         "Qtd Sellers",
+        "reputacao_seller":    "Reputação",
+        "avaliacao":           "Avaliação",
+        "fulfillment":         "Fulfillment",
+        "posicao_patrocinada": "Pos. Patroc.",
+        "seller":              "Seller",
+        "preco":               "Preço",
+        "patrocinado":         "Patrocinado",
     }
 
     last_seen = df.groupby("plataforma")["data"].max()
@@ -3176,6 +3182,12 @@ def page_data_health() -> None:
     )
     _apply_chart_style(fig, height=max(380, 26 * len(cov)), hovermode="closest")
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Campos booleanos (Fulfillment, Patrocinado) contam `false` como "
+        "preenchido — 100% significa que o scraper sempre envia o campo. "
+        "`Pos. Patroc.` só é preenchida em anúncios pagos: a célula equivale "
+        "ao % de anúncios patrocinados da plataforma."
+    )
 
     st.dataframe(cov, use_container_width=True, hide_index=True)
     _csv_download_btn(
