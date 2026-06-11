@@ -5209,7 +5209,8 @@ def page_reputacao() -> None:
         st.info(
             "Cobertura limitada: `reputacao_seller` só é preenchida pela coleta "
             "complementar via API oficial do ML (`python main.py --platforms "
-            "ml_api`, requer ML_APP_ID/ML_APP_SECRET) e pela Shopee — confira "
+            "ml_api` — requer ML_APP_ID/ML_APP_SECRET no .env e o setup único "
+            "`python scripts/ml_oauth_setup.py`) e pela Shopee — confira "
             "a página 🩺 Data Health."
         )
         if not {"reputacao_seller", "buy_box_seller"} <= set(df.columns):

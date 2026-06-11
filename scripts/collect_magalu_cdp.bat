@@ -16,8 +16,12 @@ setlocal enabledelayedexpansion
 
 set "BASE_DIR=C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
 set "PAGES=%~1"
-set "PRIORITY=%~2"
 if "%PAGES%"=="" set "PAGES=2"
+
+:: Prioridades: aceita ate 3 valores (ex: "2 alta media" -> --priority alta media)
+set "PRIORITY=%~2"
+if not "%~3"=="" set "PRIORITY=%PRIORITY% %~3"
+if not "%~4"=="" set "PRIORITY=%PRIORITY% %~4"
 
 set "MAGALU_CDP_URL=http://localhost:9222"
 
@@ -69,5 +73,6 @@ if %COLLECT_EXIT% EQU 0 (
     )
 )
 
-endlocal
-exit /b %COLLECT_EXIT%
+:: endlocal & exit na MESMA linha: %COLLECT_EXIT% e expandido no parse,
+:: antes do endlocal limpar as variaveis locais
+endlocal & exit /b %COLLECT_EXIT%

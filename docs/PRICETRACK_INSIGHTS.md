@@ -74,7 +74,7 @@ estoque no canal; explosão de sellers desconhecidos sinaliza mercado cinza.
 
 | # | Melhoria | Por quê | Esforço |
 |---|----------|---------|---------|
-| 1 | **Índice `(sku, collection_date)`** em `pricetrack_daily` | Joins por SKU (2.2, 2.5) varrem a tabela hoje; índice atual cobre só `(date, brand)` | Baixo — 1 migration |
+| 1 | **Índice composto `(sku, collection_date)`** em `pricetrack_daily` | Existe índice simples em `sku`, mas as análises 2.2/2.5 filtram SKU **em janela de datas** — o composto evita o filtro adicional por data em cada SKU | Baixo — 1 migration |
 | 2 | **Particionamento por mês** (`PARTITION BY RANGE (collection_date)`) | ~1,7M linhas/4 meses; em 12+ meses queries de janela degradam | Médio — migration + recriar índices |
 | 3 | **Views materializadas diárias** (`mv_pt_sku_dia`: piso/mediana/spread/n_sellers por sku×marketplace×dia, refresh pós-import) | Dashboard pagina 50k linhas cruas via PostgREST a cada load; a MV reduz para centenas | Médio |
 | 4 | **`seller_map` assistido**: job que agrupa `unknown_sellers.log` por similaridade (rapidfuzz) e abre fila de revisão na página 🧬 Família & SKU | 103 variantes mapeadas na mão; novos sellers viram buraco silencioso de canônico | Médio |

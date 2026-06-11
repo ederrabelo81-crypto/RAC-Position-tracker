@@ -318,15 +318,18 @@ class MLScraper(BaseScraper):
                 for el in item.select(".andes-visually-hidden")
             )
             for text in texts:
-                # âncora "de 5" evita confundir com preço/parcela
-                if "de 5" not in text:
-                    continue
-                if rating is None:
+                # âncora "de 5" libera os padrões ambíguos (evita confundir
+                # parcela/preço com rating); a contagem com a palavra
+                # "avaliações" é inequívoca e vale mesmo em texto separado
+                has_anchor = "de 5" in text
+                if rating is None and has_anchor:
                     m = _RATING_OF5_RE.search(text)
                     if m:
                         rating = parse_rating(m.group(1))
                 if count is None:
-                    m = _COUNT_PARENS_RE.search(text) or _COUNT_WORD_RE.search(text)
+                    m = _COUNT_WORD_RE.search(text)
+                    if m is None and has_anchor:
+                        m = _COUNT_PARENS_RE.search(text)
                     if m:
                         count = parse_review_count(m.group(1))
                 if rating is not None and count is not None:
@@ -356,7 +359,13 @@ class MLScraper(BaseScraper):
             return "Loja Oficial"
         if item.find(string=_OFFICIAL_STORE_RE):
             return "Loja Oficial"
-        if item.select_one('[class*="cockade" i], [class*="verified" i]'):
+        # cockade específico do Poly + rótulo em atributo acessível.
+        # Matchers genéricos tipo [class*="verified"] dariam falso positivo
+        # (ex: verified-purchase em reviews).
+        if item.select_one(
+            '[class*="cockade" i], [aria-label*="loja oficial" i], '
+            '[title*="loja oficial" i]'
+        ):
             return "Loja Oficial"
         return "3P"
 
