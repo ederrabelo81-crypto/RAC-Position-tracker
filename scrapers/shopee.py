@@ -299,7 +299,9 @@ class ShopeeScraper(BaseScraper):
                 price_float=price_float,
                 seller=shop_name,
                 buy_box_seller=shop_name,
-                qtd_sellers=None,  # marketplace puro: cada anúncio é 1 loja
+                # Marketplace puro: cada anúncio pertence a exatamente 1 loja.
+                # None significaria "desconhecido"; aqui o valor é conhecido (=1).
+                qtd_sellers=1,
                 tipo_seller=tipo_seller,
                 reputacao_seller=reputacao,
                 is_fulfillment=False,
