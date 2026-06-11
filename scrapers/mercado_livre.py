@@ -4,14 +4,22 @@ scrapers/mercado_livre.py — Scraper do Mercado Livre (mercadolivre.com.br).
 Estratégia de extração:
   - URL de busca: https://lista.mercadolivre.com.br/{keyword_encoded}
   - Paginação: parâmetro `_Desde_{offset}` na URL (48 itens por página)
-  - Distinção Orgânico/Patrocinado: presença do atributo data-label="publicity"
-    ou classe css com "promoted" / "advertising" no container do item
+  - Distinção Orgânico/Patrocinado: 5 camadas — classe do container, chip
+    legado/Poly, texto "Patrocinado", aria-label/title e href de ad-tracking
+    (click1.mercadolivre / mclics)
+  - Avaliação/reviews: seletores Poly (.poly-reviews__*) + legados + fallback
+    via texto acessível "Avaliação 4,8 de 5 (1.234 avaliações)"
+  - Loja Oficial: label legado + texto "Loja oficial" + selo de verificação
   - Fulfillment (FULL): badge com aria-label ou texto "Full" / "Enviado pelo ML"
   - Preço: fragmentos `.andes-money-amount__fraction` + `.andes-money-amount__cents`
 
 Notas de manutenção:
   - Se o ML alterar sua estrutura CSS, ajuste os seletores em _SELECTORS abaixo.
   - Todos os seletores estão centralizados neste dict para facilitar atualização.
+  - Valide mudanças com `python scripts/diagnose_ml.py` (taxa de acerto por
+    campo) — cobertura por plataforma fica na página 🩺 Data Health.
+  - Histórico: avaliação/qtd_avaliações/patrocinado ficaram 0% Mar→Jun/2026
+    porque os seletores Poly originais não existiam no DOM real (fix Jun/2026).
 """
 
 import re
@@ -62,17 +70,25 @@ _SELECTORS = {
     "fulfillment":     ".poly-component__fulfillment, "
                        ".ui-search-item__group__element.ui-search-item__fulfillment",
 
-    # nota de avaliação
+    # nota de avaliação — Poly 2025+ renderiza em .poly-reviews__rating;
+    # os nomes "poly-component__reviews-*" nunca bateram em produção
+    # (cobertura 0% Mar→Jun/2026 — ver docs/DIAGNOSTICO_COLETA_JUN2026.md)
     "rating_candidates": [
-        ".poly-component__reviews-rating",  # Poly
+        ".poly-reviews__rating",            # Poly atual
+        ".poly-component__reviews-rating",  # variante antiga (mantida por segurança)
         ".ui-search-reviews__rating-number", # legado
     ],
 
-    # quantidade de avaliações
+    # quantidade de avaliações — ex: "(1.234)"
     "review_count_candidates": [
-        ".poly-component__reviews-count",  # Poly
+        ".poly-reviews__total",            # Poly atual
+        ".poly-component__reviews-count",  # variante antiga
         ".ui-search-reviews__amount",      # legado
     ],
+
+    # bloco completo de reviews — fallback via texto acessível
+    # ("Avaliação 4,8 de 5 (1.234 avaliações)" em span visually-hidden)
+    "reviews_block": ".poly-component__reviews",
 
     # tag de destaque (ex: "MAIS VENDIDO", "OFERTA DO DIA")
     "tag_candidates": [
@@ -82,6 +98,9 @@ _SELECTORS = {
 
     # indicador de patrocinado — testa múltiplas abordagens
     "sponsored_label": ".ui-search-item__promoted-label",
+
+    # chip "Patrocinado" do sistema Poly (âncora p/ click-tracking de ads)
+    "ads_chip": ".poly-component__ads-promotions",
 
     # link do produto — âncora que leva ao PDP
     "url_candidates": [
@@ -95,6 +114,34 @@ _SELECTORS = {
 
 # ML pagina de 48 em 48 itens; o offset começa em 1
 _ITEMS_PER_PAGE = 48
+
+# ---------------------------------------------------------------------------
+# Padrões de texto/atributo — robustos a mudança de classes CSS
+# ---------------------------------------------------------------------------
+
+# rótulo de anúncio em texto, aria-label ou title
+_SPONSORED_TEXT_RE = re.compile(r"patrocinad|publicidad|sponsor", re.I)
+
+# âncoras de click-tracking de Product Ads: presentes no card patrocinado
+# mesmo quando o rótulo "Patrocinado" é renderizado via CSS/ícone
+_AD_HREF_RE = re.compile(
+    r"click1\.mercadoli[bv]re|/mclics?/|[?&#](?:is_advertising|ad_domain)=", re.I
+)
+
+# texto acessível do bloco de reviews: "Avaliação 4,8 de 5 (1.234 avaliações)"
+_RATING_OF5_RE  = re.compile(r"(\d(?:[.,]\d+)?)\s*de\s*5")
+_COUNT_PARENS_RE = re.compile(r"\(\s*([\d.,]+)\s*\)")
+_COUNT_WORD_RE   = re.compile(r"([\d.,]+)\s*avalia", re.I)
+
+# selo de loja oficial — texto ("Loja oficial Midea") em qualquer nó do card
+_OFFICIAL_STORE_RE = re.compile(r"loja\s+oficial|tienda\s+oficial", re.I)
+
+# tags de destaque conhecidas do ML — fallback quando a classe CSS mudar
+_KNOWN_TAG_RE = re.compile(
+    r"\b(MAIS VENDIDO|OFERTA DO DIA|OFERTA IMPERD[ÍI]VEL|OFERTA REL[ÂA]MPAGO|"
+    r"RECOMENDADO|MELHOR PRE[ÇC]O)\b",
+    re.I,
+)
 
 
 class MLScraper(BaseScraper):
@@ -187,27 +234,131 @@ class MLScraper(BaseScraper):
     @staticmethod
     def _is_sponsored(item: Tag) -> bool:
         """
-        Retorna True se o item for um anúncio patrocinado.
+        Retorna True se o item for um anúncio patrocinado (Product Ads).
 
         Estratégia em camadas (para robustez contra mudanças do ML):
-          1. Classe CSS com "promoted" ou "advertising" no container
-          2. Elemento filho com label de patrocinado
-          3. Atributo data-* indicando publicidade
+          1. Classe CSS com "promoted"/"advertising" no container
+          2. Label/chip filho (legado .ui-search-item__promoted-label
+             ou Poly .poly-component__ads-promotions)
+          3. Texto "Patrocinado"/"Publicidade" em qualquer nó
+          4. Atributos acessíveis (aria-label/title/alt) com o rótulo —
+             o ML às vezes só expõe "Patrocinado" para leitores de tela
+          5. Âncora de click-tracking de ads (click1.mercadolivre / mclics /
+             is_advertising=true) — sobrevive a redesigns do rótulo visível
         """
         # camada 1: classes do container
         item_classes = " ".join(item.get("class", []))
         if re.search(r"promot|advertis|publicidad|sponsor", item_classes, re.I):
             return True
 
-        # camada 2: label filho
+        # camada 2: chip/label filho (legado + Poly)
         if item.select_one(_SELECTORS["sponsored_label"]):
             return True
-
-        # camada 3: qualquer elemento com texto "Patrocinado" ou "Publicidade"
-        for el in item.find_all(string=re.compile(r"patrocinado|publicidade", re.I)):
+        if item.select_one(_SELECTORS["ads_chip"]):
             return True
 
+        # camada 3: texto visível
+        if item.find(string=_SPONSORED_TEXT_RE):
+            return True
+
+        # camada 4: atributos acessíveis
+        for el in item.find_all(True):
+            for attr in ("aria-label", "title", "alt"):
+                val = el.get(attr)
+                if val and _SPONSORED_TEXT_RE.search(str(val)):
+                    return True
+
+        # camada 5: href de ad-tracking
+        for anchor in item.find_all("a", href=True):
+            if _AD_HREF_RE.search(anchor["href"]):
+                return True
+
         return False
+
+    # ------------------------------------------------------------------
+    # Avaliação e nº de reviews (Poly + legado + texto acessível)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_reviews(item: Tag) -> tuple:
+        """
+        Extrai (avaliação, qtd_avaliações) de um card da SERP.
+
+        Ordem de extração:
+          1. Seletores CSS dedicados (.poly-reviews__rating / __total + legados)
+          2. Texto acessível do bloco de reviews ou de spans
+             .andes-visually-hidden: "Avaliação 4,8 de 5 (1.234 avaliações)"
+
+        Returns:
+            Tupla (Optional[float], Optional[int]).
+        """
+        rating: Optional[float] = None
+        for sel in _SELECTORS["rating_candidates"]:
+            el = item.select_one(sel)
+            if el:
+                rating = parse_rating(el.get_text())
+                if rating is not None:
+                    break
+
+        count: Optional[int] = None
+        for sel in _SELECTORS["review_count_candidates"]:
+            el = item.select_one(sel)
+            if el:
+                count = parse_review_count(el.get_text())
+                if count is not None:
+                    break
+
+        if rating is None or count is None:
+            texts = []
+            block = item.select_one(_SELECTORS["reviews_block"])
+            if block:
+                texts.append(block.get_text(" ", strip=True))
+            texts.extend(
+                el.get_text(" ", strip=True)
+                for el in item.select(".andes-visually-hidden")
+            )
+            for text in texts:
+                # âncora "de 5" evita confundir com preço/parcela
+                if "de 5" not in text:
+                    continue
+                if rating is None:
+                    m = _RATING_OF5_RE.search(text)
+                    if m:
+                        rating = parse_rating(m.group(1))
+                if count is None:
+                    m = _COUNT_PARENS_RE.search(text) or _COUNT_WORD_RE.search(text)
+                    if m:
+                        count = parse_review_count(m.group(1))
+                if rating is not None and count is not None:
+                    break
+
+        return rating, count
+
+    # ------------------------------------------------------------------
+    # Tipo de seller: Loja Oficial vs 3P
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_tipo_seller(item: Tag, seller: Optional[str]) -> str:
+        """
+        Classifica o seller do card como "Loja Oficial" ou "3P".
+
+        Camadas (a flag legada .ui-search-official-store-label nunca disparou
+        no sistema Poly — 0 registros "Loja Oficial" no banco até Jun/2026):
+          1. Label legado de loja oficial
+          2. Texto "Loja oficial" no nome do seller extraído
+          3. Texto "Loja oficial" em qualquer nó do card
+          4. Selo de verificação (cockade) junto ao seller no Poly
+        """
+        if item.select_one(".ui-search-official-store-label"):
+            return "Loja Oficial"
+        if seller and _OFFICIAL_STORE_RE.search(seller):
+            return "Loja Oficial"
+        if item.find(string=_OFFICIAL_STORE_RE):
+            return "Loja Oficial"
+        if item.select_one('[class*="cockade" i], [class*="verified" i]'):
+            return "Loja Oficial"
+        return "3P"
 
     # ------------------------------------------------------------------
     # Extração de URL do produto
@@ -341,31 +492,20 @@ class MLScraper(BaseScraper):
             for sel in _SELECTORS["seller_candidates"]:
                 el = item.select_one(sel)
                 if el and el.get_text(strip=True):
-                    seller = el.get_text(strip=True)
+                    # Poly prefixa com "Por " (ex: "Por WebContinental")
+                    seller = re.sub(
+                        r"^por\s+", "", el.get_text(strip=True), flags=re.I
+                    ).strip() or "Mercado Livre"
                     break
 
-            # --- tipo de seller: presença do selo de loja oficial ---
-            is_official = bool(item.select_one(".ui-search-official-store-label"))
-            tipo_seller = "Loja Oficial" if is_official else "3P"
+            # --- tipo de seller: Loja Oficial vs 3P (multi-camada) ---
+            tipo_seller = self._detect_tipo_seller(item, seller)
 
             # --- fulfillment ---
             fulfillment = self._is_fulfillment(item)
 
-            # --- avaliação ---
-            rating = None
-            for sel in _SELECTORS["rating_candidates"]:
-                el = item.select_one(sel)
-                if el:
-                    rating = parse_rating(el.get_text())
-                    break
-
-            # --- qtd avaliações ---
-            review_count = None
-            for sel in _SELECTORS["review_count_candidates"]:
-                el = item.select_one(sel)
-                if el:
-                    review_count = parse_review_count(el.get_text())
-                    break
+            # --- avaliação + qtd avaliações (CSS + texto acessível) ---
+            rating, review_count = self._extract_reviews(item)
 
             # --- tag de destaque ---
             tag = None
@@ -374,6 +514,12 @@ class MLScraper(BaseScraper):
                 if el and el.get_text(strip=True):
                     tag = el.get_text(strip=True)
                     break
+            if tag is None:
+                # fallback por texto: tags conhecidas sobrevivem a redesign CSS
+                hit = item.find(string=_KNOWN_TAG_RE)
+                if hit:
+                    m = _KNOWN_TAG_RE.search(str(hit))
+                    tag = m.group(1).upper() if m else None
 
             record = self._build_record(
                 keyword=keyword,

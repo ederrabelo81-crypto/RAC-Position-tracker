@@ -44,6 +44,7 @@ from config import (
 )
 from scrapers.base import BaseScraper
 from scrapers.mercado_livre import MLScraper
+from scrapers.mercado_livre_api import MLAPIScraper
 from scrapers.amazon import AmazonScraper
 from scrapers.magalu import MagaluScraper
 from scrapers.casas_bahia import CasasBahiaScraper
@@ -58,6 +59,7 @@ from scrapers.dealers import DealerScraper, DEALER_CONFIGS
 # ---------------------------------------------------------------------------
 SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
     "ml":             MLScraper,
+    "ml_api":         MLAPIScraper,
     "amazon":         AmazonScraper,
     "magalu":         MagaluScraper,
     "casasbahia":     CasasBahiaScraper,
@@ -67,6 +69,12 @@ SCRAPER_REGISTRY: Dict[str, Type[BaseScraper]] = {
     "fast":           FastShopScraper,
     "dealers":        DealerScraper,
 }
+
+# Plataformas que NÃO entram na expansão de "--platforms all": rodam apenas
+# quando pedidas explicitamente. "ml_api" duplicaria os registros do ML
+# (mesmo platform_name) — é uma coleta COMPLEMENTAR para reputacao_seller
+# (requer ML_APP_ID/ML_APP_SECRET + scripts/ml_oauth_setup.py).
+_EXPLICIT_ONLY_PLATFORMS = {"ml_api"}
 
 # Keywords map para DealerScraper: cada dealer name vira a "keyword".
 # Dealers marcados como "on_hold" são excluídos da coleta.
@@ -377,7 +385,9 @@ def main() -> None:
         # Padrão: usa ACTIVE_PLATFORMS do config.py
         platform_names = [p for p, active in ACTIVE_PLATFORMS.items() if active]
     elif "all" in args.platforms:
-        platform_names = list(SCRAPER_REGISTRY.keys())
+        platform_names = [
+            p for p in SCRAPER_REGISTRY if p not in _EXPLICIT_ONLY_PLATFORMS
+        ]
     else:
         platform_names = args.platforms
 

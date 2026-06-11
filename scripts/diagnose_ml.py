@@ -35,6 +35,18 @@ except ImportError:
     print("      Execute: pip install beautifulsoup4")
     sys.exit(1)
 
+# Extração de campos de insight (avaliação/patrocinado/seller) — usa a MESMA
+# lógica do scraper de produção quando o repo está disponível, evitando drift
+# entre diagnóstico e coleta. Sem o repo, degrada para título/preço apenas.
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scrapers.mercado_livre import MLScraper  # noqa: E402
+
+    HAVE_SCRAPER = True
+except Exception as _exc:  # repo/deps indisponíveis → modo standalone
+    HAVE_SCRAPER = False
+    _SCRAPER_IMPORT_ERROR = _exc
+
 # ---------------------------------------------------------------------------
 # Seletores (espelha scrapers/mercado_livre.py)
 # ---------------------------------------------------------------------------
@@ -134,37 +146,91 @@ def diagnose_html(html: str, url: str = "", label: str = "HTML") -> None:
     # Extrai amostras
     titles_found = 0
     prices_found = 0
-    print(f"\n  {'#':<4} {'Título':<55} {'Preço'}")
-    print(f"  {'─'*4} {'─'*55} {'─'*12}")
-    for i, item in enumerate(items[:20]):
+    print(f"\n  {'#':<4} {'Título':<45} {'Preço':<12} {'Patroc':<7} {'Aval':<6} {'Rev':<7} {'Tipo':<13} {'Seller'}")
+    print(f"  {'─'*4} {'─'*45} {'─'*12} {'─'*7} {'─'*6} {'─'*7} {'─'*13} {'─'*15}")
+    insight = {"sponsored": 0, "rating": 0, "reviews": 0, "official": 0, "seller": 0}
+    sample = items[:20]
+    for i, item in enumerate(sample):
         title = None
         for sel in TITLE_CANDIDATES:
             el = item.select_one(sel)
             if el and el.get_text(strip=True):
-                title = el.get_text(strip=True)[:54]
+                title = el.get_text(strip=True)[:44]
                 break
         price = extract_price(item)
         if title:
             titles_found += 1
         if price != "—":
             prices_found += 1
+
+        spon = aval = rev = tipo = seller = "—"
+        if HAVE_SCRAPER:
+            is_spon = MLScraper._is_sponsored(item)
+            rating, count = MLScraper._extract_reviews(item)
+            seller_el = item.select_one(".poly-component__seller")
+            seller_txt = seller_el.get_text(strip=True) if seller_el else None
+            tipo_seller = MLScraper._detect_tipo_seller(item, seller_txt)
+            if is_spon:
+                insight["sponsored"] += 1
+                spon = "SIM"
+            if rating is not None:
+                insight["rating"] += 1
+                aval = f"{rating:.1f}"
+            if count is not None:
+                insight["reviews"] += 1
+                rev = str(count)
+            if tipo_seller == "Loja Oficial":
+                insight["official"] += 1
+            tipo = tipo_seller
+            if seller_txt:
+                insight["seller"] += 1
+                seller = seller_txt[:15]
+
         title_display = title or "⚠️  sem título"
-        print(f"  {i+1:<4} {title_display:<55} {price}")
+        print(f"  {i+1:<4} {title_display:<45} {price:<12} {spon:<7} {aval:<6} {rev:<7} {tipo:<13} {seller}")
 
     if len(items) > 20:
         print(f"  ... (+{len(items)-20} itens não exibidos)")
 
+    n = len(sample)
     print(f"\n  RESUMO:")
     print(f"  • Itens totais:    {len(items)}")
-    print(f"  • Títulos: {titles_found}/{min(len(items),20)} nas primeiras 20 amostras")
-    print(f"  • Preços:  {prices_found}/{min(len(items),20)} nas primeiras 20 amostras")
+    print(f"  • Títulos: {titles_found}/{n} nas primeiras {n} amostras")
+    print(f"  • Preços:  {prices_found}/{n} nas primeiras {n} amostras")
+    if HAVE_SCRAPER:
+        print(f"  • Avaliação:    {insight['rating']}/{n}   (esperado >70% — itens novos não têm reviews)")
+        print(f"  • Qtd reviews:  {insight['reviews']}/{n}")
+        print(f"  • Seller:       {insight['seller']}/{n}")
+        print(f"  • Loja Oficial: {insight['official']}/{n}")
+        print(f"  • Patrocinado:  {insight['sponsored']}/{n}  (SERP típica tem 2-6 ads no top-20;")
+        print(f"                  0 em TODAS as keywords = detecção quebrada ou sessão sem ads)")
+    else:
+        print(f"  ⚠️  Campos de insight não avaliados — import do scraper falhou:")
+        print(f"      {_SCRAPER_IMPORT_ERROR}")
+        print(f"      Rode a partir da raiz do repo com as dependências instaladas.")
 
     # Seletores de título — taxa individual
-    print(f"\n  Taxa por seletor de título (primeiros 20 itens):")
+    print(f"\n  Taxa por seletor de título (primeiros {n} itens):")
     for sel in TITLE_CANDIDATES:
-        hits = sum(1 for it in items[:20] if it.select_one(sel))
-        bar  = "█" * hits + "░" * (20 - hits)
-        print(f"    {sel:<45} {bar}  {hits}/20")
+        hits = sum(1 for it in sample if it.select_one(sel))
+        bar  = "█" * hits + "░" * (n - hits)
+        print(f"    {sel:<45} {bar}  {hits}/{n}")
+
+    if HAVE_SCRAPER:
+        from scrapers.mercado_livre import _SELECTORS as _S
+        print(f"\n  Taxa por seletor de insight (primeiros {n} itens):")
+        field_sels = (
+            [("rating", s) for s in _S["rating_candidates"]]
+            + [("reviews", s) for s in _S["review_count_candidates"]]
+            + [("reviews_blk", _S["reviews_block"])]
+            + [("ads_chip", _S["ads_chip"])]
+            + [("sponsored", _S["sponsored_label"])]
+            + [("seller", s) for s in _S["seller_candidates"]]
+        )
+        for field, sel in field_sels:
+            hits = sum(1 for it in sample if it.select_one(sel))
+            bar  = "█" * hits + "░" * (n - hits)
+            print(f"    [{field:<11}] {sel:<40} {bar}  {hits}/{n}")
 
 
 # ---------------------------------------------------------------------------
