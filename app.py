@@ -4675,8 +4675,8 @@ def page_availability():
     st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
-    tab_share, tab_timeline, tab_detail = st.tabs(
-        ["📊 Share", "📅 Timeline", "📋 Detail"]
+    tab_share, tab_vis, tab_timeline, tab_detail = st.tabs(
+        ["📊 Share", "🎯 Visibility Score", "📅 Timeline", "📋 Detail"]
     )
 
     # ── Tab 1: Appearance share by Brand / Platform ─────────────────────────
@@ -4743,7 +4743,140 @@ def page_availability():
             _apply_chart_style(fig_pie, height=380, hovermode="closest")
             st.plotly_chart(fig_pie, use_container_width=True)
 
-    # ── Tab 2: Timeline ──────────────────────────────────────────────────────
+    # ── Tab 2: Visibility Score ponderado por posição ────────────────────────
+    with tab_vis:
+        st.subheader("Visibility Score — share of shelf ponderado por posição")
+        st.caption(
+            "Cada aparição vale `1/posição_geral`: o slot 1 vale 1.0, o slot 10 "
+            "vale 0.1. O share ponderado premia quem domina o topo da busca; o "
+            "share simples conta presença em qualquer posição."
+        )
+        if "marca" not in df_all.columns:
+            st.info("Brand (marca) column not available.")
+        else:
+            vis = df_all[df_all["posicao_geral"] > 0].copy()
+            if vis.empty:
+                st.info("No records with valid position for the visibility score.")
+            else:
+                vis["_peso"] = 1.0 / vis["posicao_geral"].astype(float)
+
+                por_marca = (
+                    vis.groupby("marca")
+                    .agg(**{"Aparições": ("_peso", "size"),
+                            "_peso_total": ("_peso", "sum")})
+                    .reset_index()
+                )
+                por_marca["Share simples (%)"] = (
+                    por_marca["Aparições"] / por_marca["Aparições"].sum() * 100
+                ).round(2)
+                por_marca["Share ponderado (%)"] = (
+                    por_marca["_peso_total"] / por_marca["_peso_total"].sum() * 100
+                ).round(2)
+                por_marca["Δ (p.p.)"] = (
+                    por_marca["Share ponderado (%)"] - por_marca["Share simples (%)"]
+                ).round(2)
+                por_marca = por_marca.sort_values("Share ponderado (%)", ascending=False)
+
+                top_vis = por_marca.head(12)
+                comp = top_vis.melt(
+                    id_vars="marca",
+                    value_vars=["Share simples (%)", "Share ponderado (%)"],
+                    var_name="Métrica", value_name="Share (%)",
+                )
+                fig_cmp = px.bar(
+                    comp, x="marca", y="Share (%)", color="Métrica",
+                    barmode="group", color_discrete_sequence=_CHART_COLORS,
+                    title="Share ponderado (1/posição) vs share simples, por marca",
+                    labels={"marca": "Marca"},
+                )
+                _apply_chart_style(fig_cmp, height=440)
+                st.plotly_chart(fig_cmp, use_container_width=True)
+                st.caption(
+                    "Δ positivo = a marca rankeia melhor do que o volume sugere "
+                    "(slots no topo); Δ negativo = presença grande mas enterrada."
+                )
+                st.dataframe(
+                    _style_midea_df(
+                        por_marca.drop(columns="_peso_total")
+                        .rename(columns={"marca": "Marca"}),
+                        brand_col="Marca",
+                    ),
+                    use_container_width=True, hide_index=True,
+                )
+                _csv_download_btn(
+                    por_marca.drop(columns="_peso_total"),
+                    f"rac_visibility_score_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar visibility score", key="av_vis_csv",
+                )
+
+                # Heatmap marca × plataforma — share ponderado dentro da plataforma
+                if "plataforma" in vis.columns:
+                    top10_marcas = por_marca.head(10)["marca"].tolist()
+                    sub = vis[vis["marca"].isin(top10_marcas)]
+                    heat_plat = sub.pivot_table(
+                        index="marca", columns="plataforma",
+                        values="_peso", aggfunc="sum",
+                    )
+                    plat_tot = vis.pivot_table(
+                        columns="plataforma", values="_peso", aggfunc="sum",
+                    )
+                    heat_plat = (
+                        heat_plat.div(plat_tot.iloc[0], axis=1) * 100
+                    ).round(1)
+                    fig_hp = px.imshow(
+                        heat_plat, text_auto=".1f", aspect="auto",
+                        color_continuous_scale="Blues",
+                        labels=dict(x="Plataforma", y="Marca",
+                                    color="Share ponderado (%)"),
+                        title="Share ponderado por marca × plataforma (% dentro da plataforma)",
+                    )
+                    _apply_chart_style(
+                        fig_hp, height=max(380, 32 * len(heat_plat)),
+                        hovermode="closest",
+                    )
+                    st.plotly_chart(fig_hp, use_container_width=True)
+
+                # Segmentação por categoria de keyword (campo `categoria`)
+                if "categoria" in vis.columns and vis["categoria"].notna().any():
+                    seg = vis[vis["categoria"].notna()
+                              & (vis["categoria"].astype(str).str.strip() != "")]
+                    top10_marcas = por_marca.head(10)["marca"].tolist()
+                    sub_cat = seg[seg["marca"].isin(top10_marcas)]
+                    if not sub_cat.empty:
+                        heat_cat = sub_cat.pivot_table(
+                            index="marca", columns="categoria",
+                            values="_peso", aggfunc="sum",
+                        )
+                        cat_tot = seg.pivot_table(
+                            columns="categoria", values="_peso", aggfunc="sum",
+                        )
+                        heat_cat = (
+                            heat_cat.div(cat_tot.iloc[0], axis=1) * 100
+                        ).round(1)
+                        fig_hc = px.imshow(
+                            heat_cat, text_auto=".1f", aspect="auto",
+                            color_continuous_scale="Greens",
+                            labels=dict(x="Categoria Keyword", y="Marca",
+                                        color="Share ponderado (%)"),
+                            title="Share ponderado por marca × categoria de keyword (% dentro da categoria)",
+                        )
+                        _apply_chart_style(
+                            fig_hc, height=max(380, 32 * len(heat_cat)),
+                            hovermode="closest",
+                        )
+                        st.plotly_chart(fig_hc, use_container_width=True)
+                        st.caption(
+                            "Categoria Keyword segmenta a intenção da busca "
+                            "(Genérica, Capacidade BTU, Marca, Intenção Compra…): "
+                            "mostra onde cada marca domina o topo do funil."
+                        )
+                else:
+                    st.info(
+                        "Campo `categoria` (Categoria Keyword) sem dados no período — "
+                        "segmentação por categoria indisponível."
+                    )
+
+    # ── Tab 3: Timeline ──────────────────────────────────────────────────────
     with tab_timeline:
         st.subheader("Appearances over time")
 
@@ -4780,7 +4913,7 @@ def page_availability():
             _apply_chart_style(fig_line, height=450)
             st.plotly_chart(fig_line, use_container_width=True)
 
-    # ── Tab 3: Detail ────────────────────────────────────────────────────────
+    # ── Tab 4: Detail ────────────────────────────────────────────────────────
     with tab_detail:
         st.subheader("All records")
 
