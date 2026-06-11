@@ -101,6 +101,10 @@ if (-not (Test-Path $CollectScript)) {
     exit 1
 }
 
+# Garante o diretorio de logs usado no redirect das tarefas (sem ele o
+# cmd /c falha e a execucao agendada quebra silenciosamente)
+New-Item -ItemType Directory -Force -Path (Join-Path $BaseDir "logs") | Out-Null
+
 # Remove tarefas legadas Magalu-only (a autenticada ja cobre o Magalu)
 foreach ($t in $LegacyTasks) {
     $existing = Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue

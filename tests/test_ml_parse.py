@@ -187,6 +187,28 @@ class TestExtractReviews:
         assert rating is None
         assert count is None
 
+    def test_contagem_em_texto_separado_sem_de5(self):
+        # contagem com a palavra "avaliações" vale mesmo sem o trecho "de 5"
+        # no mesmo nó (rating e contagem em spans separados)
+        html = """
+        <li class="ui-search-layout__item">
+          <span class="andes-visually-hidden">Avaliação 4,6 de 5</span>
+          <span class="andes-visually-hidden">2.345 avaliações</span>
+        </li>"""
+        rating, count = MLScraper._extract_reviews(_item(html))
+        assert rating == 4.6
+        assert count == 2345
+
+    def test_parenteses_sem_ancora_nao_vira_contagem(self):
+        # "(2026)" num texto qualquer (ex: ano) não pode virar qtd_avaliacoes
+        html = """
+        <li class="ui-search-layout__item">
+          <span class="andes-visually-hidden">Lançamento (2026) novo</span>
+        </li>"""
+        rating, count = MLScraper._extract_reviews(_item(html))
+        assert rating is None
+        assert count is None
+
 
 # ---------------------------------------------------------------------------
 # Loja Oficial vs 3P
