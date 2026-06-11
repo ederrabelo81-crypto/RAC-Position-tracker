@@ -18,7 +18,7 @@ Paginação: parâmetro &page={n}.
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 
 import requests
@@ -510,6 +510,66 @@ class CasasBahiaScraper(BaseScraper):
             "price_float": buy_box_price,
         }
 
+    @staticmethod
+    def _extract_vtex_rating(prod: Dict) -> Tuple[Optional[float], Optional[int]]:
+        """Extrai (avaliação média, nº de avaliações) do payload VTEX IS.
+
+        A VTEX Intelligent Search expõe rating em formatos que variam conforme
+        o app de reviews instalado: número simples (``rating``,
+        ``aggregateRating``), dict aninhado (``rating: {average, count}`` /
+        ``{value, totalCount}``) ou campos separados (``reviews``,
+        ``totalReviews``, ``reviewCount``).
+
+        Args:
+            prod: dict do produto como veio da API VTEX IS.
+
+        Returns:
+            Tupla (rating, review_count); (None, None) quando ausente/ inválido.
+        """
+        rating: Optional[float] = None
+        review_count: Optional[int] = None
+
+        raw = prod.get("rating")
+        if raw is None:
+            raw = prod.get("aggregateRating")
+        if isinstance(raw, dict):
+            for key in ("average", "value", "ratingValue", "rating"):
+                if raw.get(key) is not None:
+                    try:
+                        rating = float(str(raw[key]).replace(",", "."))
+                        break
+                    except (TypeError, ValueError):
+                        continue
+            for key in ("count", "totalCount", "reviewCount", "ratingCount"):
+                if raw.get(key) is not None:
+                    try:
+                        review_count = int(float(str(raw[key])))
+                        break
+                    except (TypeError, ValueError):
+                        continue
+        elif raw is not None:
+            try:
+                rating = float(str(raw).replace(",", "."))
+            except (TypeError, ValueError):
+                rating = None
+
+        if review_count is None:
+            for key in ("reviews", "totalReviews", "reviewCount"):
+                val = prod.get(key)
+                if isinstance(val, (int, float)):
+                    review_count = int(val)
+                    break
+                if isinstance(val, list):
+                    review_count = len(val)
+                    break
+
+        # Sanity: escala VTEX é 0-5; fora disso é lixo de payload
+        if rating is not None and not 0 <= rating <= 5:
+            rating = None
+        if review_count is not None and review_count < 0:
+            review_count = None
+        return rating, review_count
+
     def _parse_api_products(
         self,
         keyword: str,
@@ -519,6 +579,7 @@ class CasasBahiaScraper(BaseScraper):
     ) -> List[Dict[str, Any]]:
         source = products if products is not None else self._captured_products
         records = []
+        with_rating = 0
         for idx, prod in enumerate(source):
             title = prod.get("productName") or prod.get("name") or prod.get("title")
 
@@ -530,6 +591,10 @@ class CasasBahiaScraper(BaseScraper):
                     price_float = float(str(prod.get("price"))) if prod.get("price") else None
                 except (ValueError, TypeError):
                     price_float = None
+
+            rating, review_count = self._extract_vtex_rating(prod)
+            if rating is not None:
+                with_rating += 1
 
             pos = page_offset + idx + 1
             record = self._build_record(
@@ -547,8 +612,8 @@ class CasasBahiaScraper(BaseScraper):
                 qtd_sellers=sellers_info["qtd_sellers"],
                 tipo_seller=sellers_info["tipo_seller"],
                 is_fulfillment=False,
-                rating=None,
-                review_count=None,
+                rating=rating,
+                review_count=review_count,
                 tag_destaque=None,
             )
             if sellers_info["buy_box_seller"] is None:
@@ -557,6 +622,11 @@ class CasasBahiaScraper(BaseScraper):
                 # virar vitória fantasma da casa no share of buy box.
                 record["Buy Box Seller"] = None
             records.append(record)
+        if source:
+            logger.debug(
+                f"[{self.platform_name}] {with_rating}/{len(source)} produtos "
+                "com rating no payload VTEX IS"
+            )
         return records
 
     # ------------------------------------------------------------------
