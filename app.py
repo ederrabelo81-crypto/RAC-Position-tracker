@@ -5960,6 +5960,225 @@ def _ci_pricetrack_block(
     )
 
 
+# ---------------------------------------------------------------------------
+# Page — 🛡️ Price Compliance (monitor de preço-piso PriceTrack)
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _query_pt_compliance(window_days: int) -> pd.DataFrame:
+    """Linhas MCJV do PriceTrack na janela — base do monitor de preço-piso.
+
+    Uma linha por (dia, sku, marketplace, seller) com o preço mínimo
+    observado (docs/PRICETRACK_INSIGHTS.md §2.1). Pagina além do cap de
+    1000 do PostgREST e seleciona só as colunas necessárias.
+    """
+    client = _get_supabase()
+    if client is None:
+        return pd.DataFrame()
+    since = str(date.today() - timedelta(days=max(window_days, 1)))
+    cols = "collection_date,sku,brand,marketplace,seller_canonical,min_price"
+    rows: list = []
+    offset = 0
+    try:
+        while True:
+            resp = (
+                client.table("pricetrack_daily").select(cols)
+                .eq("is_midea_group", True)
+                .gte("collection_date", since)
+                .neq("sku", "")
+                .order("id", desc=True)
+                .range(offset, offset + _SUPABASE_PAGE - 1)
+                .execute()
+            )
+            if not resp.data:
+                break
+            rows.extend(resp.data)
+            if len(resp.data) < _SUPABASE_PAGE:
+                break
+            offset += _SUPABASE_PAGE
+            if offset > 200_000:  # trava de segurança (30d ≈ 110k linhas MCJV)
+                break
+    except Exception as exc:
+        st.error(f"Consulta pricetrack_daily falhou: {exc}")
+        return pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["collection_date"] = pd.to_datetime(df["collection_date"]).dt.date
+    df["min_price"] = pd.to_numeric(df["min_price"], errors="coerce")
+    df = df.dropna(subset=["min_price"])
+    df = df[df["min_price"] > 0]
+    return df
+
+
+def page_price_compliance() -> None:
+    """Página 🛡️ Price Compliance — quem rompe o preço-piso MCJV, e onde.
+
+    Implementa o insight §2.1 do docs/PRICETRACK_INSIGHTS.md com o
+    `min_price` diário por (sku, seller) do PriceTrack. Sem `map_price`
+    no catálogo (futuro), a referência de piso é a mediana dos preços
+    mínimos dos sellers do mesmo SKU no dia: rompimento = ofertar mais de
+    X% abaixo dela (limiar configurável).
+    """
+    st.title("🛡️ Price Compliance")
+    st.caption(
+        "Monitor de preço-piso dos SKUs MCJV (`pricetrack_daily.is_midea_group`). "
+        "**Rompimento** = preço mínimo do seller mais de X% abaixo da mediana "
+        "dos sellers do mesmo SKU no dia. Quando o catálogo ganhar a coluna "
+        "`map_price`, ela vira a referência oficial."
+    )
+
+    with st.sidebar:
+        st.subheader("Filtros")
+        window = st.select_slider(
+            "Janela (dias)", options=[7, 14, 30], value=7, key="pc_window",
+        )
+        limiar = st.slider(
+            "Limiar de rompimento (% abaixo da mediana)",
+            min_value=1, max_value=30, value=10, key="pc_limiar",
+        )
+        min_sellers = st.slider(
+            "Mín. de sellers no SKU/dia", 2, 10, 3, key="pc_min_sellers",
+            help="A mediana só é referência confiável com concorrência mínima "
+                 "no SKU naquele dia.",
+        )
+
+    with st.spinner("Carregando PriceTrack…"):
+        df = _query_pt_compliance(window)
+
+    if df.empty:
+        st.warning("Sem dados MCJV do PriceTrack na janela (ou Supabase desconectado).")
+        return
+
+    # Referências por SKU × dia — espelha o SQL do §2.1 (piso_dia via window
+    # function), acrescentando mediana e nº de sellers para o limiar.
+    grp = df.groupby(["sku", "collection_date"])
+    df["piso_dia"] = grp["min_price"].transform("min")
+    df["mediana_dia"] = grp["min_price"].transform("median")
+    df["n_sellers"] = grp["seller_canonical"].transform("nunique")
+    df["pct_abaixo"] = (
+        (df["mediana_dia"] - df["min_price"]) / df["mediana_dia"] * 100
+    ).round(1)
+    df["plataforma"] = df["marketplace"].map(_normalize_pt_platform)
+
+    elegiveis = df[df["n_sellers"] >= min_sellers]
+    breaches = elegiveis[elegiveis["pct_abaixo"] >= limiar].copy()
+    # Para rankings, 1 rompimento = (seller, sku, dia) — o mesmo seller no
+    # mesmo SKU em N marketplaces no dia conta uma vez ("quem"); o recorte
+    # por marketplace ("onde") usa as linhas granulares.
+    breach_events = breaches.drop_duplicates(
+        ["seller_canonical", "sku", "collection_date"]
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Rompimentos (seller×SKU×dia)", len(breach_events))
+    c2.metric("Sellers rompendo", breaches["seller_canonical"].nunique())
+    c3.metric("SKUs afetados", breaches["sku"].nunique())
+    c4.metric(
+        "Maior desvio",
+        f"-{breaches['pct_abaixo'].max():.0f}%" if not breaches.empty else "—",
+    )
+
+    if breaches.empty:
+        st.success(
+            f"Nenhum seller rompeu o piso em mais de {limiar}% na janela de "
+            f"{window} dias (SKUs com ≥ {min_sellers} sellers/dia)."
+        )
+        return
+
+    st.divider()
+
+    # ── QUEM rompe — ranking de sellers ──────────────────────────────────────
+    rank = (
+        breach_events.groupby("seller_canonical")
+        .agg(
+            rompimentos=("sku", "size"),
+            skus=("sku", "nunique"),
+            desvio_max=("pct_abaixo", "max"),
+        )
+        .reset_index()
+        .sort_values("rompimentos", ascending=False)
+    )
+    col_quem, col_onde = st.columns(2)
+    with col_quem:
+        top = rank.head(15)
+        fig = px.bar(
+            top, x="rompimentos", y="seller_canonical", orientation="h",
+            title=f"QUEM rompe — top {len(top)} sellers (≥{limiar}% abaixo da mediana)",
+            labels={"rompimentos": "Rompimentos (SKU×dia)", "seller_canonical": "Seller"},
+            color_discrete_sequence=_CHART_COLORS,
+        )
+        fig.update_layout(yaxis=dict(autorange="reversed"))
+        _apply_chart_style(fig, height=max(380, 24 * len(top)), hovermode="closest")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── ONDE — marketplaces dos rompimentos ──────────────────────────────────
+    with col_onde:
+        onde = (
+            breaches.groupby("plataforma", dropna=False)
+            .size().reset_index(name="linhas")
+            .sort_values("linhas", ascending=False)
+        )
+        fig2 = px.bar(
+            onde, x="plataforma", y="linhas",
+            title="ONDE — linhas de rompimento por marketplace",
+            labels={"plataforma": "Marketplace", "linhas": "Linhas"},
+            color_discrete_sequence=_CHART_COLORS,
+        )
+        _apply_chart_style(fig2, height=max(380, 24 * len(rank.head(15))),
+                           hovermode="closest")
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # ── Tendência diária ──────────────────────────────────────────────────────
+    trend = (
+        breach_events.groupby("collection_date")
+        .size().reset_index(name="rompimentos")
+    )
+    trend["collection_date"] = pd.to_datetime(trend["collection_date"])
+    fig3 = px.line(
+        trend, x="collection_date", y="rompimentos", markers=True,
+        title="Rompimentos por dia (seller×SKU)",
+        labels={"collection_date": "Data", "rompimentos": "Rompimentos"},
+        color_discrete_sequence=_CHART_COLORS,
+    )
+    _apply_chart_style(fig3, height=320)
+    st.plotly_chart(fig3, use_container_width=True)
+
+    # ── Detalhe (espelho do SQL §2.1, com referências) ────────────────────────
+    cat = get_catalogo()
+    sku_nome: dict = {}
+    if not cat.empty and "produto" in cat.columns:
+        sku_nome = dict(zip(cat["sku"].astype(str), cat["produto"].astype(str)))
+
+    detail = breaches.copy()
+    detail["produto"] = detail["sku"].astype(str).map(sku_nome).fillna(detail["sku"])
+    detail = detail.sort_values(
+        ["collection_date", "pct_abaixo"], ascending=[False, False]
+    )[[
+        "collection_date", "sku", "produto", "brand", "seller_canonical",
+        "plataforma", "min_price", "piso_dia", "mediana_dia", "pct_abaixo",
+        "n_sellers",
+    ]].rename(columns={
+        "collection_date": "Data",
+        "sku": "SKU",
+        "produto": "Produto",
+        "brand": "Marca",
+        "seller_canonical": "Seller",
+        "plataforma": "Marketplace",
+        "min_price": "Preço Min (R$)",
+        "piso_dia": "Piso do dia (R$)",
+        "mediana_dia": "Mediana do dia (R$)",
+        "pct_abaixo": "% abaixo da mediana",
+        "n_sellers": "Sellers no dia",
+    })
+    st.markdown(f"**Detalhe dos rompimentos** — {len(detail)} linha(s)")
+    st.dataframe(detail, use_container_width=True, hide_index=True, height=420)
+    _csv_download_btn(
+        detail, f"rac_price_compliance_{date.today()}.csv",
+        "⬇️ Exportar rompimentos", key="pc_csv",
+    )
+
+
 def page_ci_analysis() -> None:
     st.title("🧠 Competitive Intelligence")
     st.caption("Análise competitiva gerada por IA com base nos dados de monitoramento de posicionamento.")
@@ -7886,6 +8105,7 @@ PAGES = {
     "👑 Share of Buy Box":         page_share_of_buybox,
     "⭐ Reputação & Avaliações":   page_reputacao,
     "📣 SoV Patrocinado":          page_sov_patrocinado,
+    "🛡️ Price Compliance":         page_price_compliance,
     "📦 Availability":             page_availability,
     "🧠 Competitive Intelligence": page_ci_analysis,
     "🚀 Run Collection":           page_run_collection,
@@ -7910,6 +8130,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "👑 Share of Buy Box",
         "⭐ Reputação & Avaliações",
         "📣 SoV Patrocinado",
+        "🛡️ Price Compliance",
         "📦 Availability",
         "🧠 Competitive Intelligence",
     ],

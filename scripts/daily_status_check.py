@@ -371,6 +371,93 @@ def _coverage_overall_line(
 
 
 # ---------------------------------------------------------------------------
+# PriceTrack — gap do import D-1 (docs/PRICETRACK_INSIGHTS.md §3 item 5)
+# ---------------------------------------------------------------------------
+# O import diário (06:00 BRT) traz os dados da VÉSPERA (D-1). Antes deste
+# check, uma falha só era percebida como buraco de preço no dashboard — o
+# auto-heal --gaps-only tentava de novo no dia seguinte sem avisar ninguém.
+
+def _check_pricetrack_import(data_str: str) -> Dict:
+    """Valida se o import D-1 do PriceTrack aconteceu e como terminou.
+
+    Verdade primária: linhas em `pricetrack_daily` com collection_date = D-1.
+    Diagnóstico: última entrada de `pricetrack_import_log` para `api-{D-1}`
+    (o job grava SUCCESS/PARTIAL; em crash não grava nada — por isso a
+    ausência de linhas E de log também é FAIL).
+
+    Args:
+        data_str: data alvo do relatório (YYYY-MM-DD); D-1 = véspera dela.
+
+    Returns:
+        Dict {status, d1, detail} com status ∈ {"PASS", "WARN", "FAIL"}.
+
+    Raises:
+        RuntimeError: Supabase indisponível ou erro de consulta.
+    """
+    client = _get_client()
+    if client is None:
+        raise RuntimeError("Supabase indisponível — verifique SUPABASE_URL/KEY no .env")
+
+    target = datetime.strptime(data_str, "%Y-%m-%d").date()
+    d1 = (target - timedelta(days=1)).isoformat()
+
+    try:
+        resp = (
+            client.table("pricetrack_daily")
+            .select("id", count="exact")
+            .eq("collection_date", d1)
+            .limit(1)
+            .execute()
+        )
+        rows_d1 = resp.count or 0
+
+        log_resp = (
+            client.table("pricetrack_import_log")
+            .select("status, rows_inserted, rows_rejected, import_finished")
+            .eq("source_file", f"api-{d1}")
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        log = (log_resp.data or [None])[0]
+    except Exception as exc:
+        raise RuntimeError(f"Erro ao consultar import PriceTrack: {exc}")
+
+    if rows_d1 > 0:
+        detail = f"{rows_d1:,} linhas D-1 ({d1})".replace(",", ".")
+        if log and log.get("status") != "SUCCESS":
+            return {
+                "status": "WARN", "d1": d1,
+                "detail": f"{detail} — último import {log.get('status')}",
+            }
+        return {"status": "PASS", "d1": d1, "detail": detail}
+
+    if log is None:
+        return {
+            "status": "FAIL", "d1": d1,
+            "detail": f"sem dados nem log de import para {d1} "
+                      "(job das 06:00 BRT não rodou?)",
+        }
+    return {
+        "status": "FAIL", "d1": d1,
+        "detail": f"import {log.get('status')} para {d1} "
+                  f"({log.get('rows_inserted') or 0} inseridas) — "
+                  "rode: python scripts/pricetrack_api_import.py --gaps-only",
+    }
+
+
+def _pricetrack_telegram_lines(pt_check: Dict) -> List[str]:
+    """Bloco compacto do status do import PriceTrack para o Telegram."""
+    import html as _html
+    icon = _STATUS_ICON.get(pt_check["status"], "?")
+    return [
+        "<b>🗃 PriceTrack (D-1)</b>",
+        f"  {icon} {_html.escape(pt_check['detail'])}",
+        "",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Avaliação PASS/WARN/FAIL
 # ---------------------------------------------------------------------------
 
@@ -742,17 +829,37 @@ def main() -> int:
     except RuntimeError as exc:
         logger.warning(f"[daily_status] Cobertura de insight indisponível: {exc}")
 
+    # Import D-1 do PriceTrack — best-effort: falha de consulta não derruba
+    # o relatório das plataformas (mesmo contrato da cobertura de insight).
+    pt_check: Optional[Dict] = None
+    try:
+        pt_check = _check_pricetrack_import(data_str)
+        if pt_check["status"] == "WARN":
+            summary["warn"] += 1
+        elif pt_check["status"] == "FAIL":
+            summary["fail"] += 1
+    except RuntimeError as exc:
+        logger.warning(f"[daily_status] Check do import PriceTrack indisponível: {exc}")
+
     _print_terminal(data_str, args.turno, rows, summary)
     _print_coverage(cov_today, cov_base, cov_warnings)
+    if pt_check:
+        icon = _STATUS_ICON.get(pt_check["status"], "?")
+        print(f"PRICETRACK IMPORT (D-1): {icon} {pt_check['status']} — "
+              f"{pt_check['detail']}")
+        print("=" * 78 + "\n")
 
     if not args.no_notify:
         coverage_lines = (
             _coverage_telegram_lines(
                 cov_warnings, _coverage_overall_line(cov_today, cov_rows)
             )
-            if cov_today else None
+            if cov_today else []
         )
-        msg = _format_telegram(data_str, args.turno, rows, summary, coverage_lines)
+        if pt_check:
+            coverage_lines = coverage_lines + _pricetrack_telegram_lines(pt_check)
+        msg = _format_telegram(data_str, args.turno, rows, summary,
+                               coverage_lines or None)
         sent = _send_telegram(msg)
         if sent:
             logger.success("[daily_status] Notificação enviada ao Telegram.")
