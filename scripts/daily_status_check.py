@@ -3,6 +3,10 @@ scripts/daily_status_check.py — Validação diária do status de cada platafor
 
 Consulta o Supabase pelos registros do dia (ou turno específico) e gera um
 relatório PASS/WARN/FAIL por plataforma comparado aos thresholds mínimos.
+Também monitora o % de preenchimento dos campos de insight (buy_box_seller,
+tipo_seller, qtd_sellers, reputacao_seller, avaliacao) por plataforma e emite
+WARN quando a cobertura de um campo cai >50% vs a média dos últimos 7 dias —
+pega regressão silenciosa de scraper antes de virar buraco no dashboard.
 Envia o resumo via Telegram (N8N webhook ou Bot API direto).
 
 Uso:
@@ -27,6 +31,7 @@ Exit code:
 
 import argparse
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -176,6 +181,196 @@ def _fetch_counts(
 
 
 # ---------------------------------------------------------------------------
+# Cobertura dos campos de insight (buy box / seller / avaliação)
+# ---------------------------------------------------------------------------
+# Além da contagem de linhas, monitoramos o % de preenchimento dos campos de
+# insight por plataforma. Uma queda brusca com volume normal indica regressão
+# silenciosa de scraper (ex: fallback DOM que para de preencher tipo_seller).
+
+_INSIGHT_FIELDS: Tuple[str, ...] = (
+    "buy_box_seller",
+    "tipo_seller",
+    "qtd_sellers",
+    "reputacao_seller",
+    "avaliacao",
+)
+
+# Rótulos curtos para o resumo compacto (terminal + Telegram)
+_INSIGHT_LABELS: Dict[str, str] = {
+    "buy_box_seller":   "buybox",
+    "tipo_seller":      "tipo",
+    "qtd_sellers":      "qtd",
+    "reputacao_seller": "reput",
+    "avaliacao":        "aval",
+}
+
+# Dias de histórico usados como baseline de cobertura
+_COVERAGE_BASELINE_DAYS = 7
+# WARN quando a cobertura de hoje cai para menos da metade da média 7d
+_COVERAGE_DROP_RATIO = 0.5
+# Baseline abaixo disso = plataforma nunca preencheu o campo → sem alerta
+_COVERAGE_MIN_BASELINE_PCT = 5.0
+
+
+def _fetch_insight_rows(data_str: str, turno: Optional[str]) -> List[Dict]:
+    """Busca linhas (data, plataforma, campos de insight) do dia + baseline.
+
+    Uma única query paginada cobre [data − 7 dias, data]; a separação
+    hoje × baseline é feita em Python.
+
+    Args:
+        data_str: data alvo no formato YYYY-MM-DD.
+        turno:    filtro opcional de turno (Abertura/Fechamento).
+
+    Returns:
+        Lista de dicts com data, plataforma e os campos de _INSIGHT_FIELDS.
+
+    Raises:
+        RuntimeError: Supabase indisponível, colunas de insight ausentes
+            (banco não migrado) ou falha de consulta.
+    """
+    client = _get_client()
+    if client is None:
+        raise RuntimeError("Supabase indisponível — verifique SUPABASE_URL/KEY no .env")
+
+    target = datetime.strptime(data_str, "%Y-%m-%d").date()
+    since = (target - timedelta(days=_COVERAGE_BASELINE_DAYS)).isoformat()
+
+    cols = "data, plataforma, " + ", ".join(_INSIGHT_FIELDS)
+    query = (
+        client.table("coletas")
+        .select(cols)
+        .gte("data", since)
+        .lte("data", data_str)
+    )
+    if turno:
+        query = query.eq("turno", turno)
+
+    try:
+        all_rows: List[Dict] = []
+        page_size = 1000
+        offset = 0
+        while True:
+            resp = query.range(offset, offset + page_size - 1).execute()
+            rows = resp.data or []
+            all_rows.extend(rows)
+            if len(rows) < page_size:
+                break
+            offset += page_size
+    except Exception as exc:
+        raise RuntimeError(f"Erro ao consultar cobertura de insight: {exc}")
+    return all_rows
+
+
+def _coverage_tables(
+    rows: List[Dict], data_str: str
+) -> Tuple[
+    Dict[str, Dict[str, float]],
+    Dict[str, Dict[str, float]],
+    Dict[str, int],
+]:
+    """Calcula % de preenchimento por plataforma × campo (hoje e baseline).
+
+    Args:
+        rows:     linhas vindas de _fetch_insight_rows.
+        data_str: data alvo (separa hoje × baseline).
+
+    Returns:
+        Tupla (today, baseline, today_rows):
+        - today:      plataforma → campo → % preenchido no dia alvo
+        - baseline:   plataforma → campo → média das coberturas diárias dos
+                      dias anteriores (dias sem coleta da plataforma não contam)
+        - today_rows: plataforma → nº de linhas no dia alvo
+    """
+    daily: Dict[Tuple[str, str], Dict[str, int]] = {}
+    for row in rows:
+        plat = row.get("plataforma") or "?"
+        day = str(row.get("data") or "?")
+        bucket = daily.setdefault(
+            (plat, day), {field: 0 for field in _INSIGHT_FIELDS} | {"n": 0}
+        )
+        bucket["n"] += 1
+        for field in _INSIGHT_FIELDS:
+            value = row.get(field)
+            if value is not None and value != "":
+                bucket[field] += 1
+
+    today: Dict[str, Dict[str, float]] = {}
+    today_rows: Dict[str, int] = {}
+    base_acc: Dict[str, Dict[str, List[float]]] = {}
+    for (plat, day), bucket in daily.items():
+        n = bucket["n"]
+        if n == 0:
+            continue
+        pcts = {field: bucket[field] / n * 100 for field in _INSIGHT_FIELDS}
+        if day == data_str:
+            today[plat] = pcts
+            today_rows[plat] = n
+        else:
+            acc = base_acc.setdefault(plat, {field: [] for field in _INSIGHT_FIELDS})
+            for field in _INSIGHT_FIELDS:
+                acc[field].append(pcts[field])
+
+    baseline = {
+        plat: {
+            field: (sum(vals) / len(vals) if vals else 0.0)
+            for field, vals in fields.items()
+        }
+        for plat, fields in base_acc.items()
+    }
+    return today, baseline, today_rows
+
+
+def _evaluate_coverage(
+    today: Dict[str, Dict[str, float]],
+    baseline: Dict[str, Dict[str, float]],
+) -> List[Dict]:
+    """Detecta queda de cobertura >50% vs a média dos últimos 7 dias.
+
+    Plataformas sem histórico ou cujo baseline do campo é ~0% (nunca
+    preencheram) não geram alerta — só regressão real interessa.
+
+    Returns:
+        Lista de dicts {platform, field, today_pct, base_pct} ordenada por
+        plataforma.
+    """
+    warnings: List[Dict] = []
+    for plat, fields in sorted(today.items()):
+        base_fields = baseline.get(plat)
+        if not base_fields:
+            continue
+        for field in _INSIGHT_FIELDS:
+            base_pct = base_fields.get(field, 0.0)
+            if base_pct < _COVERAGE_MIN_BASELINE_PCT:
+                continue
+            today_pct = fields.get(field, 0.0)
+            if today_pct < base_pct * _COVERAGE_DROP_RATIO:
+                warnings.append({
+                    "platform":  plat,
+                    "field":     field,
+                    "today_pct": today_pct,
+                    "base_pct":  base_pct,
+                })
+    return warnings
+
+
+def _coverage_overall_line(
+    today: Dict[str, Dict[str, float]], today_rows: Dict[str, int]
+) -> str:
+    """Linha compacta: cobertura média do dia por campo (ponderada por linhas)."""
+    total = sum(today_rows.values())
+    if not total:
+        return ""
+    parts: List[str] = []
+    for field in _INSIGHT_FIELDS:
+        filled = sum(
+            today[plat][field] / 100 * today_rows[plat] for plat in today
+        )
+        parts.append(f"{_INSIGHT_LABELS[field]} {filled / total * 100:.0f}%")
+    return " · ".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Avaliação PASS/WARN/FAIL
 # ---------------------------------------------------------------------------
 
@@ -309,6 +504,64 @@ def _print_terminal(
     print("=" * 78 + "\n")
 
 
+def _print_coverage(
+    today: Dict[str, Dict[str, float]],
+    baseline: Dict[str, Dict[str, float]],
+    cov_warnings: List[Dict],
+) -> None:
+    """Imprime matriz plataforma × campo (hoje/média 7d) no terminal."""
+    if not today:
+        return
+    print("COBERTURA DOS CAMPOS DE INSIGHT — % preenchido (hoje/média 7d)")
+    print("-" * 78)
+    header = "{:<22}".format("Plataforma") + "".join(
+        f"{_INSIGHT_LABELS[field]:>11}" for field in _INSIGHT_FIELDS
+    )
+    print(header)
+    warned = {(w["platform"], w["field"]) for w in cov_warnings}
+    for plat in sorted(today):
+        cells: List[str] = []
+        for field in _INSIGHT_FIELDS:
+            t = today[plat].get(field, 0.0)
+            b = baseline.get(plat, {}).get(field)
+            cell = f"{t:.0f}/{b:.0f}" if b is not None else f"{t:.0f}/—"
+            if (plat, field) in warned:
+                cell += "⚠"
+            cells.append(f"{cell:>11}")
+        print("{:<22}".format(plat[:21]) + "".join(cells))
+    if cov_warnings:
+        print("-" * 78)
+        for w in cov_warnings:
+            print(
+                f"⚠️ {w['platform']}: {w['field']} caiu para {w['today_pct']:.0f}% "
+                f"(média 7d: {w['base_pct']:.0f}%)"
+            )
+    print("=" * 78 + "\n")
+
+
+def _coverage_telegram_lines(
+    cov_warnings: List[Dict], overall_line: str
+) -> List[str]:
+    """Bloco compacto de cobertura de insight para a mensagem Telegram."""
+    import html as _html
+    esc = _html.escape
+
+    lines = ["<b>📈 Campos de insight</b>"]
+    if overall_line:
+        lines.append(f"  {esc(overall_line)}")
+    if cov_warnings:
+        for w in cov_warnings:
+            lines.append(
+                f"  ⚠️ <code>{esc(w['platform'])}</code>: "
+                f"{esc(_INSIGHT_LABELS.get(w['field'], w['field']))} "
+                f"{w['today_pct']:.0f}% (7d: {w['base_pct']:.0f}%)"
+            )
+    else:
+        lines.append("  ✅ sem regressão de cobertura vs média 7d")
+    lines.append("")
+    return lines
+
+
 def _is_dealer(platform: str) -> bool:
     """True se a plataforma é dealer (não marketplace nacional)."""
     return platform in DEALER_CONFIGS
@@ -319,6 +572,7 @@ def _format_telegram(
     turno_filter: Optional[str],
     rows: List[Dict],
     summary: Dict[str, int],
+    coverage_lines: Optional[List[str]] = None,
 ) -> str:
     """Formata mensagem HTML pra Telegram.
 
@@ -398,6 +652,9 @@ def _format_telegram(
 
         lines.append("")
 
+    if coverage_lines:
+        lines.extend(coverage_lines)
+
     lines.append(
         f"<b>Resumo:</b> ✅ {summary['pass']} | ⚠️ {summary['warn']} | "
         f"❌ {summary['fail']} | crítico: {summary['critical_fail']}"
@@ -470,10 +727,32 @@ def main() -> int:
         return 2
 
     rows, summary = _build_report(data_str, args.turno, counts)
+
+    # Cobertura dos campos de insight — best-effort: bancos sem a migration
+    # 003 ou falhas de consulta não derrubam o relatório de contagens.
+    cov_today: Dict[str, Dict[str, float]] = {}
+    cov_base: Dict[str, Dict[str, float]] = {}
+    cov_rows: Dict[str, int] = {}
+    cov_warnings: List[Dict] = []
+    try:
+        insight_rows = _fetch_insight_rows(data_str, args.turno)
+        cov_today, cov_base, cov_rows = _coverage_tables(insight_rows, data_str)
+        cov_warnings = _evaluate_coverage(cov_today, cov_base)
+        summary["warn"] += len(cov_warnings)
+    except RuntimeError as exc:
+        logger.warning(f"[daily_status] Cobertura de insight indisponível: {exc}")
+
     _print_terminal(data_str, args.turno, rows, summary)
+    _print_coverage(cov_today, cov_base, cov_warnings)
 
     if not args.no_notify:
-        msg = _format_telegram(data_str, args.turno, rows, summary)
+        coverage_lines = (
+            _coverage_telegram_lines(
+                cov_warnings, _coverage_overall_line(cov_today, cov_rows)
+            )
+            if cov_today else None
+        )
+        msg = _format_telegram(data_str, args.turno, rows, summary, coverage_lines)
         sent = _send_telegram(msg)
         if sent:
             logger.success("[daily_status] Notificação enviada ao Telegram.")
