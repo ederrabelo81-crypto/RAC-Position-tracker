@@ -102,4 +102,34 @@ reputação. Resultado: a coluna é 100% nula.
 
 ---
 
-*Gerado na revisão geral de Jun/2026. Dados: Supabase `coletas` até 2026-06-01.*
+## Adendo (11/06/2026) — avaliação/patrocinado do ML: 0% desde sempre
+
+Investigação complementar (consulta mensal ao Supabase) para as páginas novas
+⭐ Reputação & Avaliações e 📣 SOV Patrocinado, que não exibiam Mercado Livre:
+
+| Mês | Registros ML | `avaliacao` | `qtd_avaliacoes` | `patrocinado` | `tag` |
+|-----|-------------:|:-----------:|:----------------:|:-------------:|:-----:|
+| Mar/2026 | 1.033 | 0% | 0% | 0% | 14,6% |
+| Abr/2026 | 10.869 | 0% | 0% | 0% | 16,2% |
+| Mai/2026 | 76.908 | 0% | 0% | 0% | 1,5% |
+| Jun/2026 | 13.266 | 0% | 0% | 0% | 0,0% |
+
+**Causa raiz:** os seletores Poly do `scrapers/mercado_livre.py` para reviews
+(`.poly-component__reviews-rating`/`-count`) **nunca existiram no DOM real** —
+os nomes corretos do sistema Poly são `.poly-reviews__rating`/`__total`. A
+detecção de patrocinado dependia de rótulo textual que o card atual não expõe
+como nó de texto, e `tag` degradou junto com o rollout do Poly.
+
+**Fix (Jun/2026):** extração multi-camada em `scrapers/mercado_livre.py` —
+seletores Poly corretos + fallback via texto acessível ("Avaliação 4,8 de 5"),
+patrocinado em 5 camadas (incl. âncora de ad-tracking `click1.mercadolivre`/
+`mclics`), Loja Oficial via texto/selo (fecha o D2) e tags por texto conhecido.
+Testes em `tests/test_ml_parse.py`; validação viva com
+`python scripts/diagnose_ml.py` (taxa de acerto por campo/seletor).
+
+**D4 (reputacao_seller):** `MLAPIScraper` agora é invocável como coleta
+complementar: `python main.py --platforms ml_api` (fora do `all`; requer
+`ML_APP_ID`/`ML_APP_SECRET` + `scripts/ml_oauth_setup.py`).
+
+*Gerado na revisão geral de Jun/2026. Dados: Supabase `coletas` até 2026-06-01;
+adendo com dados até 2026-06-11.*

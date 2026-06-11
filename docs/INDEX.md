@@ -31,10 +31,27 @@
 2. Reference: `scrapers/base.py` (BaseScraper interface)
 3. Example: `scrapers/amazon.py` (well-structured marketplace scraper)
 
+### "I need to automate Shopee / Magalu / Casas Bahia collection"
+1. Load `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md` (CDP + auto session refresh)
+2. Key files: `scripts/refresh_sessions_cdp.py`,
+   `scripts/collect_authenticated_cdp.bat`,
+   `scripts/setup_authenticated_scheduler.ps1`
+3. Background: `docs/cdp_magalu_collection.md` (CDP setup + troubleshooting)
+
 ### "I need to run a manual collection via the Claude Chrome Extension"
 1. Load the platform guide: `docs/manual_magalu_collection.md`,
    `docs/manual_shopee_collection.md` or `docs/manual_casasbahia_collection.md`
 2. Each guide has the extraction prompt + the "Economia de tokens" section
+3. Prefer the automated path above when the CDP Chrome is available
+
+### "I need to work with PriceTrack data (price source of truth)"
+1. Load `docs/PRICETRACK_INSIGHTS.md` (pipeline + insight/improvement roadmap)
+2. Key files: `scripts/pricetrack_api_import.py`, `pricetrack_importer/`
+
+### "I need to diagnose broken field coverage (buy box, rating, sponsored)"
+1. Load `docs/DIAGNOSTICO_COLETA_JUN2026.md` (root causes per platform)
+2. Dashboard page 🩺 Data Health (field × platform matrix)
+3. ML live check: `python scripts/diagnose_ml.py`
 
 ### "I need to orchestrate or automate collection with n8n"
 1. Load `docs/n8n_orchestration.md`
@@ -73,6 +90,10 @@ CLAUDE.md                                  ← Project overview + session protoc
 .claude/templates/                         ← Templates for completions/sessions
 docs/INDEX.md                              ← This file
 docs/QUICK_REFERENCE.md                    ← Fast lookups
+docs/AUTOMACAO_COLETAS_AUTENTICADAS.md     ← Shopee/Magalu/CB automation (CDP + sessions)
+docs/PRICETRACK_INSIGHTS.md                ← PriceTrack pipeline + insight roadmap
+docs/DIAGNOSTICO_COLETA_JUN2026.md         ← Field coverage diagnosis (buy box, ML fix)
+docs/cdp_magalu_collection.md              ← Chrome CDP setup (Windows + Task Scheduler)
 docs/n8n_orchestration.md                  ← n8n workflow: scheduling + CSV ingestion
 docs/manual_magalu_collection.md           ← Magalu collection via Claude Chrome Extension
 docs/manual_shopee_collection.md           ← Shopee collection via Claude Chrome Extension

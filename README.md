@@ -1,85 +1,89 @@
-# RAC Price Monitor — Retail Analytics & Competitive Intelligence
+# RAC Position Tracker — Retail Analytics & Competitive Intelligence
 
-Bot de monitoramento de preços e posicionamento de produtos de ar condicionado em marketplaces brasileiros e varejistas especializados.
+Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ✅ Produção | **Última atualização:** Maio 2026 (v3.3)
+**Status:** ✅ Produção | **Última atualização:** 11 de Junho de 2026 (v4.0)
 
 ---
 
 ## 📋 Visão Geral
 
-Este projeto realiza scraping automatizado de múltiplas plataformas de e-commerce para monitorar:
-- **Posicionamento** de produtos (orgânico e patrocinado)
-- **Preços** competitivos em tempo real
-- **Informações de sellers** e fulfillment
-- **Avaliações** e ratings de produtos
-- **Análise competitiva via IA** (Claude API)
+> **Foco desde Mai/2026: buy box & sellers — preço virou campo secundário.**
+> O preço "oficial" dos dashboards vem da API da Price Track (importação
+> diária); a coleta própria entrega o que o PriceTrack não tem: posição na
+> busca, patrocinado, buy box, tipo/reputação de seller e avaliações.
 
-Os dados são exportados em CSV e enviados para Supabase para visualização em dashboard Streamlit com inteligência competitiva. Notificações executivas automáticas são enviadas via Telegram (N8N ou API direta) após cada coleta.
+O projeto monitora em 7 marketplaces:
+- **Buy box & sellers** — quem vence a oferta (`Buy Box Seller`), quantos competem (`Qtd Sellers`), 1P/3P/Loja Oficial (`Tipo Seller`), reputação
+- **Posicionamento** orgânico × patrocinado (Share of Voice de mídia)
+- **Avaliações** — rating e volume de reviews por produto/marca
+- **Preços** — coleta própria (secundário) + PriceTrack (fonte de verdade)
+- **Análise competitiva via IA** (Claude API) com relatório executivo
 
----
-
-## 🏗️ Arquitetura de Coleta
-
-```
-Oracle Cloud VM (Brazil East — São Paulo)
-  └─ Cron 10:00 BRT → todas as plataformas, prioridade alta+media, 2 páginas
-  └─ Cron 21:00 BRT → todas as plataformas, prioridade alta, 1 página
-  └─ Supabase upload automático após cada coleta
-  └─ Notificação Telegram automática (N8N ou API direta) após cada coleta
-
-GitHub Actions
-  └─ Manual (workflow_dispatch) apenas — backup e testes pontuais
-```
+Dados → CSV → Supabase (`coletas` + `pricetrack_daily`) → dashboard Streamlit (20 páginas) → notificações Telegram (N8N ou API direta).
 
 ---
 
-## 🌐 Plataformas Suportadas
+## 🏗️ Arquitetura de Coleta — 3 canais + PriceTrack
 
-> Status validado em smoke test — 03/05/2026 | Última revisão — 16/05/2026
+```
+Oracle Cloud VM (Brazil East — São Paulo)              [canal primário]
+  ├─ Cron 10:00 BRT → plataformas ativas, alta+media, 2 páginas
+  ├─ Cron 21:00 BRT → plataformas ativas, alta, 1 página
+  └─ Cron 06:00 BRT → import PriceTrack (D-1) — espelho do GH Actions
 
-### Funcionando ✅
+GitHub Actions                                          [backup agendado]
+  ├─ collect.yml          → cron 13:00/00:00 UTC (10:00/21:00 BRT) + manual
+  │                         (sem ML — IPs do GitHub bloqueados; Magalu via xvfb)
+  └─ pricetrack_daily.yml → cron 09:00 UTC (06:00 BRT) + auto-heal de gaps (14d)
 
-| Plataforma | Tipo | Observações |
-|------------|------|-------------|
-| Mercado Livre | Nacional Retail | 16-22 sellers/keyword; ~22-42s/keyword |
-| Amazon | Nacional Retail | Seller via "Vendido por"; ~26-31s/keyword |
-| Leroy Merlin | Varejo Especializado | Algolia API direta; ~10-11s/keyword; 15 IDs 3P não resolvidos (404 VTEX) |
-| Magazine Luiza | Nacional Retail | **Python** — `curl_cffi` + TLS chrome impersonation; bypass Akamai via `_next/data` JSON (Mai/2026) |
-| Dealers (Frigelar e outros) | Regional/Nacional | JSON-LD + VTEX + DOM fallback; ~30 itens / 108s |
-| Shopee | Nacional Marketplace | **Node.js** (`magalu_shopee/`) — Puppeteer + sessão autenticada |
+PC pessoal Windows (IP residencial)                     [coleta autenticada]
+  └─ Task Scheduler 10:05/21:05 → collect_authenticated_cdp.bat
+       Chrome real (CDP :9222) → renova sessões Shopee/Casas Bahia
+       → coleta Magalu + Shopee + Casas Bahia → upload
+       Ver docs/AUTOMACAO_COLETAS_AUTENTICADAS.md
+```
 
-### Com ressalvas ⚠️
+Após cada coleta: upload automático ao Supabase + notificação Telegram.
+Watchdog: `python scripts/daily_status_check.py` (PASS/FAIL por plataforma +
+cobertura de campos de insight com alerta de regressão).
 
-| Plataforma | Tipo | Observações |
-|------------|------|-------------|
-| Google Shopping | Comparador de Preços | reCAPTCHA em headless; funciona com delays 25-45s em coletas reais |
+---
 
-### On Hold / Stand-by ⏸️
+## 🌐 Plataformas (foco buy box/seller — Jun/2026)
 
-| Plataforma | Tipo | Motivo |
-|------------|------|--------|
-| Casas Bahia | Nacional Retail | WAF Akamai |
-| Fast Shop | Nacional Varejo | Bloqueio total PerimeterX |
+| Plataforma | Status | Canal | Observações |
+|------------|--------|-------|-------------|
+| Mercado Livre | ✅ | VM (xvfb) / local | Buy box ✓; avaliação/patrocinado/Loja Oficial **corrigidos em Jun/2026** (estavam 0% — ver `docs/DIAGNOSTICO_COLETA_JUN2026.md`). Complemento opcional `--platforms ml_api` (API oficial OAuth) preenche `reputacao_seller` |
+| Amazon | ✅ | VM / GH Actions | Buy box via "Vendido por"; `Qtd Sellers` de "X ofertas"; 1P vs 3P |
+| Leroy Merlin | ✅ | VM / GH Actions | Algolia API; 1P vs 3P marketplace |
+| Magalu | ✅ | **PC via CDP** (primário), VM best-effort | Akamai: Chrome real + `rebrowser-playwright` + busca orgânica + circuit breaker (aborta após 5 keywords 100% bloqueadas) |
+| Casas Bahia | ✅ via CDP/sessão | **PC via CDP** | VTEX Intelligent Search (`sellers[]` → buy box); IP datacenter bloqueado → sessão renovada automaticamente no PC |
+| Shopee | 🟡 via CDP/sessão | **PC via CDP** | API v4 + cookies de conta logada (`SPC_*` expiram em horas → `refresh_sessions_cdp.py` renova antes de cada coleta) |
+| Google Shopping | ⚠️ | VM / GH Actions | reCAPTCHA em headless; `Qtd Sellers` = nº de lojas comparando |
+| Fast Shop | ⏸️ | — | Bloqueio total PerimeterX |
+| Dealers (13+) | ⏸️ | — | Fora do foco (`ACTIVE_PLATFORMS["dealers"]=False`); scraper mantido |
 
-### Dealers com problema ❌
+> **Causa raiz dos bloqueios** (Shopee/CB/Magalu): IP de datacenter marcado
+> pelo antibot antes do fingerprint. Solução em produção: coleta autenticada
+> no PC com IP residencial (`docs/AUTOMACAO_COLETAS_AUTENTICADAS.md`).
+> Evolução planejada: proxy residencial BR na VM.
 
-| Dealer | Parado desde | Status |
-|--------|-------------|--------|
-| CentralAr | 26/04/2026 | Diagnóstico pendente (Sprint 1) |
-| Eletrozema | 26/04/2026 | Causa comum com CentralAr — VTEX IO (Sprint 1) |
-| Dufrio | 29/04/2026 | Diagnóstico pendente (Sprint 1) |
-| PoloAr | 20-31 dias | Sprint 2 |
-| Climario | 20-31 dias | Sprint 2 |
-| FrioPecas | 20-31 dias | Sprint 2 |
-| Leveros | 20-31 dias | Sprint 2 |
-| WebContinental | 20-31 dias | Sprint 2 |
+---
 
-### Dealers Incluídos
+## 💰 PriceTrack — fonte de verdade de preço
 
-**Nacional:** Carrefour  
-**Regional Médio Porte:** Grupo Mateus, Eletrozema, Angeloni, Império Digital, Bemol  
-**Regional Pequeno Porte:** Frigelar, CentralAr, PoloAr, Belmicro, GoCompras, FrioPecas, WebContinental, Dufrio, Leveros, ArCerto, Ferreira Costa, Climario, EngageEletro, NossoLar, Casas D'Água, TVLar, Zenir, CenterKennedy, Norte Refrigeração, Armazém Paraíba, A.Dias, Carajás, Quero-Quero, Edimil, Única AR, Top Móveis
+Import diário (06:00 BRT) do export da API Price Track: preços
+min/avg/mode/max por `(data, marca, sku, marketplace, seller)` da categoria
+AR CONDICIONADO → tabela `pricetrack_daily`.
+
+- **Pipeline:** `scripts/pricetrack_api_import.py` (export assíncrono → NDJSON.gz → agrega → upsert) + `--gaps-only` auto-heal dos últimos 14 dias
+- **Importador manual** (md/xlsx): `python -m pricetrack_importer arquivo.md`
+- **Precedência (28/05/2026):** para cada `(data, sku_resolvido)` presente no PriceTrack, os dashboards de preço descartam a linha equivalente das coletas
+- **Reconciliação:** de-para de marketplace (`_PT_TO_CANONICAL_PLATFORM` no `app.py`) e de seller (`pricetrack_importer/seller_map.py`, ~103 variantes → ~30 canônicos)
+- **Env:** `PRICETRACK_API_KEY` no `.env` / GitHub Secrets
+
+📄 Insights e roadmap de melhorias: `docs/PRICETRACK_INSIGHTS.md`
 
 ---
 
@@ -88,102 +92,100 @@ GitHub Actions
 ### Pré-requisitos
 
 - Python 3.10+
-- Playwright browsers instalados
+- Playwright browsers instalados (`rebrowser-playwright` para CDP/Akamai)
 - Supabase configurado (obrigatório para dashboard)
 - Conta Anthropic (opcional, para Competitive Intelligence)
 
-### Passos
-
 ```bash
-# Clonar o repositório
-git clone https://github.com/ederrabelo81-crypto/rac-position-tracker.git
-cd rac-position-tracker
+git clone https://github.com/ederrabelo81-crypto/RAC-Position-tracker.git
+cd RAC-Position-tracker
 
-# Criar e ativar ambiente virtual
 python -m venv .venv
+.venv\Scripts\activate          # Windows
+source .venv/bin/activate       # Linux/Mac
 
-# Windows:
-.venv\Scripts\activate
-# Linux/Mac:
-source .venv/bin/activate
-
-# Instalar dependências
 pip install -r requirements.txt
-
-# Instalar browsers do Playwright
 python -m playwright install chromium
 ```
 
 ### Arquivo `.env`
 
-Crie um arquivo `.env` na raiz do projeto:
-
 ```env
-# Supabase (obrigatório para upload e dashboard)
+# Supabase (obrigatório para upload e dashboard) — usar service_role key!
 SUPABASE_URL=https://seu-projeto.supabase.co
 SUPABASE_KEY=sua_service_role_key
+
+# PriceTrack (import diário de preços)
+PRICETRACK_API_KEY=...
 
 # Anthropic (opcional — página Competitive Intelligence)
 ANTHROPIC_API_KEY=sk-ant-...
 
+# Mercado Livre API oficial (opcional — coleta complementar ml_api p/ reputação)
+ML_APP_ID=...
+ML_APP_SECRET=...
+
 # Nome do analista nos relatórios
 ANALYST_NAME="Bot Automático Python"
 
-# Notificações Telegram — N8N (opcional)
+# Notificações Telegram — N8N (opcional) + fallback direto
 N8N_WEBHOOK_URL=http://localhost:5678/webhook/coleta
 N8N_TELEGRAM_CHAT_ID=123456789
-
-# Notificações Telegram — API direta (fallback sem N8N)
 TELEGRAM_BOT_TOKEN=7730291785:AAF...
 ```
-
-> **Atenção:** use a **service_role key** do Supabase (não a anon key). Encontre em: Supabase → Project Settings → API → service_role.
-> Para notificações Telegram sem N8N, basta configurar `TELEGRAM_BOT_TOKEN` e `N8N_TELEGRAM_CHAT_ID`.
 
 ---
 
 ## 📖 Uso
 
-### Execução Básica
-
 ```bash
 # Demo rápida (Mercado Livre, 1 keyword, 1 página)
 python main.py
 
-# Todas as plataformas, 2 páginas
-python main.py --platforms ml magalu amazon google_shopping leroy dealers --pages 2
+# Todas as plataformas ativas, 2 páginas
+python main.py --platforms all --pages 2
 
-# Apenas dealers
-python main.py --platforms dealers --pages 2
+# Plataformas individuais
+python main.py --platforms casasbahia --pages 1   # VTEX IS + warm-up Akamai
+python main.py --platforms shopee --pages 1       # API v4 (requer sessão)
+python main.py --platforms magalu --pages 2       # CDP/browser persistente
+
+# Coleta complementar de reputação de seller (fora do "all"; requer OAuth ML)
+python main.py --platforms ml_api --pages 1
 
 # Browser visível (debug)
-python main.py --platforms dealers --pages 1 --no-headless
+python main.py --platforms ml --pages 1 --no-headless
 ```
 
 ### Opções de Linha de Comando
 
 | Opção | Descrição | Padrão |
 |-------|-----------|--------|
-| `--platforms` | Plataformas: `ml`, `magalu`, `amazon`, `google_shopping`, `leroy`, `dealers`, `all` | ACTIVE_PLATFORMS do config.py |
+| `--platforms` | `ml`, `ml_api`, `amazon`, `magalu`, `casasbahia`, `google_shopping`, `leroy`, `shopee`, `fast`, `dealers`, `all` | `ACTIVE_PLATFORMS` do config.py |
 | `--pages` | Páginas por keyword | 3 |
-| `--keywords` | Keywords customizadas (substitui config.py) | KEYWORDS_LIST do config |
-| `--priority` | Filtro por prioridade: `alta`, `media`, `baixa` | todas |
-| `--headless` | Browser sem interface (padrão) | True |
-| `--no-headless` | Exibir browser (debug visual) | — |
+| `--keywords` | Keywords customizadas (substitui config.py) | `KEYWORDS_LIST` |
+| `--priority` | Filtro: `alta`, `media`, `baixa` | todas |
+| `--headless` / `--no-headless` | Browser sem/com interface | headless |
 | `--output-dir` | Diretório de saída dos CSVs | `output/` |
+| `--debug-hits` | Salva N hits Algolia brutos (diagnóstico Leroy) | — |
 
-### Exemplos por Caso de Uso
+> `ml_api` não entra no `all` (duplicaria os registros do ML) — é uma coleta
+> complementar para `reputacao_seller`. Setup único: `python scripts/ml_oauth_setup.py`.
 
-```bash
-# Coleta rápida só prioridade alta (para testes)
-python main.py --platforms ml magalu --pages 1 --priority alta
+### Coleta autenticada (Magalu + Shopee + Casas Bahia) — PC Windows
 
-# Coleta manhã completa
-python main.py --platforms ml magalu amazon google_shopping leroy dealers --pages 2 --priority alta media
+```powershell
+# Setup (1x): perfil CDP + login Shopee + agendamento 10:05/21:05
+scripts\setup_cdp_profile.bat
+scripts\start_chrome_cdp.bat        # logar 1x na Shopee neste Chrome
+PowerShell -ExecutionPolicy Bypass -File scripts\setup_authenticated_scheduler.ps1
 
-# Coleta noite rápida
-python main.py --platforms ml magalu amazon google_shopping leroy dealers --pages 1 --priority alta
+# Manual
+python scripts\refresh_sessions_cdp.py --sites shopee casasbahia   # só sessões
+scripts\collect_authenticated_cdp.bat 1                            # ciclo completo
 ```
+
+📄 Detalhes e alternativas (proxy residencial, Tailscale): `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md`
 
 ---
 
@@ -191,214 +193,120 @@ python main.py --platforms ml magalu amazon google_shopping leroy dealers --page
 
 ### Arquivos Gerados
 
-**CSV de Monitoramento:** `output/rac_monitoramento_YYYYMMDD_HHMM.csv`
-- Encoding: UTF-8 BOM (compatível com Excel PT-BR)
-- Separador: `;`
+- **CSV:** `output/rac_monitoramento_YYYYMMDD_HHMM.csv` — UTF-8 BOM, separador `;`
+- **Logs:** `logs/bot_YYYYMMDD_HHMMSS.log` (rotação 50 MB, retenção 7 dias)
+- **Screenshots SERP:** capturados por keyword/página
+- **HTML de debug:** `logs/dealer_debug_<nome>_p<N>.html` e `logs/ml_debug_*.html`
 
-**Logs:** `logs/bot_YYYYMMDD_HHMMSS.log`
-- Rotação a cada 50 MB, retenção de 7 dias
+### Colunas do CSV (schema Jun/2026)
 
-**Screenshots:** `screenshots/` (quando capturados)
-- Imagens da SERP (página de resultados) com posicionamento dos produtos
-
-**HTML de Debug:** `logs/dealer_debug_<nome>_p<N>.html`
-- Salvo automaticamente quando dealer retorna 0 produtos
-
-### Colunas do CSV
-
-| Coluna | Descrição |
-|--------|-----------|
-| Data | Data da coleta (YYYY-MM-DD) |
-| Turno | `Abertura` (≤12h BRT) ou `Fechamento` (>12h BRT) |
-| Horário | Hora da coleta em BRT |
-| Analista | Nome configurado no `.env` |
-| Plataforma | Nome do marketplace |
-| Tipo Plataforma | Categoria (Nacional Retail, Comparador, etc.) |
-| Keyword Buscada | Termo de busca |
-| Categoria Keyword | Genérica, Capacidade BTU, Marca, Intenção Compra |
-| Marca Monitorada | Marca extraída do título |
-| Produto / SKU | Nome normalizado do produto |
-| Posição Orgânica | Posição nos resultados orgânicos |
-| Posição Patrocinada | Posição nos anúncios patrocinados |
-| Posição Geral | Posição combinada |
-| Preço (R$) | Float parseado (vírgula/ponto tratados) |
-| Seller / Vendedor | Nome do vendedor |
-| Fulfillment? | `Sim` ou `Não` |
-| Avaliação | Rating 0–5 |
-| Qtd Avaliações | Número de reviews |
-| Tag Destaque | Tags especiais (Mais Vendido, Frete Grátis, etc.) |
-
-### Dashboard Streamlit
-
-```bash
-# Local
-streamlit run app.py
-
-# Ou acesse: https://rac-position-tracker-ygnmxhmemn6zwse5rp7uxf.streamlit.app
+```
+Data; Turno; Horário; Analista; Plataforma; Tipo Plataforma;
+Keyword Buscada; Categoria Keyword; Marca Monitorada; Produto / SKU;
+Produto Normalizado; Posição Orgânica; Posição Patrocinada; Posição Geral;
+Patrocinado?; Buy Box Seller; Qtd Sellers; Tipo Seller; Reputação Seller;
+Seller / Vendedor; Fulfillment?; Avaliação; Qtd Avaliações; Tag Destaque;
+Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto
 ```
 
-**Páginas — 16 seções de análise e operações:**
+Campos de insight (protagonistas desde Mai/2026): `Patrocinado?`,
+`Buy Box Seller`, `Qtd Sellers`, `Tipo Seller`, `Reputação Seller`.
+Migrations do banco: `migrations/` + `docs/migrations/` (001→005).
 
-**INSIGHTS (9 páginas):**
-- **🏠 Overview** — Métricas agregadas, evolução de preços, tendências
-- **🚨 Top Movers** — Maiores altas/quedas de preço e posicionamento
-- **📊 Results** — Detalhamento completo de coletas com filtros avançados
-- **📈 Price Evolution** — Gráficos de série temporal e análise de volatilidade
-- **📊 Market Analytics** — Share de marcas, posicionamento por plataforma, benchmarking
-- **🗂️ Ficha do Produto** — Página detalhada de um SKU específico com screenshots
-- **🏆 BuyBox Position** — Posicionamento de primeira posição (buybox/destaque)
-- **📦 Availability** — Disponibilidade em estoque por plataforma
-- **🧠 Competitive Intelligence** — Relatórios gerados por IA (Claude) com insights competitivos, download em Markdown
+### Dashboard Streamlit — 20 páginas
 
-**OPERAÇÕES (4 páginas):**
-- **🚀 Run Collection** — Dispara coleta manual com controle de plataformas e páginas
-- **📧 Email Digest** — Gera e envia relatórios por email em HTML ou texto plano
-- **🔔 Price Anomalies** — Detecta variações suspeitas de preço (>50%)
-- **📂 Import History** — Revisa histórico de importações e CSVs processados
+```bash
+streamlit run app.py
+```
 
-**ADMIN (2 páginas):**
-- **🧹 Data Cleanup** — Limpeza de registros inválidos e normalizações de dados
-- **🔤 Normalize SKUs** — Re-normaliza nomes de produtos em batch
+**INSIGHTS (12):**
+- **🏠 Overview** — métricas consolidadas, evolução de preços, tendências
+- **🚨 Top Movers** — SKUs com maior variação (janelas comparativas, confiança, sparkline)
+- **📊 Results** — detalhamento de coletas com filtros avançados
+- **📈 Price Evolution** — séries temporais (preço = PriceTrack)
+- **📊 Market Analytics** — share de marcas, posicionamento, benchmarking
+- **🗂️ Ficha do Produto** — SKU específico + screenshots
+- **🏆 BuyBox Position** — quem vence a posição #1 por produto/plataforma
+- **👑 Share of Buy Box** — vencedor da oferta por seller/marca/período
+- **⭐ Reputação & Avaliações** — rating, reviews, reputação × buy box, fulfillment
+- **📣 SoV Patrocinado** — quem compra mídia, keywords disputadas, dupla presença
+- **📦 Availability** — presença por posição + Visibility Score ponderado
+- **🧠 Competitive Intelligence** — relatório IA (Claude) com download Markdown
+
+**OPERAÇÕES (5):**
+- **🚀 Run Collection** — coleta manual (plataformas/keywords/páginas)
+- **📧 Email Digest** — relatórios HTML/texto por email
+- **🔔 Price Anomalies** — variações suspeitas (>50%)
+- **📂 Import History** — histórico de CSVs + upload via Streamlit
+- **🩺 Data Health** — cobertura de coleta + matriz campo × plataforma (regressões)
+
+**ADMIN (3):**
+- **🧹 Data Cleanup** — remove registros não-AC
+- **🔤 Normalize SKUs** — re-normalização em batch
+- **🧬 Família & SKU** — resolve fila REVISAR do de-para (catálogo)
 
 ---
 
 ## 📲 Notificações Telegram
 
-Após cada coleta o bot envia automaticamente um **resumo executivo** para um chat Telegram com:
+Resumo executivo automático após cada coleta: volume/duração/plataformas,
+matriz de preço Midea por linha × capacidade, ranking top 5 por keyword
+estratégica, maiores quedas/altas, ganhos/perdas de buy box Midea.
 
-- **Indicadores gerais** — volume de registros, duração, plataformas coletadas
-- **Matriz de preço Midea** — High Wall Inverter por linha (AI Ecomaster / AI Airvolution / Lite) × capacidade (9k / 12k / 18k BTU), com delta em relação à coleta anterior
-- **Ranking top 5 por keyword estratégica** — "ar condicionado", "ar condicionado inverter", "ar condicionado split inverter" (High Wall 9k/12k), posições Midea destacadas
-- **Maiores quedas e altas de preço** — top 3 cada, com keyword, plataforma e categoria; variações suspeitas sinalizadas (⚠️ >50%) ou descartadas (>150%)
-- **Ganhos/perdas de buybox Midea** — mostra qual marca foi deslocada (ganho) ou assumiu o 1º lugar (perda)
-
-### Configuração
-
-Adicione ao `.env`:
-
-```env
-# N8N (opcional — se configurado, o webhook é chamado primeiro)
-N8N_WEBHOOK_URL=http://localhost:5678/webhook/coleta
-N8N_TELEGRAM_CHAT_ID=123456789
-
-# Telegram direto (fallback quando N8N não está disponível)
-TELEGRAM_BOT_TOKEN=7730291785:AAF...
-```
-
-> Se `N8N_WEBHOOK_URL` não estiver configurado ou o webhook falhar, a notificação é enviada diretamente pela Telegram Bot API usando `TELEGRAM_BOT_TOKEN`. Basta configurar o token para funcionar sem N8N.
-
-### Workflow N8N
-
-O arquivo `n8n/rac_coleta_monitor.json` é um workflow importável (Webhook → Telegram) pronto para uso.
-
-```bash
-# Importe no N8N via: Settings → Import → colar o JSON
-```
+Configuração no `.env` (N8N opcional; fallback direto via `TELEGRAM_BOT_TOKEN`).
+Workflow importável: `n8n/rac_coleta_monitor.json` · Guia: `docs/n8n_orchestration.md`
 
 ---
 
 ## ☁️ Infraestrutura — Oracle Cloud Free Tier
 
-A coleta automática roda em uma VM Oracle Cloud (Brazil East, São Paulo).
-
-### Configuração da VM
-
 ```bash
-# Na VM, baixar e executar o script de setup:
+# Setup completo da VM (Python, Playwright, swap 2GB, crons):
 curl -fsSL https://raw.githubusercontent.com/ederrabelo81-crypto/RAC-Position-tracker/main/scripts/oracle_setup.sh -o oracle_setup.sh
 chmod +x oracle_setup.sh
-./oracle_setup.sh \
-  --supabase-url "https://xxxx.supabase.co" \
-  --supabase-key "sua_service_role_key"
+./oracle_setup.sh --supabase-url "https://xxxx.supabase.co" --supabase-key "service_role_key"
 ```
 
-O script instala automaticamente:
-- Python 3.11 + virtualenv
-- Playwright Chromium (`--with-deps`)
-- Todas as dependências Python
-- **2 GB de swap** (essencial para VM.Standard.E2.1.Micro com 1 GB RAM)
-- Cron jobs: 13:00 UTC (manhã) e 00:00 UTC (noite)
-
-### Cron Jobs na VM
+| Script | Horário BRT | Função |
+|--------|-------------|--------|
+| `collect_manha_linux.sh` | 10:00 | Coleta alta+media, 2 páginas (xvfb p/ ML/Magalu) |
+| `collect_noite_linux.sh` | 21:00 | Coleta alta, 1 página |
+| `pricetrack_import_linux.sh` | 06:00 | Import PriceTrack D-1 (espelho do GH Actions) |
+| `daily_status_check.py` | diário | PASS/FAIL por plataforma + cobertura de campos → Telegram |
 
 ```bash
-# Ver jobs configurados
-crontab -l
-
-# Monitorar logs
-~/rac-position-tracker/scripts/monitor.sh
-
-# Atualizar código após push
-cd ~/rac-position-tracker && git pull origin main
-```
-
-### Scripts de Coleta e Monitoramento
-
-| Script | Tipo | Horário BRT | Descrição |
-|--------|------|-------------|-----------|
-| `collect_manha_linux.sh` | Coleta | 10:00 | Todas as plataformas, prioridade alta + media, 2 páginas |
-| `collect_noite_linux.sh` | Coleta | 21:00 | Todas as plataformas, prioridade alta, 1 página |
-| `scripts/daily_status_check.py` | Monitoramento | Diário | Validação de status PASS/FAIL por plataforma; resultado enviado ao Telegram |
-
-**Comandos de Monitoramento:**
-```bash
-# Status de hoje (ambos turnos)
-python scripts/daily_status_check.py
-
-# Apenas um turno
+# Monitoramento
+python scripts/daily_status_check.py                  # hoje, ambos turnos
 python scripts/daily_status_check.py --turno Abertura
-python scripts/daily_status_check.py --turno Fechamento
-
-# Data específica (sem notificação)
 python scripts/daily_status_check.py --data 2026-05-14 --no-notify
 ```
 
-Saída: Tabela PASS ✅ / FAIL ❌ por plataforma, enviada ao Telegram + exibida no console.
-
 ---
 
-## 🔄 GitHub Actions (Backup Manual)
+## 🔄 GitHub Actions
 
-O workflow `.github/workflows/collect.yml` está configurado para **execução manual apenas** (não tem cron ativo). Use para testes pontuais ou se a VM Oracle estiver indisponível.
-
-```
-GitHub Actions → Actions → RAC Price Collection → Run workflow
-```
-
-Parâmetros disponíveis: `platforms`, `pages`, `priority`.
+| Workflow | Trigger | Função |
+|----------|---------|--------|
+| `collect.yml` | cron 13:00/00:00 UTC + manual | Coleta (sem ML — IP bloqueado); Magalu com `MAGALU_HEADLESS=false` + xvfb; inputs: platforms/pages/priority |
+| `pricetrack_daily.yml` | cron 09:00 UTC + manual | Import PriceTrack D-1 + auto-heal `--gaps-only` (14 dias); inputs: start/end/force |
 
 ---
 
 ## 🔧 Configuração
 
-### Keywords (`config.py`)
+- **Keywords:** 31 em `config.py` (`KEYWORDS_LIST`) — head terms, capacidade BTU (9/12/18/24k), marca própria Midea, concorrentes, intenção de compra. Prioridades: `alta` (2 turnos), `media` (manhã), `baixa` (sob demanda)
+- **Marcas:** 43 em `config.py` (`BRANDS`) — MCJV (Midea/Springer Midea/Springer) + LG, Samsung, Elgin, Gree, TCL, Philco, Electrolux, Agratto, emergentes…
+- **Plataformas ativas:** `ACTIVE_PLATFORMS` (7 on; `fast`/`dealers` off)
+- **Turno:** `TURNO_ABERTURA_MAX_HOUR=12` — timestamps sempre BRT via `now_brt()` (independe do relógio do SO)
 
-**31 keywords monitoradas** — definidas em `config.py` com 3 prioridades:
-
-| Categoria | Prioridade | Keywords | Qtd |
-|-----------|-----------|----------|-----|
-| **Head Terms** | `alta` | ar condicionado, ar condicionado split, ar condicionado inverter, ar condicionado split inverter | 4 |
-| **Capacidade BTU** | `alta` | 9k/12k/18k/24k BTUs (com/sem inverter) | 8 |
-| **Midea (Própria)** | `alta` | ar condicionado midea, midea inverter, midea 12000/9000, midea ecomaster, midea airvolution | 6 |
-| **Concorrentes Top** | `alta` | LG (dual inverter), Samsung (windfree) + genéricas | 5 |
-| **Concorrentes Mid** | `media` | Gree, Elgin, Philco, TCL | 4 |
-| **Intenção Compra** | `alta`/`media` | melhor custo benefício, melhor 2026, comprar, em promoção | 4 |
-
-**Prioridades:**
-- `alta` — Coleta diária em ambos os turnos (manhã + noite)
-- `media` — Coleta apenas na manhã
-- `baixa` — Opcional, sob demanda
-
-**Marcas monitoradas: 43 marcas**  
-Springer Midea, Midea, Carrier, Elgin, Electrolux, Agratto, Springer, Consul, Daikin, LG, Samsung, Gree, Philco, TCL, Consul, Brastemp, Consul, Fujitsu, Toshiba, Panasonic, Sharp, York, Hitachi, Midea, Compressor, Thermostat, Valvulas, Acessórios, e outras.
-
-### Filtro de Turno
-
-```python
-TURNO_ABERTURA_MAX_HOUR: int = 12  # ≤ 12h → "Abertura" | > 12h → "Fechamento"
-```
-
-> **Importante:** os timestamps usam sempre BRT (America/Sao_Paulo) via `now_brt()` (`utils/text.py`), que força o fuso usando `zoneinfo` independente do relógio do SO. Isso garante que coletas na VM Oracle (UTC) registrem data e turno corretos no Brasil.
+| Preciso mudar… | Arquivo |
+|----------------|---------|
+| Keywords / plataformas / marcas / delays | `config.py` |
+| Seletores ML (Poly) | `scrapers/mercado_livre.py` `_SELECTORS` |
+| Dealer URLs/seletores | `scrapers/dealers.py` `DEALER_CONFIGS` |
+| Parser de preço | `utils/text.py` `parse_price_brazil()` |
+| Colunas CSV | `main.py` `COLUMN_ORDER` |
+| De-para PriceTrack↔coletas | `app.py` `_PT_TO_CANONICAL_PLATFORM` / `pricetrack_importer/seller_map.py` |
 
 ---
 
@@ -406,172 +314,105 @@ TURNO_ABERTURA_MAX_HOUR: int = 12  # ≤ 12h → "Abertura" | > 12h → "Fechame
 
 ```
 rac-position-tracker/
-├── main.py                      # CLI principal (argparse, loop de scrapers, CSV export)
-├── app.py                       # Dashboard Streamlit (6 páginas + CI com Claude)
-├── config.py                    # Keywords, plataformas, delays, User-Agents
-├── requirements.txt             # Dependências bot
-├── requirements_app.txt         # Dependências dashboard
-│
-├── magalu_shopee/               # Sub-projeto Node.js/TS — Shopee (Puppeteer + sessão autenticada)
-│   └── src/index.ts             # Entry point: ts-node src/index.ts --platforms shopee
+├── main.py                       # CLI (argparse, registry de scrapers, CSV, upload)
+├── app.py                        # Dashboard Streamlit (20 páginas + CI Claude)
+├── config.py                     # Keywords, plataformas, marcas, delays
 │
 ├── scrapers/
-│   ├── base.py                  # BaseScraper ABC (Playwright, stealth JS, _build_record)
-│   ├── mercado_livre.py         # MLScraper
-│   ├── amazon.py                # AmazonScraper
-│   ├── magalu.py                # MagaluScraper — curl_cffi + TLS impersonation chrome124; bypass Akamai (Mai/2026)
-│   ├── google_shopping.py       # GoogleShoppingScraper
-│   ├── leroy_merlin.py          # LeroyMerlinScraper (Algolia API)
-│   ├── dealers.py               # DealerScraper (JSON-LD + VTEX + DOM)
-│   ├── casas_bahia.py           # ⏸️ Stand by (Akamai WAF)
-│   └── fast_shop.py             # ⏸️ Stand by (PerimeterX)
+│   ├── base.py                   # BaseScraper ABC (Playwright, stealth, _build_record)
+│   ├── mercado_livre.py          # MLScraper (browser; fix campos de insight Jun/2026)
+│   ├── mercado_livre_api.py      # MLAPIScraper (API oficial OAuth — reputação; opt-in)
+│   ├── amazon.py                 # AmazonScraper
+│   ├── magalu.py                 # MagaluScraper (CDP/persistente, rebrowser-playwright)
+│   ├── casas_bahia.py            # CasasBahiaScraper (VTEX IS + warm-up Akamai)
+│   ├── shopee.py                 # ShopeeScraper (API v4 + sessão curl_cffi)
+│   ├── google_shopping.py        # GoogleShoppingScraper
+│   ├── leroy_merlin.py           # LeroyMerlinScraper (Algolia)
+│   ├── dealers.py                # DealerScraper (⏸️ fora do foco)
+│   └── fast_shop.py              # ⏸️ PerimeterX
+│
+├── pricetrack_importer/          # Importador md/xlsx (parser/validator/seller_map)
+├── scripts/
+│   ├── pricetrack_api_import.py  # Import diário via API PriceTrack
+│   ├── refresh_sessions_cdp.py   # Renova sessões Shopee/CB/ML via Chrome CDP 🆕
+│   ├── collect_authenticated_cdp.bat   # Magalu+Shopee+CB no PC (CDP) 🆕
+│   ├── setup_authenticated_scheduler.ps1  # Task Scheduler 10:05/21:05 🆕
+│   ├── start_chrome_cdp.bat / setup_cdp_profile.bat  # Chrome CDP (perfil real)
+│   ├── daily_status_check.py     # Watchdog PASS/FAIL + cobertura de campos
+│   ├── diagnose_ml.py            # Diagnóstico ML: taxa de acerto por campo/seletor
+│   ├── ml_oauth_setup.py         # Setup OAuth da API oficial do ML (1x)
+│   ├── collect_*_linux.sh        # Crons da VM Oracle
+│   └── oracle_setup.sh           # Setup completo da VM
 │
 ├── utils/
-│   ├── text.py                  # parse_price, get_turno, now_brt(), normalize_text
-│   ├── brands.py                # extract_brand() regex word boundary
-│   ├── normalize_product.py     # normalize_product_name()
-│   ├── supabase_client.py       # Upload, limpeza e manutenção do banco
-│   └── n8n_notify.py            # Notificações Telegram (N8N webhook + fallback direto)
+│   ├── text.py                   # parse_price, parse_rating, now_brt, turno
+│   ├── brands.py                 # extract_brand()
+│   ├── normalize_product.py      # normalização v1 + v2 (SKU-anchored)
+│   ├── session_grabber.py        # Captura manual de sessões (fallback)
+│   ├── supabase_client.py        # Upload (manutenção em supabase_maintenance.py)
+│   └── n8n_notify.py             # Telegram (N8N + fallback direto)
 │
-├── n8n/
-│   └── rac_coleta_monitor.json  # Workflow N8N importável (Webhook → Telegram)
-│
-├── scripts/
-│   ├── oracle_setup.sh          # Setup completo da VM Oracle Cloud
-│   ├── collect_manha_linux.sh   # Coleta manhã (VM Oracle)
-│   ├── collect_noite_linux.sh   # Coleta noite (VM Oracle)
-│   ├── collect_manha.bat        # Coleta manhã (Windows — backup)
-│   ├── collect_tarde.bat        # Coleta noite (Windows — backup)
-│   ├── fix_turno.py             # Limpeza pontual de turno invertido no Supabase
-│   └── monitor.sh               # Tail dos logs de cron na VM
-│
-├── .github/workflows/
-│   └── collect.yml              # GitHub Actions (manual apenas)
-│
-├── output/                      # CSVs exportados
-├── logs/                        # Loguru logs + dealer_debug_*.html
-└── docs/                        # Documentação técnica interna
+├── tests/                        # pytest (parser ML, de-para, normalização v2)
+├── migrations/ + docs/migrations/ # SQL: pricetrack, buy box, índices, depara
+├── .github/workflows/            # collect.yml + pricetrack_daily.yml
+├── n8n/                          # Workflow Telegram importável
+├── magalu_shopee/                # Sub-projeto Node/TS (fallback Shopee)
+├── docs/                         # Documentação técnica (ver docs/INDEX.md)
+├── output/                       # CSVs
+└── logs/                         # Loguru + HTML de debug
 ```
 
 ---
 
-## 🛠️ Manutenção do Banco (Supabase)
-
-Funções disponíveis em `utils/supabase_client.py`:
-
-| Função | Finalidade |
-|--------|------------|
-| `upload_to_supabase(records)` | Upload de registros coletados |
-| `fix_inverted_turno_in_supabase()` | Remove registros com turno invertido (bug pré-timezone-fix) |
-| `delete_invalid_from_supabase()` | Remove produtos não relacionados a AC |
-| `normalize_brands_in_supabase()` | Consolida variantes de marca (Springer → Midea) |
-| `scan_fix_bad_prices_in_supabase()` | Remove preços suspeitos (bug parser ×10) |
-| `normalize_all_products_in_supabase()` | Re-normaliza nomes de produto |
-
-Todas as funções aceitam `dry_run=True` para preview antes de alterar dados.
+## 🧪 Testes & Diagnóstico
 
 ```bash
-# Limpeza pontual de turno invertido (se necessário):
-python scripts/fix_turno.py           # dry-run (só conta)
-python scripts/fix_turno.py --confirm  # executa a deleção
+pytest tests/ -q                          # parser ML, de-para, normalização v2
+
+# Antes de deployar mudança em scraper:
+python main.py --platforms ml --pages 1 --no-headless
+python scripts/diagnose_ml.py             # taxa de acerto por campo (ML)
+python scripts/diagnose_ml.py --html logs/ml_debug_0.html   # analisa HTML salvo
+python scripts/smoke_test.py              # smoke geral
 ```
 
 ---
 
 ## 🐛 Troubleshooting
 
-### Playwright não encontra browsers
-```bash
-python -m playwright install chromium
-```
+| Problema | Solução |
+|----------|---------|
+| Playwright não encontra browsers | `python -m playwright install chromium` |
+| Upload Supabase ignorado | `.env` com `SUPABASE_URL`/`SUPABASE_KEY` (**service_role**) |
+| Turno invertido | `python scripts/fix_turno.py --confirm` |
+| Dealer/ML retorna 0 produtos | ver `logs/*_debug_*.html` + `--no-headless` |
+| ML sem avaliação/patrocinado no banco | rodar `python scripts/diagnose_ml.py` e conferir 🩺 Data Health (fix Jun/2026 — seletores Poly) |
+| Magalu 403 / `_abck` em challenge | `pip install rebrowser-playwright`; ver troubleshooting completo em `docs/cdp_magalu_collection.md` |
+| Shopee `error=90309999` | sessão expirada → `python scripts/refresh_sessions_cdp.py --sites shopee` (ou `session_grabber.py` manual) |
+| Casas Bahia parada | renovar sessão via CDP no PC (IP datacenter é bloqueado) |
+| VM Oracle OOM | swap 2 GB: `free -h`, `sudo swapon --show` |
+| Telegram não chega | testar `curl https://api.telegram.org/bot<TOKEN>/getMe` |
 
-### Supabase upload ignorado localmente
-Verifique se o arquivo `.env` existe na raiz com `SUPABASE_URL` e `SUPABASE_KEY` preenchidos com a **service_role key**.
+**Variáveis de ambiente do Magalu/CDP:**
 
-### Dashboard mostra turno errado (Abertura/Fechamento invertidos)
-Dados coletados antes do fix de timezone têm turno invertido. Execute a limpeza:
-```bash
-python scripts/fix_turno.py --confirm
-```
-
-### Dealer retorna 0 produtos
-1. Verifique `logs/dealer_debug_<nome>_p1.html`
-2. Execute com `--no-headless` para observar visualmente
-3. Atualize seletores em `DEALER_CONFIGS` em `scrapers/dealers.py`
-
-### VM Oracle sem memória (OOM)
-O setup já configura 2 GB de swap. Se ocorrer OOM mesmo assim:
-```bash
-free -h                    # verificar uso atual
-sudo swapon --show         # confirmar swap ativo
-```
-
-### Magalu — Bypass Akamai com CDP e Circuit Breaker
-O scraper Python (`scrapers/magalu.py`) implementa **CDP mode** (DevTools Protocol) para conectar ao Chrome real do usuário e bypassar `sensor.js` do Akamai:
-
-1. **CDP Mode** — Conecta ao Chrome real via protocolo DevTools (não headless detection)
-2. **Browser Persistente** — Reutiliza perfil Chrome com cookies Akamai acumulados
-3. **Circuit Breaker** — Desativa coleta Magalu por 2h após detecção de bloqueio
-4. **Fallback Orgânico** — Se bloqueado, busca orgânica sem JavaScript renderizado
-
-**Fluxo alternativo (curl_cffi — desativado):**
-- Antes: `impersonate="chrome124"` para TLS JA3/JA4 bypass
-- Agora: apenas fallback se CDP falhar
-
-Para reativar curl_cffi (em caso de CDP issues):
-```python
-# Em scrapers/magalu.py, descomente:
-# MAGALU_USE_CURL_CFFI = True
-```
-
-Variáveis de ambiente:
 ```env
-MAGALU_HEADLESS=false          # Force browser visível (debug)
-MAGALU_CDP_PORT=9222           # DevTools port (default: auto)
-MAGALU_CIRCUIT_BREAKER_MINUTES=120  # Repouso após bloqueio
+MAGALU_HEADLESS=false              # browser visível (obrigatório em produção)
+MAGALU_CDP_URL=http://localhost:9222   # se setada, ativa modo CDP (Chrome real)
+MAGALU_FORCE_CURL=true             # só curl_cffi (não funciona hoje; futuro)
+RAC_CDP_URL=http://localhost:9222  # CDP p/ refresh_sessions_cdp.py (fallback: MAGALU_CDP_URL)
 ```
-
-### Cron não executa na VM Oracle
-```bash
-sudo systemctl status cron
-sudo systemctl start cron
-crontab -l
-```
-
-### Notificação Telegram não chega
-1. Confirme que `TELEGRAM_BOT_TOKEN` e `N8N_TELEGRAM_CHAT_ID` estão no `.env`
-2. Teste o token: `curl https://api.telegram.org/bot<TOKEN>/getMe`
-3. Se usar N8N, verifique se o webhook está ativo e acessível pela VM
-4. Logs de notificação aparecem no arquivo de log da coleta com prefixo `[n8n_notify]`
 
 ---
 
-## 📝 Dependências Principais
+## 🛠️ Manutenção do Banco (Supabase)
 
-| Pacote | Versão | Finalidade |
-|--------|--------|------------|
-| `playwright>=1.50` | Latest | Browser automation com stealth JS |
-| `beautifulsoup4` | 4.12+ | Parsing HTML/XML |
-| `pandas>=2.2` | Latest | DataFrames e export CSV |
-| `loguru` | 0.7+ | Logging estruturado com rotação |
-| `supabase>=2.3` | Latest | Client Supabase (upload/queries) |
-| `streamlit>=1.35` | 1.35+ | Dashboard web (16 páginas) |
-| `plotly>=5.20` | 5.20+ | Gráficos interativos |
-| `anthropic>=0.40` | 0.40+ | Claude API 4.x (Competitive Intelligence) |
-| `tenacity` | 8.2+ | Retry automático com backoff exponencial |
-| `python-dotenv` | 1.0+ | Carregamento de variáveis de ambiente |
-| `curl_cffi` | Latest | HTTP requests com TLS impersonation (Magalu bypass) |
-| `rebrowser-playwright` | Latest | Playwright com plugin anti-detecção CDP |
-| `requests` | 2.31+ | HTTP requests (fallback, Algolia) |
+Funções em `utils/supabase_maintenance.py` (todas com `dry_run=True`):
+`fix_inverted_turno`, `delete_invalid` (não-AC), `normalize_brands`,
+`scan_fix_bad_prices` (bug ×10), `normalize_all_products`.
 
-**Node.js (Shopee sub-projeto):**
-```json
-{
-  "typescript": "^5.x",
-  "puppeteer": "^22.x",
-  "@types/node": "^20.x"
-}
-```
+Utilitários: `cleanup_supabase.py`, `normalize_supabase.py`,
+`import_history.py`, `reenviar_csv.py`, `scripts/fix_turno.py`,
+`scripts/auto_resolver_depara.py` (fila REVISAR do catálogo).
 
 ---
 
@@ -579,35 +420,39 @@ crontab -l
 
 | Documento | Finalidade |
 |-----------|------------|
-| `.claude/QUICK_START.md` | Comandos essenciais |
-| `.claude/ARCHITECTURE_MAP.md` | Fluxo de dados e estrutura |
-| `.claude/COMMON_MISTAKES.md` | Anti-padrões críticos |
 | `docs/INDEX.md` | Navegação por tarefa |
-| `docs/learnings/` | Scraping patterns, anti-bot, dealer configs |
+| `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md` | Automação Shopee/Magalu/CB (CDP + sessões) 🆕 |
+| `docs/PRICETRACK_INSIGHTS.md` | Pipeline PriceTrack + roadmap de insights 🆕 |
+| `docs/DIAGNOSTICO_COLETA_JUN2026.md` | Diagnóstico de cobertura por campo/plataforma |
+| `docs/cdp_magalu_collection.md` | Setup Chrome CDP (Windows + Task Scheduler) |
+| `docs/n8n_orchestration.md` | Orquestração n8n (validação CSV + Telegram) |
+| `.claude/` + `docs/learnings/` | Guias para sessões de IA (anti-patterns, padrões) |
 
 ---
 
-## 👤 @ederrabelo
+## 📝 Dependências Principais
 
-Desenvolvido para monitoramento competitivo de preços no varejo brasileiro de climatização (RAC).
+`playwright>=1.50` + `rebrowser-playwright` (anti-detecção CDP) ·
+`curl-cffi` (TLS impersonation) · `beautifulsoup4` · `pandas` · `loguru` ·
+`tenacity` · `supabase>=2.3` · `streamlit>=1.35` · `plotly` ·
+`anthropic>=0.40` · `openpyxl` (PriceTrack xlsx) · `Pillow` · `filelock`
 
-**Stack:** Python · curl_cffi · Playwright · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · TypeScript/Puppeteer (Shopee)
+Dashboard usa o subset `requirements_app.txt`.
 
 ---
 
-**Versão:** 3.4 | **Última atualização:** 21 de Maio de 2026
+## ✅ Validação Operacional — 11/06/2026
+
+- ✅ **20 páginas** de dashboard (12 Insights + 5 Operações + 3 Admin)
+- ✅ **7 plataformas ativas** com buy box/seller (rollout fim de Mai/2026)
+- ✅ **PriceTrack diário** como fonte de verdade de preço (06:00 BRT + auto-heal)
+- ✅ **Coleta autenticada automatizada** Magalu+Shopee+CB via CDP (Jun/2026)
+- ✅ **Fix ML**: avaliação, reviews, patrocinado, Loja Oficial (Jun/2026)
+- ✅ **Data Health** com matriz campo × plataforma + alerta de regressão
+- ✅ 31 keywords · 43 marcas · catálogo de-para com auto-resolver
 
 ---
 
-## ✅ Validação Operacional — 21/05/2026
+**Stack:** Python · Playwright/rebrowser · curl_cffi · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · GitHub Actions
 
-### Status de Desenvolvimento
-- ✅ **16 páginas dashboard** operacionais (Insights + Operações + Admin)
-- ✅ **7 scrapers principais** em produção (ML, Amazon, Magalu, Google Shopping, Leroy Merlin, Dealers, Shopee)
-- ✅ **31 keywords** monitoradas continuamente
-- ✅ **43 marcas** rastreadas em tempo real
-- ✅ **Magalu CDP mode** com circuit breaker ativo
-- ✅ **Screenshots SERP** capturados automaticamente
-- ✅ **Daily status check** validando plataformas por turno
-- ✅ **Email Digest & Price Anomalies** para operações
-- ✅ **Competitive Intelligence** com Claude API
+**Versão:** 4.0 | **Última atualização:** 11 de Junho de 2026 | @ederrabelo
