@@ -4820,6 +4820,368 @@ def page_availability():
 
 
 # ---------------------------------------------------------------------------
+# Page — Reputação & Avaliações
+# ---------------------------------------------------------------------------
+
+_MCJV_BRANDS = {"Midea", "Springer Midea", "Springer"}
+
+
+def page_reputacao() -> None:
+    """Página ⭐ Reputação & Avaliações.
+
+    Usa as colunas `avaliacao`, `qtd_avaliacoes`, `reputacao_seller` e
+    `fulfillment` já carregadas por query_coletas — campos que até então não
+    apareciam em nenhuma análise do dashboard.
+    """
+    st.title("⭐ Reputação & Avaliações")
+    st.caption(
+        "Avaliação dos produtos, volume de reviews, reputação do seller e "
+        "fulfillment — e como isso se relaciona com posição orgânica e buy box."
+    )
+
+    with st.sidebar:
+        st.subheader("Filtros")
+        date_range = st.date_input(
+            "Período",
+            value=(date.today() - timedelta(days=14), date.today()),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
+            key="rep_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=14)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="rep_platforms")
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="rep_brands")
+        sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "rep")
+        min_cell = st.number_input(
+            "Mín. de registros avaliados por célula (heatmap)",
+            min_value=1, max_value=100, value=5, key="rep_min_cell",
+        )
+        load_btn = st.button("🔄 Carregar Avaliações", type="primary",
+                             use_container_width=True)
+
+    if not load_btn:
+        st.info("Defina os filtros na barra lateral e clique em **Carregar Avaliações**.")
+        st.caption(
+            "💡 A cobertura de `avaliacao` e `reputacao_seller` varia por plataforma "
+            "e scraper — veja a matriz campo × plataforma na página 🩺 Data Health."
+        )
+        return
+
+    with st.spinner("Carregando dados…"):
+        df = query_coletas(
+            start_date, end_date,
+            platforms=sel_platforms or None,
+            brands=sel_brands or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
+            limit=50000,
+        )
+
+    if df.empty or "avaliacao" not in df.columns:
+        st.warning("Nenhum dado com avaliação para os filtros selecionados.")
+        return
+
+    rated = df[df["avaliacao"].notna()].copy()
+    if rated.empty:
+        st.warning("Nenhum registro com `avaliacao` preenchida no período/filtros.")
+        cov = (
+            df.assign(tem_aval=df["avaliacao"].notna())
+            .groupby("plataforma")["tem_aval"].mean().mul(100).round(0)
+            .reset_index()
+            .rename(columns={"tem_aval": "% com avaliação", "plataforma": "Plataforma"})
+            .sort_values("% com avaliação", ascending=False)
+        )
+        st.markdown("**Cobertura de avaliação por plataforma no período:**")
+        st.dataframe(cov, use_container_width=True, hide_index=True)
+        return
+
+    has_marca   = "marca" in rated.columns
+    has_reviews = "qtd_avaliacoes" in rated.columns
+
+    # ── KPIs: MCJV vs concorrência ────────────────────────────────────────────
+    is_mcjv = (
+        rated["marca"].isin(_MCJV_BRANDS) if has_marca
+        else pd.Series(False, index=rated.index)
+    )
+    aval_mcjv = rated.loc[is_mcjv, "avaliacao"].mean()
+    conc_mask = ~is_mcjv
+    if has_marca:
+        conc_mask &= rated["marca"].ne("Desconhecida")
+    aval_conc = rated.loc[conc_mask, "avaliacao"].mean()
+    gap = (
+        aval_mcjv - aval_conc
+        if pd.notna(aval_mcjv) and pd.notna(aval_conc) else None
+    )
+
+    reviews_marca = pd.DataFrame()
+    total_reviews_mcjv = None
+    if has_reviews and has_marca and "produto" in rated.columns:
+        rev = rated.dropna(subset=["qtd_avaliacoes"])
+        if not rev.empty:
+            # máx. por produto: o mesmo anúncio aparece em várias keywords/runs
+            por_produto = rev.groupby(
+                ["marca", "produto"], as_index=False
+            )["qtd_avaliacoes"].max()
+            reviews_marca = (
+                por_produto.groupby("marca", as_index=False)["qtd_avaliacoes"].sum()
+                .rename(columns={"qtd_avaliacoes": "Total de reviews"})
+                .sort_values("Total de reviews", ascending=False)
+            )
+            total_reviews_mcjv = int(
+                reviews_marca.loc[
+                    reviews_marca["marca"].isin(_MCJV_BRANDS), "Total de reviews"
+                ].sum()
+            )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Registros c/ avaliação", f"{len(rated):,}")
+    c2.metric(
+        "Avaliação média MCJV",
+        f"{aval_mcjv:.2f} ⭐" if pd.notna(aval_mcjv) else "—",
+        help="Midea + Springer Midea + Springer",
+    )
+    c3.metric(
+        "Média concorrentes",
+        f"{aval_conc:.2f} ⭐" if pd.notna(aval_conc) else "—",
+        help="Todas as marcas identificadas fora do grupo MCJV",
+    )
+    c4.metric(
+        "Gap MCJV − concorrência",
+        f"{gap:+.2f}" if gap is not None else "—",
+        help="Positivo = produtos MCJV melhor avaliados que a concorrência",
+    )
+    c5.metric(
+        "Reviews MCJV",
+        f"{total_reviews_mcjv:,}" if total_reviews_mcjv is not None else "—",
+        help="Soma do nº de avaliações dos produtos MCJV (máx. por produto, sem dupla contagem)",
+    )
+    st.divider()
+
+    tab_heat, tab_scatter, tab_rep, tab_ful = st.tabs(
+        ["🗺️ Marca × Plataforma", "🔵 Posição × Avaliação",
+         "🏅 Reputação do Seller", "📦 Fulfillment"]
+    )
+
+    # ── Tab 1: heatmap de avaliação média + volume de reviews ───────────────
+    with tab_heat:
+        if not has_marca or "plataforma" not in rated.columns:
+            st.info("Colunas marca/plataforma indisponíveis.")
+        else:
+            top_marcas = rated["marca"].value_counts().head(12).index
+            sub = rated[rated["marca"].isin(top_marcas)]
+            medias = sub.pivot_table(
+                index="marca", columns="plataforma",
+                values="avaliacao", aggfunc="mean",
+            )
+            counts = sub.pivot_table(
+                index="marca", columns="plataforma",
+                values="avaliacao", aggfunc="count",
+            )
+            medias = medias.where(counts >= min_cell).round(2)
+            if medias.dropna(how="all").dropna(how="all", axis=1).empty:
+                st.info(
+                    f"Nenhuma célula marca × plataforma com ≥ {min_cell} "
+                    "registros avaliados. Reduza o mínimo na barra lateral."
+                )
+            else:
+                fig = px.imshow(
+                    medias, text_auto=".2f", aspect="auto",
+                    color_continuous_scale="RdYlGn", zmin=3, zmax=5,
+                    labels=dict(x="Plataforma", y="Marca", color="Avaliação média"),
+                    title=f"Avaliação média por marca × plataforma (células com ≥ {min_cell} registros)",
+                )
+                _apply_chart_style(
+                    fig, height=max(380, 32 * len(medias)), hovermode="closest"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                _csv_download_btn(
+                    medias.reset_index(),
+                    f"rac_avaliacao_heatmap_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar heatmap", key="rep_heat_csv",
+                )
+
+            if not reviews_marca.empty:
+                top_rev = reviews_marca.head(12)
+                fig_rev = px.bar(
+                    top_rev, x="marca", y="Total de reviews",
+                    color="marca", color_discrete_map=_brand_color_map(top_rev["marca"]),
+                    title="Total de reviews por marca (máx. por produto — proxy de base instalada)",
+                    labels={"marca": "Marca"},
+                )
+                fig_rev.update_layout(showlegend=False)
+                _apply_chart_style(fig_rev, height=400, hovermode="closest")
+                st.plotly_chart(fig_rev, use_container_width=True)
+
+    # ── Tab 2: scatter posição orgânica × avaliação ──────────────────────────
+    with tab_scatter:
+        st.markdown("**Produtos bem avaliados rankeiam melhor?**")
+        needed = {"posicao_organica", "produto"}
+        if not (needed <= set(rated.columns) and has_marca):
+            st.info("Colunas posicao_organica/produto/marca indisponíveis.")
+        else:
+            base = rated.dropna(subset=["posicao_organica"])
+            if base.empty:
+                st.info("Nenhum registro com posição orgânica e avaliação simultâneas.")
+            else:
+                agg_kwargs = {
+                    "aval":  ("avaliacao", "mean"),
+                    "pos":   ("posicao_organica", "mean"),
+                    "n":     ("avaliacao", "size"),
+                }
+                if has_reviews:
+                    agg_kwargs["reviews"] = ("qtd_avaliacoes", "max")
+                prod = base.groupby(["produto", "marca"], as_index=False).agg(**agg_kwargs)
+                if has_reviews:
+                    prod["reviews"] = (
+                        pd.to_numeric(prod["reviews"], errors="coerce")
+                        .fillna(1).clip(lower=1).astype(float)
+                    )
+                else:
+                    prod["reviews"] = 1.0
+                prod = prod.sort_values("reviews", ascending=False).head(400)
+                fig = px.scatter(
+                    prod, x="aval", y="pos", size="reviews", color="marca",
+                    color_discrete_map=_brand_color_map(prod["marca"]),
+                    hover_name="produto", size_max=42,
+                    labels={"aval": "Avaliação média", "pos": "Posição orgânica média",
+                            "reviews": "Qtd avaliações", "marca": "Marca"},
+                    title="Posição orgânica média × avaliação (bolha = nº de avaliações)",
+                )
+                fig.update_yaxes(autorange="reversed")
+                _apply_chart_style(fig, height=520, hovermode="closest")
+                st.plotly_chart(fig, use_container_width=True)
+                corr = prod["aval"].corr(prod["pos"])
+                st.caption(
+                    "Eixo Y invertido: quanto mais alto o ponto, melhor a posição. "
+                    + (
+                        f"Correlação avaliação × posição: {corr:+.2f} "
+                        "(negativa = melhor avaliação anda junto com melhor posição)."
+                        if pd.notna(corr) else ""
+                    )
+                )
+                _csv_download_btn(
+                    prod.rename(columns={
+                        "aval": "Avaliação média", "pos": "Posição orgânica média",
+                        "n": "Registros", "reviews": "Qtd avaliações",
+                    }),
+                    f"rac_posicao_avaliacao_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar produtos", key="rep_scatter_csv",
+                )
+
+    # ── Tab 3: buy box win-rate por reputação do seller ─────────────────────
+    with tab_rep:
+        st.info(
+            "Cobertura limitada: hoje `reputacao_seller` vem principalmente de "
+            "ML (API oficial) e Shopee — confira a página 🩺 Data Health."
+        )
+        if not {"reputacao_seller", "buy_box_seller"} <= set(df.columns):
+            st.warning("Colunas de reputação/buy box indisponíveis no schema.")
+        else:
+            rep = df[
+                df["reputacao_seller"].notna()
+                & (df["reputacao_seller"].astype(str).str.strip() != "")
+                & df["buy_box_seller"].notna()
+                & (df["buy_box_seller"].astype(str).str.strip() != "")
+            ].copy()
+            if rep.empty:
+                st.warning("Nenhum registro com reputação + buy box no período/filtros.")
+            else:
+                wins = (
+                    rep.groupby("reputacao_seller", as_index=False)
+                    .agg(**{
+                        "Buy box wins": ("buy_box_seller", "count"),
+                        "Sellers distintos": ("buy_box_seller", "nunique"),
+                    })
+                    .rename(columns={"reputacao_seller": "Reputação"})
+                    .sort_values("Buy box wins", ascending=False)
+                )
+                wins["Share (%)"] = (
+                    wins["Buy box wins"] / wins["Buy box wins"].sum() * 100
+                ).round(1)
+                col_chart, col_table = st.columns([2, 1])
+                with col_chart:
+                    fig = px.bar(
+                        wins.head(12), x="Buy box wins", y="Reputação",
+                        orientation="h", color="Reputação",
+                        color_discrete_sequence=_CHART_COLORS, text="Share (%)",
+                        title="Buy box vencida por nível de reputação do seller",
+                    )
+                    fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                    fig.update_layout(showlegend=False,
+                                      yaxis={"categoryorder": "total ascending"})
+                    _apply_chart_style(fig, height=440, hovermode="closest")
+                    st.plotly_chart(fig, use_container_width=True)
+                with col_table:
+                    st.dataframe(wins, use_container_width=True,
+                                 hide_index=True, height=440)
+                _csv_download_btn(
+                    wins, f"rac_buybox_reputacao_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar reputação", key="rep_rep_csv",
+                )
+
+    # ── Tab 4: fulfillment × buy box e preço ────────────────────────────────
+    with tab_ful:
+        if "fulfillment" not in df.columns:
+            st.info("Coluna `fulfillment` indisponível no schema.")
+        else:
+            ful = df[df["fulfillment"].notna()].copy()
+            if ful.empty:
+                st.info("Nenhum registro com `fulfillment` no período/filtros.")
+            else:
+                ful["fulfillment"] = ful["fulfillment"].astype(bool)
+                if "buy_box_seller" in ful.columns:
+                    bb = ful[
+                        ful["buy_box_seller"].notna()
+                        & (ful["buy_box_seller"].astype(str).str.strip() != "")
+                    ]
+                else:
+                    bb = pd.DataFrame()
+                if bb.empty:
+                    st.info("Nenhum registro com buy box + fulfillment no período.")
+                else:
+                    pct = (
+                        bb.groupby("plataforma", as_index=False)["fulfillment"]
+                        .mean()
+                        .rename(columns={"fulfillment": "frac"})
+                    )
+                    pct["% buy box c/ fulfillment"] = (pct["frac"] * 100).round(1)
+                    fig = px.bar(
+                        pct.sort_values("% buy box c/ fulfillment", ascending=False),
+                        x="plataforma", y="% buy box c/ fulfillment",
+                        color="plataforma", color_discrete_sequence=_CHART_COLORS,
+                        title="% de buy box vencida com fulfillment, por plataforma",
+                        labels={"plataforma": "Plataforma"},
+                    )
+                    fig.update_layout(showlegend=False)
+                    _apply_chart_style(fig, height=400, hovermode="closest")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                if "preco" in ful.columns:
+                    # ≥ R$100: descarta parcela/erro de scraping (regra do projeto)
+                    pr = ful[ful["preco"].notna() & (ful["preco"] >= 100)]
+                    if not pr.empty and pr["fulfillment"].nunique() > 1:
+                        cmp_df = (
+                            pr.groupby(["plataforma", "fulfillment"], as_index=False)["preco"]
+                            .mean()
+                        )
+                        cmp_df["Oferta"] = cmp_df["fulfillment"].map(
+                            {True: "Com fulfillment", False: "Sem fulfillment"}
+                        )
+                        cmp_df["preco"] = cmp_df["preco"].round(2)
+                        fig2 = px.bar(
+                            cmp_df, x="plataforma", y="preco", color="Oferta",
+                            barmode="group", color_discrete_sequence=_CHART_COLORS,
+                            title="Preço médio com vs sem fulfillment (preços ≥ R$100)",
+                            labels={"plataforma": "Plataforma", "preco": "Preço médio (R$)"},
+                        )
+                        _apply_chart_style(fig2, height=400)
+                        st.plotly_chart(fig2, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
 # Competitive Intelligence — system prompt + page
 # ---------------------------------------------------------------------------
 
@@ -7022,6 +7384,7 @@ PAGES = {
     "🗂️ Ficha do Produto":         page_product_sheet,
     "🏆 BuyBox Position":          page_buybox_position,
     "👑 Share of Buy Box":         page_share_of_buybox,
+    "⭐ Reputação & Avaliações":   page_reputacao,
     "📦 Availability":             page_availability,
     "🧠 Competitive Intelligence": page_ci_analysis,
     "🚀 Run Collection":           page_run_collection,
@@ -7044,6 +7407,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "🗂️ Ficha do Produto",
         "🏆 BuyBox Position",
         "👑 Share of Buy Box",
+        "⭐ Reputação & Avaliações",
         "📦 Availability",
         "🧠 Competitive Intelligence",
     ],
