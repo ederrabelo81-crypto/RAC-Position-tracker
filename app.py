@@ -5182,6 +5182,315 @@ def page_reputacao() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Page — Share of Voice Patrocinado
+# ---------------------------------------------------------------------------
+
+def page_sov_patrocinado() -> None:
+    """Página 📣 Share of Voice Patrocinado.
+
+    Usa `posicao_patrocinada`, `patrocinado` e `posicao_organica` para mostrar
+    quem compra mídia, em quais keywords e com que dominância de SERP.
+    """
+    st.title("📣 Share of Voice Patrocinado")
+    st.caption(
+        "Quem compra mídia: densidade de anúncios patrocinados no top-10 por "
+        "marca/plataforma, keywords mais disputadas em leilão, dupla presença "
+        "orgânico + patrocinado e evolução diária."
+    )
+
+    with st.sidebar:
+        st.subheader("Filtros")
+        date_range = st.date_input(
+            "Período",
+            value=(date.today() - timedelta(days=14), date.today()),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
+            key="sov_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=14)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="sov_platforms")
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="sov_brands")
+        sel_keywords  = st.multiselect("Keywords", opts["keywords"], key="sov_keywords")
+        load_btn = st.button("🔄 Carregar SoV", type="primary", use_container_width=True)
+
+    if not load_btn:
+        st.info("Defina os filtros na barra lateral e clique em **Carregar SoV**.")
+        st.caption(
+            "💡 Plataformas com ads hoje: Amazon (AMS) e Magalu (HEROs); ML é "
+            "100% orgânico. A cobertura real está na página 🩺 Data Health."
+        )
+        return
+
+    with st.spinner("Carregando dados…"):
+        df = query_coletas(
+            start_date, end_date,
+            platforms=sel_platforms or None,
+            brands=sel_brands or None,
+            keywords=sel_keywords or None,
+            limit=50000,
+        )
+
+    if df.empty:
+        st.warning("Nenhum dado para os filtros selecionados.")
+        return
+    if "patrocinado" not in df.columns and "posicao_patrocinada" not in df.columns:
+        st.warning("Colunas de patrocinado indisponíveis no schema.")
+        return
+
+    spon = pd.Series(False, index=df.index)
+    if "patrocinado" in df.columns:
+        spon |= df["patrocinado"].fillna(False).astype(bool)
+    if "posicao_patrocinada" in df.columns:
+        spon |= df["posicao_patrocinada"].notna()
+    df = df.assign(_spon=spon)
+
+    if not bool(spon.any()):
+        st.warning(
+            "Nenhum anúncio patrocinado no período/filtros. Plataformas 100% "
+            "orgânicas (ex: ML) não geram dados aqui — veja 🩺 Data Health."
+        )
+        return
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    n_spon = int(spon.sum())
+    pct_spon = n_spon / len(df) * 100
+    plats_com_ads = (
+        df.loc[df["_spon"], "plataforma"].nunique() if "plataforma" in df.columns else 0
+    )
+    kws_com_ads = (
+        df.loc[df["_spon"], "keyword"].nunique() if "keyword" in df.columns else 0
+    )
+    lider = None
+    if "marca" in df.columns:
+        spon_brands = df.loc[df["_spon"], "marca"].value_counts()
+        if not spon_brands.empty:
+            lider = f"{spon_brands.index[0]} ({spon_brands.iloc[0]:,})"
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Anúncios patrocinados", f"{n_spon:,}")
+    c2.metric("% patrocinado geral", f"{pct_spon:.1f}%")
+    c3.metric("Plataformas c/ ads", str(plats_com_ads))
+    c4.metric("Keywords c/ ads", f"{kws_com_ads:,}")
+    c5.metric("Marca líder em ads", lider or "—",
+              help="Marca com mais anúncios patrocinados no período")
+    st.divider()
+
+    tab_midia, tab_kw, tab_dupla, tab_evo = st.tabs(
+        ["📊 Quem compra mídia", "🔑 Keywords disputadas",
+         "👯 Dupla presença", "📈 Evolução diária"]
+    )
+
+    # ── Tab 1: % patrocinado no top-10 por marca e plataforma ───────────────
+    with tab_midia:
+        if "posicao_geral" not in df.columns:
+            st.info("Coluna posicao_geral indisponível.")
+        else:
+            t10 = df[df["posicao_geral"].notna() & (df["posicao_geral"] <= 10)]
+            if t10.empty:
+                st.info("Nenhum registro no top-10 para o período/filtros.")
+            else:
+                col_m, col_p = st.columns(2)
+                if "marca" in t10.columns:
+                    por_marca = (
+                        t10.groupby("marca")
+                        .agg(n=("_spon", "size"), spon=("_spon", "sum"))
+                        .reset_index()
+                    )
+                    por_marca = por_marca[por_marca["n"] >= 5]
+                    por_marca["% patrocinado no top-10"] = (
+                        por_marca["spon"] / por_marca["n"] * 100
+                    ).round(1)
+                    total_spon_t10 = por_marca["spon"].sum()
+                    por_marca["Share dos ads (%)"] = (
+                        (por_marca["spon"] / total_spon_t10 * 100).round(1)
+                        if total_spon_t10 else 0.0
+                    )
+                    por_marca = por_marca.sort_values(
+                        "% patrocinado no top-10", ascending=False
+                    )
+                    with col_m:
+                        top_m = por_marca.head(12)
+                        fig = px.bar(
+                            top_m, x="% patrocinado no top-10", y="marca",
+                            orientation="h", color="marca",
+                            color_discrete_map=_brand_color_map(top_m["marca"]),
+                            title="% de slots top-10 que são patrocinados, por marca",
+                            labels={"marca": "Marca"},
+                        )
+                        fig.update_layout(showlegend=False,
+                                          yaxis={"categoryorder": "total ascending"})
+                        _apply_chart_style(fig, height=440, hovermode="closest")
+                        st.plotly_chart(fig, use_container_width=True)
+                if "plataforma" in t10.columns:
+                    por_plat = (
+                        t10.groupby("plataforma")
+                        .agg(n=("_spon", "size"), spon=("_spon", "sum"))
+                        .reset_index()
+                    )
+                    por_plat["% patrocinado no top-10"] = (
+                        por_plat["spon"] / por_plat["n"] * 100
+                    ).round(1)
+                    with col_p:
+                        fig = px.bar(
+                            por_plat.sort_values("% patrocinado no top-10",
+                                                 ascending=False),
+                            x="plataforma", y="% patrocinado no top-10",
+                            color="plataforma",
+                            color_discrete_sequence=_CHART_COLORS,
+                            title="% de slots top-10 patrocinados, por plataforma",
+                            labels={"plataforma": "Plataforma"},
+                        )
+                        fig.update_layout(showlegend=False)
+                        _apply_chart_style(fig, height=440, hovermode="closest")
+                        st.plotly_chart(fig, use_container_width=True)
+                if "marca" in t10.columns and not por_marca.empty:
+                    st.dataframe(
+                        _style_midea_df(por_marca.rename(columns={
+                            "marca": "Marca", "n": "Slots top-10",
+                            "spon": "Patrocinados",
+                        }), brand_col="Marca"),
+                        use_container_width=True, hide_index=True,
+                    )
+                    _csv_download_btn(
+                        por_marca,
+                        f"rac_sov_top10_{start_date}_{end_date}.csv",
+                        "⬇️ Exportar top-10", key="sov_t10_csv",
+                    )
+
+    # ── Tab 2: keywords com maior densidade de patrocinados ─────────────────
+    with tab_kw:
+        if "keyword" not in df.columns:
+            st.info("Coluna keyword indisponível.")
+        else:
+            kw = (
+                df.groupby("keyword")
+                .agg(n=("_spon", "size"), spon=("_spon", "sum"))
+                .reset_index()
+            )
+            kw = kw[kw["n"] >= 10]
+            kw["Densidade patrocinada (%)"] = (kw["spon"] / kw["n"] * 100).round(1)
+            kw = kw.sort_values("Densidade patrocinada (%)", ascending=False)
+            kw_com_ads = kw[kw["spon"] > 0]
+            if kw_com_ads.empty:
+                st.info("Nenhuma keyword com anúncio patrocinado no período.")
+            else:
+                top_kw = kw_com_ads.head(15)
+                fig = px.bar(
+                    top_kw, x="Densidade patrocinada (%)", y="keyword",
+                    orientation="h", color="Densidade patrocinada (%)",
+                    color_continuous_scale="OrRd",
+                    title="Keywords com leilão mais disputado (% de anúncios pagos)",
+                    labels={"keyword": "Keyword"},
+                )
+                fig.update_layout(yaxis={"categoryorder": "total ascending"},
+                                  coloraxis_showscale=False)
+                _apply_chart_style(fig, height=480, hovermode="closest")
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(
+                    kw_com_ads.rename(columns={
+                        "keyword": "Keyword", "n": "Registros",
+                        "spon": "Patrocinados",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+                _csv_download_btn(
+                    kw_com_ads,
+                    f"rac_sov_keywords_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar keywords", key="sov_kw_csv",
+                )
+
+    # ── Tab 3: dupla presença orgânico + patrocinado ────────────────────────
+    with tab_dupla:
+        st.markdown(
+            "**Dominância de SERP:** a mesma marca ocupando slot orgânico **e** "
+            "patrocinado na mesma keyword/coleta."
+        )
+        run_cols = [c for c in ["data", "turno", "plataforma", "keyword", "marca"]
+                    if c in df.columns]
+        if not {"keyword", "marca"} <= set(run_cols) or "posicao_organica" not in df.columns:
+            st.info("Colunas necessárias (keyword/marca/posicao_organica) indisponíveis.")
+        else:
+            org_flag = df["posicao_organica"].notna() & ~df["_spon"]
+            runs = (
+                df.assign(_org=org_flag)
+                .groupby(run_cols)
+                .agg(org=("_org", "any"), spon=("_spon", "any"))
+                .reset_index()
+            )
+            runs["dupla"] = runs["org"] & runs["spon"]
+            por_marca = (
+                runs.groupby("marca")
+                .agg(**{"Buscas da marca": ("dupla", "size"),
+                        "Com dupla presença": ("dupla", "sum")})
+                .reset_index()
+            )
+            por_marca["% de dupla presença"] = (
+                por_marca["Com dupla presença"] / por_marca["Buscas da marca"] * 100
+            ).round(1)
+            por_marca = por_marca[por_marca["Com dupla presença"] > 0].sort_values(
+                "Com dupla presença", ascending=False
+            )
+            if por_marca.empty:
+                st.info("Nenhuma marca com dupla presença no período/filtros.")
+            else:
+                top_d = por_marca.head(12)
+                fig = px.bar(
+                    top_d, x="Com dupla presença", y="marca", orientation="h",
+                    color="marca", color_discrete_map=_brand_color_map(top_d["marca"]),
+                    text="% de dupla presença",
+                    title="Keyword-coletas com slot orgânico E patrocinado da mesma marca",
+                    labels={"marca": "Marca"},
+                )
+                fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                fig.update_layout(showlegend=False,
+                                  yaxis={"categoryorder": "total ascending"})
+                _apply_chart_style(fig, height=440, hovermode="closest")
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(
+                    _style_midea_df(por_marca.rename(columns={"marca": "Marca"}),
+                                    brand_col="Marca"),
+                    use_container_width=True, hide_index=True,
+                )
+                _csv_download_btn(
+                    por_marca,
+                    f"rac_sov_dupla_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar dupla presença", key="sov_dupla_csv",
+                )
+
+    # ── Tab 4: evolução diária do % patrocinado por marca ───────────────────
+    with tab_evo:
+        if "marca" not in df.columns or "data" not in df.columns:
+            st.info("Colunas marca/data indisponíveis.")
+        else:
+            top8 = (
+                df.loc[df["_spon"], "marca"].value_counts().head(8).index
+            )
+            ev = (
+                df[df["marca"].isin(top8)]
+                .groupby(["data", "marca"])
+                .agg(n=("_spon", "size"), spon=("_spon", "sum"))
+                .reset_index()
+            )
+            if ev.empty:
+                st.info("Sem dados para a evolução diária.")
+            else:
+                ev["% patrocinado"] = (ev["spon"] / ev["n"] * 100).round(1)
+                ev["data"] = pd.to_datetime(ev["data"])
+                fig = px.line(
+                    ev, x="data", y="% patrocinado", color="marca", markers=True,
+                    color_discrete_map=_brand_color_map(ev["marca"]),
+                    title="% de anúncios patrocinados por dia (top-8 marcas em ads)",
+                    labels={"data": "Data", "marca": "Marca"},
+                )
+                _emphasize_midea_traces(fig)
+                _apply_chart_style(fig, height=450)
+                st.plotly_chart(fig, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
 # Competitive Intelligence — system prompt + page
 # ---------------------------------------------------------------------------
 
@@ -7385,6 +7694,7 @@ PAGES = {
     "🏆 BuyBox Position":          page_buybox_position,
     "👑 Share of Buy Box":         page_share_of_buybox,
     "⭐ Reputação & Avaliações":   page_reputacao,
+    "📣 SoV Patrocinado":          page_sov_patrocinado,
     "📦 Availability":             page_availability,
     "🧠 Competitive Intelligence": page_ci_analysis,
     "🚀 Run Collection":           page_run_collection,
@@ -7408,6 +7718,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "🏆 BuyBox Position",
         "👑 Share of Buy Box",
         "⭐ Reputação & Avaliações",
+        "📣 SoV Patrocinado",
         "📦 Availability",
         "🧠 Competitive Intelligence",
     ],
