@@ -3075,6 +3075,7 @@ def _query_health(window_days: int) -> pd.DataFrame:
         return pd.DataFrame()
     since = str(date.today() - timedelta(days=max(window_days, 1) - 1))
     cols = ("data,plataforma,buy_box_seller,tipo_seller,qtd_sellers,"
+            "reputacao_seller,avaliacao,fulfillment,posicao_patrocinada,"
             "seller,preco,patrocinado")
     rows: list = []
     offset = 0
@@ -3123,14 +3124,19 @@ def page_data_health() -> None:
         st.warning("Sem dados recentes ou Supabase desconectado.")
         return
 
-    # Campos-chave a monitorar (coluna no DB → rótulo)
+    # Campos-chave a monitorar (coluna no DB → rótulo). Esta matriz é a fonte
+    # de verdade do que cada scraper entrega — nada de listas hardcoded.
     key_cols = {
-        "buy_box_seller": "Buy Box",
-        "tipo_seller":    "Tipo Seller",
-        "qtd_sellers":    "Qtd Sellers",
-        "seller":         "Seller",
-        "preco":          "Preço",
-        "patrocinado":    "Patrocinado",
+        "buy_box_seller":      "Buy Box",
+        "tipo_seller":         "Tipo Seller",
+        "qtd_sellers":         "Qtd Sellers",
+        "reputacao_seller":    "Reputação",
+        "avaliacao":           "Avaliação",
+        "fulfillment":         "Fulfillment",
+        "posicao_patrocinada": "Pos. Patroc.",
+        "seller":              "Seller",
+        "preco":               "Preço",
+        "patrocinado":         "Patrocinado",
     }
 
     last_seen = df.groupby("plataforma")["data"].max()
@@ -3176,6 +3182,12 @@ def page_data_health() -> None:
     )
     _apply_chart_style(fig, height=max(380, 26 * len(cov)), hovermode="closest")
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Campos booleanos (Fulfillment, Patrocinado) contam `false` como "
+        "preenchido — 100% significa que o scraper sempre envia o campo. "
+        "`Pos. Patroc.` só é preenchida em anúncios pagos: a célula equivale "
+        "ao % de anúncios patrocinados da plataforma."
+    )
 
     st.dataframe(cov, use_container_width=True, hide_index=True)
     _csv_download_btn(
@@ -4303,9 +4315,9 @@ def page_share_of_buybox() -> None:
     if not load_btn:
         st.info("Defina os filtros na barra lateral e clique em **Carregar Buy Box**.")
         st.caption(
-            "💡 Plataformas que hoje expõem o vencedor da buy box: **Mercado Livre, "
-            "Amazon, Leroy Merlin** (e Casas Bahia / Shopee / Magalu quando a coleta "
-            "não está bloqueada). A coleta de buy box começou no fim de Maio/2026."
+            "💡 A cobertura de `buy_box_seller` varia por plataforma e scraper — "
+            "consulte a matriz campo × plataforma na página 🩺 Data Health. "
+            "A coleta de buy box começou no fim de Maio/2026."
         )
         return
 
@@ -4335,7 +4347,8 @@ def page_share_of_buybox() -> None:
     if bb.empty:
         st.warning(
             "As plataformas/períodos selecionados não têm `buy_box_seller` preenchido. "
-            "Tente Mercado Livre, Amazon ou Leroy Merlin num período recente."
+            "Veja quais plataformas entregam o campo na página 🩺 Data Health e "
+            "tente um período recente."
         )
         cov = (
             df.assign(tem_bb=df["buy_box_seller"].notna())
@@ -4414,7 +4427,11 @@ def page_share_of_buybox() -> None:
             and not bb["tipo_seller"].fillna("").astype(str).str.strip().eq("").all()
         )
         if not has_tipo:
-            st.info("Nenhuma plataforma no filtro preenche `tipo_seller` (hoje: ML e Amazon).")
+            st.info(
+                "Nenhum registro com `tipo_seller` preenchido nos filtros/período "
+                "selecionados. A cobertura varia por plataforma e scraper — veja a "
+                "matriz campo × plataforma na página 🩺 Data Health."
+            )
         else:
             tdf = bb[bb["tipo_seller"].notna()
                      & (bb["tipo_seller"].astype(str).str.strip() != "")]
@@ -4446,9 +4463,9 @@ def page_share_of_buybox() -> None:
         has_qtd = "qtd_sellers" in bb.columns and not bb["qtd_sellers"].dropna().empty
         if not has_qtd:
             st.info(
-                "`qtd_sellers` quase não é coletado hoje (apenas Amazon e Google "
-                "Shopping). Para ML/Leroy exigiria extrair o nº de ofertas por "
-                "listagem no scraper — ver página 🩺 Data Health."
+                "Nenhum registro com `qtd_sellers` preenchido nos filtros/período "
+                "selecionados. A cobertura varia por plataforma e scraper — veja a "
+                "matriz campo × plataforma na página 🩺 Data Health."
             )
         else:
             comp = bb.dropna(subset=["qtd_sellers"])
@@ -4658,8 +4675,8 @@ def page_availability():
     st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
-    tab_share, tab_timeline, tab_detail = st.tabs(
-        ["📊 Share", "📅 Timeline", "📋 Detail"]
+    tab_share, tab_vis, tab_timeline, tab_detail = st.tabs(
+        ["📊 Share", "🎯 Visibility Score", "📅 Timeline", "📋 Detail"]
     )
 
     # ── Tab 1: Appearance share by Brand / Platform ─────────────────────────
@@ -4726,7 +4743,140 @@ def page_availability():
             _apply_chart_style(fig_pie, height=380, hovermode="closest")
             st.plotly_chart(fig_pie, use_container_width=True)
 
-    # ── Tab 2: Timeline ──────────────────────────────────────────────────────
+    # ── Tab 2: Visibility Score ponderado por posição ────────────────────────
+    with tab_vis:
+        st.subheader("Visibility Score — share of shelf ponderado por posição")
+        st.caption(
+            "Cada aparição vale `1/posição_geral`: o slot 1 vale 1.0, o slot 10 "
+            "vale 0.1. O share ponderado premia quem domina o topo da busca; o "
+            "share simples conta presença em qualquer posição."
+        )
+        if "marca" not in df_all.columns:
+            st.info("Brand (marca) column not available.")
+        else:
+            vis = df_all[df_all["posicao_geral"] > 0].copy()
+            if vis.empty:
+                st.info("No records with valid position for the visibility score.")
+            else:
+                vis["_peso"] = 1.0 / vis["posicao_geral"].astype(float)
+
+                por_marca = (
+                    vis.groupby("marca")
+                    .agg(**{"Aparições": ("_peso", "size"),
+                            "_peso_total": ("_peso", "sum")})
+                    .reset_index()
+                )
+                por_marca["Share simples (%)"] = (
+                    por_marca["Aparições"] / por_marca["Aparições"].sum() * 100
+                ).round(2)
+                por_marca["Share ponderado (%)"] = (
+                    por_marca["_peso_total"] / por_marca["_peso_total"].sum() * 100
+                ).round(2)
+                por_marca["Δ (p.p.)"] = (
+                    por_marca["Share ponderado (%)"] - por_marca["Share simples (%)"]
+                ).round(2)
+                por_marca = por_marca.sort_values("Share ponderado (%)", ascending=False)
+
+                top_vis = por_marca.head(12)
+                comp = top_vis.melt(
+                    id_vars="marca",
+                    value_vars=["Share simples (%)", "Share ponderado (%)"],
+                    var_name="Métrica", value_name="Share (%)",
+                )
+                fig_cmp = px.bar(
+                    comp, x="marca", y="Share (%)", color="Métrica",
+                    barmode="group", color_discrete_sequence=_CHART_COLORS,
+                    title="Share ponderado (1/posição) vs share simples, por marca",
+                    labels={"marca": "Marca"},
+                )
+                _apply_chart_style(fig_cmp, height=440)
+                st.plotly_chart(fig_cmp, use_container_width=True)
+                st.caption(
+                    "Δ positivo = a marca rankeia melhor do que o volume sugere "
+                    "(slots no topo); Δ negativo = presença grande mas enterrada."
+                )
+                st.dataframe(
+                    _style_midea_df(
+                        por_marca.drop(columns="_peso_total")
+                        .rename(columns={"marca": "Marca"}),
+                        brand_col="Marca",
+                    ),
+                    use_container_width=True, hide_index=True,
+                )
+                _csv_download_btn(
+                    por_marca.drop(columns="_peso_total"),
+                    f"rac_visibility_score_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar visibility score", key="av_vis_csv",
+                )
+
+                # Heatmap marca × plataforma — share ponderado dentro da plataforma
+                if "plataforma" in vis.columns:
+                    top10_marcas = por_marca.head(10)["marca"].tolist()
+                    sub = vis[vis["marca"].isin(top10_marcas)]
+                    heat_plat = sub.pivot_table(
+                        index="marca", columns="plataforma",
+                        values="_peso", aggfunc="sum",
+                    )
+                    plat_tot = vis.pivot_table(
+                        columns="plataforma", values="_peso", aggfunc="sum",
+                    )
+                    heat_plat = (
+                        heat_plat.div(plat_tot.iloc[0], axis=1) * 100
+                    ).round(1)
+                    fig_hp = px.imshow(
+                        heat_plat, text_auto=".1f", aspect="auto",
+                        color_continuous_scale="Blues",
+                        labels=dict(x="Plataforma", y="Marca",
+                                    color="Share ponderado (%)"),
+                        title="Share ponderado por marca × plataforma (% dentro da plataforma)",
+                    )
+                    _apply_chart_style(
+                        fig_hp, height=max(380, 32 * len(heat_plat)),
+                        hovermode="closest",
+                    )
+                    st.plotly_chart(fig_hp, use_container_width=True)
+
+                # Segmentação por categoria de keyword (campo `categoria`)
+                if "categoria" in vis.columns and vis["categoria"].notna().any():
+                    seg = vis[vis["categoria"].notna()
+                              & (vis["categoria"].astype(str).str.strip() != "")]
+                    top10_marcas = por_marca.head(10)["marca"].tolist()
+                    sub_cat = seg[seg["marca"].isin(top10_marcas)]
+                    if not sub_cat.empty:
+                        heat_cat = sub_cat.pivot_table(
+                            index="marca", columns="categoria",
+                            values="_peso", aggfunc="sum",
+                        )
+                        cat_tot = seg.pivot_table(
+                            columns="categoria", values="_peso", aggfunc="sum",
+                        )
+                        heat_cat = (
+                            heat_cat.div(cat_tot.iloc[0], axis=1) * 100
+                        ).round(1)
+                        fig_hc = px.imshow(
+                            heat_cat, text_auto=".1f", aspect="auto",
+                            color_continuous_scale="Greens",
+                            labels=dict(x="Categoria Keyword", y="Marca",
+                                        color="Share ponderado (%)"),
+                            title="Share ponderado por marca × categoria de keyword (% dentro da categoria)",
+                        )
+                        _apply_chart_style(
+                            fig_hc, height=max(380, 32 * len(heat_cat)),
+                            hovermode="closest",
+                        )
+                        st.plotly_chart(fig_hc, use_container_width=True)
+                        st.caption(
+                            "Categoria Keyword segmenta a intenção da busca "
+                            "(Genérica, Capacidade BTU, Marca, Intenção Compra…): "
+                            "mostra onde cada marca domina o topo do funil."
+                        )
+                else:
+                    st.info(
+                        "Campo `categoria` (Categoria Keyword) sem dados no período — "
+                        "segmentação por categoria indisponível."
+                    )
+
+    # ── Tab 3: Timeline ──────────────────────────────────────────────────────
     with tab_timeline:
         st.subheader("Appearances over time")
 
@@ -4763,7 +4913,7 @@ def page_availability():
             _apply_chart_style(fig_line, height=450)
             st.plotly_chart(fig_line, use_container_width=True)
 
-    # ── Tab 3: Detail ────────────────────────────────────────────────────────
+    # ── Tab 4: Detail ────────────────────────────────────────────────────────
     with tab_detail:
         st.subheader("All records")
 
@@ -4800,6 +4950,677 @@ def page_availability():
             file_name=f"rac_availability_{start_date}_{end_date}.csv",
             mime="text/csv",
         )
+
+
+# ---------------------------------------------------------------------------
+# Page — Reputação & Avaliações
+# ---------------------------------------------------------------------------
+
+_MCJV_BRANDS = {"Midea", "Springer Midea", "Springer"}
+
+
+def page_reputacao() -> None:
+    """Página ⭐ Reputação & Avaliações.
+
+    Usa as colunas `avaliacao`, `qtd_avaliacoes`, `reputacao_seller` e
+    `fulfillment` já carregadas por query_coletas — campos que até então não
+    apareciam em nenhuma análise do dashboard.
+    """
+    st.title("⭐ Reputação & Avaliações")
+    st.caption(
+        "Avaliação dos produtos, volume de reviews, reputação do seller e "
+        "fulfillment — e como isso se relaciona com posição orgânica e buy box."
+    )
+
+    with st.sidebar:
+        st.subheader("Filtros")
+        date_range = st.date_input(
+            "Período",
+            value=(date.today() - timedelta(days=14), date.today()),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
+            key="rep_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=14)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="rep_platforms")
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="rep_brands")
+        sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "rep")
+        min_cell = st.number_input(
+            "Mín. de registros avaliados por célula (heatmap)",
+            min_value=1, max_value=100, value=5, key="rep_min_cell",
+        )
+        load_btn = st.button("🔄 Carregar Avaliações", type="primary",
+                             use_container_width=True)
+
+    if not load_btn:
+        st.info("Defina os filtros na barra lateral e clique em **Carregar Avaliações**.")
+        st.caption(
+            "💡 A cobertura de `avaliacao` e `reputacao_seller` varia por plataforma "
+            "e scraper — veja a matriz campo × plataforma na página 🩺 Data Health."
+        )
+        return
+
+    with st.spinner("Carregando dados…"):
+        df = query_coletas(
+            start_date, end_date,
+            platforms=sel_platforms or None,
+            brands=sel_brands or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
+            limit=50000,
+        )
+
+    if df.empty or "avaliacao" not in df.columns:
+        st.warning("Nenhum dado com avaliação para os filtros selecionados.")
+        return
+
+    rated = df[df["avaliacao"].notna()].copy()
+    if rated.empty:
+        st.warning("Nenhum registro com `avaliacao` preenchida no período/filtros.")
+        cov = (
+            df.assign(tem_aval=df["avaliacao"].notna())
+            .groupby("plataforma")["tem_aval"].mean().mul(100).round(0)
+            .reset_index()
+            .rename(columns={"tem_aval": "% com avaliação", "plataforma": "Plataforma"})
+            .sort_values("% com avaliação", ascending=False)
+        )
+        st.markdown("**Cobertura de avaliação por plataforma no período:**")
+        st.dataframe(cov, use_container_width=True, hide_index=True)
+        return
+
+    has_marca   = "marca" in rated.columns
+    has_reviews = "qtd_avaliacoes" in rated.columns
+
+    # ── KPIs: MCJV vs concorrência ────────────────────────────────────────────
+    is_mcjv = (
+        rated["marca"].isin(_MCJV_BRANDS) if has_marca
+        else pd.Series(False, index=rated.index)
+    )
+    aval_mcjv = rated.loc[is_mcjv, "avaliacao"].mean()
+    conc_mask = ~is_mcjv
+    if has_marca:
+        conc_mask &= rated["marca"].ne("Desconhecida")
+    aval_conc = rated.loc[conc_mask, "avaliacao"].mean()
+    gap = (
+        aval_mcjv - aval_conc
+        if pd.notna(aval_mcjv) and pd.notna(aval_conc) else None
+    )
+
+    reviews_marca = pd.DataFrame()
+    total_reviews_mcjv = None
+    if has_reviews and has_marca and "produto" in rated.columns:
+        rev = rated.dropna(subset=["qtd_avaliacoes"])
+        if not rev.empty:
+            # máx. por produto: o mesmo anúncio aparece em várias keywords/runs
+            por_produto = rev.groupby(
+                ["marca", "produto"], as_index=False
+            )["qtd_avaliacoes"].max()
+            reviews_marca = (
+                por_produto.groupby("marca", as_index=False)["qtd_avaliacoes"].sum()
+                .rename(columns={"qtd_avaliacoes": "Total de reviews"})
+                .sort_values("Total de reviews", ascending=False)
+            )
+            total_reviews_mcjv = int(
+                reviews_marca.loc[
+                    reviews_marca["marca"].isin(_MCJV_BRANDS), "Total de reviews"
+                ].sum()
+            )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Registros c/ avaliação", f"{len(rated):,}")
+    c2.metric(
+        "Avaliação média MCJV",
+        f"{aval_mcjv:.2f} ⭐" if pd.notna(aval_mcjv) else "—",
+        help="Midea + Springer Midea + Springer",
+    )
+    c3.metric(
+        "Média concorrentes",
+        f"{aval_conc:.2f} ⭐" if pd.notna(aval_conc) else "—",
+        help="Todas as marcas identificadas fora do grupo MCJV",
+    )
+    c4.metric(
+        "Gap MCJV − concorrência",
+        f"{gap:+.2f}" if gap is not None else "—",
+        help="Positivo = produtos MCJV melhor avaliados que a concorrência",
+    )
+    c5.metric(
+        "Reviews MCJV",
+        f"{total_reviews_mcjv:,}" if total_reviews_mcjv is not None else "—",
+        help="Soma do nº de avaliações dos produtos MCJV (máx. por produto, sem dupla contagem)",
+    )
+    st.divider()
+
+    tab_heat, tab_scatter, tab_rep, tab_ful = st.tabs(
+        ["🗺️ Marca × Plataforma", "🔵 Posição × Avaliação",
+         "🏅 Reputação do Seller", "📦 Fulfillment"]
+    )
+
+    # ── Tab 1: heatmap de avaliação média + volume de reviews ───────────────
+    with tab_heat:
+        if not has_marca or "plataforma" not in rated.columns:
+            st.info("Colunas marca/plataforma indisponíveis.")
+        else:
+            top_marcas = rated["marca"].value_counts().head(12).index
+            sub = rated[rated["marca"].isin(top_marcas)]
+            medias = sub.pivot_table(
+                index="marca", columns="plataforma",
+                values="avaliacao", aggfunc="mean",
+            )
+            counts = sub.pivot_table(
+                index="marca", columns="plataforma",
+                values="avaliacao", aggfunc="count",
+            )
+            medias = medias.where(counts >= min_cell).round(2)
+            if medias.dropna(how="all").dropna(how="all", axis=1).empty:
+                st.info(
+                    f"Nenhuma célula marca × plataforma com ≥ {min_cell} "
+                    "registros avaliados. Reduza o mínimo na barra lateral."
+                )
+            else:
+                fig = px.imshow(
+                    medias, text_auto=".2f", aspect="auto",
+                    color_continuous_scale="RdYlGn", zmin=3, zmax=5,
+                    labels=dict(x="Plataforma", y="Marca", color="Avaliação média"),
+                    title=f"Avaliação média por marca × plataforma (células com ≥ {min_cell} registros)",
+                )
+                _apply_chart_style(
+                    fig, height=max(380, 32 * len(medias)), hovermode="closest"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                _csv_download_btn(
+                    medias.reset_index(),
+                    f"rac_avaliacao_heatmap_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar heatmap", key="rep_heat_csv",
+                )
+
+            if not reviews_marca.empty:
+                top_rev = reviews_marca.head(12)
+                fig_rev = px.bar(
+                    top_rev, x="marca", y="Total de reviews",
+                    color="marca", color_discrete_map=_brand_color_map(top_rev["marca"]),
+                    title="Total de reviews por marca (máx. por produto — proxy de base instalada)",
+                    labels={"marca": "Marca"},
+                )
+                fig_rev.update_layout(showlegend=False)
+                _apply_chart_style(fig_rev, height=400, hovermode="closest")
+                st.plotly_chart(fig_rev, use_container_width=True)
+
+    # ── Tab 2: scatter posição orgânica × avaliação ──────────────────────────
+    with tab_scatter:
+        st.markdown("**Produtos bem avaliados rankeiam melhor?**")
+        needed = {"posicao_organica", "produto"}
+        if not (needed <= set(rated.columns) and has_marca):
+            st.info("Colunas posicao_organica/produto/marca indisponíveis.")
+        else:
+            base = rated.dropna(subset=["posicao_organica"])
+            if base.empty:
+                st.info("Nenhum registro com posição orgânica e avaliação simultâneas.")
+            else:
+                agg_kwargs = {
+                    "aval":  ("avaliacao", "mean"),
+                    "pos":   ("posicao_organica", "mean"),
+                    "n":     ("avaliacao", "size"),
+                }
+                if has_reviews:
+                    agg_kwargs["reviews"] = ("qtd_avaliacoes", "max")
+                prod = base.groupby(["produto", "marca"], as_index=False).agg(**agg_kwargs)
+                if has_reviews:
+                    prod["reviews"] = (
+                        pd.to_numeric(prod["reviews"], errors="coerce")
+                        .fillna(1).clip(lower=1).astype(float)
+                    )
+                else:
+                    prod["reviews"] = 1.0
+                prod = prod.sort_values("reviews", ascending=False).head(400)
+                fig = px.scatter(
+                    prod, x="aval", y="pos", size="reviews", color="marca",
+                    color_discrete_map=_brand_color_map(prod["marca"]),
+                    hover_name="produto", size_max=42,
+                    labels={"aval": "Avaliação média", "pos": "Posição orgânica média",
+                            "reviews": "Qtd avaliações", "marca": "Marca"},
+                    title="Posição orgânica média × avaliação (bolha = nº de avaliações)",
+                )
+                fig.update_yaxes(autorange="reversed")
+                _apply_chart_style(fig, height=520, hovermode="closest")
+                st.plotly_chart(fig, use_container_width=True)
+                corr = prod["aval"].corr(prod["pos"])
+                st.caption(
+                    "Eixo Y invertido: quanto mais alto o ponto, melhor a posição. "
+                    + (
+                        f"Correlação avaliação × posição: {corr:+.2f} "
+                        "(negativa = melhor avaliação anda junto com melhor posição)."
+                        if pd.notna(corr) else ""
+                    )
+                )
+                _csv_download_btn(
+                    prod.rename(columns={
+                        "aval": "Avaliação média", "pos": "Posição orgânica média",
+                        "n": "Registros", "reviews": "Qtd avaliações",
+                    }),
+                    f"rac_posicao_avaliacao_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar produtos", key="rep_scatter_csv",
+                )
+
+    # ── Tab 3: buy box win-rate por reputação do seller ─────────────────────
+    with tab_rep:
+        st.info(
+            "Cobertura limitada: hoje `reputacao_seller` vem principalmente de "
+            "ML (API oficial) e Shopee — confira a página 🩺 Data Health."
+        )
+        if not {"reputacao_seller", "buy_box_seller"} <= set(df.columns):
+            st.warning("Colunas de reputação/buy box indisponíveis no schema.")
+        else:
+            rep = df[
+                df["reputacao_seller"].notna()
+                & (df["reputacao_seller"].astype(str).str.strip() != "")
+                & df["buy_box_seller"].notna()
+                & (df["buy_box_seller"].astype(str).str.strip() != "")
+            ].copy()
+            if rep.empty:
+                st.warning("Nenhum registro com reputação + buy box no período/filtros.")
+            else:
+                wins = (
+                    rep.groupby("reputacao_seller", as_index=False)
+                    .agg(**{
+                        "Buy box wins": ("buy_box_seller", "count"),
+                        "Sellers distintos": ("buy_box_seller", "nunique"),
+                    })
+                    .rename(columns={"reputacao_seller": "Reputação"})
+                    .sort_values("Buy box wins", ascending=False)
+                )
+                wins["Share (%)"] = (
+                    wins["Buy box wins"] / wins["Buy box wins"].sum() * 100
+                ).round(1)
+                col_chart, col_table = st.columns([2, 1])
+                with col_chart:
+                    fig = px.bar(
+                        wins.head(12), x="Buy box wins", y="Reputação",
+                        orientation="h", color="Reputação",
+                        color_discrete_sequence=_CHART_COLORS, text="Share (%)",
+                        title="Buy box vencida por nível de reputação do seller",
+                    )
+                    fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                    fig.update_layout(showlegend=False,
+                                      yaxis={"categoryorder": "total ascending"})
+                    _apply_chart_style(fig, height=440, hovermode="closest")
+                    st.plotly_chart(fig, use_container_width=True)
+                with col_table:
+                    st.dataframe(wins, use_container_width=True,
+                                 hide_index=True, height=440)
+                _csv_download_btn(
+                    wins, f"rac_buybox_reputacao_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar reputação", key="rep_rep_csv",
+                )
+
+    # ── Tab 4: fulfillment × buy box e preço ────────────────────────────────
+    with tab_ful:
+        if "fulfillment" not in df.columns:
+            st.info("Coluna `fulfillment` indisponível no schema.")
+        else:
+            ful = df[df["fulfillment"].notna()].copy()
+            if ful.empty:
+                st.info("Nenhum registro com `fulfillment` no período/filtros.")
+            else:
+                ful["fulfillment"] = ful["fulfillment"].astype(bool)
+                if "buy_box_seller" in ful.columns:
+                    bb = ful[
+                        ful["buy_box_seller"].notna()
+                        & (ful["buy_box_seller"].astype(str).str.strip() != "")
+                    ]
+                else:
+                    bb = pd.DataFrame()
+                if bb.empty:
+                    st.info("Nenhum registro com buy box + fulfillment no período.")
+                else:
+                    pct = (
+                        bb.groupby("plataforma", as_index=False)["fulfillment"]
+                        .mean()
+                        .rename(columns={"fulfillment": "frac"})
+                    )
+                    pct["% buy box c/ fulfillment"] = (pct["frac"] * 100).round(1)
+                    fig = px.bar(
+                        pct.sort_values("% buy box c/ fulfillment", ascending=False),
+                        x="plataforma", y="% buy box c/ fulfillment",
+                        color="plataforma", color_discrete_sequence=_CHART_COLORS,
+                        title="% de buy box vencida com fulfillment, por plataforma",
+                        labels={"plataforma": "Plataforma"},
+                    )
+                    fig.update_layout(showlegend=False)
+                    _apply_chart_style(fig, height=400, hovermode="closest")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                if "preco" in ful.columns:
+                    # ≥ R$100: descarta parcela/erro de scraping (regra do projeto)
+                    pr = ful[ful["preco"].notna() & (ful["preco"] >= 100)]
+                    if not pr.empty and pr["fulfillment"].nunique() > 1:
+                        cmp_df = (
+                            pr.groupby(["plataforma", "fulfillment"], as_index=False)["preco"]
+                            .mean()
+                        )
+                        cmp_df["Oferta"] = cmp_df["fulfillment"].map(
+                            {True: "Com fulfillment", False: "Sem fulfillment"}
+                        )
+                        cmp_df["preco"] = cmp_df["preco"].round(2)
+                        fig2 = px.bar(
+                            cmp_df, x="plataforma", y="preco", color="Oferta",
+                            barmode="group", color_discrete_sequence=_CHART_COLORS,
+                            title="Preço médio com vs sem fulfillment (preços ≥ R$100)",
+                            labels={"plataforma": "Plataforma", "preco": "Preço médio (R$)"},
+                        )
+                        _apply_chart_style(fig2, height=400)
+                        st.plotly_chart(fig2, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Page — Share of Voice Patrocinado
+# ---------------------------------------------------------------------------
+
+def page_sov_patrocinado() -> None:
+    """Página 📣 Share of Voice Patrocinado.
+
+    Usa `posicao_patrocinada`, `patrocinado` e `posicao_organica` para mostrar
+    quem compra mídia, em quais keywords e com que dominância de SERP.
+    """
+    st.title("📣 Share of Voice Patrocinado")
+    st.caption(
+        "Quem compra mídia: densidade de anúncios patrocinados no top-10 por "
+        "marca/plataforma, keywords mais disputadas em leilão, dupla presença "
+        "orgânico + patrocinado e evolução diária."
+    )
+
+    with st.sidebar:
+        st.subheader("Filtros")
+        date_range = st.date_input(
+            "Período",
+            value=(date.today() - timedelta(days=14), date.today()),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
+            key="sov_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=14)
+        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+
+        opts = get_filter_options()
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="sov_platforms")
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="sov_brands")
+        sel_keywords  = st.multiselect("Keywords", opts["keywords"], key="sov_keywords")
+        load_btn = st.button("🔄 Carregar SoV", type="primary", use_container_width=True)
+
+    if not load_btn:
+        st.info("Defina os filtros na barra lateral e clique em **Carregar SoV**.")
+        st.caption(
+            "💡 Plataformas com ads hoje: Amazon (AMS) e Magalu (HEROs); ML é "
+            "100% orgânico. A cobertura real está na página 🩺 Data Health."
+        )
+        return
+
+    with st.spinner("Carregando dados…"):
+        df = query_coletas(
+            start_date, end_date,
+            platforms=sel_platforms or None,
+            brands=sel_brands or None,
+            keywords=sel_keywords or None,
+            limit=50000,
+        )
+
+    if df.empty:
+        st.warning("Nenhum dado para os filtros selecionados.")
+        return
+    if "patrocinado" not in df.columns and "posicao_patrocinada" not in df.columns:
+        st.warning("Colunas de patrocinado indisponíveis no schema.")
+        return
+
+    spon = pd.Series(False, index=df.index)
+    if "patrocinado" in df.columns:
+        spon |= df["patrocinado"].fillna(False).astype(bool)
+    if "posicao_patrocinada" in df.columns:
+        spon |= df["posicao_patrocinada"].notna()
+    df = df.assign(_spon=spon)
+
+    if not bool(spon.any()):
+        st.warning(
+            "Nenhum anúncio patrocinado no período/filtros. Plataformas 100% "
+            "orgânicas (ex: ML) não geram dados aqui — veja 🩺 Data Health."
+        )
+        return
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    n_spon = int(spon.sum())
+    pct_spon = n_spon / len(df) * 100
+    plats_com_ads = (
+        df.loc[df["_spon"], "plataforma"].nunique() if "plataforma" in df.columns else 0
+    )
+    kws_com_ads = (
+        df.loc[df["_spon"], "keyword"].nunique() if "keyword" in df.columns else 0
+    )
+    lider = None
+    if "marca" in df.columns:
+        spon_brands = df.loc[df["_spon"], "marca"].value_counts()
+        if not spon_brands.empty:
+            lider = f"{spon_brands.index[0]} ({spon_brands.iloc[0]:,})"
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Anúncios patrocinados", f"{n_spon:,}")
+    c2.metric("% patrocinado geral", f"{pct_spon:.1f}%")
+    c3.metric("Plataformas c/ ads", str(plats_com_ads))
+    c4.metric("Keywords c/ ads", f"{kws_com_ads:,}")
+    c5.metric("Marca líder em ads", lider or "—",
+              help="Marca com mais anúncios patrocinados no período")
+    st.divider()
+
+    tab_midia, tab_kw, tab_dupla, tab_evo = st.tabs(
+        ["📊 Quem compra mídia", "🔑 Keywords disputadas",
+         "👯 Dupla presença", "📈 Evolução diária"]
+    )
+
+    # ── Tab 1: % patrocinado no top-10 por marca e plataforma ───────────────
+    with tab_midia:
+        if "posicao_geral" not in df.columns:
+            st.info("Coluna posicao_geral indisponível.")
+        else:
+            t10 = df[df["posicao_geral"].notna() & (df["posicao_geral"] <= 10)]
+            if t10.empty:
+                st.info("Nenhum registro no top-10 para o período/filtros.")
+            else:
+                col_m, col_p = st.columns(2)
+                if "marca" in t10.columns:
+                    por_marca = (
+                        t10.groupby("marca")
+                        .agg(n=("_spon", "size"), spon=("_spon", "sum"))
+                        .reset_index()
+                    )
+                    por_marca = por_marca[por_marca["n"] >= 5]
+                    por_marca["% patrocinado no top-10"] = (
+                        por_marca["spon"] / por_marca["n"] * 100
+                    ).round(1)
+                    total_spon_t10 = por_marca["spon"].sum()
+                    por_marca["Share dos ads (%)"] = (
+                        (por_marca["spon"] / total_spon_t10 * 100).round(1)
+                        if total_spon_t10 else 0.0
+                    )
+                    por_marca = por_marca.sort_values(
+                        "% patrocinado no top-10", ascending=False
+                    )
+                    with col_m:
+                        top_m = por_marca.head(12)
+                        fig = px.bar(
+                            top_m, x="% patrocinado no top-10", y="marca",
+                            orientation="h", color="marca",
+                            color_discrete_map=_brand_color_map(top_m["marca"]),
+                            title="% de slots top-10 que são patrocinados, por marca",
+                            labels={"marca": "Marca"},
+                        )
+                        fig.update_layout(showlegend=False,
+                                          yaxis={"categoryorder": "total ascending"})
+                        _apply_chart_style(fig, height=440, hovermode="closest")
+                        st.plotly_chart(fig, use_container_width=True)
+                if "plataforma" in t10.columns:
+                    por_plat = (
+                        t10.groupby("plataforma")
+                        .agg(n=("_spon", "size"), spon=("_spon", "sum"))
+                        .reset_index()
+                    )
+                    por_plat["% patrocinado no top-10"] = (
+                        por_plat["spon"] / por_plat["n"] * 100
+                    ).round(1)
+                    with col_p:
+                        fig = px.bar(
+                            por_plat.sort_values("% patrocinado no top-10",
+                                                 ascending=False),
+                            x="plataforma", y="% patrocinado no top-10",
+                            color="plataforma",
+                            color_discrete_sequence=_CHART_COLORS,
+                            title="% de slots top-10 patrocinados, por plataforma",
+                            labels={"plataforma": "Plataforma"},
+                        )
+                        fig.update_layout(showlegend=False)
+                        _apply_chart_style(fig, height=440, hovermode="closest")
+                        st.plotly_chart(fig, use_container_width=True)
+                if "marca" in t10.columns and not por_marca.empty:
+                    st.dataframe(
+                        _style_midea_df(por_marca.rename(columns={
+                            "marca": "Marca", "n": "Slots top-10",
+                            "spon": "Patrocinados",
+                        }), brand_col="Marca"),
+                        use_container_width=True, hide_index=True,
+                    )
+                    _csv_download_btn(
+                        por_marca,
+                        f"rac_sov_top10_{start_date}_{end_date}.csv",
+                        "⬇️ Exportar top-10", key="sov_t10_csv",
+                    )
+
+    # ── Tab 2: keywords com maior densidade de patrocinados ─────────────────
+    with tab_kw:
+        if "keyword" not in df.columns:
+            st.info("Coluna keyword indisponível.")
+        else:
+            kw = (
+                df.groupby("keyword")
+                .agg(n=("_spon", "size"), spon=("_spon", "sum"))
+                .reset_index()
+            )
+            kw = kw[kw["n"] >= 10]
+            kw["Densidade patrocinada (%)"] = (kw["spon"] / kw["n"] * 100).round(1)
+            kw = kw.sort_values("Densidade patrocinada (%)", ascending=False)
+            kw_com_ads = kw[kw["spon"] > 0]
+            if kw_com_ads.empty:
+                st.info("Nenhuma keyword com anúncio patrocinado no período.")
+            else:
+                top_kw = kw_com_ads.head(15)
+                fig = px.bar(
+                    top_kw, x="Densidade patrocinada (%)", y="keyword",
+                    orientation="h", color="Densidade patrocinada (%)",
+                    color_continuous_scale="OrRd",
+                    title="Keywords com leilão mais disputado (% de anúncios pagos)",
+                    labels={"keyword": "Keyword"},
+                )
+                fig.update_layout(yaxis={"categoryorder": "total ascending"},
+                                  coloraxis_showscale=False)
+                _apply_chart_style(fig, height=480, hovermode="closest")
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(
+                    kw_com_ads.rename(columns={
+                        "keyword": "Keyword", "n": "Registros",
+                        "spon": "Patrocinados",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+                _csv_download_btn(
+                    kw_com_ads,
+                    f"rac_sov_keywords_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar keywords", key="sov_kw_csv",
+                )
+
+    # ── Tab 3: dupla presença orgânico + patrocinado ────────────────────────
+    with tab_dupla:
+        st.markdown(
+            "**Dominância de SERP:** a mesma marca ocupando slot orgânico **e** "
+            "patrocinado na mesma keyword/coleta."
+        )
+        run_cols = [c for c in ["data", "turno", "plataforma", "keyword", "marca"]
+                    if c in df.columns]
+        if not {"keyword", "marca"} <= set(run_cols) or "posicao_organica" not in df.columns:
+            st.info("Colunas necessárias (keyword/marca/posicao_organica) indisponíveis.")
+        else:
+            org_flag = df["posicao_organica"].notna() & ~df["_spon"]
+            runs = (
+                df.assign(_org=org_flag)
+                .groupby(run_cols)
+                .agg(org=("_org", "any"), spon=("_spon", "any"))
+                .reset_index()
+            )
+            runs["dupla"] = runs["org"] & runs["spon"]
+            por_marca = (
+                runs.groupby("marca")
+                .agg(**{"Buscas da marca": ("dupla", "size"),
+                        "Com dupla presença": ("dupla", "sum")})
+                .reset_index()
+            )
+            por_marca["% de dupla presença"] = (
+                por_marca["Com dupla presença"] / por_marca["Buscas da marca"] * 100
+            ).round(1)
+            por_marca = por_marca[por_marca["Com dupla presença"] > 0].sort_values(
+                "Com dupla presença", ascending=False
+            )
+            if por_marca.empty:
+                st.info("Nenhuma marca com dupla presença no período/filtros.")
+            else:
+                top_d = por_marca.head(12)
+                fig = px.bar(
+                    top_d, x="Com dupla presença", y="marca", orientation="h",
+                    color="marca", color_discrete_map=_brand_color_map(top_d["marca"]),
+                    text="% de dupla presença",
+                    title="Keyword-coletas com slot orgânico E patrocinado da mesma marca",
+                    labels={"marca": "Marca"},
+                )
+                fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                fig.update_layout(showlegend=False,
+                                  yaxis={"categoryorder": "total ascending"})
+                _apply_chart_style(fig, height=440, hovermode="closest")
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(
+                    _style_midea_df(por_marca.rename(columns={"marca": "Marca"}),
+                                    brand_col="Marca"),
+                    use_container_width=True, hide_index=True,
+                )
+                _csv_download_btn(
+                    por_marca,
+                    f"rac_sov_dupla_{start_date}_{end_date}.csv",
+                    "⬇️ Exportar dupla presença", key="sov_dupla_csv",
+                )
+
+    # ── Tab 4: evolução diária do % patrocinado por marca ───────────────────
+    with tab_evo:
+        if "marca" not in df.columns or "data" not in df.columns:
+            st.info("Colunas marca/data indisponíveis.")
+        else:
+            top8 = (
+                df.loc[df["_spon"], "marca"].value_counts().head(8).index
+            )
+            ev = (
+                df[df["marca"].isin(top8)]
+                .groupby(["data", "marca"])
+                .agg(n=("_spon", "size"), spon=("_spon", "sum"))
+                .reset_index()
+            )
+            if ev.empty:
+                st.info("Sem dados para a evolução diária.")
+            else:
+                ev["% patrocinado"] = (ev["spon"] / ev["n"] * 100).round(1)
+                ev["data"] = pd.to_datetime(ev["data"])
+                fig = px.line(
+                    ev, x="data", y="% patrocinado", color="marca", markers=True,
+                    color_discrete_map=_brand_color_map(ev["marca"]),
+                    title="% de anúncios patrocinados por dia (top-8 marcas em ads)",
+                    labels={"data": "Data", "marca": "Marca"},
+                )
+                _emphasize_midea_traces(fig)
+                _apply_chart_style(fig, height=450)
+                st.plotly_chart(fig, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -4912,6 +5733,7 @@ REGRAS DE ANÁLISE:
 9. Se houver dados de mais de um dia, incluir análise D/D (dia a dia) com tendências
 10. Manter linguagem em PORTUGUÊS BRASILEIRO, usar termos do mercado em inglês quando padrão (sell-in, sell-out, Buy Box, ROAS, etc.)
 11. BUY BOX (foco principal): quando os campos "Buy Box Seller", "Tipo Seller" e "Qtd Sellers" estiverem preenchidos, priorizar a análise de share of buy box — qual seller vence a oferta principal por produto/plataforma, o mix 1P vs 3P/Loja Oficial (Tipo Seller) e o nível de competição (Qtd Sellers). Sinalizar trocas de dono da buy box entre dias. Nem toda plataforma expõe esses campos; analisar onde houver dado e não inferir buy box a partir de posição quando o campo real estiver ausente.
+12. REPUTAÇÃO & AVALIAÇÕES: quando os campos "Avaliação", "Qtd Avaliações", "Reputação Seller" e "Fulfillment?" estiverem presentes, analisar (a) o gap de avaliação média Midea/MCJV vs principais concorrentes por plataforma, ponderando pelo volume de reviews; (b) a correlação entre reputação do seller e fulfillment × vitória de buy box (seção BUY BOX × REPUTAÇÃO quando disponível). A cobertura desses campos varia por plataforma (reputação vem principalmente de ML-API e Shopee); NUNCA inferir avaliação, reputação ou fulfillment quando o campo estiver ausente — declarar explicitamente "sem dados" para a plataforma.
 
 OUTPUT: Relatório completo em Markdown. Sem blocos de código. Sem introduções genéricas. Começar direto com o título do relatório."""
 
@@ -4933,6 +5755,11 @@ _CI_COL_MAP = {
     "buy_box_seller":     "Buy Box Seller",
     "qtd_sellers":        "Qtd Sellers",
     "tipo_seller":        "Tipo Seller",
+    # Reputação & avaliações (Jun/2026)
+    "avaliacao":          "Avaliação",
+    "qtd_avaliacoes":     "Qtd Avaliações",
+    "reputacao_seller":   "Reputação Seller",
+    "fulfillment":        "Fulfillment?",
     "tag":                "Tag Destaque",
 }
 _CI_MAX_RAW = 20_000  # Above this, send pre-aggregated tables instead of raw CSV
@@ -5007,6 +5834,53 @@ def _ci_build_payload(df: pd.DataFrame) -> str:
             min_price=("preco", "min"),
         ).reset_index()
         sections.append("=== KEYWORD PERFORMANCE (ML) ===\n" + kw_agg.to_csv(sep=";", index=False))
+
+    # 3b. Reputação & avaliações — groupby (plataforma, marca)
+    rep_kwargs: dict = {}
+    if "avaliacao" in df.columns:
+        rep_kwargs["aval_media"] = ("avaliacao", "mean")
+    if "qtd_avaliacoes" in df.columns:
+        rep_kwargs["total_reviews"] = ("qtd_avaliacoes", "sum")
+    if "fulfillment" in df.columns:
+        rep_kwargs["pct_fulfillment"] = (
+            "fulfillment", lambda s: s.fillna(False).astype(bool).mean() * 100
+        )
+    if rep_kwargs:
+        rep_agg = df.groupby(["plataforma", "marca"], dropna=False).agg(
+            registros=("plataforma", "size"), **rep_kwargs
+        ).reset_index()
+        for col in ("aval_media", "pct_fulfillment"):
+            if col in rep_agg.columns:
+                rep_agg[col] = rep_agg[col].round(2)
+        sections.append(
+            "=== REPUTAÇÃO & AVALIAÇÕES (plataforma × marca) ===\n"
+            + rep_agg.to_csv(sep=";", index=False)
+        )
+
+    # 3c. Win-rate de buy box por reputação do seller (ML-API / Shopee)
+    if {"buy_box_seller", "reputacao_seller"} <= set(df.columns):
+        rep_bb = df[
+            df["buy_box_seller"].notna()
+            & (df["buy_box_seller"].astype(str).str.strip() != "")
+            & df["reputacao_seller"].notna()
+            & (df["reputacao_seller"].astype(str).str.strip() != "")
+        ]
+        if not rep_bb.empty:
+            rep_bb_agg = rep_bb.groupby(
+                ["plataforma", "reputacao_seller"], dropna=False
+            ).agg(
+                buy_box_wins=("buy_box_seller", "count"),
+                sellers=("buy_box_seller", "nunique"),
+            ).reset_index()
+            rep_bb_agg["share_plataforma_pct"] = (
+                rep_bb_agg["buy_box_wins"]
+                / rep_bb_agg.groupby("plataforma")["buy_box_wins"].transform("sum")
+                * 100
+            ).round(1)
+            sections.append(
+                "=== BUY BOX × REPUTAÇÃO DO SELLER ===\n"
+                + rep_bb_agg.to_csv(sep=";", index=False)
+            )
 
     # 4. Tags distribution
     tag_df = df[df["tag"].notna() & (df["tag"] != "")]
@@ -7005,6 +7879,8 @@ PAGES = {
     "🗂️ Ficha do Produto":         page_product_sheet,
     "🏆 BuyBox Position":          page_buybox_position,
     "👑 Share of Buy Box":         page_share_of_buybox,
+    "⭐ Reputação & Avaliações":   page_reputacao,
+    "📣 SoV Patrocinado":          page_sov_patrocinado,
     "📦 Availability":             page_availability,
     "🧠 Competitive Intelligence": page_ci_analysis,
     "🚀 Run Collection":           page_run_collection,
@@ -7027,6 +7903,8 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "🗂️ Ficha do Produto",
         "🏆 BuyBox Position",
         "👑 Share of Buy Box",
+        "⭐ Reputação & Avaliações",
+        "📣 SoV Patrocinado",
         "📦 Availability",
         "🧠 Competitive Intelligence",
     ],

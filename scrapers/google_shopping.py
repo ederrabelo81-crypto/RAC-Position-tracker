@@ -31,6 +31,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
+from utils.brands import extract_brand
 from utils.text import parse_price, parse_rating, parse_review_count
 
 # ---------------------------------------------------------------------------
@@ -352,6 +353,37 @@ class GoogleShoppingScraper(BaseScraper):
 
         return None
 
+    @staticmethod
+    def _classify_tipo_seller(
+        seller: Optional[str], title: Optional[str]
+    ) -> Optional[str]:
+        """Classifica o merchant do card em loja oficial da marca vs varejista.
+
+        Heurística: se o nome do merchant contém a marca do produto (extraída
+        do título via lista BRANDS do config) → "Loja da Marca (1P)"; merchant
+        presente sem relação com a marca → "Varejista". Sem merchant extraído
+        não inventamos classificação (None).
+
+        Args:
+            seller: nome do merchant extraído do card (pode ser None).
+            title:  título do produto (fonte da marca monitorada).
+
+        Returns:
+            "Loja da Marca (1P)", "Varejista" ou None quando não há merchant.
+        """
+        if not seller or not seller.strip():
+            return None
+        product_brand = extract_brand(title)
+        if product_brand != "Desconhecida":
+            if re.search(rf"\b{re.escape(product_brand)}\b", seller, re.IGNORECASE):
+                return "Loja da Marca (1P)"
+            return "Varejista"
+        # Marca do produto desconhecida: merchant cujo nome é uma marca
+        # monitorada (ex: "LG Brasil") ainda conta como loja da marca.
+        if extract_brand(seller) != "Desconhecida":
+            return "Loja da Marca (1P)"
+        return "Varejista"
+
     _RE_MERCHANTS = re.compile(
         r"(\d+)\s*\+?\s*(?:lojas?|ofertas?|vendedores?)", re.IGNORECASE
     )
@@ -497,6 +529,7 @@ class GoogleShoppingScraper(BaseScraper):
                 seller=seller,
                 buy_box_seller=seller,
                 qtd_sellers=qtd_sellers,
+                tipo_seller=self._classify_tipo_seller(seller, title),
                 is_fulfillment=False,
                 rating=rating,
                 review_count=review_count,
