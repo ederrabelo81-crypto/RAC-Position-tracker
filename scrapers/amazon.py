@@ -9,6 +9,12 @@ Estratégia de extração:
   - Distinção de patrocinado: `div[data-component-type="sp-sponsored-result"]`
   - Fulfillment: badge Prime ou "Vendido pela Amazon" / "Enviado pela Amazon"
 
+Buy box / seller (foco Mai/2026): a SERP da Amazon NÃO mostra "Vendido por"
+  (isso só existe no PDP). Quando o vendedor não é extraído do card, o buy box
+  fica desconhecido (None) em vez de virar "Amazon/1P" fantasma — caso contrário
+  100% dos registros sairiam como vitória 1P da Amazon, distorcendo o share of
+  buy box. O campo de exibição `seller` mantém "Amazon" como fallback.
+
 Notas de manutenção:
   A Amazon muda frequentemente seus atributos data-*. Ao receber 0 resultados,
   verifique o arquivo logs/amazon_debug_p{n}_{kw}.html para inspecionar o DOM.
@@ -184,10 +190,18 @@ class AmazonScraper(BaseScraper):
         return None
 
     @staticmethod
-    def _classify_seller(seller: Optional[str]) -> str:
-        """Amazon 1P (vendido pela Amazon) vs 3P (marketplace de terceiros)."""
+    def _classify_seller(seller: Optional[str]) -> Optional[str]:
+        """Amazon 1P (vendido pela Amazon) vs 3P (marketplace de terceiros).
+
+        Retorna None quando o vendedor é desconhecido: a SERP não expõe o
+        "Vendido por", então um card sem seller extraído NÃO pode ser contado
+        como vitória 1P da Amazon (inflaria o share of buy box). Só o caller
+        com um nome de fato observado deve chamar este método.
+        """
         name = (seller or "").strip().lower()
-        if not name or "amazon" in name:
+        if not name:
+            return None
+        if "amazon" in name:
             return "1P"
         return "3P"
 
@@ -288,9 +302,14 @@ class AmazonScraper(BaseScraper):
 
             price = self._extract_price(item)
 
-            seller = self._extract_seller(item) or "Amazon"
+            # "Vendido por" só aparece no PDP, não na SERP. Quando não há
+            # vendedor extraído, mantemos "Amazon" apenas no campo de exibição
+            # `seller`; buy box e tipo ficam desconhecidos (None) em vez de
+            # virarem 100% "Amazon/1P" fantasma no share of buy box.
+            seller_extracted = self._extract_seller(item)
+            seller_display = seller_extracted or "Amazon"
             qtd_sellers = self._extract_offers_count(item)
-            tipo_seller = self._classify_seller(seller)
+            tipo_seller = self._classify_seller(seller_extracted)
 
             fulfillment = bool(item.select_one(_SELECTORS["fulfillment"]))
 
@@ -310,7 +329,7 @@ class AmazonScraper(BaseScraper):
 
             url_produto = self._extract_url(item)
 
-            records.append(self._build_record(
+            record = self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
                 title=title,
@@ -318,8 +337,8 @@ class AmazonScraper(BaseScraper):
                 position_organic=pos_organic,
                 position_sponsored=pos_sponsored,
                 price_float=price,
-                seller=seller,
-                buy_box_seller=seller,
+                seller=seller_display,
+                buy_box_seller=seller_extracted,
                 qtd_sellers=qtd_sellers,
                 tipo_seller=tipo_seller,
                 is_fulfillment=fulfillment,
@@ -327,7 +346,13 @@ class AmazonScraper(BaseScraper):
                 review_count=review_count,
                 tag_destaque=tag,
                 url_produto=url_produto,
-            ))
+            )
+            if seller_extracted is None:
+                # _build_record cai pra `seller` ("Amazon") quando buy_box=None;
+                # aqui o vendedor é desconhecido (SERP sem "Vendido por") e não
+                # pode virar vitória 1P fantasma no share of buy box.
+                record["Buy Box Seller"] = None
+            records.append(record)
 
         return records
 
