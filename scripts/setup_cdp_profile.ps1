@@ -11,7 +11,7 @@
 #   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -Slot Default
 #   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -Slot "Profile 1"
 #   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -ProfileName "Lumina"
-# (-Slot escolhe direto a pasta do perfil — use quando os nomes locais se
+# (-Slot escolhe direto a pasta do perfil - use quando os nomes locais se
 #  repetem, ex.: dois slots "Seu Chrome"; confira o seu em chrome://version)
 #
 # Re-executar: deleta C:\chrome-rac-cdp antes (apaga sessao acumulada):
@@ -20,10 +20,10 @@
 
 param(
     [string]$ProfileName = "Eder",
-    # Slot direto (ex: "Default", "Profile 1") — resolve ambiguidade quando
+    # Slot direto (ex: "Default", "Profile 1") - resolve ambiguidade quando
     # varios perfis tem o mesmo nome local ("Seu Chrome"/"Pessoa 1")
     [string]$Slot = "",
-    # Pasta de dados do Chrome do usuario LOGADO — nao fixar usuario no path
+    # Pasta de dados do Chrome do usuario LOGADO - nao fixar usuario no path
     [string]$UserDataDir = (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"),
     [string]$CdpDataDir  = "C:\chrome-rac-cdp"
 )
@@ -81,7 +81,7 @@ if ($profiles.Count -eq 0) {
     exit 1
 }
 
-# Encontra o match — por slot (direto, sem ambiguidade) ou por nome local
+# Encontra o match - por slot (direto, sem ambiguidade) ou por nome local
 if ($Slot) {
     $match = $profiles | Where-Object { $_.Slot -eq $Slot } | Select-Object -First 1
     if ($null -eq $match) {
@@ -90,7 +90,7 @@ if ($Slot) {
 } else {
     $match = $profiles | Where-Object { $_.Name -eq $ProfileName } | Select-Object -First 1
 
-    # Sem match pelo nome mas so existe UM perfil → usa ele (maquina nova/pessoal)
+    # Sem match pelo nome mas so existe UM perfil -> usa ele (maquina nova/pessoal)
     if ($null -eq $match -and $profiles.Count -eq 1) {
         $match = $profiles[0]
         Write-Host "[INFO] Perfil '$ProfileName' nao existe; usando o unico perfil da maquina: '$($match.Name)' ($($match.Slot))" -ForegroundColor Yellow
@@ -107,7 +107,7 @@ if ($null -eq $match) {
         Write-Host ("  {0,-12} -> {1,-20} | {2}" -f $_.Slot, $_.Name, $_.Email) -ForegroundColor Gray
     }
     Write-Host ""
-    Write-Host "Selecione pelo SLOT (recomendado — nomes locais se repetem):" -ForegroundColor Yellow
+    Write-Host "Selecione pelo SLOT (recomendado - nomes locais se repetem):" -ForegroundColor Yellow
     Write-Host "  PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -Slot Default" -ForegroundColor Gray
     Write-Host "  PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -Slot 'Profile 3'" -ForegroundColor Gray
     Write-Host "ou pelo nome local:" -ForegroundColor Yellow

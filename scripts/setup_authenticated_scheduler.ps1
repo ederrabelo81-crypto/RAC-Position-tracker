@@ -11,7 +11,7 @@
 #   3. RAC_Autenticada_Noite    - Coleta 21:05 (Fechamento, 1 pg, alta)
 #
 # Se as tarefas antigas RAC_Magalu_* existirem, sao removidas (a coleta
-# autenticada ja inclui o Magalu — manter as duas duplicaria os dados).
+# autenticada ja inclui o Magalu - manter as duas duplicaria os dados).
 #
 # Uso (PowerShell como Admin):
 #   PowerShell -ExecutionPolicy Bypass -File scripts\setup_authenticated_scheduler.ps1
@@ -164,7 +164,7 @@ Write-Host "Remover:   .\setup_authenticated_scheduler.ps1 -Remove" -ForegroundC
 Write-Host ""
 Write-Host "PROXIMOS PASSOS:" -ForegroundColor Yellow
 Write-Host "  1. Rode start_chrome_cdp.bat (ou faca logout/login do Windows)" -ForegroundColor Yellow
-Write-Host "  2. No Chrome CDP: faca LOGIN na Shopee (1x — fica salvo no perfil)" -ForegroundColor Yellow
+Write-Host "  2. No Chrome CDP: faca LOGIN na Shopee (1x - fica salvo no perfil)" -ForegroundColor Yellow
 Write-Host "  3. Navegue 2-3 min no Magalu/Casas Bahia para aquecer o perfil" -ForegroundColor Yellow
 Write-Host "  4. Deixe o Chrome aberto" -ForegroundColor Yellow
 Write-Host "  5. Teste: Start-ScheduledTask -TaskName 'RAC_Autenticada_Manha'" -ForegroundColor Yellow
