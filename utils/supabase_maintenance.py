@@ -26,7 +26,10 @@ from utils.supabase_client import (
     _BTU_PRICE_CEILINGS,
 )
 
-def delete_invalid_from_supabase(dry_run: bool = False) -> Dict[str, int]:
+def delete_invalid_from_supabase(
+    dry_run: bool = False,
+    since_id: Optional[int] = None,
+) -> Dict[str, int]:
     """
     Varre a tabela `coletas` e remove registros que não passam no filtro AC.
 
@@ -36,7 +39,9 @@ def delete_invalid_from_supabase(dry_run: bool = False) -> Dict[str, int]:
       3. Deleta IDs inválidos em lotes de 100
 
     Args:
-        dry_run: Se True, apenas conta — não deleta nada.
+        dry_run:  Se True, apenas conta — não deleta nada.
+        since_id: Varredura incremental — só linhas com id > since_id
+                  (watermark da automação). None = histórico inteiro.
 
     Returns:
         dict com chaves: scanned, invalid, deleted, errors
@@ -52,16 +57,21 @@ def delete_invalid_from_supabase(dry_run: bool = False) -> Dict[str, int]:
     scanned = 0
     offset = 0
 
-    logger.info("[Supabase] Iniciando varredura de registros inválidos...")
+    logger.info(
+        f"[Supabase] Iniciando varredura de registros inválidos"
+        f"{f' (id > {since_id})' if since_id else ''}..."
+    )
 
     while True:
         try:
-            resp = (
+            q = (
                 client.table("coletas")
                 .select("id,produto,preco")
-                .range(offset, offset + _FETCH_BATCH - 1)
-                .execute()
+                .order("id")
             )
+            if since_id:
+                q = q.gt("id", since_id)
+            resp = q.range(offset, offset + _FETCH_BATCH - 1).execute()
         except Exception as exc:
             logger.error(f"[Supabase] Erro ao buscar registros (offset={offset}): {exc}")
             break
@@ -256,6 +266,7 @@ def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, 
 def normalize_all_products_in_supabase(
     dry_run: bool = False,
     preview_limit: int = 20,
+    since_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Varrer a tabela `coletas` e re-normaliza o campo `produto` usando
@@ -274,6 +285,7 @@ def normalize_all_products_in_supabase(
     Args:
         dry_run:       Se True, conta e exibe preview — não grava nada.
         preview_limit: Máximo de exemplos de mudança retornados no dry-run.
+        since_id:      Varredura incremental — só linhas com id > since_id.
 
     Returns:
         dict com chaves:
@@ -300,12 +312,14 @@ def normalize_all_products_in_supabase(
     # ── Fase 1: identificar mudanças ──
     while True:
         try:
-            resp = (
+            q = (
                 client.table("coletas")
                 .select("id,produto,marca")
-                .range(offset, offset + _FETCH_BATCH - 1)
-                .execute()
+                .order("id")
             )
+            if since_id:
+                q = q.gt("id", since_id)
+            resp = q.range(offset, offset + _FETCH_BATCH - 1).execute()
         except Exception as exc:
             logger.error(f"[Supabase] Erro ao buscar registros (offset={offset}): {exc}")
             break
@@ -462,7 +476,10 @@ def normalize_all_products_in_supabase(
         "preview":   preview,
     }
 
-def scan_fix_bad_prices_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
+def scan_fix_bad_prices_in_supabase(
+    dry_run: bool = False,
+    since_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Varre a tabela `coletas` e identifica/remove registros com preço suspeito.
 
@@ -471,7 +488,8 @@ def scan_fix_bad_prices_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
     (deveria ser ~R$ 1.899) — indício do bug de parser ×10.
 
     Args:
-        dry_run: Se True, apenas conta e retorna exemplos — não deleta.
+        dry_run:  Se True, apenas conta e retorna exemplos — não deleta.
+        since_id: Varredura incremental — só linhas com id > since_id.
 
     Returns:
         dict com chaves: scanned, suspicious, deleted, errors, examples
@@ -488,17 +506,22 @@ def scan_fix_bad_prices_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
     scanned = 0
     offset  = 0
 
-    logger.info("[Supabase] Iniciando varredura de preços suspeitos...")
+    logger.info(
+        f"[Supabase] Iniciando varredura de preços suspeitos"
+        f"{f' (id > {since_id})' if since_id else ''}..."
+    )
 
     while True:
         try:
-            resp = (
+            q = (
                 client.table("coletas")
                 .select("id,produto,preco,plataforma")
                 .not_.is_("preco", "null")
-                .range(offset, offset + _FETCH_BATCH - 1)
-                .execute()
+                .order("id")
             )
+            if since_id:
+                q = q.gt("id", since_id)
+            resp = q.range(offset, offset + _FETCH_BATCH - 1).execute()
         except Exception as exc:
             logger.error(f"[Supabase] Erro ao buscar registros (offset={offset}): {exc}")
             break
@@ -574,7 +597,10 @@ def scan_fix_bad_prices_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
         "examples":   examples,
     }
 
-def recalculate_unknown_brands_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
+def recalculate_unknown_brands_in_supabase(
+    dry_run: bool = False,
+    since_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Varre registros com marca='Desconhecida' e re-aplica extract_brand() sobre
     o campo `produto`. Atualiza os que agora são identificados com a lista atual
@@ -584,7 +610,10 @@ def recalculate_unknown_brands_in_supabase(dry_run: bool = False) -> Dict[str, A
     históricos que foram gravados como "Desconhecida".
 
     Args:
-        dry_run: Se True, apenas conta/lista — não grava nada.
+        dry_run:  Se True, apenas conta/lista — não grava nada.
+        since_id: Varredura incremental — só linhas com id > since_id.
+                  Após mudar config.BRANDS, rode sem since_id (full scan)
+                  para recuperar o histórico.
 
     Returns:
         dict: scanned, updated, unchanged, errors, preview
@@ -608,13 +637,15 @@ def recalculate_unknown_brands_in_supabase(dry_run: bool = False) -> Dict[str, A
 
     while True:
         try:
-            resp = (
+            q = (
                 client.table("coletas")
                 .select("id,produto")
                 .eq("marca", "Desconhecida")
-                .range(offset, offset + _FETCH_BATCH - 1)
-                .execute()
+                .order("id")
             )
+            if since_id:
+                q = q.gt("id", since_id)
+            resp = q.range(offset, offset + _FETCH_BATCH - 1).execute()
         except Exception as exc:
             logger.error(f"[Supabase] Erro ao buscar lote (offset={offset}): {exc}")
             break
