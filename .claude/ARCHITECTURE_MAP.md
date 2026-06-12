@@ -27,10 +27,15 @@ RAC-Position-tracker/
 │   ├── text.py                # parse_price, parse_rating, parse_review_count, normalize_text
 │   ├── brands.py              # extract_brand() — regex matching against BRANDS list
 │   ├── session_grabber.py     # Auth session capture for Shopee/Casas Bahia
+│   ├── supabase_maintenance.py # Limpeza/normalização (aceita since_id incremental)
+│   ├── admin_automation.py    # Motor automação ADMIN: 10 etapas, watermark, LLM
 │   └── discover_shopee_api.py # Shopee API discovery
 │
+├── scripts/
+│   └── admin_auto.py          # CLI da automação ADMIN (cron: --full semanal)
+│
 ├── output/                    # Generated CSVs (rac_monitoramento_*.csv)
-└── logs/                      # Loguru logs + debug HTML dumps
+└── logs/                      # Loguru logs + admin_automation.jsonl + debug HTML
 ```
 
 ## Data Flow

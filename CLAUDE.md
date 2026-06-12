@@ -238,12 +238,14 @@ rac-position-tracker/
 │   ├── brands.py                # extract_brand() regex matching
 │   ├── session_grabber.py       # Auth session capture
 │   ├── supabase_client.py       # Upload, cleanup, maintenance
+│   ├── admin_automation.py      # Motor da automação ADMIN (zero interação)
 │   └── n8n_notify.py            # Telegram notifications (N8N + fallback)
 │
 ├── scripts/
 │   ├── oracle_setup.sh          # VM setup script
 │   ├── collect_manha_linux.sh   # Morning collection (10:00 BRT)
 │   ├── collect_noite_linux.sh   # Night collection (21:00 BRT)
+│   ├── admin_auto.py            # CLI da automação ADMIN (cron/debug)
 │   ├── fix_turno.py             # Database cleanup utilities
 │   └── monitor.sh               # Log monitoring
 │
@@ -727,6 +729,13 @@ streamlit run app.py
 python scripts/daily_status_check.py              # Hoje, ambos turnos
 python scripts/daily_status_check.py --turno Abertura
 python scripts/daily_status_check.py --data 2026-05-14 --no-notify
+
+# Automação ADMIN — limpeza, normalização e de-para SEM interação humana.
+# Roda sozinha pós-coleta (main.py) e por auto-run no dashboard (🤖 Automação);
+# CLI para cron/debug:
+python scripts/admin_auto.py                      # incremental (watermark)
+python scripts/admin_auto.py --dry-run            # simula, não grava nada
+python scripts/admin_auto.py --full               # varre o histórico inteiro
 
 # Database maintenance
 python scripts/fix_turno.py --confirm             # Fix inverted turno

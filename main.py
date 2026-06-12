@@ -497,6 +497,17 @@ def main() -> None:
         except Exception:
             pass
 
+        # --- Automação ADMIN pós-coleta (limpeza, normalização, de-para) ---
+        # Substitui as ações manuais do dashboard (Data Cleanup / Normalize
+        # SKUs / fila REVISAR). Incremental por watermark — rápido após a
+        # primeira execução. Desative com ADMIN_AUTOMATION=off no .env.
+        if os.getenv("ADMIN_AUTOMATION", "on").strip().lower() not in ("off", "0", "false"):
+            try:
+                from utils.admin_automation import run_admin_automation
+                run_admin_automation(trigger="pos_coleta")
+            except Exception as exc:
+                logger.error(f"Automação admin pós-coleta falhou: {exc}")
+
     else:
         logger.warning(
             "Nenhum registro coletado. "

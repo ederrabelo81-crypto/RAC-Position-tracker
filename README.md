@@ -240,10 +240,15 @@ streamlit run app.py
 - **📂 Import History** — histórico de CSVs + upload via Streamlit
 - **🩺 Data Health** — cobertura de coleta + matriz campo × plataforma (regressões)
 
-**ADMIN (3):**
-- **🧹 Data Cleanup** — remove registros não-AC
-- **🔤 Normalize SKUs** — re-normalização em batch
-- **🧬 Família & SKU** — resolve fila REVISAR do de-para (catálogo)
+**ADMIN (2):**
+- **🤖 Automação** — manutenção 100% automática (sem cliques): limpeza de
+  não-AC, preços suspeitos, normalizações (produto/marca/plataforma), seed +
+  resolução da fila REVISAR (regras → LLM → heurística) e refresh de cache.
+  Dispara pós-coleta (`main.py`), via cron (`scripts/admin_auto.py`) e em
+  auto-run ao abrir a página (>24h). Auditoria em `admin_automation_runs`
+  (migration 006) + resumo no Telegram.
+- **🧬 Família & SKU** — auditoria/override pontual do de-para (a fila
+  REVISAR é resolvida pela automação)
 
 ---
 
@@ -443,7 +448,7 @@ Dashboard usa o subset `requirements_app.txt`.
 
 ## ✅ Validação Operacional — 11/06/2026
 
-- ✅ **20 páginas** de dashboard (12 Insights + 5 Operações + 3 Admin)
+- ✅ **20 páginas** de dashboard (13 Insights + 5 Operações + 2 Admin, com manutenção automática)
 - ✅ **7 plataformas ativas** com buy box/seller (rollout fim de Mai/2026)
 - ✅ **PriceTrack diário** como fonte de verdade de preço (06:00 BRT + auto-heal)
 - ✅ **Coleta autenticada automatizada** Magalu+Shopee+CB via CDP (Jun/2026)

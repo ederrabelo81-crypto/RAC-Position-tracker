@@ -3218,561 +3218,214 @@ def page_data_health() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Page 5 — Data Cleanup
+# Page 5 — Automação Admin (substitui as páginas manuais Data Cleanup e
+# Normalize SKUs: as mesmas rotinas agora rodam sozinhas, sem cliques)
 # ---------------------------------------------------------------------------
 
-def page_data_cleanup():
-    st.title("🧹 Data Cleanup")
-    st.caption(
-        "Scans Supabase for records that are not air-conditioner products "
-        "(e.g. iPhones, diapers, notebooks) and removes them."
-    )
-
-    st.info(
-        "**How it works:** Each record's product name is checked against a list of "
-        "strong AC terms (BTU, ar condicionado, evaporadora…), weak terms (split, inverter), "
-        "and a blocklist of known non-AC products. Records that fail the check are flagged for deletion."
-    )
-
-    col1, col2 = st.columns(2)
-
-    # --- Scan ---
-    with col1:
-        scan_btn = st.button("🔍 Scan for invalid records", use_container_width=True)
-
-    with col2:
-        delete_btn = st.button(
-            "🗑️ Delete invalid records",
-            type="primary",
-            use_container_width=True,
-            help="Permanently removes all records that don't pass the AC product filter.",
-        )
-
-    if scan_btn:
-        with st.spinner("Scanning Supabase… this may take a moment for large datasets."):
-            from utils.supabase_maintenance import delete_invalid_from_supabase
-            result = delete_invalid_from_supabase(dry_run=True)
-
-        st.session_state["cleanup_scan"] = result
-
-    if "cleanup_scan" in st.session_state:
-        r = st.session_state["cleanup_scan"]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Records scanned", f"{r['scanned']:,}")
-        c2.metric("Invalid (non-AC)", f"{r['invalid']:,}", delta=f"-{r['invalid']:,}" if r["invalid"] else None, delta_color="inverse")
-        c3.metric("Valid", f"{r['scanned'] - r['invalid']:,}")
-
-        if r["invalid"] == 0:
-            st.success("✅ No invalid records found. Your dataset is clean!")
-        else:
-            pct = r["invalid"] / r["scanned"] * 100 if r["scanned"] else 0
-            st.warning(
-                f"Found **{r['invalid']:,}** records ({pct:.1f}%) that appear unrelated "
-                f"to air-conditioners. Click **Delete invalid records** to remove them."
-            )
-
-    if delete_btn:
-        if "cleanup_scan" not in st.session_state or st.session_state["cleanup_scan"]["invalid"] == 0:
-            st.warning("Run a scan first to confirm there are invalid records.")
-        else:
-            with st.spinner("Deleting invalid records…"):
-                from utils.supabase_maintenance import delete_invalid_from_supabase
-                result = delete_invalid_from_supabase(dry_run=False)
-
-            if result["errors"] == 0:
-                st.success(
-                    f"✅ Done. **{result['deleted']:,}** invalid records deleted. "
-                    f"Your dataset now contains only AC-related products."
-                )
-            else:
-                st.warning(
-                    f"Partial cleanup: {result['deleted']:,} deleted, "
-                    f"{result['errors']:,} with errors. Check Supabase logs."
-                )
-            # Clear cached scan result
-            del st.session_state["cleanup_scan"]
-
-    st.divider()
-    # ── Price Validation ─────────────────────────────────────────────────────
-    st.subheader("💰 Price Validation")
-    st.caption(
-        "Identifies records where the price significantly exceeds the reasonable ceiling "
-        "for the detected BTU capacity — likely caused by historical parsing errors (×10 bug). "
-        "E.g., a 9.000 BTU AC priced at R$ 18.990 instead of ~R$ 1.899."
-    )
-
-    col_p1, col_p2 = st.columns(2)
-    with col_p1:
-        price_scan_btn = st.button(
-            "🔍 Scan for bad prices",
-            use_container_width=True,
-            key="price_scan_btn",
-        )
-    with col_p2:
-        price_delete_btn = st.button(
-            "🗑️ Delete records with bad prices",
-            type="primary",
-            use_container_width=True,
-            key="price_delete_btn",
-            help="Permanently removes records where price exceeds the BTU-based ceiling.",
-        )
-
-    if price_scan_btn:
-        with st.spinner("Scanning for suspicious prices… this may take a moment."):
-            from utils.supabase_maintenance import scan_fix_bad_prices_in_supabase
-            price_result = scan_fix_bad_prices_in_supabase(dry_run=True)
-        st.session_state["price_scan"] = price_result
-
-    if "price_scan" in st.session_state:
-        pr = st.session_state["price_scan"]
-        pc1, pc2 = st.columns(2)
-        pc1.metric("Records scanned", f"{pr['scanned']:,}")
-        pc2.metric(
-            "Suspicious prices",
-            f"{pr['suspicious']:,}",
-            delta=f"-{pr['suspicious']:,}" if pr["suspicious"] else None,
-            delta_color="inverse",
-        )
-
-        if pr["suspicious"] == 0:
-            st.success("✅ No price anomalies found!")
-        else:
-            pct = pr["suspicious"] / pr["scanned"] * 100 if pr["scanned"] else 0
-            st.warning(
-                f"Found **{pr['suspicious']:,}** records ({pct:.1f}%) with suspiciously high "
-                "prices. These are likely ×10 parsing errors. "
-                "Click **Delete records with bad prices** to remove them."
-            )
-            if pr.get("examples"):
-                with st.expander(f"Examples ({len(pr['examples'])} shown)", expanded=True):
-                    st.dataframe(pr["examples"], use_container_width=True, hide_index=True)
-
-    if price_delete_btn:
-        scan = st.session_state.get("price_scan")
-        if not scan or scan["suspicious"] == 0:
-            st.warning("Run a price scan first to confirm there are records to remove.")
-        else:
-            with st.spinner(f"Deleting {scan['suspicious']:,} records with bad prices…"):
-                from utils.supabase_maintenance import scan_fix_bad_prices_in_supabase
-                price_result = scan_fix_bad_prices_in_supabase(dry_run=False)
-            if price_result["errors"] == 0:
-                st.success(
-                    f"✅ Done. **{price_result['deleted']:,}** records with bad prices deleted."
-                )
-            else:
-                st.warning(
-                    f"Partial cleanup: {price_result['deleted']:,} deleted, "
-                    f"{price_result['errors']:,} with errors. Check Supabase logs."
-                )
-            if "price_scan" in st.session_state:
-                del st.session_state["price_scan"]
-
-    st.divider()
-    st.markdown(
-        "**Price ceilings by BTU capacity** *(prices above these are flagged)*\n\n"
-        "| Capacity | Max reasonable |\n|---|---|\n"
-        "| 7.000 BTUs | R$ 4.500 |\n"
-        "| 9.000 BTUs | R$ 5.500 |\n"
-        "| 12.000 BTUs | R$ 7.000 |\n"
-        "| 18.000 BTUs | R$ 12.000 |\n"
-        "| 24.000 BTUs | R$ 16.000 |\n"
-        "| 36.000 BTUs | R$ 28.000 |\n"
-        "| 48.000 BTUs | R$ 40.000 |\n"
-        "| 60.000 BTUs | R$ 55.000 |\n"
-    )
-
-    st.divider()
-    st.subheader("Filter rules reference")
-
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.markdown("**✅ Strong AC terms** *(any one = keep)*")
-        st.code(
-            "ar condicionado\nBTU / BTUs\nevaporadora\ncondensadora\nhi-wall\nmini-split\ncassete",
-            language=None,
-        )
-    with col_b:
-        st.markdown("**🟡 Weak AC terms** *(need 2+ = keep)*")
-        st.code("split\ninverter", language=None)
-    with col_c:
-        st.markdown("**🚫 Blocklist** *(any one = remove)*")
-        st.code(
-            "iphone / ipad\nnotebook / laptop\ncelular / smartphone\nfralda\ngeladeira / refrigerador\nfogão / microondas\ntablet / airpods / macbook\ncolchão / sofá",
-            language=None,
-        )
+def _admin_auto_clear_caches() -> None:
+    """Invalida caches do dashboard após um run da automação."""
+    for fn in (get_depara, get_cobertura_resolucao, get_familia_options,
+               get_filter_options):
+        try:
+            fn.clear()
+        except Exception:
+            pass
 
 
-# ---------------------------------------------------------------------------
-# Page 6 — Normalize SKUs
-# ---------------------------------------------------------------------------
+def _admin_auto_rel_time(iso_str) -> str:
+    """ISO timestamp → 'há 3h' (aproximado, para métricas)."""
+    if not iso_str:
+        return "nunca"
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
+        if hours < 1:
+            return f"há {max(int(hours * 60), 0)}min"
+        if hours < 48:
+            return f"há {hours:.0f}h"
+        return f"há {hours / 24:.0f}d"
+    except Exception:
+        return str(iso_str)
 
-def page_normalize_skus():
-    st.title("🔤 Normalize SKUs")
-    st.caption(
-        "Re-applies the RAC normalization rules to every `produto` field stored in Supabase. "
-        "Only rows whose name actually changes are written back. "
-        "Records without a recognized brand or BTU value are left untouched."
-    )
 
-    st.info(
-        "**Format:** `Ar Condicionado {Marca} {Linha} {BTUs} {Tipo} {Ciclo} [{Forma}] [{Cor}]`\n\n"
-        "Run a **Scan** first to preview which records would change, then **Apply** to write the updates."
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        scan_btn = st.button("🔍 Scan for outdated names", use_container_width=True)
-    with col2:
-        apply_btn = st.button(
-            "✏️ Apply normalization",
-            type="primary",
-            use_container_width=True,
-            help="Updates only rows whose normalized name differs from the stored value.",
-        )
-
-    # ── Scan (dry-run) ──
-    if scan_btn:
-        with st.spinner("Scanning Supabase… this may take a moment for large datasets."):
-            from utils.supabase_maintenance import normalize_all_products_in_supabase
-            result = normalize_all_products_in_supabase(dry_run=True, preview_limit=30)
-        st.session_state["norm_scan"] = result
-
-    if "norm_scan" in st.session_state:
-        r = st.session_state["norm_scan"]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Records scanned",     f"{r['scanned']:,}")
-        c2.metric("Need update",         f"{r['changed']:,}",
-                  delta=f"-{r['changed']:,}" if r["changed"] else None,
-                  delta_color="inverse")
-        c3.metric("Already normalized",  f"{r['unchanged']:,}")
-
-        if r["changed"] == 0:
-            st.success("✅ All product names are already normalized. Nothing to do.")
-        else:
-            pct = r["changed"] / r["scanned"] * 100 if r["scanned"] else 0
-            st.warning(
-                f"**{r['changed']:,}** records ({pct:.1f}%) have outdated names. "
-                "Click **Apply normalization** to update them."
-            )
-            if r.get("preview"):
-                with st.expander(f"Preview of changes ({len(r['preview'])} examples)", expanded=True):
-                    rows = [
-                        {"ID": ex["id"], "Before": ex["before"], "After": ex["after"]}
-                        for ex in r["preview"]
-                    ]
-                    st.dataframe(rows, use_container_width=True)
-
-    # ── Apply ──
-    if apply_btn:
-        scan = st.session_state.get("norm_scan")
-        if not scan or scan["changed"] == 0:
-            st.warning("Run a scan first and confirm there are records to update.")
-        else:
-            with st.spinner(f"Updating {scan['changed']:,} records…"):
-                from utils.supabase_maintenance import normalize_all_products_in_supabase
-                result = normalize_all_products_in_supabase(dry_run=False)
-
-            upd  = result["updated"]
-            ded  = result.get("deduped", 0)
-            errs = result["errors"]
-            if errs == 0:
-                st.success(
-                    f"✅ Done. **{upd:,}** records renamed, "
-                    f"**{ded:,}** duplicate old-name records removed."
-                )
-            else:
-                st.warning(
-                    f"Partial run: {upd:,} renamed, {ded:,} duplicates removed, "
-                    f"{errs:,} with errors. Check Supabase logs."
-                )
-            if "norm_scan" in st.session_state:
-                del st.session_state["norm_scan"]
-
-    st.divider()
-
-    # ── Brand Normalization ───────────────────────────────────────────────────
-    st.subheader("🏷️ Brand Normalization")
-    st.caption(
-        "Unifies brand variants stored in the `marca` column. "
-        '"Springer Midea", "Midea Carrier", and "Springer" are all Midea products — '
-        "this consolidates them under a single `Midea` entry for cleaner analysis."
-    )
-    st.info(
-        "| Variant in DB | → Canonical |\n|---|---|\n"
-        "| Springer Midea | **Midea** |\n"
-        "| Midea Carrier | **Midea** |\n"
-        "| Springer | **Midea** |\n"
-        "| Britania | **Britânia** |"
-    )
-
-    col_b1, col_b2 = st.columns(2)
-    with col_b1:
-        brand_scan_btn = st.button(
-            "🔍 Scan brand variants",
-            use_container_width=True,
-            key="brand_scan_btn",
-        )
-    with col_b2:
-        brand_apply_btn = st.button(
-            "✏️ Apply brand normalization",
-            type="primary",
-            use_container_width=True,
-            key="brand_apply_btn",
-            help="Updates marca for all variant rows to the canonical name.",
-        )
-
-    if brand_scan_btn:
-        with st.spinner("Scanning brand variants…"):
-            from utils.supabase_maintenance import normalize_brands_in_supabase
-            brand_result = normalize_brands_in_supabase(dry_run=True)
-        st.session_state["brand_scan"] = brand_result
-
-    if "brand_scan" in st.session_state:
-        br = st.session_state["brand_scan"]
-        total_variants = sum(
-            v["count"] for v in br["by_brand"].values() if v["count"] > 0
-        )
-        rows = [
-            {
-                "Variant (DB)": src,
-                "→ Canonical": info["target"],
-                "Records": info["count"] if info["count"] >= 0 else "error",
-            }
-            for src, info in br["by_brand"].items()
-        ]
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-
-        if total_variants == 0:
-            st.success("✅ All brand names are already normalized!")
-        else:
-            st.warning(
-                f"Found **{total_variants:,}** records with non-canonical brand names. "
-                "Click **Apply brand normalization** to consolidate them."
-            )
-
-    if brand_apply_btn:
-        scan = st.session_state.get("brand_scan")
-        total_to_fix = (
-            sum(v["count"] for v in scan["by_brand"].values() if v["count"] > 0)
-            if scan else 0
-        )
-        if not scan or total_to_fix == 0:
-            st.warning("Run a scan first to confirm there are records to update.")
-        else:
-            with st.spinner(f"Normalizing {total_to_fix:,} brand records…"):
-                from utils.supabase_maintenance import normalize_brands_in_supabase
-                brand_result = normalize_brands_in_supabase(dry_run=False)
-            if brand_result["errors"] == 0:
-                st.success(
-                    f"✅ Done. **{brand_result['total_updated']:,}** records updated."
-                )
-            else:
-                st.warning(
-                    f"Partial run: {brand_result['total_updated']:,} updated, "
-                    f"{brand_result['errors']:,} with errors."
-                )
-            if "brand_scan" in st.session_state:
-                del st.session_state["brand_scan"]
-            # Clear cached filter options so the brand dropdown refreshes
-            get_filter_options.clear()
-
-    st.divider()
-
-    # ── Re-extrair marcas Desconhecidas ───────────────────────────────────────
-    st.subheader("🔄 Recalcular Marcas Desconhecidas")
-    st.caption(
-        "Varre registros com `marca = 'Desconhecida'` e re-aplica `extract_brand()` "
-        "usando a lista atual de marcas em `config.BRANDS`. "
-        "Use após adicionar novas marcas para recuperar registros históricos."
-    )
-    new_brands_list = [
-        "AIWA", "American Range", "Geminis", "Fontaine", "Luxor",
-        "Turbro", "Velleman", "Whynter", "DeLonghi", "Kian", "Equation",
+def _admin_auto_render_report(report: dict) -> None:
+    """Tabela de etapas de um run (último ou recém-executado)."""
+    rows = [
+        {
+            "Etapa":   s.get("label", s.get("name", "?")),
+            "Status":  "✅ ok" if s.get("ok") else "❌ erro",
+            "Resumo":  s.get("summary", ""),
+            "Duração": f"{float(s.get('duration_s') or 0):.1f}s",
+        }
+        for s in (report.get("steps") or [])
     ]
-    st.info(
-        "Marcas recém-adicionadas (Abril 2026): "
-        + ", ".join(f"**{b}**" for b in new_brands_list)
-    )
-
-    col_rb1, col_rb2 = st.columns(2)
-    with col_rb1:
-        rebrand_scan_btn = st.button(
-            "🔍 Scan 'Desconhecida' records",
-            use_container_width=True,
-            key="rebrand_scan_btn",
-        )
-    with col_rb2:
-        rebrand_apply_btn = st.button(
-            "✏️ Apply brand recalculation",
-            type="primary",
-            use_container_width=True,
-            key="rebrand_apply_btn",
-            help="Atualiza o campo marca para todos os registros identificados.",
-        )
-
-    if rebrand_scan_btn:
-        with st.spinner("Scanning 'Desconhecida' records…"):
-            from utils.supabase_maintenance import recalculate_unknown_brands_in_supabase
-            rebrand_result = recalculate_unknown_brands_in_supabase(dry_run=True)
-        st.session_state["rebrand_scan"] = rebrand_result
-
-    if "rebrand_scan" in st.session_state:
-        rb = st.session_state["rebrand_scan"]
-        st.metric("Registros escaneados", f"{rb['scanned']:,}")
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Identificados", f"{rb['scanned'] - rb['unchanged']:,}")
-        col_m2.metric("Permanecem desconhecidos", f"{rb['unchanged']:,}")
-        col_m3.metric("Erros", f"{rb.get('errors', 0):,}")
-
-        if rb["preview"]:
-            st.dataframe(
-                rb["preview"],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "id": st.column_config.NumberColumn("ID", width="small"),
-                    "produto": st.column_config.TextColumn("Produto", width="large"),
-                    "nova_marca": st.column_config.TextColumn("Nova Marca", width="medium"),
-                },
-            )
-
-        if rb["scanned"] - rb["unchanged"] == 0:
-            st.success("✅ Nenhum registro 'Desconhecida' identificado com as marcas atuais.")
-        else:
-            st.warning(
-                f"**{rb['scanned'] - rb['unchanged']:,}** registros podem ser atualizados. "
-                "Clique em **Apply brand recalculation** para gravar."
-            )
-
-    if rebrand_apply_btn:
-        scan = st.session_state.get("rebrand_scan")
-        to_fix = (scan["scanned"] - scan["unchanged"]) if scan else 0
-        if not scan or to_fix == 0:
-            st.warning("Execute o scan primeiro para confirmar os registros a atualizar.")
-        else:
-            with st.spinner(f"Atualizando {to_fix:,} registros…"):
-                from utils.supabase_maintenance import recalculate_unknown_brands_in_supabase
-                rebrand_result = recalculate_unknown_brands_in_supabase(dry_run=False)
-            if rebrand_result["errors"] == 0:
-                st.success(
-                    f"✅ Concluído. **{rebrand_result['updated']:,}** registros atualizados."
-                )
-            else:
-                st.warning(
-                    f"Parcial: {rebrand_result['updated']:,} atualizados, "
-                    f"{rebrand_result['errors']:,} com erros."
-                )
-            if "rebrand_scan" in st.session_state:
-                del st.session_state["rebrand_scan"]
-            get_filter_options.clear()
-
-    st.divider()
-
-    # ── Platform / Seller Normalization ──────────────────────────────────────
-    st.subheader("🏪 Platform / Seller Normalization")
-    st.caption(
-        "Corrige typos e capitalização nos campos `plataforma` e `seller`. "
-        "Aplica em ambas as colunas simultaneamente."
-    )
-    st.info(
-        "| Variant in DB | → Canonical |\n|---|---|\n"
-        "| FerreiraCoasta | **FerreiraCosta** |\n"
-        "| Webcontinental | **WebContinental** |"
-    )
-
-    col_p1, col_p2 = st.columns(2)
-    with col_p1:
-        plat_scan_btn = st.button(
-            "🔍 Scan platform/seller variants",
-            use_container_width=True,
-            key="plat_scan_btn",
-        )
-    with col_p2:
-        plat_apply_btn = st.button(
-            "✏️ Apply platform/seller normalization",
-            type="primary",
-            use_container_width=True,
-            key="plat_apply_btn",
-            help="Updates plataforma and seller columns for all variant rows.",
-        )
-
-    if plat_scan_btn:
-        with st.spinner("Scanning platform/seller variants…"):
-            from utils.supabase_maintenance import normalize_platforms_sellers_in_supabase
-            plat_result = normalize_platforms_sellers_in_supabase(dry_run=True)
-        st.session_state["plat_scan"] = plat_result
-
-    if "plat_scan" in st.session_state:
-        pr = st.session_state["plat_scan"]
-        total_variants = sum(
-            (v.get("plataforma") or 0) + (v.get("seller") or 0)
-            for v in pr["by_mapping"].values()
-            if isinstance(v.get("plataforma"), int) and isinstance(v.get("seller"), int)
-        )
-        rows = [
-            {
-                "Variant (DB)": src,
-                "→ Canonical":   info["target"],
-                "plataforma":    info.get("plataforma", "?"),
-                "seller":        info.get("seller", "?"),
-            }
-            for src, info in pr["by_mapping"].items()
-        ]
+    if rows:
         st.dataframe(rows, use_container_width=True, hide_index=True)
+    for s in (report.get("steps") or []):
+        if s.get("error"):
+            st.error(f"{s.get('label', s.get('name'))}: {s['error']}")
 
-        if total_variants == 0:
-            st.success("✅ All platform/seller names are already correct!")
-        else:
-            st.warning(
-                f"Found **{total_variants:,}** records with non-canonical "
-                "platform/seller names. Click **Apply** to fix them."
+
+def page_admin_automation() -> None:
+    st.title("🤖 Automação Admin")
+    st.caption(
+        "Manutenção do banco **100% automática** — sem cliques: limpeza de "
+        "registros não-AC, preços suspeitos (bug ×10), normalização de "
+        "nomes/marcas/plataformas/sellers, seed + resolução da fila REVISAR "
+        "(Família & SKU) e refresh do cache de filtros. "
+        "Roda após **cada coleta** (`main.py`), via **cron** "
+        "(`scripts/admin_auto.py`) e em **auto-run** ao abrir esta página "
+        "quando a última execução tem mais de 24h."
+    )
+
+    client = _get_supabase()
+    if client is None:
+        st.error("Supabase não conectado.")
+        return
+
+    from utils.admin_automation import (
+        get_last_run,
+        get_run_history,
+        run_admin_automation,
+        should_run,
+    )
+
+    last = get_last_run(client)
+
+    # ── Auto-run: cobre quem só usa o dashboard (sem cron/coleta local) ────
+    if "_admin_auto_checked" not in st.session_state:
+        st.session_state["_admin_auto_checked"] = True
+        if should_run(client, min_hours=24):
+            with st.status(
+                "⏳ Última manutenção há mais de 24h — executando agora "
+                "(automático, incremental)…", expanded=True,
+            ) as box:
+                report = run_admin_automation(trigger="dashboard_auto", client=client)
+                for s in report.get("steps", []):
+                    st.write(("✅ " if s.get("ok") else "❌ ")
+                             + f"{s.get('label')}: {s.get('summary', '')}")
+                box.update(
+                    label=(f"Manutenção automática concluída — "
+                           f"{report['status'].upper()} em {report['duration_s']:.0f}s"),
+                    state="complete" if report["errors"] == 0 else "error",
+                )
+            _admin_auto_clear_caches()
+            last = report
+
+    # ── Execução manual (atalho opcional — a automação não depende disto) ──
+    c1, c2, c3 = st.columns(3)
+    run_now  = c1.button("▶️ Executar agora", type="primary", use_container_width=True,
+                         help="Roda a pipeline incremental imediatamente.")
+    run_dry  = c2.button("🧪 Simular (dry-run)", use_container_width=True,
+                         help="Conta o que seria feito sem gravar nada.")
+    run_full = c3.button("🔁 Full scan", use_container_width=True,
+                         help="Ignora o watermark e varre o histórico inteiro. "
+                              "Use após mudar regras/marcas em config.py.")
+    if run_now or run_dry or run_full:
+        with st.status("Executando pipeline de manutenção…", expanded=True) as box:
+            report = run_admin_automation(
+                trigger="dashboard_manual",
+                dry_run=run_dry,
+                full_scan=run_full,
+                client=client,
             )
-
-    if plat_apply_btn:
-        scan = st.session_state.get("plat_scan")
-        total_to_fix = 0
-        if scan:
-            for v in scan["by_mapping"].values():
-                p = v.get("plataforma") or 0
-                s = v.get("seller") or 0
-                if isinstance(p, int):
-                    total_to_fix += p
-                if isinstance(s, int):
-                    total_to_fix += s
-        if not scan or total_to_fix == 0:
-            st.warning("Run a scan first to confirm there are records to update.")
-        else:
-            with st.spinner(f"Normalizing {total_to_fix:,} records…"):
-                from utils.supabase_maintenance import normalize_platforms_sellers_in_supabase
-                plat_result = normalize_platforms_sellers_in_supabase(dry_run=False)
-            if plat_result["errors"] == 0:
-                st.success(
-                    f"✅ Done. **{plat_result['total_updated']:,}** records updated."
-                )
-            else:
-                st.warning(
-                    f"Partial run: {plat_result['total_updated']:,} updated, "
-                    f"{plat_result['errors']:,} with errors."
-                )
-            if "plat_scan" in st.session_state:
-                del st.session_state["plat_scan"]
-            get_filter_options.clear()
+            for s in report.get("steps", []):
+                st.write(("✅ " if s.get("ok") else "❌ ")
+                         + f"{s.get('label')}: {s.get('summary', '')}")
+            box.update(
+                label=(f"Pipeline concluída — {report['status'].upper()} "
+                       f"em {report['duration_s']:.0f}s"
+                       + (" (simulação)" if report["dry_run"] else "")),
+                state="complete" if report["errors"] == 0 else "error",
+            )
+        if not report["dry_run"]:
+            _admin_auto_clear_caches()
+        last = report
 
     st.divider()
-    st.subheader("Normalization rules")
-    st.markdown(
-        "| Component | Rule |\n"
-        "|-----------|------|\n"
-        "| **Marca** | Aliases unified (Springer Midea → Midea, TCL Semp → TCL, …) |\n"
-        "| **Linha** | Preserved exactly per brand — each model line stays distinct for phase-out tracking |\n"
-        "| **BTUs** | Brazilian format: 12.000 BTUs, 9.000 BTUs, … |\n"
-        "| **Tipo** | `Inverter` (default) or `On/Off` |\n"
-        "| **Ciclo** | `Frio` (default) or `Quente/Frio` |\n"
-        "| **Forma** | Omitted when Hi-Wall (default); shown for Janela, Cassete, Piso-Teto… |\n"
-        "| **Cor** | Omitted when white (default); shown for Preto, etc. |\n"
-        "| **Fallback** | Name unchanged when brand or BTU cannot be identified |\n"
+
+    # ── Status do último run ────────────────────────────────────────────────
+    if not last:
+        st.info(
+            "Nenhuma execução registrada ainda. A primeira acontece "
+            "automaticamente após a próxima coleta — ou agora, pelos botões acima."
+        )
+        return
+
+    status_icon = {"ok": "🟢", "partial": "🟡", "error": "🔴",
+                   "skipped": "⚪"}.get(str(last.get("status")), "⚪")
+    cob = get_cobertura_resolucao()
+    pendentes = cob.get("REVISAR", 0) + cob.get("NULL", 0)
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Último run", _admin_auto_rel_time(last.get("started_at")),
+              help=str(last.get("started_at", "")))
+    m2.metric("Status", f"{status_icon} {str(last.get('status', '?')).upper()}"
+              + (" (dry)" if last.get("dry_run") else ""))
+    m3.metric("Duração", f"{float(last.get('duration_s') or 0):.0f}s")
+    m4.metric("Erros", int(last.get("errors") or 0))
+    m5.metric("REVISAR pendentes", f"{pendentes:,}".replace(",", "."),
+              help="Linhas de coletas com estado REVISAR ou sem estado — "
+                   "a automação as resolve a cada ciclo.")
+
+    st.caption(
+        f"Trigger: `{last.get('trigger', '?')}` · "
+        f"Watermark: `{last.get('watermark_id') or '—'}` "
+        f"(varredura incremental a partir deste id de coletas)"
     )
+
+    _admin_auto_render_report(last)
+
+    # ── Histórico ───────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📜 Histórico de execuções")
+    history = get_run_history(client, limit=20)
+    if history:
+        hist_rows = [
+            {
+                "Início":   str(h.get("started_at", ""))[:19].replace("T", " "),
+                "Trigger":  h.get("trigger", "?"),
+                "Status":   h.get("status", "?"),
+                "Dry-run":  "sim" if h.get("dry_run") else "não",
+                "Duração":  f"{float(h.get('duration_s') or 0):.0f}s",
+                "Erros":    int(h.get("errors") or 0),
+            }
+            for h in history
+        ]
+        st.dataframe(hist_rows, use_container_width=True, hide_index=True)
+    else:
+        st.caption("Sem histórico (tabela `admin_automation_runs` vazia).")
+
+    # ── Como funciona / configuração ────────────────────────────────────────
+    with st.expander("⚙️ Como funciona & configuração (.env)"):
+        st.markdown(
+            "**Gatilhos automáticos** — nenhuma ação humana necessária:\n"
+            "1. **Pós-coleta** — `main.py` dispara a pipeline após cada upload "
+            "(cron 10:00/21:00 BRT na VM e GitHub Actions);\n"
+            "2. **Cron dedicado** — `python scripts/admin_auto.py` "
+            "(sugestão: `--full` semanal, domingo 03:00);\n"
+            "3. **Auto-run no dashboard** — ao abrir esta página com a última "
+            "execução há mais de 24h.\n\n"
+            "**Fila REVISAR (Família & SKU)** — resolvida em 3 camadas: "
+            "regras determinísticas (marca/BTU/ciclo + catálogo), classificador "
+            "**LLM** (Anthropic, quando `ANTHROPIC_API_KEY` está no .env) e "
+            "heurística terminal para o resto. Reclassificações manuais seguem "
+            "possíveis na página 🧬 Família & SKU.\n\n"
+            "| Variável (.env) | Efeito | Default |\n"
+            "|---|---|---|\n"
+            "| `ADMIN_AUTOMATION` | `off` desativa o hook pós-coleta | `on` |\n"
+            "| `ADMIN_AUTO_LLM` | `off` pula a camada LLM | `on` |\n"
+            "| `ADMIN_AUTO_LLM_MODEL` | Modelo Anthropic | `claude-opus-4-8` |\n"
+            "| `ADMIN_AUTO_LLM_MAX_NAMES` | Máx. nomes/run na camada LLM | `400` |\n"
+            "| `ADMIN_AUTO_RESIDUAL_POLICY` | `terminal` zera a fila sem LLM; `keep` mantém REVISAR | `terminal` |\n"
+            "| `ADMIN_AUTO_RESOLVE_MAX` | Máx. resoluções aplicadas/run | `1000` |\n\n"
+            "Auditoria: tabela `admin_automation_runs` (migration 006) + "
+            "`logs/admin_automation.jsonl`. Resumo no Telegram quando há "
+            "mudanças ou erros."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3781,8 +3434,15 @@ def page_normalize_skus():
 
 def page_familia_sku_admin() -> None:
     st.title("🧬 Normalização de Família & SKU")
-    st.caption("Resolve a fila REVISAR e edita o de-para `produtos_depara_nome`. "
+    st.caption("Audita e corrige o de-para `produtos_depara_nome`. "
                "Mudanças propagam para `coletas` e `rac_monitoramento` imediatamente.")
+    st.info(
+        "A fila REVISAR agora é resolvida automaticamente pela página "
+        "**🤖 Automação** (regras → LLM → heurística), após cada coleta e via "
+        "cron — nenhuma classificação manual é necessária. Use esta página "
+        "apenas para auditar ou corrigir exceções pontuais.",
+        icon="🤖",
+    )
 
     client = _get_supabase()
     if client is None:
@@ -8113,8 +7773,7 @@ PAGES = {
     "🔔 Price Anomalies":          page_price_anomalies,
     "📂 Import History":           page_import_history,
     "🩺 Data Health":              page_data_health,
-    "🧹 Data Cleanup":             page_data_cleanup,
-    "🔤 Normalize SKUs":           page_normalize_skus,
+    "🤖 Automação":                page_admin_automation,
     "🧬 Família & SKU":            page_familia_sku_admin,
 }
 
@@ -8142,8 +7801,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "🩺 Data Health",
     ],
     "ADMIN": [
-        "🧹 Data Cleanup",
-        "🔤 Normalize SKUs",
+        "🤖 Automação",
         "🧬 Família & SKU",
     ],
 }
