@@ -10,7 +10,8 @@
 
 setlocal enabledelayedexpansion
 
-set "BASE_DIR=C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
+:: Raiz do repo = pasta pai deste script (funciona em qualquer maquina/usuario)
+for %%I in ("%~dp0..") do set "BASE_DIR=%%~fI"
 set "LOG=%BASE_DIR%\logs\sync.log"
 
 :: ── Garante pasta de logs ───────────────────────────────────────────────────

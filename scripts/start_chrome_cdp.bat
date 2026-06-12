@@ -19,6 +19,8 @@ setlocal
 
 set "CHROME_EXE=C:\Program Files\Google\Chrome\Application\chrome.exe"
 if not exist "%CHROME_EXE%" set "CHROME_EXE=C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+:: Instalacao por usuario (sem admin) fica em %LOCALAPPDATA%
+if not exist "%CHROME_EXE%" set "CHROME_EXE=%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
 if not exist "%CHROME_EXE%" (
     echo [ERRO] chrome.exe nao encontrado em locais padrao.
     echo Edite este script e ajuste CHROME_EXE.

@@ -17,7 +17,8 @@
 
 param(
     [string]$ProfileName = "Eder",
-    [string]$UserDataDir = "C:\Users\Eder Rabelo\AppData\Local\Google\Chrome\User Data",
+    # Pasta de dados do Chrome do usuario LOGADO — nao fixar usuario no path
+    [string]$UserDataDir = (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"),
     [string]$CdpDataDir  = "C:\chrome-rac-cdp"
 )
 
@@ -68,6 +69,12 @@ if ($profiles.Count -eq 0) {
 
 # Encontra o match
 $match = $profiles | Where-Object { $_.Name -eq $ProfileName } | Select-Object -First 1
+
+# Sem match pelo nome mas so existe UM perfil → usa ele (maquina nova/pessoal)
+if ($null -eq $match -and $profiles.Count -eq 1) {
+    $match = $profiles[0]
+    Write-Host "[INFO] Perfil '$ProfileName' nao existe; usando o unico perfil da maquina: '$($match.Name)' ($($match.Slot))" -ForegroundColor Yellow
+}
 
 if ($null -eq $match) {
     Write-Host "[ERRO] Nenhum perfil com nome '$ProfileName' encontrado." -ForegroundColor Red

@@ -50,8 +50,7 @@ if (-not $isAdmin) {
     } catch {
         Write-Host ""
         Write-Host "ERRO: elevacao UAC negada ou falhou." -ForegroundColor Red
-        Write-Host "Rode num PowerShell (Admin):" -ForegroundColor Yellow
-        Write-Host "  cd 'C:\Users\Eder Rabelo\Downloads\rac-position-tracker'" -ForegroundColor Gray
+        Write-Host "Rode num PowerShell (Admin), a partir da pasta do projeto:" -ForegroundColor Yellow
         Write-Host "  PowerShell -ExecutionPolicy Bypass -File scripts\setup_authenticated_scheduler.ps1" -ForegroundColor Gray
         exit 1
     }
@@ -60,7 +59,8 @@ if (-not $isAdmin) {
 Write-Host "Executando como Administrador (OK)." -ForegroundColor Green
 Write-Host ""
 
-$BaseDir = "C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
+# Raiz do repo = pasta pai de scripts\ (nao fixar usuario/caminho da maquina)
+$BaseDir = Split-Path -Parent $PSScriptRoot
 $StartChromeScript = Join-Path $BaseDir "scripts\start_chrome_cdp.bat"
 $CollectScript     = Join-Path $BaseDir "scripts\collect_authenticated_cdp.bat"
 
