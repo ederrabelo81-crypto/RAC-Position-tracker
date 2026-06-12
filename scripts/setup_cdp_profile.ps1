@@ -8,8 +8,11 @@
 #
 # Uso:
 #   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1
-#   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -ProfileName "Eder"
+#   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -Slot Default
+#   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -Slot "Profile 1"
 #   PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -ProfileName "Lumina"
+# (-Slot escolhe direto a pasta do perfil — use quando os nomes locais se
+#  repetem, ex.: dois slots "Seu Chrome"; confira o seu em chrome://version)
 #
 # Re-executar: deleta C:\chrome-rac-cdp antes (apaga sessao acumulada):
 #   Remove-Item C:\chrome-rac-cdp -Recurse -Force
@@ -17,6 +20,9 @@
 
 param(
     [string]$ProfileName = "Eder",
+    # Slot direto (ex: "Default", "Profile 1") — resolve ambiguidade quando
+    # varios perfis tem o mesmo nome local ("Seu Chrome"/"Pessoa 1")
+    [string]$Slot = "",
     # Pasta de dados do Chrome do usuario LOGADO — nao fixar usuario no path
     [string]$UserDataDir = (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"),
     [string]$CdpDataDir  = "C:\chrome-rac-cdp"
@@ -50,11 +56,19 @@ Get-ChildItem -LiteralPath $UserDataDir -Directory |
         $pref = Join-Path $_.FullName "Preferences"
         if (Test-Path -LiteralPath $pref) {
             try {
-                $json = Get-Content -LiteralPath $pref -Raw | ConvertFrom-Json
+                # Preferences e UTF-8; sem -Encoding os acentos viram mojibake
+                $json = Get-Content -LiteralPath $pref -Raw -Encoding UTF8 | ConvertFrom-Json
+                $email = ""
+                try {
+                    if ($json.account_info -and @($json.account_info).Count -gt 0) {
+                        $email = @($json.account_info)[0].email
+                    }
+                } catch { }
                 $profiles += [PSCustomObject]@{
-                    Slot = $_.Name
-                    Name = $json.profile.name
-                    Path = $_.FullName
+                    Slot  = $_.Name
+                    Name  = $json.profile.name
+                    Email = $email
+                    Path  = $_.FullName
                 }
             } catch {
                 # Preferences invalido - ignora silenciosamente
@@ -67,31 +81,44 @@ if ($profiles.Count -eq 0) {
     exit 1
 }
 
-# Encontra o match
-$match = $profiles | Where-Object { $_.Name -eq $ProfileName } | Select-Object -First 1
+# Encontra o match — por slot (direto, sem ambiguidade) ou por nome local
+if ($Slot) {
+    $match = $profiles | Where-Object { $_.Slot -eq $Slot } | Select-Object -First 1
+    if ($null -eq $match) {
+        Write-Host "[ERRO] Slot '$Slot' nao encontrado em $UserDataDir." -ForegroundColor Red
+    }
+} else {
+    $match = $profiles | Where-Object { $_.Name -eq $ProfileName } | Select-Object -First 1
 
-# Sem match pelo nome mas so existe UM perfil → usa ele (maquina nova/pessoal)
-if ($null -eq $match -and $profiles.Count -eq 1) {
-    $match = $profiles[0]
-    Write-Host "[INFO] Perfil '$ProfileName' nao existe; usando o unico perfil da maquina: '$($match.Name)' ($($match.Slot))" -ForegroundColor Yellow
+    # Sem match pelo nome mas so existe UM perfil → usa ele (maquina nova/pessoal)
+    if ($null -eq $match -and $profiles.Count -eq 1) {
+        $match = $profiles[0]
+        Write-Host "[INFO] Perfil '$ProfileName' nao existe; usando o unico perfil da maquina: '$($match.Name)' ($($match.Slot))" -ForegroundColor Yellow
+    }
+    if ($null -eq $match) {
+        Write-Host "[ERRO] Nenhum perfil com nome '$ProfileName' encontrado." -ForegroundColor Red
+    }
 }
 
 if ($null -eq $match) {
-    Write-Host "[ERRO] Nenhum perfil com nome '$ProfileName' encontrado." -ForegroundColor Red
     Write-Host ""
-    Write-Host "Perfis disponiveis:" -ForegroundColor Yellow
+    Write-Host "Perfis disponiveis (slot -> nome local | conta Google):" -ForegroundColor Yellow
     $profiles | ForEach-Object {
-        Write-Host ("  {0,-12} -> {1}" -f $_.Slot, $_.Name) -ForegroundColor Gray
+        Write-Host ("  {0,-12} -> {1,-20} | {2}" -f $_.Slot, $_.Name, $_.Email) -ForegroundColor Gray
     }
     Write-Host ""
-    Write-Host "Rode novamente passando o nome correto, ex:" -ForegroundColor Yellow
+    Write-Host "Selecione pelo SLOT (recomendado — nomes locais se repetem):" -ForegroundColor Yellow
+    Write-Host "  PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -Slot Default" -ForegroundColor Gray
+    Write-Host "  PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -Slot 'Profile 3'" -ForegroundColor Gray
+    Write-Host "ou pelo nome local:" -ForegroundColor Yellow
     Write-Host "  PowerShell -ExecutionPolicy Bypass -File scripts\setup_cdp_profile.ps1 -ProfileName 'Nome Exato'" -ForegroundColor Gray
     exit 1
 }
 
 $SourceProfile = $match.Path
 
-Write-Host "[OK] Perfil '$ProfileName' encontrado em: $($match.Slot)" -ForegroundColor Green
+$contaInfo = if ($match.Email) { " | conta: $($match.Email)" } else { "" }
+Write-Host "[OK] Perfil selecionado: $($match.Slot) ('$($match.Name)'$contaInfo)" -ForegroundColor Green
 Write-Host ""
 Write-Host "Origem  : $SourceProfile"
 Write-Host "Destino : $CdpProfile"
