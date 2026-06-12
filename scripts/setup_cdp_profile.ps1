@@ -177,8 +177,15 @@ Write-Host ""
 Write-Host "PROXIMOS PASSOS:" -ForegroundColor Yellow
 Write-Host "  1. Voce ja pode reabrir seu Chrome normal - sem conflito de lock." -ForegroundColor Gray
 Write-Host "  2. Rode: scripts\start_chrome_cdp.bat" -ForegroundColor Gray
-Write-Host "  3. Confirme que o site do Magalu carrega normalmente (HTTPS, sem captcha)" -ForegroundColor Gray
-Write-Host "  4. Configure o Task Scheduler: setup_magalu_scheduler.ps1" -ForegroundColor Gray
+Write-Host "  3. AVISO: o Chrome CDP vai abrir DESLOGADO da conta Google - e ESPERADO." -ForegroundColor Yellow
+Write-Host "     O Chrome invalida o login Google ao detectar que o perfil foi copiado" -ForegroundColor Gray
+Write-Host "     de pasta (medida de seguranca). O botao 'Continuar como <conta>' e so" -ForegroundColor Gray
+Write-Host "     a sugestao da ultima conta usada no PC - seu perfil NAO foi trocado." -ForegroundColor Gray
+Write-Host "     NAO precisa logar no Google para a coleta funcionar." -ForegroundColor Gray
+Write-Host "  4. OBRIGATORIO: no Chrome CDP, abra shopee.com.br e FACA LOGIN (1x)." -ForegroundColor Yellow
+Write-Host "     Sem login a API da Shopee retorna 403 em toda a coleta." -ForegroundColor Gray
+Write-Host "  5. Confirme que o site do Magalu carrega normalmente (HTTPS, sem captcha)" -ForegroundColor Gray
+Write-Host "  6. Configure o Task Scheduler: setup_magalu_scheduler.ps1" -ForegroundColor Gray
 Write-Host ""
 Write-Host "Pressione qualquer tecla para fechar..."
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")

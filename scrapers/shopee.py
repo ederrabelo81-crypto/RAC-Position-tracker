@@ -66,6 +66,15 @@ _BASE_HEADERS = {
     "x-api-source": "pc",
 }
 
+# Cookies que só existem em sessão LOGADA. csrftoken/SPC_SI/SPC_SEC_SI saem
+# até pra visitante anônimo — com eles mas SEM estes, a API v4 responde 403.
+_LOGIN_COOKIE_NAMES = ("SPC_EC", "SPC_ST", "SPC_U")
+
+# Circuit breaker: 403 da API v4 é bloqueio de sessão/IP, não falha pontual —
+# após N keywords seguidas 100% bloqueadas, aborta a coleta Shopee inteira
+# (31 keywords × 3 retries × backoff ≈ 5min de requests inúteis por execução).
+_ABORT_AFTER_BLOCKED_KEYWORDS = 3
+
 
 class ShopeeScraper(BaseScraper):
     """
@@ -83,6 +92,14 @@ class ShopeeScraper(BaseScraper):
         self._session: Optional[Any] = None
         self._csrf_token: str = ""
         self.captcha_hit: bool = False
+        # UA do browser que gerou a sessão (refresh_sessions_cdp) — replicar
+        # o MESMO UA dos cookies reduz o cruzamento UA × sessão do anti-fraude.
+        self._session_ua: str = ""
+        self._has_login_cookies: bool = False
+        # Estado do circuit breaker (ver _ABORT_AFTER_BLOCKED_KEYWORDS)
+        self._hard_blocked: bool = False        # 403/anti-fraude na keyword atual
+        self._blocked_keyword_streak: int = 0
+        self._collection_aborted: bool = False
 
     # ------------------------------------------------------------------
     # Context manager — sem browser; só prepara a sessão HTTP
@@ -111,6 +128,13 @@ class ShopeeScraper(BaseScraper):
                 f"[{self.platform_name}] Sem csrftoken — API pode rejeitar. "
                 "Capture a sessão logado: python utils/session_grabber.py --site shopee"
             )
+        if n_cookies and not self._has_login_cookies:
+            logger.warning(
+                f"[{self.platform_name}] Sessão ANÔNIMA — nenhum cookie de login "
+                f"({'/'.join(_LOGIN_COOKIE_NAMES)}). A API de busca retorna 403 "
+                "sem login. Abra o Chrome CDP, faça login na Shopee (1x) e rode: "
+                "python scripts/refresh_sessions_cdp.py --sites shopee"
+            )
 
     def _close(self) -> None:
         try:
@@ -127,16 +151,20 @@ class ShopeeScraper(BaseScraper):
     def _load_session_cookies(self) -> int:
         """Aplica cookies da sessão capturada à sessão HTTP. Retorna a contagem."""
         try:
-            from utils.session_grabber import load_session
-            cookies = load_session("shopee") or []
+            from utils.session_grabber import load_session_meta
+            meta = load_session_meta("shopee") or {}
+            cookies = meta.get("cookies") or []
+            self._session_ua = meta.get("userAgent") or ""
         except Exception as exc:
             logger.debug(f"[{self.platform_name}] load_session falhou: {exc}")
             return 0
 
+        names = set()
         for c in cookies:
             name, value = c.get("name"), c.get("value")
             if not name or value is None:
                 continue
+            names.add(name)
             domain = (c.get("domain") or "shopee.com.br").lstrip(".")
             try:
                 self._session.cookies.set(name, value, domain=domain)
@@ -144,6 +172,7 @@ class ShopeeScraper(BaseScraper):
                 pass
             if name == "csrftoken":
                 self._csrf_token = value
+        self._has_login_cookies = any(n in names for n in _LOGIN_COOKIE_NAMES)
         return len(cookies)
 
     def _warmup(self) -> None:
@@ -151,7 +180,7 @@ class ShopeeScraper(BaseScraper):
         try:
             kwargs: Dict[str, Any] = {
                 "headers": {
-                    "User-Agent": _BASE_HEADERS["User-Agent"],
+                    "User-Agent": self._session_ua or _BASE_HEADERS["User-Agent"],
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Accept-Language": _BASE_HEADERS["Accept-Language"],
                     "Upgrade-Insecure-Requests": "1",
@@ -188,6 +217,8 @@ class ShopeeScraper(BaseScraper):
             "version": "2",
         }
         headers = dict(_BASE_HEADERS)
+        if self._session_ua:
+            headers["User-Agent"] = self._session_ua
         if self._csrf_token:
             headers["x-csrftoken"] = self._csrf_token
 
@@ -201,6 +232,17 @@ class ShopeeScraper(BaseScraper):
                 resp = self._session.get(_SHOPEE_API, **kwargs)
 
                 ct = resp.headers.get("content-type", "")
+                if resp.status_code == 403:
+                    # 403 da API v4 é bloqueio DURO (sessão anônima/expirada ou
+                    # anti-fraude) — não é transitório: re-tentar só queima
+                    # tempo e marca ainda mais o IP/sessão.
+                    logger.warning(
+                        f"[{self.platform_name}] HTTP 403 (bloqueio duro) — sem retry. "
+                        "Sessão sem login ou anti-fraude ativo."
+                    )
+                    self.captcha_hit = True
+                    self._hard_blocked = True
+                    return None
                 if resp.status_code != 200 or "application/json" not in ct:
                     logger.warning(
                         f"[{self.platform_name}] HTTP {resp.status_code} CT={ct[:40]} "
@@ -233,6 +275,7 @@ class ShopeeScraper(BaseScraper):
                 "Shopee Open Platform API. Sem proxy BR isto é esperado."
             )
             self.captcha_hit = True
+            self._hard_blocked = True
         else:
             logger.error(f"[{self.platform_name}] API erro {err} na pág {page+1}")
 
@@ -342,6 +385,16 @@ class ShopeeScraper(BaseScraper):
                 "será bloqueada. Instale: pip install curl_cffi"
             )
 
+        # Circuit breaker — coleta já abortada por bloqueios consecutivos:
+        # pula a keyword sem gastar requests (todas retornariam 403).
+        if self._collection_aborted:
+            logger.debug(
+                f"[{self.platform_name}] Coleta abortada (circuit breaker) — "
+                f"pulando '{keyword}'"
+            )
+            return []
+
+        self._hard_blocked = False
         all_records: List[Dict[str, Any]] = []
         for page in range(page_limit):
             data = self._fetch_page(keyword, page)
@@ -363,5 +416,25 @@ class ShopeeScraper(BaseScraper):
             if len(items) < _ITEMS_PER_PAGE:
                 break
             time.sleep(random.uniform(*_INTER_PAGE_DELAY))
+
+        # Circuit breaker — N keywords seguidas 100% bloqueadas = sessão/IP
+        # rejeitados de forma persistente; aborta o restante da coleta.
+        if all_records:
+            self._blocked_keyword_streak = 0
+        elif self._hard_blocked:
+            self._blocked_keyword_streak += 1
+            if (
+                self._blocked_keyword_streak >= _ABORT_AFTER_BLOCKED_KEYWORDS
+                and not self._collection_aborted
+            ):
+                self._collection_aborted = True
+                logger.error(
+                    f"[{self.platform_name}] Circuit breaker: "
+                    f"{self._blocked_keyword_streak} keywords seguidas com 403 — "
+                    "abortando a coleta Shopee (keywords restantes serão puladas). "
+                    "Causas prováveis: (1) sessão sem login — logue na Shopee no "
+                    "Chrome CDP e rode scripts/refresh_sessions_cdp.py --sites "
+                    "shopee; (2) IP marcado — proxy residencial BR."
+                )
 
         return all_records

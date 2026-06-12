@@ -424,9 +424,20 @@ class MagaluScraper(BaseScraper):
                 Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
             """)
 
+        # Modo CDP: NUNCA sequestra uma aba existente — o Chrome é do usuário,
+        # que pode fechar/navegar as abas dele a qualquer momento (foi o que
+        # derrubou a coleta no meio: 'Target page ... has been closed'). Uma
+        # aba dedicada isola a coleta do uso normal do browser.
+        if self._is_cdp:
+            try:
+                self._pw_page = self._pw_context.new_page()
+            except Exception as exc:
+                logger.error(f"[Magalu] Falha ao abrir aba dedicada no Chrome CDP: {exc}")
+                self._close_persistent_browser()
+                return False
         # Persistent context já vem com 1 página aberta (about:blank) —
         # reusa em vez de criar nova, pra economizar 1 sinal de automação.
-        if self._pw_context.pages:
+        elif self._pw_context.pages:
             self._pw_page = self._pw_context.pages[0]
         else:
             self._pw_page = self._pw_context.new_page()
@@ -530,7 +541,13 @@ class MagaluScraper(BaseScraper):
         é o Chrome do usuário, deixa aberto pra próximo run.
         """
         if self._is_cdp:
-            # CDP: só desconecta; não fecha página, contexto ou browser
+            # CDP: fecha SÓ a aba dedicada da coleta e desconecta — nunca o
+            # Chrome do usuário (contexto/browser ficam abertos pro próximo run)
+            try:
+                if self._pw_page and not self._pw_page.is_closed():
+                    self._pw_page.close()
+            except Exception:
+                pass
             try:
                 if self._pw_browser:
                     self._pw_browser.close()  # close() em CDP-browser apenas desconecta
@@ -572,6 +589,65 @@ class MagaluScraper(BaseScraper):
         self._pw_context = None
         self._pw_browser = None
         self._pw_handle = None
+
+    def _page_is_dead(self) -> bool:
+        """True se a aba de coleta não existe mais (fechada/crashed)."""
+        if self._pw_page is None:
+            return True
+        try:
+            return self._pw_page.is_closed()
+        except Exception:
+            return True
+
+    def _revive_page(self) -> bool:
+        """
+        Recria a aba de coleta quando a atual morreu — ex.: usuário fechou a
+        aba/janela do Chrome CDP no meio da coleta ('Target page, context or
+        browser has been closed'). Sem isso, TODAS as keywords restantes caíam
+        pro fallback curl_cffi, bem mais frágil contra o Akamai.
+
+        Returns:
+            True se há uma aba viva pronta pra navegar.
+        """
+        if not self._page_is_dead():
+            return True
+
+        # 1) Nova aba no mesmo contexto (Chrome ainda aberto, só a aba fechou)
+        try:
+            if self._pw_context is not None:
+                self._pw_page = self._pw_context.new_page()
+                self._pw_page.set_default_timeout(45_000)
+                logger.warning(
+                    f"[{self.platform_name}] Aba de coleta foi fechada — "
+                    "nova aba criada no mesmo Chrome"
+                )
+                return True
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] new_page falhou: {exc}")
+
+        # 2) Modo CDP: reconecta ao Chrome (janela pode ter sido reaberta)
+        cdp_url = os.getenv("MAGALU_CDP_URL", "").strip()
+        if self._is_cdp and cdp_url and self._pw_handle is not None:
+            try:
+                self._pw_browser = self._pw_handle.chromium.connect_over_cdp(cdp_url)
+                if self._pw_browser.contexts:
+                    self._pw_context = self._pw_browser.contexts[0]
+                    self._pw_page = self._pw_context.new_page()
+                    self._pw_page.set_default_timeout(45_000)
+                    logger.warning(
+                        f"[{self.platform_name}] Reconectado ao Chrome CDP "
+                        "após desconexão"
+                    )
+                    return True
+            except Exception as exc:
+                logger.warning(f"[{self.platform_name}] Reconexão CDP falhou: {exc}")
+
+        self._pw_page = None
+        logger.warning(
+            f"[{self.platform_name}] Browser indisponível — seguindo só com "
+            "curl_cffi (fallback). Reabra o Chrome CDP: scripts/start_chrome_cdp.bat"
+        )
+        return False
 
     def _find_search_input(self) -> Optional[Any]:
         """Retorna o ElementHandle do campo de busca visível, ou None."""
@@ -660,7 +736,7 @@ class MagaluScraper(BaseScraper):
           2. `goto` direto na URL /busca/ mobile, com Referer da home.
           3. `goto` direto na URL /busca/ desktop, com Referer da home.
         """
-        if not self._pw_page:
+        if not self._revive_page():
             return None
 
         slug = quote_plus(keyword.strip())
@@ -694,6 +770,10 @@ class MagaluScraper(BaseScraper):
                         f"[{self.platform_name}] Browser goto '{keyword}' "
                         f"p{page_num} em {base[8:30]}: {exc}"
                     )
+                    # Aba/janela fechada no meio da coleta → tenta reviver
+                    # antes da próxima tentativa; sem browser, vai pro cffi.
+                    if "closed" in str(exc).lower() and not self._revive_page():
+                        return None
                     continue
 
             # Espera produtos aparecerem (sinal de página renderizada com sucesso).
