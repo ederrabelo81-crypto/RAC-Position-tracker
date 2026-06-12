@@ -166,6 +166,12 @@ class CasasBahiaScraper(BaseScraper):
         self._blocked_keyword_streak: int = 0
         self._collection_aborted: bool = False
 
+        # Warm-up CDP feito 1x por execução: visita a home e espera o sensor.js
+        # do Akamai validar o _abck (vira "~0~"). Sem isso, um goto direto pra
+        # /busca chega ao Akamai antes da validação → bloqueio (foi o que
+        # derrubou a coleta mesmo via Chrome real). Mesma lição do Magalu.
+        self._cdp_warmed: bool = False
+
     def _vtex_headers(self) -> Dict[str, str]:
         """Headers da API VTEX com o UA alinhado à sessão/plataforma."""
         headers = dict(_VTEX_HEADERS)
@@ -884,6 +890,118 @@ class CasasBahiaScraper(BaseScraper):
     # Search
     # ------------------------------------------------------------------
 
+    def _warmup_cdp_session(self) -> bool:
+        """
+        Aquece a home no Chrome CDP e espera o Akamai validar o _abck.
+
+        Mesma lição do Magalu: um goto direto pra /busca chega ao Akamai antes
+        do sensor.js validar o _abck → bloqueio (visto na coleta mesmo via
+        Chrome real). Visitar a home, emular interação humana e esperar o
+        _abck virar "~0~" promove o cookie pras rotas de busca/API.
+
+        Idempotente: roda só na 1ª keyword (cacheia em self._cdp_warmed).
+        """
+        if self._cdp_warmed or not self._cdp_active or self._page is None:
+            return self._cdp_warmed
+
+        try:
+            self._page.goto(_VTEX_BASE, wait_until="domcontentloaded", timeout=40_000)
+            # Akamai pontua mouse/scroll — emula humano antes de esperar o _abck
+            try:
+                for _ in range(3):
+                    self._page.mouse.move(
+                        random.randint(150, 1200), random.randint(150, 700)
+                    )
+                    time.sleep(random.uniform(0.3, 0.7))
+                self._page.mouse.wheel(0, 500)
+                time.sleep(random.uniform(0.8, 1.5))
+            except Exception:
+                pass
+
+            # Espera o _abck validar (sensor.js POSTa fingerprint → Akamai aprova)
+            try:
+                self._page.wait_for_function(
+                    """() => {
+                        const m = document.cookie.match(/_abck=([^;]+)/);
+                        return m && /~0~/.test(decodeURIComponent(m[1]));
+                    }""",
+                    timeout=20_000,
+                )
+                logger.info(
+                    f"[{self.platform_name}] _abck validado pelo sensor.js ✓ "
+                    "(warm-up CDP)"
+                )
+            except Exception:
+                logger.warning(
+                    f"[{self.platform_name}] _abck não validou em 20s — "
+                    "a busca pode ainda ser bloqueada"
+                )
+            self._cdp_warmed = True
+            return True
+        except Exception as exc:
+            logger.warning(f"[{self.platform_name}] Warm-up CDP falhou: {exc}")
+            return False
+
+    def _vtex_fetch_in_page(self, keyword: str, page: int) -> Optional[List[Dict]]:
+        """
+        Chama a API VTEX intelligent-search DE DENTRO da página (same-origin).
+
+        Depois do warm-up, o fetch carrega o _abck validado + o fingerprint do
+        Chrome real, então o Akamai libera o JSON com o array ``sellers[]`` — o
+        que o curl_cffi (TLS ok, mas cookie não validado pelo sensor.js) não
+        conseguia. É o caminho mais rico: expõe o vencedor da buy box.
+
+        Returns:
+            Lista de produtos VTEX (mesma estrutura do endpoint IS), ou None.
+        """
+        if self._page is None:
+            return None
+        count = _ITEMS_PER_PAGE
+        api_url = (
+            f"/_v/api/intelligent-search/product_search/pt/pt-BR/search"
+            f"?query={quote_plus(keyword)}&page={page}&count={count}"
+            f"&sort=score_desc&hideUnavailableItems=false"
+        )
+        try:
+            result = self._page.evaluate(
+                """async (u) => {
+                    try {
+                        const r = await fetch(u, {
+                            headers: {'accept': 'application/json'},
+                            credentials: 'include',
+                        });
+                        if (!r.ok) return {status: r.status, products: null};
+                        const j = await r.json();
+                        const prods = j.products
+                            || (j.productSearch && j.productSearch.products)
+                            || [];
+                        return {status: 200, products: prods};
+                    } catch (e) {
+                        return {status: -1, products: null, error: String(e)};
+                    }
+                }""",
+                api_url,
+            )
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] in-page VTEX fetch erro: {exc}")
+            return None
+
+        if not result:
+            return None
+        status = result.get("status")
+        products = result.get("products")
+        if status == 200 and products:
+            logger.info(
+                f"[{self.platform_name}] VTEX in-page (CDP): {len(products)} "
+                f"produtos (pág {page})"
+            )
+            return products
+        logger.debug(
+            f"[{self.platform_name}] in-page VTEX fetch sem produtos "
+            f"(status={status})"
+        )
+        return None
+
     def _browser_search_page(
         self,
         keyword: str,
@@ -1021,12 +1139,30 @@ class CasasBahiaScraper(BaseScraper):
 
             if self._cdp_active:
                 # --- CDP: Chrome real primeiro (Akamai aceita o fingerprint) ---
-                browser_records = self._browser_search_page(
-                    keyword, keyword_category_map, page, offset
-                )
-                if browser_records is None:
-                    break
-                records = browser_records
+                # 1) Warm-up 1x: home + sensor.js valida o _abck (mesma lição
+                #    do Magalu — sem isso o /busca chega ao Akamai sem o cookie
+                #    validado e é bloqueado, como nos logs de 12/Jun).
+                if page == 1:
+                    self._warmup_cdp_session()
+
+                # 2) Caminho mais rico: API VTEX via fetch same-origin na página
+                #    aquecida — carrega o _abck validado e devolve sellers[].
+                products = self._vtex_fetch_in_page(keyword, page)
+                if products:
+                    records = self._parse_api_products(
+                        keyword, keyword_category_map, offset, products=products
+                    )
+
+                # 3) Fallback: navega /busca no browser + XHR/DOM
+                if not records:
+                    browser_records = self._browser_search_page(
+                        keyword, keyword_category_map, page, offset
+                    )
+                    if browser_records is None:
+                        break
+                    records = browser_records
+
+                # 4) Último recurso: curl_cffi (provável bloqueio, mas tenta)
                 if not records:
                     records = self._vtex_cffi_search(
                         keyword, keyword_category_map, page, offset
