@@ -74,6 +74,10 @@ $$;
 -- PASSO 3 — Seed automático de nomes novos no de-para (REVISAR)
 -- ============================================================================
 
+-- Critério = ausência REAL no de-para (anti-join), não o proxy
+-- `estado_match IS NULL`: linhas antigas podem ter estado_match preenchido
+-- por backfills mesmo sem entrada no de-para — o anti-join recria esses
+-- gaps. Nomes vazios/whitespace ficam de fora (não poluem a fila).
 CREATE OR REPLACE FUNCTION public.seed_depara_nomes_novos()
 RETURNS jsonb LANGUAGE plpgsql SET search_path TO 'public' AS $$
 DECLARE
@@ -83,16 +87,22 @@ BEGIN
     INSERT INTO produtos_depara_nome (nome_coletado, estado, marca_norm, origem)
     SELECT DISTINCT c.produto, 'REVISAR', fn_marca_norm_seed(c.marca), 'auto_seed'
     FROM coletas c
-    WHERE c.produto IS NOT NULL
-      AND c.estado_match IS NULL
+    WHERE NULLIF(BTRIM(c.produto), '') IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM produtos_depara_nome d
+          WHERE d.nome_coletado = c.produto
+      )
     ON CONFLICT (nome_coletado) DO NOTHING;
     GET DIAGNOSTICS v_coletas = ROW_COUNT;
 
     INSERT INTO produtos_depara_nome (nome_coletado, estado, marca_norm, origem)
     SELECT DISTINCT r.produto_sku, 'REVISAR', fn_marca_norm_seed(r.marca_monitorada), 'auto_seed'
     FROM rac_monitoramento r
-    WHERE r.produto_sku IS NOT NULL
-      AND r.estado_match IS NULL
+    WHERE NULLIF(BTRIM(r.produto_sku), '') IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM produtos_depara_nome d
+          WHERE d.nome_coletado = r.produto_sku
+      )
     ON CONFLICT (nome_coletado) DO NOTHING;
     GET DIAGNOSTICS v_rac = ROW_COUNT;
 

@@ -3296,8 +3296,12 @@ def page_admin_automation() -> None:
     last = get_last_run(client)
 
     # ── Auto-run: cobre quem só usa o dashboard (sem cron/coleta local) ────
-    if "_admin_auto_checked" not in st.session_state:
-        st.session_state["_admin_auto_checked"] = True
+    # Re-checa a cada 6h dentro da MESMA sessão (sessões longas não ficam sem
+    # manutenção); o gate real de 24h é o should_run, que lê o histórico.
+    import time as _time
+    _last_check = float(st.session_state.get("_admin_auto_checked_at", 0.0))
+    if _time.time() - _last_check > 6 * 3600:
+        st.session_state["_admin_auto_checked_at"] = _time.time()
         if should_run(client, min_hours=24):
             with st.status(
                 "⏳ Última manutenção há mais de 24h — executando agora "

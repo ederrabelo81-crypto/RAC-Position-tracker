@@ -129,3 +129,42 @@ class TestPipelineRegistry:
     def test_ordem_cobre_todas_as_etapas(self):
         assert list(STEP_LABELS.keys()) == STEP_ORDER
         assert set(_STEP_FUNCS.keys()) == set(STEP_ORDER)
+
+
+class TestShouldRun:
+    """should_run ignora dry-runs: decide pelo último run REAL (fix cubic #179)."""
+
+    def _patch_runs(self, monkeypatch, runs):
+        import utils.admin_automation as m
+        monkeypatch.setattr(m, "_read_local_runs", lambda: runs)
+        monkeypatch.setattr(m, "_get_client", lambda: None)
+        return m
+
+    def _iso(self, **delta):
+        from datetime import datetime, timedelta, timezone
+        return (datetime.now(timezone.utc) - timedelta(**delta)).isoformat()
+
+    def test_dry_run_recente_nao_adia_nem_forca(self, monkeypatch):
+        # Run real há 2h (dentro da janela) + dry-run há 5min → NÃO roda
+        m = self._patch_runs(monkeypatch, [
+            {"dry_run": False, "status": "ok", "started_at": self._iso(hours=2)},
+            {"dry_run": True,  "status": "ok", "started_at": self._iso(minutes=5)},
+        ])
+        assert m.should_run(min_hours=24) is False
+
+    def test_run_real_antigo_dispara(self, monkeypatch):
+        m = self._patch_runs(monkeypatch, [
+            {"dry_run": False, "status": "ok", "started_at": self._iso(hours=26)},
+            {"dry_run": True,  "status": "ok", "started_at": self._iso(minutes=5)},
+        ])
+        assert m.should_run(min_hours=24) is True
+
+    def test_sem_historico_dispara(self, monkeypatch):
+        m = self._patch_runs(monkeypatch, [])
+        assert m.should_run(min_hours=24) is True
+
+    def test_so_dry_runs_dispara(self, monkeypatch):
+        m = self._patch_runs(monkeypatch, [
+            {"dry_run": True, "status": "ok", "started_at": self._iso(minutes=5)},
+        ])
+        assert m.should_run(min_hours=24) is True
