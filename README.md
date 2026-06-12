@@ -219,7 +219,7 @@ Migrations do banco: `migrations/` + `docs/migrations/` (001→005).
 streamlit run app.py
 ```
 
-**INSIGHTS (12):**
+**INSIGHTS (13):**
 - **🏠 Overview** — métricas consolidadas, evolução de preços, tendências
 - **🚨 Top Movers** — SKUs com maior variação (janelas comparativas, confiança, sparkline)
 - **📊 Results** — detalhamento de coletas com filtros avançados
@@ -230,6 +230,7 @@ streamlit run app.py
 - **👑 Share of Buy Box** — vencedor da oferta por seller/marca/período
 - **⭐ Reputação & Avaliações** — rating, reviews, reputação × buy box, fulfillment
 - **📣 SoV Patrocinado** — quem compra mídia, keywords disputadas, dupla presença
+- **🛡️ Price Compliance** — aderência ao preço sugerido por SKU/plataforma
 - **📦 Availability** — presença por posição + Visibility Score ponderado
 - **🧠 Competitive Intelligence** — relatório IA (Claude) com download Markdown
 

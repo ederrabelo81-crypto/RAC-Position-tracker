@@ -443,18 +443,25 @@ def _step_auto_resolve_depara(client, ctx: Dict[str, Any]) -> StepResult:
     # como REVISAR — ou o que excedeu o cap/falhou — permanece na fila e o
     # próximo ciclo re-tenta. Sem LLM: a heurística terminal zera a fila
     # (política "terminal", default) ou mantém REVISAR (política "keep").
+    # Dry-run: a heurística é pura e roda na simulação; a chamada LLM não é
+    # feita (custo) — os nomes que iriam para ela são reportados em
+    # `llm_pendentes` para a contagem refletir o fluxo real.
     politica = os.getenv("ADMIN_AUTO_RESIDUAL_POLICY", "terminal").strip().lower()
     llm_error: Optional[str] = None
     llm_usado = False
+    llm_pendentes = 0
     heuristica_aplicada = 0
-    if residuais and not ctx["dry_run"]:
+    if residuais:
         if _llm_available():
-            llm_usado = True
-            resolvidos_llm, llm_error = _classify_residuals_llm(
-                residuais, CATALOG_BRANDS, catalog_btus
-            )
-            for nome, (estado, familia, marca) in resolvidos_llm.items():
-                propostas[nome] = (estado, familia, marca, "llm")
+            if ctx["dry_run"]:
+                llm_pendentes = len(residuais)
+            else:
+                llm_usado = True
+                resolvidos_llm, llm_error = _classify_residuals_llm(
+                    residuais, CATALOG_BRANDS, catalog_btus
+                )
+                for nome, (estado, familia, marca) in resolvidos_llm.items():
+                    propostas[nome] = (estado, familia, marca, "llm")
         elif politica == "terminal":
             for nome in residuais:
                 estado, reason = _residual_heuristic(nome)
@@ -492,6 +499,7 @@ def _step_auto_resolve_depara(client, ctx: Dict[str, Any]) -> StepResult:
         "coletas_atualizadas": coletas_tot,
         "erros": erros,
         "llm_usado": llm_usado,
+        "llm_pendentes": llm_pendentes,
         "llm_error": llm_error,
         "politica_residual": politica,
         "dry_run": ctx["dry_run"],
@@ -502,7 +510,9 @@ def _step_auto_resolve_depara(client, ctx: Dict[str, Any]) -> StepResult:
         summary=(f"fila {len(fila):,} · resolvidos {aplicadas:,} "
                  f"(regras {por_camada['regra']:,} · llm {por_camada['llm']:,} · "
                  f"heurística {por_camada['heurística']:,}) · "
-                 f"restam {max(restantes, 0):,}"),
+                 f"restam {max(restantes, 0):,}"
+                 + (f" ({llm_pendentes:,} iriam ao LLM — não simulado)"
+                    if llm_pendentes else "")),
         details=details,
         error=None if erros == 0 else f"{erros} erro(s) ao aplicar resoluções",
     )
@@ -664,12 +674,32 @@ def get_run_history(client=None, limit: int = 20) -> List[Dict[str, Any]]:
     return list(reversed(_read_local_runs()))[:limit]
 
 
+def _get_last_effective_run(client=None) -> Optional[Dict[str, Any]]:
+    """Último run REAL (dry_run=False) — Supabase → fallback JSONL local."""
+    client = client or _get_client()
+    if client is not None:
+        try:
+            resp = (client.table(_RUNS_TABLE).select("started_at,status,dry_run")
+                    .eq("dry_run", False)
+                    .order("started_at", desc=True).limit(1).execute())
+            if resp.data:
+                return resp.data[0]
+        except Exception:
+            pass
+    for run in reversed(_read_local_runs()):
+        if not run.get("dry_run"):
+            return run
+    return None
+
+
 def should_run(client=None, min_hours: float = 24.0) -> bool:
-    """True quando o último run (não dry-run) é mais antigo que `min_hours`."""
-    last = get_last_run(client)
+    """True quando o último run real é mais antigo que `min_hours`.
+
+    Dry-runs são ignorados: uma simulação recente não substitui (nem deve
+    adiar/forçar) a manutenção de verdade.
+    """
+    last = _get_last_effective_run(client)
     if not last:
-        return True
-    if last.get("dry_run"):
         return True
     try:
         started = datetime.fromisoformat(str(last["started_at"]).replace("Z", "+00:00"))
