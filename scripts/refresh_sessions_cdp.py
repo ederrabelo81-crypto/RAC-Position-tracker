@@ -59,13 +59,32 @@ CRITICAL_COOKIES = {
     "mercadolivre": ["c_user_id", "MELI_SESSION", "_d2id"],
 }
 
+# Cookies de LOGIN (any-of) — os críticos acima saem até pra visitante
+# anônimo. Sem login, a API v4 da Shopee responde 403 em TODA busca, mesmo
+# com csrftoken/SPC_SI presentes (caso visto em produção Jun/2026).
+LOGIN_COOKIES = {
+    "shopee": ["SPC_EC", "SPC_ST", "SPC_U"],
+}
+
 SITES = {
     "shopee": {
         "home": "https://shopee.com.br/",
         # navegar pela busca renova SPC_* e os tokens anti-fraude da API v4
         "warm_urls": ["https://shopee.com.br/search?keyword=ar%20condicionado"],
         "cookie_urls": ["https://shopee.com.br/", "https://shopee.com.br/search"],
-        "login_hint": "Shopee exige conta logada no perfil CDP (logue 1x manualmente).",
+        "login_hint": (
+            "Shopee exige conta logada no perfil CDP: abra o Chrome CDP, faça "
+            "login na Shopee (1x) e rode este script de novo. ATENÇÃO: copiar o "
+            "perfil (setup_cdp_profile.ps1) DESLOGA contas — re-logue após cada cópia."
+        ),
+        # Probe same-origin: chama a API de busca DENTRO da página e reporta o
+        # status — prevê se a coleta vai passar (200) ou tomar 403 antes de
+        # gastar uma execução inteira.
+        "api_probe": (
+            "/api/v4/search/search_items?by=relevancy&keyword=ar%20condicionado"
+            "&limit=10&newest=0&order=desc&page_type=search"
+            "&scenario=PAGE_GLOBAL_SEARCH&version=2"
+        ),
     },
     "casasbahia": {
         "home": "https://www.casasbahia.com.br/",
@@ -149,11 +168,20 @@ def _harvest_site(context, site: str, cfg: dict) -> bool:
         except Exception:
             local_storage, session_storage = {}, {}
 
+        # UA do Chrome real que emitiu os cookies — os scrapers replicam o
+        # MESMO UA no replay (anti-bots cruzam UA × cookies de sessão).
+        user_agent = ""
+        try:
+            user_agent = page.evaluate("() => navigator.userAgent") or ""
+        except Exception:
+            pass
+
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
             "site":           site,
             "saved_at":       datetime.now().isoformat(),
             "url":            final_url,
+            "userAgent":      user_agent,
             "cookies":        cookies,
             "localStorage":   local_storage,
             "sessionStorage": session_storage,
@@ -173,6 +201,42 @@ def _harvest_site(context, site: str, cfg: dict) -> bool:
                 print(f"     {cfg['login_hint']}")
             return False
         print(f"  ✅ cookies críticos OK: {critical}")
+
+        # Cookies de LOGIN (any-of) — sem eles a sessão é anônima e a API
+        # de busca responde 403 mesmo com os críticos presentes.
+        login_any = LOGIN_COOKIES.get(site, [])
+        if login_any:
+            present = [n for n in login_any if n in names]
+            if not present:
+                print(
+                    f"  ❌ sessão ANÔNIMA — nenhum cookie de login "
+                    f"({'/'.join(login_any)}). A coleta vai tomar 403."
+                )
+                if cfg.get("login_hint"):
+                    print(f"     {cfg['login_hint']}")
+                return False
+            print(f"  ✅ sessão logada (cookies: {present})")
+
+        # Probe da API de busca (same-origin, com os cookies da sessão) —
+        # verdict antecipado: 200 = coleta deve passar; 403 = bloqueio.
+        probe_path = cfg.get("api_probe")
+        if probe_path:
+            try:
+                status = page.evaluate(
+                    "url => fetch(url, {credentials: 'include'}).then(r => r.status)",
+                    cfg["home"].rstrip("/") + probe_path,
+                )
+                if status == 200:
+                    print("  ✅ probe da API de busca: HTTP 200 — sessão válida")
+                else:
+                    print(
+                        f"  ⚠️  probe da API de busca: HTTP {status} — "
+                        "coleta provavelmente bloqueada (re-logue/aguarde e rode de novo)"
+                    )
+                    return False
+            except Exception as exc:
+                print(f"  ⚠️  probe da API falhou ({exc}) — seguindo sem verdict")
+
         return True
 
     except Exception as exc:

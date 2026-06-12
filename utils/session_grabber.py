@@ -269,10 +269,19 @@ def grab_session(site: str, headless: bool = False) -> bool:
         except Exception:
             pass
 
+        # UA do browser que emitiu os cookies — os scrapers replicam o MESMO
+        # UA no replay (anti-bots cruzam UA × cookies de sessão).
+        user_agent = ""
+        try:
+            user_agent = page.evaluate("() => navigator.userAgent") or ""
+        except Exception:
+            pass
+
         session_data = {
             "site": site,
             "saved_at": datetime.now().isoformat(),
             "url": current_url,
+            "userAgent": user_agent,
             "cookies": cookies,
             "localStorage": local_storage,
             "sessionStorage": session_storage,
@@ -298,20 +307,24 @@ def grab_session(site: str, headless: bool = False) -> bool:
         if site == "shopee":
             url_ok = "buyer/login" not in current_url
             print(f"  {'✅' if url_ok else '⚠️  URL É LOGIN PAGE — volte a rodar e navegue para produtos!'} URL: {current_url[:60]}")
+            # Cookies de LOGIN: csrftoken/SPC_SI saem até anônimo; sem estes
+            # a API v4 de busca responde 403.
+            has_login = any(c["name"] in ("SPC_EC", "SPC_ST", "SPC_U") for c in cookies)
+            print(f"  {'✅ sessão LOGADA' if has_login else '❌ sessão ANÔNIMA (sem SPC_EC/SPC_ST/SPC_U) — API retornará 403; faça LOGIN e recapture'}")
 
         browser.close()
 
     return True
 
 
-def load_session(site: str) -> list:
+def load_session_meta(site: str) -> dict:
     """
-    Carrega cookies de sessão salva. Retorna [] se não existir ou expirada.
-    Usado pelos scrapers quando disponível.
+    Carrega o payload COMPLETO da sessão salva (cookies + userAgent + storages).
+    Retorna {} se não existir ou expirada (>24h).
     """
     session_path = SESSIONS_DIR / f"{site}.json"
     if not session_path.exists():
-        return []
+        return {}
     try:
         data = json.loads(session_path.read_text(encoding="utf-8"))
         saved_at = datetime.fromisoformat(data["saved_at"])
@@ -319,11 +332,19 @@ def load_session(site: str) -> list:
         if age_hours > 24:
             print(f"[session_grabber] Sessão de {site} expirada ({age_hours:.1f}h). "
                   f"Execute: python utils/session_grabber.py --site {site}")
-            return []
-        return data.get("cookies", [])
+            return {}
+        return data
     except Exception as e:
         print(f"[session_grabber] Erro ao carregar sessão {site}: {e}")
-        return []
+        return {}
+
+
+def load_session(site: str) -> list:
+    """
+    Carrega cookies de sessão salva. Retorna [] se não existir ou expirada.
+    Usado pelos scrapers quando disponível.
+    """
+    return load_session_meta(site).get("cookies", [])
 
 
 def apply_session_to_context(site: str, context) -> bool:

@@ -16,6 +16,7 @@ Paginação: parâmetro &page={n}.
 """
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -33,7 +34,7 @@ from bs4 import BeautifulSoup, Tag
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import MAX_PAGES, LOGS_DIR
+from config import MAX_PAGES, LOGS_DIR, PAGE_TIMEOUT
 from scrapers.base import BaseScraper
 from utils.text import parse_price, parse_rating, parse_review_count
 
@@ -122,6 +123,11 @@ _BLOCKED_URL_PATTERNS = [
     "akamai",
 ]
 
+# Circuit breaker: após N keywords seguidas bloqueadas pelo Akamai, aborta a
+# coleta inteira — cada keyword bloqueada queimava ~35-40s de navegação
+# garantidamente inútil (31 keywords ≈ 20min por execução).
+_ABORT_AFTER_BLOCKED_KEYWORDS = 3
+
 
 class CasasBahiaScraper(BaseScraper):
     """Scraper modular para Casas Bahia."""
@@ -135,6 +141,125 @@ class CasasBahiaScraper(BaseScraper):
         # keywords; o Akamai valida o _abck por ~30min, renovamos a cada 10min.
         self._cffi_session: Optional[Any] = None
         self._cffi_session_ts: float = 0.0
+
+        # UA coerente: o Akamai cruza UA × Client Hints × TLS × cookies. O
+        # sorteio do BaseScraper podia cair em UA Linux/Firefox rodando num
+        # Chrome real Windows — flag instantânea. Prioridade: UA do browser
+        # que gerou a sessão salva (refresh_sessions_cdp) > UA Chrome/Windows.
+        self._user_agent = _VTEX_HEADERS["User-Agent"]
+        try:
+            from utils.session_grabber import load_session_meta
+            session_ua = (load_session_meta("casasbahia") or {}).get("userAgent")
+            if session_ua:
+                self._user_agent = session_ua
+        except Exception:
+            pass
+
+        # Modo CDP (Chrome real do usuário) — setado em _launch()
+        self._cdp_active: bool = False
+        # Página com handler de XHR já registrado (evita handlers duplicados
+        # acumulando entre keywords — cada search() chamava page.on de novo)
+        self._xhr_page: Optional[Any] = None
+
+        # Circuit breaker (ver _ABORT_AFTER_BLOCKED_KEYWORDS)
+        self._akamai_blocked: bool = False       # bloqueio na keyword atual
+        self._blocked_keyword_streak: int = 0
+        self._collection_aborted: bool = False
+
+    def _vtex_headers(self) -> Dict[str, str]:
+        """Headers da API VTEX com o UA alinhado à sessão/plataforma."""
+        headers = dict(_VTEX_HEADERS)
+        headers["User-Agent"] = self._user_agent
+        return headers
+
+    # ------------------------------------------------------------------
+    # Browser: modo CDP (Chrome real) ou launch próprio (fallback)
+    # ------------------------------------------------------------------
+
+    def _launch(self) -> None:
+        """
+        Conecta ao Chrome real via CDP quando RAC_CDP_URL/MAGALU_CDP_URL está
+        setado (mesma técnica que destravou o Magalu): cookies, fingerprint e
+        sensor.js validado são do browser que o Akamai já aceita. Injetar os
+        cookies salvos num browser Playwright próprio NÃO basta — o Akamai
+        vincula o _abck ao fingerprint do browser que o emitiu.
+
+        Sem CDP, cai no launch padrão do BaseScraper.
+        """
+        cdp_url = (
+            os.getenv("RAC_CDP_URL", "").strip()
+            or os.getenv("MAGALU_CDP_URL", "").strip()
+        )
+        if not cdp_url:
+            super()._launch()
+            return
+
+        # rebrowser-playwright oculta o Runtime.enable do sensor.js (mesmo
+        # requisito do magalu.py — o import seta REBROWSER_PATCHES_RUNTIME_FIX_MODE)
+        from scrapers.magalu import _import_sync_playwright
+        sync_playwright, flavor = _import_sync_playwright()
+        if sync_playwright is None:
+            super()._launch()
+            return
+
+        try:
+            self._playwright = sync_playwright().start()
+            self._browser = self._playwright.chromium.connect_over_cdp(
+                cdp_url, timeout=10_000
+            )
+            if not self._browser.contexts:
+                raise RuntimeError("Chrome CDP sem contexto aberto")
+            self._context = self._browser.contexts[0]
+            # Aba DEDICADA — nunca sequestra/navega uma aba do usuário
+            self._page = self._context.new_page()
+            self._page.set_default_timeout(PAGE_TIMEOUT)
+            self._cdp_active = True
+            logger.info(
+                f"[{self.platform_name}] Chrome real conectado via CDP em "
+                f"{cdp_url} ({flavor}) — fingerprint nativo contra o Akamai"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[{self.platform_name}] CDP indisponível ({exc}) — "
+                "abrindo browser próprio (fallback, Akamai pode bloquear)"
+            )
+            try:
+                if self._playwright:
+                    self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+            self._browser = None
+            self._context = None
+            self._page = None
+            self._cdp_active = False
+            super()._launch()
+
+    def _close(self) -> None:
+        if not self._cdp_active:
+            super()._close()
+            return
+        # CDP: fecha SÓ a aba dedicada e desconecta — o Chrome é do usuário
+        try:
+            if self._page and not self._page.is_closed():
+                self._page.close()
+        except Exception:
+            pass
+        try:
+            if self._browser:
+                self._browser.close()  # close() em CDP-browser apenas desconecta
+        except Exception:
+            pass
+        try:
+            if self._playwright:
+                self._playwright.stop()
+        except Exception:
+            pass
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._playwright = None
+        self._cdp_active = False
 
     # ------------------------------------------------------------------
     # URL
@@ -194,7 +319,7 @@ class CasasBahiaScraper(BaseScraper):
         # Warm-up: GET na home para o Akamai emitir cookies frescos
         try:
             warm_headers = {
-                "User-Agent": _VTEX_HEADERS["User-Agent"],
+                "User-Agent": self._user_agent,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": _VTEX_HEADERS["Accept-Language"],
                 "Upgrade-Insecure-Requests": "1",
@@ -255,7 +380,7 @@ class CasasBahiaScraper(BaseScraper):
         def _cffi_get(url: str, params: dict) -> Optional[object]:
             """Helper: GET com curl_cffi na session aquecida + content-type guard."""
             resp = cffi_session.get(
-                url, headers=_VTEX_HEADERS, params=params,
+                url, headers=self._vtex_headers(), params=params,
                 impersonate="chrome124", timeout=_API_TIMEOUT,
             )
             ct = resp.headers.get("content-type", "")
@@ -333,7 +458,7 @@ class CasasBahiaScraper(BaseScraper):
             encoded = quote_plus(keyword)
             resp = requests.get(
                 f"{_VTEX_CATALOG_URL}/{encoded}",
-                headers=_VTEX_HEADERS,
+                headers=self._vtex_headers(),
                 params={"_from": from_idx, "_to": to_idx},
                 timeout=_API_TIMEOUT,
             )
@@ -353,7 +478,7 @@ class CasasBahiaScraper(BaseScraper):
         try:
             resp = requests.get(
                 _VTEX_IS_URL,
-                headers=_VTEX_HEADERS,
+                headers=self._vtex_headers(),
                 params={
                     "query": keyword,
                     "page": page,
@@ -417,6 +542,13 @@ class CasasBahiaScraper(BaseScraper):
 
     def _setup_xhr_intercept(self) -> None:
         self._captured_products = []
+
+        # Handler já registrado nesta página — só zera o buffer. Sem este
+        # guard, cada search() empilhava um handler novo na MESMA página e
+        # os produtos capturados via XHR saíam multiplicados.
+        if self._xhr_page is self._page and self._page is not None:
+            return
+        self._xhr_page = self._page
 
         def handle_response(response):
             try:
@@ -752,6 +884,92 @@ class CasasBahiaScraper(BaseScraper):
     # Search
     # ------------------------------------------------------------------
 
+    def _browser_search_page(
+        self,
+        keyword: str,
+        keyword_category_map: dict,
+        page: int,
+        offset: int,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Estratégia browser pra UMA página: goto + XHR interception + DOM parse.
+
+        Returns:
+            Lista de registros (pode ser vazia), ou None quando o Akamai
+            bloqueou / o goto falhou — sinal pro caller parar a keyword.
+        """
+        url = self._build_url(keyword, page)
+
+        # Sessão manual: só no browser PRÓPRIO. No modo CDP o Chrome real já
+        # tem cookies vivos — injetar os salvos (mais antigos) degrada a sessão.
+        if page == 1 and not self._cdp_active:
+            try:
+                from utils.session_grabber import apply_session_to_context
+                if apply_session_to_context("casasbahia", self._context):
+                    logger.info(
+                        f"[{self.platform_name}] Sessão manual aplicada "
+                        "(session_grabber) — pode bypass Akamai"
+                    )
+                else:
+                    logger.warning(
+                        f"[{self.platform_name}] Sem sessão manual. "
+                        "Execute: python utils/session_grabber.py --site casasbahia"
+                    )
+            except Exception:
+                pass
+
+        # Revive: no CDP o usuário pode fechar a aba/janela no meio da coleta
+        if self._page is None or self._page.is_closed():
+            try:
+                self._page = self._context.new_page()
+                self._page.set_default_timeout(PAGE_TIMEOUT)
+                self._setup_xhr_intercept()
+                logger.warning(
+                    f"[{self.platform_name}] Aba de coleta foi fechada — "
+                    "nova aba criada"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[{self.platform_name}] Browser indisponível: {exc}"
+                )
+                return None
+
+        try:
+            self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+        except Exception as exc:
+            logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
+            return None
+
+        self._wait_for_products(timeout_ms=4_000)
+
+        # Fail-fast: checa bloqueio ANTES dos waits caros (network idle +
+        # delay + scroll somavam ~20s extras por keyword já bloqueada).
+        html = self._page.content()
+        if self._check_blocked(html):
+            self._dump_debug(html, page, keyword)
+            self._akamai_blocked = True
+            return None
+
+        self._wait_for_network_idle()
+        self._random_delay(min_s=4.0, max_s=9.0)
+        self._human_scroll(steps=10, step_px=300)
+        time.sleep(1.5)
+
+        html = self._page.content()
+        if self._check_blocked(html):
+            self._dump_debug(html, page, keyword)
+            self._akamai_blocked = True
+            return None
+
+        # XHR capturado tem prioridade (payload VTEX completo com sellers[])
+        if self._captured_products:
+            logger.info(
+                f"[{self.platform_name}] {len(self._captured_products)} produtos via XHR"
+            )
+            return self._parse_api_products(keyword, keyword_category_map, offset)
+
+        return self._parse_dom(html, keyword, keyword_category_map, page, offset)
+
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=2, min=6, max=20),
@@ -769,6 +987,9 @@ class CasasBahiaScraper(BaseScraper):
         da busca; do array ``sellers[]`` extrai o vencedor da buy box
         (``sellerDefault``), o nº de sellers e o tipo (1P/3P).
 
+        No modo CDP (RAC_CDP_URL setado), o browser real vem PRIMEIRO — é o
+        fingerprint que o Akamai já aceita; as APIs VTEX viram fallback.
+
         Args:
             keyword: termo de busca.
             keyword_category_map: mapa keyword → categoria (para o registro).
@@ -777,8 +998,18 @@ class CasasBahiaScraper(BaseScraper):
         Returns:
             Lista de registros normalizados (um por oferta).
         """
+        # Circuit breaker — coleta já abortada por bloqueios consecutivos:
+        # pula a keyword sem gastar ~40s de navegação garantidamente bloqueada.
+        if self._collection_aborted:
+            logger.debug(
+                f"[{self.platform_name}] Coleta abortada (circuit breaker) — "
+                f"pulando '{keyword}'"
+            )
+            return []
+
         all_records: List[Dict[str, Any]] = []
         self._setup_xhr_intercept()
+        self._akamai_blocked = False
 
         for page in range(1, page_limit + 1):
             url = self._build_url(keyword, page)
@@ -786,62 +1017,42 @@ class CasasBahiaScraper(BaseScraper):
             self._captured_products = []
             offset = (page - 1) * _ITEMS_PER_PAGE
             records: List[Dict[str, Any]] = []
+            browser_records: Optional[List[Dict[str, Any]]] = None
 
-            # --- Estratégia 0: VTEX API via curl_cffi (TLS fingerprint Chrome real) ---
-            records = self._vtex_cffi_search(keyword, keyword_category_map, page, offset)
-
-            # --- Estratégia 1: VTEX API via requests (fallback) ---
-            if not records:
-                records = self._vtex_api_search(keyword, keyword_category_map, page, offset)
-
-            if not records:
-                # --- Estratégias 2/3: Browser + sessão salva + XHR + DOM ---
-                # Aplica cookies de sessão manual se disponível (session_grabber.py)
-                if page == 1:
-                    try:
-                        from utils.session_grabber import apply_session_to_context
-                        if apply_session_to_context("casasbahia", self._context):
-                            logger.info(
-                                f"[{self.platform_name}] Sessão manual aplicada "
-                                "(session_grabber) — pode bypass Akamai"
-                            )
-                        else:
-                            logger.warning(
-                                f"[{self.platform_name}] Sem sessão manual. "
-                                "Execute: python utils/session_grabber.py --site casasbahia"
-                            )
-                    except Exception:
-                        pass
-
-                try:
-                    self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
-                except Exception as exc:
-                    logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
+            if self._cdp_active:
+                # --- CDP: Chrome real primeiro (Akamai aceita o fingerprint) ---
+                browser_records = self._browser_search_page(
+                    keyword, keyword_category_map, page, offset
+                )
+                if browser_records is None:
                     break
-
-                self._wait_for_products(timeout_ms=4_000)
-                self._wait_for_network_idle()
-                self._random_delay(min_s=4.0, max_s=9.0)
-                self._human_scroll(steps=10, step_px=300)
-                time.sleep(1.5)
-
-                html = self._page.content()
-
-                # Detecta bloqueio Akamai (fail fast)
-                if self._check_blocked(html):
-                    self._dump_debug(html, page, keyword)
-                    break
-
-                # Estratégia 1: XHR capturado
-                if self._captured_products:
-                    logger.info(
-                        f"[{self.platform_name}] {len(self._captured_products)} produtos via XHR"
-                    )
-                    records = self._parse_api_products(keyword, keyword_category_map, offset)
-
-                # Estratégia 2: DOM
+                records = browser_records
                 if not records:
-                    records = self._parse_dom(html, keyword, keyword_category_map, page, offset)
+                    records = self._vtex_cffi_search(
+                        keyword, keyword_category_map, page, offset
+                    ) or self._vtex_api_search(
+                        keyword, keyword_category_map, page, offset
+                    )
+            else:
+                # --- Estratégia 0: VTEX API via curl_cffi (TLS Chrome real) ---
+                records = self._vtex_cffi_search(
+                    keyword, keyword_category_map, page, offset
+                )
+
+                # --- Estratégia 1: VTEX API via requests (fallback) ---
+                if not records:
+                    records = self._vtex_api_search(
+                        keyword, keyword_category_map, page, offset
+                    )
+
+                # --- Estratégias 2/3: Browser + sessão salva + XHR + DOM ---
+                if not records:
+                    browser_records = self._browser_search_page(
+                        keyword, keyword_category_map, page, offset
+                    )
+                    if browser_records is None:
+                        break
+                    records = browser_records
 
             all_records.extend(records)
 
@@ -853,6 +1064,26 @@ class CasasBahiaScraper(BaseScraper):
 
             if page < page_limit:
                 self._random_delay()
+
+        # Circuit breaker — N keywords seguidas bloqueadas pelo Akamai = IP/
+        # fingerprint rejeitados de forma persistente; aborta o restante.
+        if all_records:
+            self._blocked_keyword_streak = 0
+        elif self._akamai_blocked:
+            self._blocked_keyword_streak += 1
+            if (
+                self._blocked_keyword_streak >= _ABORT_AFTER_BLOCKED_KEYWORDS
+                and not self._collection_aborted
+            ):
+                self._collection_aborted = True
+                logger.error(
+                    f"[{self.platform_name}] Circuit breaker: "
+                    f"{self._blocked_keyword_streak} keywords seguidas bloqueadas "
+                    "pelo Akamai — abortando a coleta Casas Bahia (keywords "
+                    "restantes serão puladas). Caminhos: coleta via Chrome CDP "
+                    "(scripts/start_chrome_cdp.bat + RAC_CDP_URL) ou proxy "
+                    "residencial BR."
+                )
 
         logger.success(
             f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
