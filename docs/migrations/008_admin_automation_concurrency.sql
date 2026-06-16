@@ -39,11 +39,17 @@ INSERT INTO public.admin_automation_lock (id) VALUES (1) ON CONFLICT (id) DO NOT
 -- Claim atômico: o UPDATE só "pega" se o lock está livre ou expirado. Sob
 -- concorrência o Postgres serializa o row lock de id=1 — só um run vence;
 -- os demais veem o lock tomado e recebem false.
+-- p_holder NULL é rejeitado: gravar holder=NULL faria o predicado "holder IS
+-- NULL" tratar o lock como livre, permitindo que todo caller "adquirisse"
+-- (bypass do mutex).
 CREATE OR REPLACE FUNCTION public.admin_automation_try_lock(
     p_holder uuid, p_trigger text DEFAULT 'manual', p_ttl_seconds int DEFAULT 900)
 RETURNS boolean LANGUAGE plpgsql SET search_path TO 'public' AS $$
 DECLARE v_rows int;
 BEGIN
+    IF p_holder IS NULL THEN
+        RAISE EXCEPTION 'admin_automation_try_lock: p_holder não pode ser NULL';
+    END IF;
     UPDATE admin_automation_lock
     SET holder = p_holder, trigger = p_trigger,
         acquired_at = now(), expires_at = now() + make_interval(secs => p_ttl_seconds)
