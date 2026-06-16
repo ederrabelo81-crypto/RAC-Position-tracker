@@ -32,19 +32,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from streamlit.testing.v1 import AppTest  # noqa: E402
+import app  # noqa: E402  — importável sem renderizar (entry sob `if __name__ == "__main__"`)
 
 APP_FILE = str(ROOT / "app.py")
-RUN_TIMEOUT = 90  # generoso: primeira execução compila o app inteiro
 
-# As 20 páginas registradas em PAGES (app.py).
-PAGE_NAMES = [
-    "🏠 Overview", "🚨 Top Movers", "📊 Results", "📈 Price Evolution",
-    "📊 Market Analytics", "🗂️ Ficha do Produto", "🏆 BuyBox Position",
-    "👑 Share of Buy Box", "⭐ Reputação & Avaliações", "📣 SoV Patrocinado",
-    "🛡️ Price Compliance", "📦 Availability", "🧠 Competitive Intelligence",
-    "🚀 Run Collection", "📧 Email Digest", "🔔 Price Anomalies",
-    "📂 Import History", "🩺 Data Health", "🤖 Automação", "🧬 Família & SKU",
-]
+# Timeouts separados. O sweep roda 60 casos, então um cap menor evita que uma
+# regressão que TRAVE uma página multiplique por 60 e segure a CI. Em operação
+# normal cada run leva ~0.3s; o cap só morde num travamento real.
+RUN_TIMEOUT = 45     # testes unitários/harness (inclui o import frio do app)
+SWEEP_TIMEOUT = 30   # cada página do sweep (60×30s = teto, nunca o caso feliz)
+
+# Fonte única de verdade: as páginas vêm direto de `app.PAGES` — sem duplicar
+# os rótulos aqui (some o risco de divergência ao adicionar/renomear página).
+PAGE_NAMES = list(app.PAGES.keys())
 
 SOURCE_COMBOS = [
     ["coletas", "pricetrack"],  # padrão (idêntico a hoje)
@@ -183,7 +183,7 @@ def _run_page(page: str, sources: list[str]):
     at.session_state["gf_sources"] = sources
     at.session_state["gf_dates"] = (date(2026, 6, 8), date(2026, 6, 15))
     at.session_state["gf_compare"] = True  # exercita também o caminho de comparação
-    at.run(timeout=RUN_TIMEOUT)
+    at.run(timeout=SWEEP_TIMEOUT)
     return at
 
 
