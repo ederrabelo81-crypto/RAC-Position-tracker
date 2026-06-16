@@ -14,8 +14,13 @@ de cliques nas páginas "🧹 Data Cleanup", "🔤 Normalize SKUs" e
     7. seed_depara           — insere nomes novos no de-para (RPC, REVISAR)
     8. auto_resolve_depara   — resolve a fila REVISAR em 3 camadas:
                                regras → LLM (Claude) → heurística terminal
-    9. resolver_pendentes    — RPC resolver_coletas_pendentes (migration 004)
-   10. refresh_cache         — RPC refresh_filter_options (materialized view)
+    9. resolver_pendentes    — RPC resolver_coletas_pendentes (migrations 004+007)
+   10. refresh_cache         — RPC refresh_filter_options (MV, CONCURRENTLY)
+
+Performance/timeouts (migration 007): índices em coletas.produto e nas linhas
+ainda não-normalizadas, refresh da MV via CONCURRENTLY e statement_timeout de
+120s só no service_role removem os timeouts (57014) que faziam a pipeline
+terminar PARTIAL. Ver docs/migrations/007_admin_automation_perf.sql.
 
 Gatilhos: pós-coleta (main.py), cron (scripts/admin_auto.py) e auto-run na
 página "🤖 Automação" do dashboard. Varredura é incremental por watermark de
