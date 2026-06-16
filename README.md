@@ -94,7 +94,7 @@ AR CONDICIONADO → tabela `pricetrack_daily`.
 - Python 3.10+
 - Playwright browsers instalados (`rebrowser-playwright` para CDP/Akamai)
 - Supabase configurado (obrigatório para dashboard)
-- Conta Anthropic (opcional, para Competitive Intelligence)
+- Conta Anthropic (opcional — camada LLM da Automação Admin)
 
 ```bash
 git clone https://github.com/ederrabelo81-crypto/RAC-Position-tracker.git
@@ -118,7 +118,7 @@ SUPABASE_KEY=sua_service_role_key
 # PriceTrack (import diário de preços)
 PRICETRACK_API_KEY=...
 
-# Anthropic (opcional — página Competitive Intelligence)
+# Anthropic (opcional — camada LLM da Automação Admin)
 ANTHROPIC_API_KEY=sk-ant-...
 
 # Mercado Livre API oficial (opcional — coleta complementar ml_api p/ reputação)
@@ -219,7 +219,7 @@ Migrations do banco: `migrations/` + `docs/migrations/` (001→005).
 streamlit run app.py
 ```
 
-**INSIGHTS (13):**
+**INSIGHTS (12):**
 - **🏠 Overview** — métricas consolidadas, evolução de preços, tendências
 - **🚨 Top Movers** — SKUs com maior variação (janelas comparativas, confiança, sparkline)
 - **📊 Results** — detalhamento de coletas com filtros avançados
@@ -232,10 +232,8 @@ streamlit run app.py
 - **📣 SoV Patrocinado** — quem compra mídia, keywords disputadas, dupla presença
 - **🛡️ Price Compliance** — aderência ao preço sugerido por SKU/plataforma
 - **📦 Availability** — presença por posição + Visibility Score ponderado
-- **🧠 Competitive Intelligence** — relatório IA (Claude) com download Markdown
 
-**OPERAÇÕES (5):**
-- **🚀 Run Collection** — coleta manual (plataformas/keywords/páginas)
+**OPERAÇÕES (4):**
 - **📧 Email Digest** — relatórios HTML/texto por email
 - **🔔 Price Anomalies** — variações suspeitas (>50%)
 - **📂 Import History** — histórico de CSVs + upload via Streamlit

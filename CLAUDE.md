@@ -672,7 +672,7 @@ tail -f logs/bot_*.log
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your_service_role_key
 
-# Anthropic (optional — Competitive Intelligence)
+# Anthropic (optional — Automação Admin LLM layer)
 ANTHROPIC_API_KEY=sk-ant-...
 
 # Analyst name for reports
