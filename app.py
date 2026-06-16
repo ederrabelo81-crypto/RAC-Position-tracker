@@ -527,14 +527,6 @@ def get_sku_resolvido_options(familias: tuple = ()) -> list:
     return sorted(df["sku"].dropna().unique().tolist())
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def get_btu_options_catalogo() -> list:
-    cat = get_catalogo()
-    if cat.empty:
-        return []
-    return sorted(cat["capacidade_btu"].dropna().unique().astype(int).tolist())
-
-
 # ---------------------------------------------------------------------------
 # Global filter accessors p/ filtros novos (estado/família/SKU)
 # Defaults: estado=['MAPEADO']; demais vazios = sem filtro extra
@@ -730,6 +722,13 @@ def query_coletas(
     client = _get_supabase()
     if client is None:
         st.error("Supabase não conectado. Verifique o arquivo .env.")
+        return pd.DataFrame()
+
+    # Filtro global de Fonte de Dados: se "Coletas (Python)" estiver desligada,
+    # esta fonte não contribui com nenhuma linha (silencioso — é um recorte
+    # intencional, não erro). A precedência/merge em query_price_evolution_data
+    # herda isto automaticamente.
+    if "coletas" not in _gf_sources():
         return pd.DataFrame()
 
     def _build_q():
@@ -966,6 +965,12 @@ def query_pricetrack_daily(
     """
     client = _get_supabase()
     if client is None:
+        return pd.DataFrame()
+
+    # Filtro global de Fonte de Dados: se "PriceTrack" estiver desligada,
+    # esta fonte não contribui com nenhuma linha. O merge em
+    # query_price_evolution_data passa a refletir só as coletas.
+    if "pricetrack" not in _gf_sources():
         return pd.DataFrame()
 
     # Resolve qualquer filtro de produto / família / SKU vindo da página
@@ -1458,51 +1463,36 @@ def _render_global_filters() -> None:
             placeholder="Selecione marcas…",
             key="gf_brands",
         )
-
-        # --- Filtros resolvidos (Estado / Família / SKU / BTU catálogo) ---
-        st.markdown("**Catálogo RAC**")
+        # Inicializa uma vez (ambas) via session_state em vez de `default=`,
+        # para nunca colidir com o valor setado por preset/teste — assim o
+        # Streamlit não emite o aviso "default + session_state".
+        st.session_state.setdefault("gf_sources", list(_DATA_SOURCES))
         st.multiselect(
-            "Estado do match",
-            _ESTADOS_RESOLVIDOS,
-            default=["MAPEADO"],
-            help=("MAPEADO = bate com família do catálogo (real ou genérica). "
-                  "FORA_ESCOPO = não-RAC HW (janela/portátil/cassete/multi-split ou marca não-catalogada). "
-                  "NAO_AC = não é ar-condicionado. REVISAR = pendente de classificação humana."),
-            key="gf_estados",
-        )
-        # Cascata: famílias filtradas por marca selecionada e estados ativos
-        _sel_brands_upper = tuple(b.upper() for b in st.session_state.get("gf_brands", []))
-        _sel_estados     = tuple(st.session_state.get("gf_estados", ["MAPEADO"]))
-        _fam_opts        = get_familia_options(_sel_brands_upper, _sel_estados)
-        st.multiselect(
-            "Família", _fam_opts,
-            format_func=_familia_display,
-            placeholder="Todas as famílias do(s) recorte(s) acima",
-            key="gf_familias",
-        )
-        # SKU resolvido (do catálogo) — depende das famílias escolhidas
-        _sku_opts = get_sku_resolvido_options(tuple(st.session_state.get("gf_familias", [])))
-        st.multiselect(
-            "SKU do catálogo", _sku_opts,
-            placeholder="Todos os SKUs das famílias acima",
-            key="gf_skus_resolvidos",
-        )
-        st.multiselect(
-            "Capacidade BTU (catálogo)", get_btu_options_catalogo(),
-            placeholder="Todas as capacidades",
-            format_func=lambda b: f"{int(b):,}".replace(",", "."),
-            key="gf_btu_catalogo",
+            "Fonte de Dados", _DATA_SOURCES,
+            format_func=lambda s: _SOURCE_LABELS.get(s, s),
+            key="gf_sources",
+            help=(
+                "Quais bases alimentam o dashboard. Padrão: **ambas**.\n\n"
+                "• **Coletas (Python)** — scraping próprio (posição, buy box, "
+                "sellers, reputação e também preço).\n"
+                "• **PriceTrack** — importação externa; fonte de preço por "
+                "(data, SKU) com precedência sobre as coletas.\n\n"
+                "Selecione apenas uma para isolar a fonte. Páginas sem dados "
+                "naquela fonte (ex.: buy box só existe nas coletas) avisam que "
+                "não há registros — nada quebra."
+            ),
         )
 
-        st.checkbox("Comparar período anterior", key="gf_compare")
-
+        st.checkbox(
+            "Comparar período anterior", key="gf_compare",
+            help="Compara com o período imediatamente anterior, de mesma "
+                 "duração — calculado automaticamente a partir do Período.",
+        )
         if st.session_state.get("gf_compare"):
-            st.date_input(
-                "Período de comparação",
-                value=(date.today() - timedelta(days=14), date.today() - timedelta(days=8)),
-                max_value=date.today(),
-                format="DD/MM/YYYY",
-                key="gf_cmp_dates",
+            _cs, _ce = _gf_cmp_dates()
+            st.caption(
+                f"↔️ Comparando com **{_cs.strftime('%d/%m/%Y')} → "
+                f"{_ce.strftime('%d/%m/%Y')}** (automático)."
             )
 
         # Preset save / load
@@ -1523,10 +1513,7 @@ def _render_global_filters() -> None:
                     "end":       str(gf[1]) if len(gf) > 1 else str(date.today()),
                     "platforms": st.session_state.get("gf_platforms", []),
                     "brands":    st.session_state.get("gf_brands", []),
-                    "estados":   st.session_state.get("gf_estados", ["MAPEADO"]),
-                    "familias":  st.session_state.get("gf_familias", []),
-                    "skus_resolvidos": st.session_state.get("gf_skus_resolvidos", []),
-                    "btu_catalogo":    st.session_state.get("gf_btu_catalogo", []),
+                    "sources":   _gf_sources(),
                 }
                 _save_presets(presets)
                 st.success(f"Salvo: '{preset_name}'")
@@ -1547,10 +1534,8 @@ def _render_global_filters() -> None:
                     st.session_state["gf_dates"]     = (date.fromisoformat(p["start"]), date.fromisoformat(p["end"]))
                     st.session_state["gf_platforms"] = p.get("platforms", [])
                     st.session_state["gf_brands"]    = p.get("brands", [])
-                    st.session_state["gf_estados"]   = p.get("estados", ["MAPEADO"])
-                    st.session_state["gf_familias"]  = p.get("familias", [])
-                    st.session_state["gf_skus_resolvidos"] = p.get("skus_resolvidos", [])
-                    st.session_state["gf_btu_catalogo"]    = p.get("btu_catalogo", [])
+                    # `sources` é novo; presets antigos caem no padrão (ambas).
+                    st.session_state["gf_sources"]   = p.get("sources", list(_DATA_SOURCES))
                     st.rerun()
                 except Exception:
                     pass
@@ -1559,6 +1544,16 @@ def _render_global_filters() -> None:
 # ---------------------------------------------------------------------------
 # Global filter accessors
 # ---------------------------------------------------------------------------
+
+# Fontes de dados disponíveis no dashboard. "coletas" = scraping Python
+# (tabela `coletas`); "pricetrack" = importação do PriceTrack
+# (tabela `pricetrack_daily`). Padrão: ambas ligadas (comportamento histórico).
+_DATA_SOURCES: list[str] = ["coletas", "pricetrack"]
+_SOURCE_LABELS: dict[str, str] = {
+    "coletas":    "Coletas (Python)",
+    "pricetrack": "PriceTrack",
+}
+
 
 def _gf_dates() -> tuple:
     gf = st.session_state.get("gf_dates", ())
@@ -1575,15 +1570,42 @@ def _gf_brands() -> list:
     return list(st.session_state.get("gf_brands", []))
 
 
+def _gf_sources() -> list:
+    """Fontes de dados ativas (subconjunto de `_DATA_SOURCES`).
+
+    Padrão = ambas. Se o usuário esvaziar o multiselect (nenhuma fonte),
+    voltamos a ambas — um dashboard 100% vazio nunca é o objetivo; "nenhuma"
+    não é um recorte útil. Selecionar uma única fonte é o caminho suportado
+    para isolar Coletas Python ou PriceTrack.
+    """
+    sel = st.session_state.get("gf_sources")
+    if not sel:
+        return list(_DATA_SOURCES)
+    return [s for s in _DATA_SOURCES if s in sel]
+
+
+def _gf_sources_key() -> tuple:
+    """Tupla estável das fontes ativas — usada como chave de cache nas
+    funções `@st.cache_data` cujo resultado depende da fonte selecionada."""
+    return tuple(_gf_sources())
+
+
 def _gf_compare() -> bool:
     return bool(st.session_state.get("gf_compare", False))
 
 
 def _gf_cmp_dates() -> tuple:
-    gf = st.session_state.get("gf_cmp_dates", ())
-    if len(gf) >= 2:
-        return gf[0], gf[1]
-    return date.today() - timedelta(days=14), date.today() - timedelta(days=8)
+    """Janela de comparação — automatizada (não há mais date-picker manual).
+
+    Calcula o período imediatamente anterior ao atual, com a mesma duração:
+    para `[início, fim]`, devolve `[início - dur - 1, início - 1]`. Ex.:
+    atual = 08/06→15/06 (8 dias) ⇒ comparação = 31/05→07/06.
+    """
+    start, end = _gf_dates()
+    span = (end - start).days
+    cmp_end = start - timedelta(days=1)
+    cmp_start = cmp_end - timedelta(days=span)
+    return cmp_start, cmp_end
 
 
 # ---------------------------------------------------------------------------
@@ -1621,10 +1643,18 @@ def _overview_data(
     limit: int = 15000,
     familias_tuple: tuple = (),
     skus_resolvidos_tuple: tuple = (),
+    sources_tuple: tuple = ("coletas", "pricetrack"),
 ) -> pd.DataFrame:
-    """Cached Supabase query for overview / top-movers pages."""
+    """Cached Supabase query for overview / top-movers pages.
+
+    `sources_tuple` espelha o filtro global de Fonte de Dados: entra na chave
+    de cache e, como esta função lê só a tabela `coletas`, devolve vazio quando
+    "coletas" está desligada.
+    """
     client = _get_supabase()
     if client is None:
+        return pd.DataFrame()
+    if "coletas" not in sources_tuple:
         return pd.DataFrame()
 
     def _build_q():
@@ -1706,6 +1736,7 @@ def _price_data(
     limit: int = 15000,
     familias_tuple: tuple = (),
     skus_resolvidos_tuple: tuple = (),
+    sources_tuple: tuple = ("coletas", "pricetrack"),
 ) -> pd.DataFrame:
     """Fonte canônica de **preço** — precedência PriceTrack.
 
@@ -1723,7 +1754,12 @@ def _price_data(
         DataFrame com colunas no schema de coletas (data, plataforma, marca,
         produto, preco, seller, sku, ...). A coluna `source` indica a origem
         de cada linha ("pricetrack" ou "coletas").
+
+    Nota: `sources_tuple` entra apenas como discriminador da chave de cache —
+    o recorte de fonte em si acontece nas funções-folha (`query_coletas` /
+    `query_pricetrack_daily`), que `query_price_evolution_data` chama.
     """
+    _ = sources_tuple  # cache-key only (ver docstring)
     familias = list(familias_tuple) or _gf_familias() or None
     skus     = list(skus_resolvidos_tuple) or _gf_skus_resolvidos() or None
     df, _ = query_price_evolution_data(
@@ -5590,6 +5626,7 @@ def _ci_pricetrack_block(
     dfp = _price_data(
         str(start_date), str(end_date),
         tuple(sorted(platforms)), tuple(sorted(brands)),
+        sources_tuple=_gf_sources_key(),
     )
     if dfp.empty or "preco" not in dfp.columns:
         return ""
@@ -5629,15 +5666,23 @@ def _ci_pricetrack_block(
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=600, show_spinner=False)
-def _query_pt_compliance(window_days: int) -> pd.DataFrame:
+def _query_pt_compliance(
+    window_days: int,
+    sources_tuple: tuple = ("coletas", "pricetrack"),
+) -> pd.DataFrame:
     """Linhas MCJV do PriceTrack na janela — base do monitor de preço-piso.
 
     Uma linha por (dia, sku, marketplace, seller) com o preço mínimo
     observado (docs/PRICETRACK_INSIGHTS.md §2.1). Pagina além do cap de
     1000 do PostgREST e seleciona só as colunas necessárias.
+
+    `sources_tuple` espelha o filtro global de Fonte de Dados — entra na chave
+    de cache e zera o resultado quando "pricetrack" está desligada.
     """
     client = _get_supabase()
     if client is None:
+        return pd.DataFrame()
+    if "pricetrack" not in sources_tuple:
         return pd.DataFrame()
     since = str(date.today() - timedelta(days=max(window_days, 1)))
     cols = "collection_date,sku,brand,marketplace,seller_canonical,min_price"
@@ -5708,7 +5753,7 @@ def page_price_compliance() -> None:
         )
 
     with st.spinner("Carregando PriceTrack…"):
-        df = _query_pt_compliance(window)
+        df = _query_pt_compliance(window, sources_tuple=_gf_sources_key())
 
     if df.empty:
         st.warning("Sem dados MCJV do PriceTrack na janela (ou Supabase desconectado).")
@@ -6077,10 +6122,12 @@ def page_overview() -> None:
         df  = _overview_data(
             str(start_date), str(end_date),
             tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+            sources_tuple=_gf_sources_key(),
         )
         dfp = _price_data(
             str(start_date), str(end_date),
             tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+            sources_tuple=_gf_sources_key(),
         )
 
     if df.empty:
@@ -6100,10 +6147,12 @@ def page_overview() -> None:
             df_cmp  = _overview_data(
                 str(cmp_start), str(cmp_end),
                 tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+                sources_tuple=_gf_sources_key(),
             )
             dfp_cmp = _price_data(
                 str(cmp_start), str(cmp_end),
                 tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+                sources_tuple=_gf_sources_key(),
             )
 
     # ── KPI Strip ────────────────────────────────────────────────────────────
@@ -6308,6 +6357,7 @@ def _pt_top_movers_data(
     familias_tuple: tuple,
     skus_resolvidos_tuple: tuple,
     limit: int = 300000,
+    sources_tuple: tuple = ("coletas", "pricetrack"),
 ) -> pd.DataFrame:
     """Paginated read of `pricetrack_daily` over the half-open `[start, end)`.
 
@@ -6317,9 +6367,14 @@ def _pt_top_movers_data(
 
     Returns raw columns (sku, brand, title, marketplace, seller,
     seller_canonical, min_price, avg_price, mode_price, collection_date).
+
+    `sources_tuple` espelha o filtro global de Fonte de Dados — entra na chave
+    de cache e zera o resultado quando "pricetrack" está desligada.
     """
     client = _get_supabase()
     if client is None:
+        return pd.DataFrame()
+    if "pricetrack" not in sources_tuple:
         return pd.DataFrame()
 
     sku_set = _collect_pt_skus(
@@ -6541,6 +6596,7 @@ def page_top_movers() -> None:
         df = _pt_top_movers_data(
             str(union_lo), str(union_hi),
             _plat_t, _brand_t, _fam_t, _sku_t,
+            sources_tuple=_gf_sources_key(),
         )
 
     if df.empty:
@@ -7042,10 +7098,10 @@ def page_email_digest() -> None:
     with st.spinner("Building digest…"):
         # Contagens / BuyBox vêm das coletas (posicao_geral só existe lá);
         # o cálculo de movers de **preço** usa a precedência PriceTrack.
-        df_cur   = _overview_data(str(window_start), str(window_end), (), ())
-        df_prev  = _overview_data(str(prev_start), str(prev_end), (), ())
-        dfp_cur  = _price_data(str(window_start), str(window_end), (), ())
-        dfp_prev = _price_data(str(prev_start), str(prev_end), (), ())
+        df_cur   = _overview_data(str(window_start), str(window_end), (), (), sources_tuple=_gf_sources_key())
+        df_prev  = _overview_data(str(prev_start), str(prev_end), (), (), sources_tuple=_gf_sources_key())
+        dfp_cur  = _price_data(str(window_start), str(window_end), (), (), sources_tuple=_gf_sources_key())
+        dfp_prev = _price_data(str(prev_start), str(prev_end), (), (), sources_tuple=_gf_sources_key())
 
     if df_cur.empty:
         st.warning("No records found in the active window.")
@@ -7198,8 +7254,8 @@ def page_price_anomalies() -> None:
     prev_day = target_day - timedelta(days=1)
 
     with st.spinner("Loading price records…"):
-        df_today = _price_data(str(target_day), str(target_day), (), ())
-        df_prev  = _price_data(str(prev_day), str(prev_day), (), ())
+        df_today = _price_data(str(target_day), str(target_day), (), (), sources_tuple=_gf_sources_key())
+        df_prev  = _price_data(str(prev_day), str(prev_day), (), (), sources_tuple=_gf_sources_key())
 
     def _agg(df):
         if df.empty or not {"preco", "produto"}.issubset(df.columns):
@@ -7352,7 +7408,8 @@ def _enrich_specs(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _query_products_history(
-    products: tuple, start_str: str, end_str: str
+    products: tuple, start_str: str, end_str: str,
+    sources_tuple: tuple = ("coletas", "pricetrack"),
 ) -> pd.DataFrame:
     """Histórico de preço por SKU (cacheado), com precedência PriceTrack.
 
@@ -7360,9 +7417,14 @@ def _query_products_history(
     por (data, SKU) e as coletas Python só preenchem produtos/datas que o
     PriceTrack ainda não cobre. A ficha do produto e o comparador são
     centrados em preço, então toda a página segue a regra de preço.
+
+    `sources_tuple` entra apenas como discriminador da chave de cache; o
+    recorte de fonte acontece nas funções-folha chamadas por
+    `query_price_evolution_data`.
     """
     if not products:
         return pd.DataFrame()
+    _ = sources_tuple  # cache-key only (ver docstring)
     df, _ = query_price_evolution_data(
         date.fromisoformat(start_str),
         date.fromisoformat(end_str),
@@ -7553,7 +7615,7 @@ def page_market_analytics() -> None:
 
 def _render_product_sheet(produto: str, start_date: date, end_date: date) -> None:
     """Renderiza a ficha detalhada de um único SKU."""
-    df = _query_products_history((produto,), str(start_date), str(end_date))
+    df = _query_products_history((produto,), str(start_date), str(end_date), sources_tuple=_gf_sources_key())
     if df.empty:
         st.warning("Sem coletas para este SKU no período selecionado.")
         return
@@ -7641,7 +7703,7 @@ def _render_product_sheet(produto: str, start_date: date, end_date: date) -> Non
 
 def _render_comparator(produtos: tuple, start_date: date, end_date: date) -> None:
     """Renderiza a comparação lado a lado de 2–4 SKUs."""
-    df = _query_products_history(produtos, str(start_date), str(end_date))
+    df = _query_products_history(produtos, str(start_date), str(end_date), sources_tuple=_gf_sources_key())
     if df.empty:
         st.warning("Sem coletas para os produtos selecionados.")
         return
@@ -7810,55 +7872,68 @@ _NAV_GROUPS: dict[str, list[str]] = {
     ],
 }
 
-# Resolve deep-link navigation from overview/movers shortcut buttons
-if "_nav_page" in st.session_state:
-    target = st.session_state.pop("_nav_page")
-    if target in PAGES:
-        st.session_state["_current_page"] = target
-    st.rerun()
-
-if "_current_page" not in st.session_state:
-    st.session_state["_current_page"] = "🏠 Overview"
-
-# Guard against stale keys after a code update
-if st.session_state["_current_page"] not in PAGES:
-    st.session_state["_current_page"] = "🏠 Overview"
-
 _SECTION_LABEL_CSS = (
     "color:#94a3b8; font-size:0.65rem; font-weight:700; "
     "letter-spacing:0.12em; text-transform:uppercase; "
     "margin:0.75rem 0 0.2rem; padding:0;"
 )
 
-with st.sidebar:
-    st.markdown("## ❄️ RAC Monitor")
-    st.divider()
 
-    # ── Global filters ────────────────────────────────────────────────────────
-    _render_global_filters()
-    st.divider()
+def _main() -> None:
+    """Renderiza o dashboard (sidebar + página ativa).
 
-    # ── Grouped navigation ────────────────────────────────────────────────────
-    current = st.session_state["_current_page"]
+    Só roda sob `streamlit run app.py` (ou via AppTest), onde
+    ``__name__ == "__main__"``. Importar `app` como módulo (testes unitários)
+    NÃO dispara a renderização — as funções puras ficam testáveis sem efeitos
+    colaterais de Streamlit/Supabase.
+    """
+    # Resolve deep-link navigation from overview/movers shortcut buttons
+    if "_nav_page" in st.session_state:
+        target = st.session_state.pop("_nav_page")
+        if target in PAGES:
+            st.session_state["_current_page"] = target
+        st.rerun()
 
-    for group_label, page_list in _NAV_GROUPS.items():
-        st.markdown(f"<p style='{_SECTION_LABEL_CSS}'>{group_label}</p>",
-                    unsafe_allow_html=True)
-        for page_name in page_list:
-            is_active = current == page_name
-            # Prefix active page with a bullet so users see which page is open
-            btn_label = f"▶ {page_name}" if is_active else f"  {page_name}"
-            if st.button(btn_label, key=f"nav__{page_name}",
-                         use_container_width=True, type="secondary"):
-                st.session_state["_current_page"] = page_name
-                st.rerun()
+    if "_current_page" not in st.session_state:
+        st.session_state["_current_page"] = "🏠 Overview"
 
-    st.divider()
+    # Guard against stale keys after a code update
+    if st.session_state["_current_page"] not in PAGES:
+        st.session_state["_current_page"] = "🏠 Overview"
 
-    # ── Status footer ─────────────────────────────────────────────────────────
-    client_ok = _get_supabase() is not None
-    st.caption(f"Supabase: {'🟢 conectado' if client_ok else '🔴 desconectado'}")
-    st.caption(f"🕐 {date.today().strftime('%d/%m/%Y')}")
+    with st.sidebar:
+        st.markdown("## ❄️ RAC Monitor")
+        st.divider()
 
-_render_cobertura_banner()
-PAGES[st.session_state["_current_page"]]()
+        # ── Global filters ─────────────────────────────────────────────────────
+        _render_global_filters()
+        st.divider()
+
+        # ── Grouped navigation ─────────────────────────────────────────────────
+        current = st.session_state["_current_page"]
+
+        for group_label, page_list in _NAV_GROUPS.items():
+            st.markdown(f"<p style='{_SECTION_LABEL_CSS}'>{group_label}</p>",
+                        unsafe_allow_html=True)
+            for page_name in page_list:
+                is_active = current == page_name
+                # Prefix active page with a bullet so users see which is open
+                btn_label = f"▶ {page_name}" if is_active else f"  {page_name}"
+                if st.button(btn_label, key=f"nav__{page_name}",
+                             use_container_width=True, type="secondary"):
+                    st.session_state["_current_page"] = page_name
+                    st.rerun()
+
+        st.divider()
+
+        # ── Status footer ──────────────────────────────────────────────────────
+        client_ok = _get_supabase() is not None
+        st.caption(f"Supabase: {'🟢 conectado' if client_ok else '🔴 desconectado'}")
+        st.caption(f"🕐 {date.today().strftime('%d/%m/%Y')}")
+
+    _render_cobertura_banner()
+    PAGES[st.session_state["_current_page"]]()
+
+
+if __name__ == "__main__":
+    _main()
