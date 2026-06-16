@@ -22,6 +22,10 @@ ainda não-normalizadas, refresh da MV via CONCURRENTLY e statement_timeout de
 120s só no service_role removem os timeouts (57014) que faziam a pipeline
 terminar PARTIAL. Ver docs/migrations/007_admin_automation_perf.sql.
 
+Concorrência (migration 008): o runner serializa execuções com o mutex
+admin_automation_lock (TTL anti-deadlock) — runs concorrentes pulam em vez de
+travar um no outro. Ver docs/migrations/008_admin_automation_concurrency.sql.
+
 Gatilhos: pós-coleta (main.py), cron (scripts/admin_auto.py) e auto-run na
 página "🤖 Automação" do dashboard. Varredura é incremental por watermark de
 `coletas.id` (full scan via `full_scan=True` / `--full`).
@@ -769,6 +773,43 @@ def _build_status(steps: List[StepResult]) -> str:
     return "error" if fails == len(steps) else "partial"
 
 
+# TTL do mutex (migration 008): se um run morrer no meio, o lock expira sozinho
+# e o próximo run consegue prosseguir. Folgado o bastante p/ a pipeline inteira.
+_LOCK_TTL_SECONDS = 900
+
+
+def _try_acquire_lock(client, run_id: str, trigger: str) -> Tuple[bool, bool]:
+    """
+    Claim do mutex admin_automation_lock — serializa execuções concorrentes.
+
+    Runs concorrentes (cliques repetidos em "Executar agora", manual sobrepondo
+    pos_coleta) travavam em REFRESH CONCURRENTLY / seed_depara e estouravam o
+    statement_timeout. O mutex deixa só um run por vez.
+
+    Returns:
+        (acquired, lock_backed)
+        acquired    — True se este run pode prosseguir.
+        lock_backed — False se a RPC não existe (migration 008 não aplicada);
+                      o chamador segue fail-open (comportamento antigo) e NÃO
+                      tenta liberar nada.
+    """
+    try:
+        resp = client.rpc("admin_automation_try_lock", {
+            "p_holder": run_id, "p_trigger": trigger, "p_ttl_seconds": _LOCK_TTL_SECONDS,
+        }).execute()
+        return bool(resp.data), True
+    except Exception as exc:
+        logger.warning(f"[AdminAuto] Mutex indisponível ({exc}) — seguindo sem serialização.")
+        return True, False
+
+
+def _release_lock(client, run_id: str) -> None:
+    try:
+        client.rpc("admin_automation_unlock", {"p_holder": run_id}).execute()
+    except Exception as exc:
+        logger.debug(f"[AdminAuto] Falha ao liberar mutex (TTL cobre): {exc}")
+
+
 def run_admin_automation(
     trigger: str = "manual",
     dry_run: bool = False,
@@ -816,44 +857,65 @@ def run_admin_automation(
         _persist_run(None, report)
         return report
 
-    selected = [s for s in (steps or STEP_ORDER) if s in _STEP_FUNCS]
-    since_id = None if full_scan else get_last_watermark(client)
-    new_watermark = _current_max_id(client)
+    # Serializa execuções (migration 008): dry-run é read-only e não disputa
+    # locks; os demais pegam o mutex e pulam se outro run já estiver rodando —
+    # evita que runs concorrentes travem em REFRESH CONCURRENTLY / seed_depara.
+    holds_lock = False
+    if not dry_run:
+        acquired, lock_backed = _try_acquire_lock(client, run_id, trigger)
+        if not acquired:
+            logger.info(
+                f"[AdminAuto] Run {run_id[:8]} pulado — outra execução em "
+                f"andamento (mutex admin_automation_lock)."
+            )
+            report["status"] = "skipped"
+            report["finished_at"] = datetime.now(timezone.utc).isoformat()
+            report["duration_s"] = round(time.time() - t0, 1)
+            return report  # skip de mutex não é persistido (evita ruído no histórico)
+        holds_lock = lock_backed
 
-    logger.info(
-        f"[AdminAuto] Run {run_id[:8]} · trigger={trigger} · dry_run={dry_run} · "
-        f"etapas={len(selected)} · since_id={since_id or 'FULL'}"
-    )
+    try:
+        selected = [s for s in (steps or STEP_ORDER) if s in _STEP_FUNCS]
+        since_id = None if full_scan else get_last_watermark(client)
+        new_watermark = _current_max_id(client)
 
-    ctx = {"dry_run": dry_run, "since_id": since_id}
-    results: List[StepResult] = []
-    for name in selected:
-        t_step = time.time()
-        try:
-            result = _STEP_FUNCS[name](client, ctx)
-        except Exception as exc:
-            result = StepResult(name, ok=False, summary="falhou", error=str(exc))
-            logger.error(f"[AdminAuto] Etapa {name} falhou: {exc}")
-        result.duration_s = time.time() - t_step
-        results.append(result)
-        log = logger.success if result.ok else logger.warning
-        log(f"[AdminAuto] {STEP_LABELS.get(name, name)} — {result.summary} "
-            f"({result.duration_s:.1f}s)")
+        logger.info(
+            f"[AdminAuto] Run {run_id[:8]} · trigger={trigger} · dry_run={dry_run} · "
+            f"etapas={len(selected)} · since_id={since_id or 'FULL'}"
+        )
 
-    report["steps"] = [r.as_dict() for r in results]
-    report["errors"] = sum(1 for r in results if not r.ok)
-    report["status"] = _build_status(results)
-    report["duration_s"] = round(time.time() - t0, 1)
-    report["finished_at"] = datetime.now(timezone.utc).isoformat()
-    if not dry_run and report["status"] in ("ok", "partial"):
-        report["watermark_id"] = new_watermark
+        ctx = {"dry_run": dry_run, "since_id": since_id}
+        results: List[StepResult] = []
+        for name in selected:
+            t_step = time.time()
+            try:
+                result = _STEP_FUNCS[name](client, ctx)
+            except Exception as exc:
+                result = StepResult(name, ok=False, summary="falhou", error=str(exc))
+                logger.error(f"[AdminAuto] Etapa {name} falhou: {exc}")
+            result.duration_s = time.time() - t_step
+            results.append(result)
+            log = logger.success if result.ok else logger.warning
+            log(f"[AdminAuto] {STEP_LABELS.get(name, name)} — {result.summary} "
+                f"({result.duration_s:.1f}s)")
 
-    _persist_run(client, report)
-    if notify:
-        _notify(report)
+        report["steps"] = [r.as_dict() for r in results]
+        report["errors"] = sum(1 for r in results if not r.ok)
+        report["status"] = _build_status(results)
+        report["duration_s"] = round(time.time() - t0, 1)
+        report["finished_at"] = datetime.now(timezone.utc).isoformat()
+        if not dry_run and report["status"] in ("ok", "partial"):
+            report["watermark_id"] = new_watermark
 
-    logger.success(
-        f"[AdminAuto] Run {run_id[:8]} concluído · status={report['status']} · "
-        f"{report['duration_s']:.0f}s · {report['errors']} erro(s)"
-    )
-    return report
+        _persist_run(client, report)
+        if notify:
+            _notify(report)
+
+        logger.success(
+            f"[AdminAuto] Run {run_id[:8]} concluído · status={report['status']} · "
+            f"{report['duration_s']:.0f}s · {report['errors']} erro(s)"
+        )
+        return report
+    finally:
+        if holds_lock:
+            _release_lock(client, run_id)
