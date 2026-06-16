@@ -5,6 +5,64 @@ analítica, como eles se conectam entre si e como interagem com o banco de dados
 
 ---
 
+## Filtros Globais (sidebar persistente)
+
+O painel **🌐 Filtros Globais** (topo da sidebar, `_render_global_filters()`)
+foi **enxugado** (Jun/2026) para conter só recortes verdadeiramente
+transversais. Cada página analítica já expõe os filtros finos na própria
+sidebar, então o global não os duplica mais.
+
+| Filtro global | Estado em `session_state` | Consumido por |
+|---|---|---|
+| **Período** | `gf_dates` | Overview, Top Movers (e default de comparação) |
+| **Plataformas** | `gf_platforms` | Overview, Top Movers |
+| **Marcas** | `gf_brands` | Overview, Top Movers |
+| **Fonte de Dados** | `gf_sources` | **Todas** (gating de fonte — ver abaixo) |
+| **Comparar período anterior** | `gf_compare` | Overview (janela de comparação **automática**) |
+| Presets (salvar/carregar) | `filter_presets.json` | persiste os itens acima |
+
+**Automatizados (saíram do painel, viraram default fixo):**
+
+- **Estado do match** → fixo em `MAPEADO` (`_gf_estados()` devolve `["MAPEADO"]`).
+  Os demais estados (`REVISAR`/`FORA_ESCOPO`/`NAO_AC`) vivem na página
+  🧬 **Família & SKU**.
+- **Família / SKU / Capacidade BTU** → continuam **por página**
+  (`_render_familia_sku_filters()` + multiselects de BTU locais). Os acessores
+  globais (`_gf_familias()` etc.) devolvem vazio = "sem filtro extra".
+- **Janela de comparação** → `_gf_cmp_dates()` calcula o período imediatamente
+  anterior, de mesma duração (sem date-picker manual). Ex.: atual
+  `08/06→15/06` ⇒ comparação `31/05→07/06`.
+
+### Fonte de Dados — `coletas` (Python) e/ou `pricetrack`
+
+Multiselect com duas opções, **padrão = ambas** (idêntico ao comportamento
+histórico). Esvaziar a seleção volta para ambas — "nenhuma" não é um recorte
+útil. O recorte é aplicado nas funções-folha, então propaga sozinho:
+
+```
+gf_sources = _gf_sources()           # ["coletas","pricetrack"] por padrão
+        │
+        ├── "coletas" ∉ sources  → query_coletas()          devolve vazio (curto-circuito)
+        ├── "pricetrack" ∉ sources → query_pricetrack_daily() devolve vazio (curto-circuito)
+        │
+        ▼
+query_price_evolution_data()  (merge PriceTrack-precede-coletas) herda os dois acima:
+        • só coletas    → preço 100% das coletas Python
+        • só pricetrack → preço 100% do PriceTrack
+        • ambas         → merge com precedência por (data, SKU) — como hoje
+```
+
+Funções com `@st.cache_data` cujo resultado depende da fonte recebem
+`sources_tuple=_gf_sources_key()` **como discriminador da chave de cache**
+(`_overview_data`, `_price_data`, `_pt_top_movers_data`, `_query_pt_compliance`,
+`_query_products_history`) — assim trocar a fonte invalida o cache certo.
+
+Páginas que só existem em uma fonte (buy box / posição / sellers só nas
+coletas; compliance / top movers só no PriceTrack) exibem o aviso padrão
+"sem dados" quando a fonte correspondente está desligada — **nada quebra**.
+
+---
+
 ## Visão Geral
 
 Todas as três páginas analíticas (**Price Evolution**, **BuyBox Position**,
