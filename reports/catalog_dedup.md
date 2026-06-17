@@ -12,24 +12,30 @@ Gerado por `scripts/build_sku_catalog.py` (offline) · 2026-06-17.
 | catálogo | cravado | exato | **precisão** |
 |---|--:|--:|--:|
 | antes (curado, familia_linha original) | 2279 | 1847 | 81.04% |
-| **depois (refinado + canônico)** | 6178 | 5455 | **88.3%** |
+| **depois (refinado + canônico)** | 6381 | 5765 | **90.35%** |
 
-## Grupos de SKUs duplicados colapsados (42 grupos, 60 SKUs absorvidos)
+## Grupos de SKUs duplicados colapsados (48 grupos, 69 SKUs absorvidos)
 
 | canônico | absorvidos | modelo |
 |---|---|---|
 | `UI12F` (canônico) | `QI12F` | ELECTROLUX-COLOR-ADAPT-12000-F 220V |
+| `UI18F` (canônico) | `JI18F/JE18F` | ELECTROLUX-COLOR-ADAPT-18000-F 220V |
 | `JI18R/JE18R` (canônico) | `UI18R/UE18R` | ELECTROLUX-COLOR-ADAPT-18000-QF  |
+| `UI24F` (canônico) | `JI24F/JE24F` | ELECTROLUX-COLOR-ADAPT-24000-F 220V |
+| `UI09F` (canônico) | `JI09F/JE09F` | ELECTROLUX-COLOR-ADAPT-9000-F 220V |
+| `QI09R` (canônico) | `JI09R/JE09R` | ELECTROLUX-COLOR-ADAPT-9000-QF 220V |
 | `45HJQI18C2WC` (canônico) | `HJQI18C2WB` | ELGIN-ECO-INVERTER-II-18000-QF 220V |
 | `HJQI24C2WC` (canônico) | `HJQI24C2WB` | ELGIN-ECO-INVERTER-II-24000-QF 220V |
 | `HJFI12C2WD` (canônico) | `HJFI12C2IA` · `HJFI12C2WC` | ELGIN-ECO-INVERTER-III-12000-F 220V |
+| `GWH12ATC` (canônico) | `GWH12AGC` | GREE-G-TOP-AUTO-12000-QF 220V |
+| `GWC18ATD` (canônico) | `GWC18AGD` | GREE-G-TOP-AUTO-18000-F 220V |
 | `GWH18ATD` (canônico) | `GWH18AGD` | GREE-G-TOP-AUTO-18000-QF 220V |
 | `GWH30ATEXF-S6DNA1A` (canônico) | `GWH30AGE` | GREE-G-TOP-AUTO-30000-QF 220V |
 | `GWC09ATB-D6DNA1A` (canônico) | `GWC09AGA` | GREE-G-TOP-AUTO-9000-F 220V |
 | `S3-Q12JA31K` (canônico) | `S3-Q12JA31E` · `S4-Q12JA315` · `S4-Q12JA31C` | LG-DUAL-INVERTER-AI-VOICE-12000-F 220V |
 | `S4-Q18KL31B` (canônico) | `S3-Q18KL33B` | LG-DUAL-INVERTER-AI-VOICE-18000-F 220V |
 | `S3-W18KL31A` (canônico) | `S4-W18KL31A` | LG-DUAL-INVERTER-AI-VOICE-18000-QF 220V |
-| `S3-Q09AA31A` (canônico) | `S3-Q09AA31F` · `S3-Q09AA33A` · `S3-Q09JA31E` | LG-DUAL-INVERTER-AI-VOICE-9000-F 220V |
+| `S3-Q09AA31A` (canônico) | `S3-Q09AA31F` · `S3-Q09AA33A` · `S3-Q09JA31E` · `S4-Q09AA31B` | LG-DUAL-INVERTER-AI-VOICE-9000-F 220V |
 | `S3-W18KLR7A` (canônico) | `S3-Q18KLR1B` · `S4-W18KLRXC` | LG-DUAL-INVERTER-ARTCOOL-18000-QF 220V |
 | `S3-W24K2R7A` (canônico) | `S4-W24K2RXD` | LG-DUAL-INVERTER-ARTCOOL-24000-QF 220V |
 | `S3-Q12JAQAL` (canônico) | `S3-Q12JA31L` · `S4-Q12JA3A5` · `S4-Q12JA3AD` | LG-DUAL-INVERTER-COMPACT-AI-12000-F 220V |
@@ -54,52 +60,44 @@ Gerado por `scripts/build_sku_catalog.py` (offline) · 2026-06-17.
 | `PAC9FB` (canônico) | `PAC9000IFM15` · `PAC9000ITFM9W` · `PAC9000TFM9` · `PAC9FC` · `PAC9FI` | PHILCO-ECO-INVERTER-9000-F 220V |
 | `PAC9000IQFM15E` (canônico) | `PAC9000TQFM12` | PHILCO-ECO-INVERTER-9000-QF 220V |
 | `AR12DYFAAWK/AZ` (canônico) | `F-AR12DYFABWK` | SAMSUNG-WINDFREE-AI-12000-F 220V |
-| `AR18DYFAAWK/AZ` (canônico) | `AR18CVFAAWK/AZ` · `AR60F18D1AWNAZ` | SAMSUNG-WINDFREE-AI-18000-F 220V |
+| `AR18DYFAAWK/AZ` (canônico) | `AR18CVFAAWK/AZ` · `AR60F18D1AWNAZ` · `F-AR60F18D1AW` | SAMSUNG-WINDFREE-AI-18000-F 220V |
 | `AR24DYFABWKNAZ` (canônico) | `AR60F24D1AWN/AZ` | SAMSUNG-WINDFREE-AI-24000-F 220V |
 | `F-AR24DXFAAWK` (canônico) | `AR24TSHCBWKN/AZ` | SAMSUNG-WINDFREE-AI-24000-QF 220V |
 | `TAC12CSG` (canônico) | `TAC-12CGV-INV` | TCL-ELITE-GV-12000-F 220V |
 | `TAC-09CSA1` (canônico) | `TAC-09CTG1` | TCL-SERIE-A1-9000-F 220V |
-| `TAC-24CHTG2` (canônico) | `TAC-24CHTG1` | TCL-T-PRO-2-0-24000-QF 220V |
+| `TAC-24CHTG2` (canônico) | `TAC-24CHTG1` · `TAC-24CTG1` | TCL-T-PRO-2-0-24000-QF 220V |
 
 > CSV completo do catálogo refinado: `reports/sku_catalog_refined.csv`.
 > Aplicação em produção (atualizar `produtos_catalogo.familia_linha` + coluna
 > `sku_canonico`) é **gated** — revisar este relatório antes.
 
 
-## Erros remanescentes (após refino) — por que 88% e não 98%
+## Erros remanescentes (dedup voltagem-tolerante) — por que ~90% e não 98%
 
-No subconjunto cravado (6.178), os 723 erros vs gabarito se distribuem em:
+Cravado **6.381** · exato **5.765 (90,35%)** · família-correta **5.768 (90,4%)**.
 
-| categoria | qtde | natureza |
-|---|--:|---|
-| **confusão de sub-linha** | 492 | linhas próximas que os títulos misturam |
-| voltagem / dedup (mesma família) | 126 | null vs 220V não colapsados — follow-up barato |
-| SKU-gabarito sem linha detectável | 105 | título do próprio gabarito é genérico |
+| categoria de erro | qtde |
+|---|--:|
+| confusão de SUB-LINHA (linhas irmãs) | 496 |
+| mesma família, SKU não colapsado (voltagem) | 3 |
+| SKU-gabarito sem linha detectável | 117 |
 
-Principais confusões de sub-linha (não são fusão Inverter/On-Off — são linhas
-irmãs Dual Inverter, que o título de marketplace embaralha):
+Maiores confusões de sub-linha (o título de marketplace embaralha os termos —
+não são fusão Inverter/On-Off, são linhas irmãs Dual Inverter/Eco/Airvolution):
 
-- **LG `Dual Inverter Voice` ⟷ `Compact +AI`** (~186): títulos trazem "Voice",
-  "+AI" e "Compact" juntos; a linha modal fica ambígua.
-- **Elgin `Eco Inverter II` ⟷ `III`** (~42).
-- **Midea `AI Airvolution` ⟷ `AI Airvolution Connect`** (~26).
-- **Midea `Xtreme Save Connect` ⟷ `…Black Edition`** (~25).
+- LG `Dual Inverter Voice` ⟷ `Compact +AI`
+- Elgin `Eco Inverter II` ⟷ `III`
+- Midea `AI Airvolution` ⟷ `AI Airvolution Connect`
+- Midea `Xtreme Save Connect` ⟷ `…Black Edition`
 
-### Conclusão
+### Conclusão (option 2 — dedup do catálogo)
 
-A deduplicação do catálogo **subiu o SKU-exato de 81% → 88,3%** e quase
-**triplicou a cobertura** (2.279 → 6.178), mas **98% de SKU-exato não é
-alcançável só por dedup**: o teto restante é **ambiguidade de sub-linha**, que
-em parte é irredutível no título do marketplace.
+Dedup + refino levou o **SKU-exato de 81% → 90,3%** e a cobertura de
+**2.279 → 6.381** (2,8x); **48 grupos** de SKUs duplicados colapsados (69 SKUs).
+**98% de SKU-exato NÃO é alcançável só por dedup**: o resíduo (496) é
+ambiguidade de SUB-LINHA, em parte irredutível no título. O grão **família**
+segue sendo o confiável (90,4%); cravar SKU só onde a sub-linha é inequívoca.
 
-**Recomendação mantida:** o grão confiável é **família/linha** (Voice e Compact
-viram famílias distintas — não há fusão). Cravar SKU exato só onde a sub-linha é
-inequívoca; o resto resolve até família ou vai a pendência. Para o
-price-evolution, agrupar coletas E pricetrack por **família** (não por SKU) evita
-o teto de sub-linha por completo.
-
-### Próximos passos para subir o SKU-exato (incremental)
-1. Dedup tolerante a voltagem (null ≡ 220V quando é o único par) → +~2%.
-2. Endurecer vocabulário LG Voice/Compact/+AI e Elgin II/III em
-   `utils/normalize_product._LINE_PATTERNS` (ordem e desempate).
-3. Re-rodar `build_sku_catalog.py` e medir; iterar até o platô.
+Subir além de ~90% exige endurecer o vocabulário de sub-linha em
+normalize_product._LINE_PATTERNS — delicado, ganho marginal, risco de regressão.
+Recomendo iterar com testes, em PR à parte.

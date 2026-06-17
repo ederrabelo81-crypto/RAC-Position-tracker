@@ -109,19 +109,34 @@ def build_refined_catalog(
             "n_pricetrack": vol_by_sku.get(sku, 0), "ativo": True,
         }
 
-    # DEDUP: mesma (familia_linha, voltagem) → mesmo produto → canônico = +volume
-    groups: Dict[Tuple[str, Optional[str]], List[str]] = defaultdict(list)
+    # DEDUP por família: SKUs do mesmo produto colapsam num canônico (+volume).
+    # Voltagem tolerante: se a família tem <=1 voltagem CONCRETA (resto NULL),
+    # tudo é o mesmo produto → colapsa. Se tem 2+ voltagens distintas (110 e
+    # 220), são produtos diferentes → separa por voltagem (NULL fica à parte).
+    by_fam: Dict[str, List[str]] = defaultdict(list)
     for sku, d in refined.items():
         if d["familia_linha"]:
-            groups[(d["familia_linha"], d["voltagem"])].append(sku)
+            by_fam[d["familia_linha"]].append(sku)
     canon_map: Dict[str, str] = {}
     dedup_groups = []
-    for key, skus in groups.items():
+
+    def _add_group(key, skus):
         if len(skus) > 1:
             canon = max(skus, key=lambda s: refined[s]["n_pricetrack"])
             for s in skus:
                 canon_map[s] = canon
             dedup_groups.append((key, canon, sorted(skus)))
+
+    for fam, skus in by_fam.items():
+        concrete = {refined[s]["voltagem"] for s in skus if refined[s]["voltagem"]}
+        if len(concrete) <= 1:
+            _add_group((fam, next(iter(concrete), None)), skus)
+        else:
+            sub: Dict[Optional[str], List[str]] = defaultdict(list)
+            for s in skus:
+                sub[refined[s]["voltagem"]].append(s)
+            for v, sk in sub.items():
+                _add_group((fam, v), sk)
     for sku in refined:
         canon_map.setdefault(sku, sku)
     for sku, d in refined.items():
