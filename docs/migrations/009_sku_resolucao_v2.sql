@@ -24,9 +24,11 @@ CREATE TABLE IF NOT EXISTS public.sku_catalog (
   marca           text,
   capacidade_btu  integer,
   ciclo           text,
-  familia_linha   text,
-  edicao          text,           -- linha derivada da familia_linha (vocabulário)
+  familia_linha   text,           -- refinada (linha re-derivada do pricetrack)
+  edicao          text,           -- linha modal observada no pricetrack
   voltagem        text,
+  sku_canonico    text,           -- dedup: SKU canônico do mesmo produto (build_sku_catalog.py)
+  n_pricetrack    integer DEFAULT 0,
   tecnologia      text DEFAULT 'Inverter',
   in_pricetrack   boolean DEFAULT false,
   fonte           text,           -- 'produtos_catalogo' | 'pricetrack'
@@ -65,6 +67,13 @@ FROM public.pricetrack_daily p
 WHERE p.sku NOT IN (SELECT sku FROM public.sku_catalog)
 GROUP BY p.sku
 ON CONFLICT (sku) DO NOTHING;
+
+-- 1.c — REFINO (FASE 1.b): `familia_linha` re-derivada dos títulos do pricetrack
+--        (split de linhas grossas) + `sku_canonico` (dedup de SKUs do mesmo
+--        produto) são produzidos por `scripts/build_sku_catalog.py`. Esse passo
+--        subiu o SKU-exato de 81% → 88,3% vs gabarito (ver reports/catalog_dedup.md).
+--        A aplicação (UPDATE de familia_linha/sku_canonico) é GATED — carregar a
+--        partir de reports/sku_catalog_refined.csv após revisão.
 
 -- FASE 1 (vocabulário): variações de LINHA/edição observadas, por marca.
 -- O vocabulário OPERATIVO vive em utils/normalize_product.py (_LINE_PATTERNS) e
