@@ -79,7 +79,9 @@ Sidebar (filtros)
         ▼
   DataFrame filtrado
         │
-        ├─── Price Evolution  → agrega por preço (mediana por data/grupo)
+        ├─── Price Evolution  → métrica selecionável (Buy Box/Moda/Mediana/
+        │                        Médio) agregada por (SKU, dia); guarda "Dados
+        │                        limpos" + flag de série congelada
         ├─── BuyBox Position  → filtra posicao_geral ≤ Top-N escolhido
         └─── Availability     → conta aparições (todas as posições)
 ```
@@ -352,20 +354,30 @@ Filtros não selecionados são simplesmente omitidos da consulta — sem efeito.
 | Aspecto | Detalhe |
 |---|---|
 | **O que analisa** | Evolução de preços ao longo do tempo |
-| **Filtro exclusivo** | Nenhum — mesmos filtros das outras páginas |
-| **Group by** | Radio: `Product`, `Brand`, `Platform` |
-| **Agregação** | Mediana do preço por (data, grupo) |
-| **Tab: Price Chart** | Gráfico de linha — preço mediano por data |
-| **Tab: Summary** | Tabela com Min/Mediana/Média/Máx por grupo |
-| **Tab: Detail** | Todos os registros brutos (colunas: data, turno, plataforma, marca, produto, posição, preço, seller, keyword, tag) |
+| **Filtro exclusivo** | **Métrica de preço** (Buy Box [default] / Moda / Mediana / Médio); toggles **Dados limpos** e **Comparar fontes** |
+| **Group by** | Radio: `Product` (= **SKU**, não nome), `Brand`, `Platform` |
+| **Agregação** | Por (SKU, dia): Buy Box = `min(min_price)` no pricetrack / `min(preco)` nas coletas; Moda/Mediana sobre `min_price`/`preco`; Médio sobre `avg_price`/`preco` |
+| **Guarda de qualidade** | "Dados limpos" (default ON): remove placeholders (preço terminando em 999,00 / 9999) e outliers > 1,5× mediana do SKU; opção de excluir Google Shopping das coletas |
+| **Série congelada** | 1 único valor diário em ≥10 dias → linha **tracejada** + ⚠️ na legenda (MAP real ou coleta travada) |
+| **Tab: Price Chart** | Linha por SKU/grupo; hover mostra `n` (ofertas no dia); banners de cobertura |
+| **Tab: Summary** | Tabela com Count/Min/Mode/Median/Max/Avg por grupo |
+| **Tab: Detail** | Todos os registros brutos (colunas: data, source, turno, plataforma, marca, sku, produto, title, posição, preço, seller, keyword, tag) |
+| **Comparar fontes** | Plota Coletas × PriceTrack para o(s) SKU(s) escolhido(s) + gap diário do piso e mediana do gap |
 | **Download** | CSV com os registros do Detail (`rac_price_evolution_YYYY-MM-DD_YYYY-MM-DD.csv`) |
+
+**KPI corrigido:** "Unique SKUs" agora conta `COUNT(DISTINCT sku)` não-nulo
+(antes contava variações de **nome** de produto).
 
 **Fluxo interno:**
 ```
-df (todos registros) → dropna(preco, data) → agg mediana por (data, group_col)
-                     → Tab Chart: px.line
-                     → Tab Summary: groupby(group_col)[preco].agg(...)
-                     → Tab Detail: df bruto com display_cols
+query_price_evolution_data → cache em session_state["evo_df"]
+   → _metric_basis(df, métrica)            (min_price/avg_price no PT; preco nas coletas)
+   → group_by Product ⇒ descarta sku nulo  (mata a linha-fantasma de nome)
+   → guarda "Dados limpos" (placeholder + outlier 1,5×)
+   → groupby(["data", série]).agg(value=métrica, n=size)
+   → flag congelada (nunique==1 & dias≥10) ⇒ linha tracejada
+   → Tab Chart: px.line  |  Tab Summary: stats por série  |  Tab Detail: df bruto
+Trocar métrica/guarda re-renderiza do cache — NÃO refaz a query nem mexe nos filtros.
 ```
 
 ---
