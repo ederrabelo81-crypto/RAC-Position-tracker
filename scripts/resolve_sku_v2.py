@@ -140,12 +140,10 @@ def _client():
     return create_client(url, key)
 
 
-def _fetch_catalog(client) -> List[dict]:
+def _paged(client, table: str, select: str) -> List[dict]:
     rows, off = [], 0
     while True:
-        resp = (client.table("produtos_catalogo")
-                .select("sku,marca,capacidade_btu,ciclo,familia_linha,voltagem,ativo")
-                .range(off, off + _PAGE - 1).execute())
+        resp = client.table(table).select(select).range(off, off + _PAGE - 1).execute()
         if not resp.data:
             break
         rows.extend(resp.data)
@@ -153,6 +151,41 @@ def _fetch_catalog(client) -> List[dict]:
             break
         off += _PAGE
     return rows
+
+
+def _fetch_catalog(client) -> List[dict]:
+    """Catálogo REFINADO de `public.sku_catalog` (familia_linha já split a partir
+    do pricetrack + `sku_canonico` da deduplicação). Mantém só a linha CANÔNICA
+    de cada grupo (`sku_canonico == sku`), para o matcher cravar o SKU canônico —
+    senão o `--apply` reproduziria o catálogo legado (famílias grossas + SKUs
+    duplicados) que a FASE 1 corrige.
+
+    Fallback no legado `produtos_catalogo` se `sku_catalog` ainda não existir/
+    estiver vazio (antes de aplicar a migração 009 + carregar o CSV refinado).
+    """
+    try:
+        rows = _paged(client, "sku_catalog",
+                      "sku,marca,capacidade_btu,ciclo,familia_linha,voltagem,sku_canonico")
+    except Exception:  # noqa: BLE001 — tabela ainda não criada
+        rows = []
+    if rows:
+        out = []
+        for r in rows:
+            canon = r.get("sku_canonico") or r.get("sku")
+            if canon != r.get("sku"):
+                continue   # SKU absorvido por um canônico — descarta a duplicata
+            out.append({"sku": r.get("sku"), "marca": r.get("marca"),
+                        "capacidade_btu": r.get("capacidade_btu"), "ciclo": r.get("ciclo"),
+                        "familia_linha": r.get("familia_linha"),
+                        "voltagem": r.get("voltagem"), "ativo": True})
+        return out
+    print("[resolve_sku_v2] sku_catalog vazio — fallback p/ produtos_catalogo "
+          "(catálogo legado, sem refino/dedup). Aplique a migração 009 e carregue "
+          "reports/sku_catalog_refined.csv para usar o catálogo refinado.",
+          file=sys.stderr)
+    legacy = _paged(client, "produtos_catalogo",
+                    "sku,marca,capacidade_btu,ciclo,familia_linha,voltagem,ativo")
+    return [r for r in legacy if r.get("ativo", True)]
 
 
 def _fetch_prod(client, full: bool) -> List[tuple]:
