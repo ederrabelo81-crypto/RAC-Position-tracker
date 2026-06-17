@@ -74,6 +74,57 @@ _EXTRA_FORA_BRANDS = [
     (re.compile(r"\bhq\b", re.IGNORECASE), "HQ"),
 ]
 
+# ── Guardas de pré-classificação (fonte única; reexportados por montar_depara) ─
+# Rodam ANTES do matcher forte. Vivem aqui (módulo puro, sem loguru) para que
+# tanto `scripts/montar_depara.py` quanto `utils/sku_matcher.py` os reutilizem.
+
+# Não-AC: peças automotivas, eletrodomésticos, acessórios, climatizadores
+NAO_AC_REGEX = [
+    re.compile(p, re.IGNORECASE) for p in [
+        r"report a violation",
+        r"\bfiltro\b.*(palio|corolla|sedan|automotiv|veicular|fiat|toyota|honda|gm|chevrolet|ford|volkswagen|vw|kombi|stilo|craftsman)",
+        r"\bradiador\b",
+        r"\bevaporador\b(?!.*split)",
+        r"\bcondensador\b.*(stilo|acquaflex|libell|original)",
+        r"\bcompressor\b.*(delphi|sanden|valvula|válvula|torneira)",
+        r"\b(polia|válvula|valvula|torneira|porca|cooler intel|injetora|garrafa)\b",
+        r"\bshampoo\b|\bcondicionador\b.*(hidratante|capilar|antiqueda|aminoacid|aminoácid)",
+        r"\bcolch[aã]o\b|\bbarraca\b|\binfl[aá]vel\b",
+        r"\bgeladeira\b|\bfrigobar\b|\bfreezer\b|\bair fryer\b|\bfritadeira\b",
+        r"\bumidificador\b|\bclimatizador\b|\bventilador\b|\baromatizador\b",
+        r"\bmini ar condicionado\b|\busb\b.*ar condicionado|ar condicionado.*\busb\b",
+        r"\bcontrole remoto\b|\bcapa para\b|\bsuporte para ar\b",
+        r"\bmelhor (mini )?ar condicionado 20\d\d\b",
+        r"\bcortina de ar\b",
+        r"\bcervejeira\b|\blavadora\b|\bsecadora\b|\bmicro-?ondas\b|\bfog[aã]o\b",
+        r"\bserpentina\b|\bcontrole\b|\bh[aá]lite\b|\borganizador\b|\bcarregador\b",
+        r"\bprotetor\b|\bcapa\b|\bsuporte\b",
+        r"\bunidade condensadora\b|\bhigienizador\b|\bmanifold\b|\bmangueira\b",
+        # Componentes/peças avulsas que carregam marca+BTU (não são a unidade):
+        r"\bcondensadora?\b|\bevaporadora\b|\bcompressor\b|\bturbina\b",
+        r"\bplaca\b|\bgabinete\b|\bbobina\b|\bfus[íi]vel\b|\btermistor\b",
+        r"\bjunta\b|\btransformador\b|\bpressostato\b|\bdifusor\b|\bdefletor\b",
+        r"\binversor\b|\bbomba\b\s*dreno|\bdreno\b|\bman[ôo]metro\b|\bcoxim",
+        r"\bauto[\s-]?transformador\b|\bcaixa\b.*\bpassagem\b",
+    ]
+]
+
+# Fora-de-escopo por tipo (mesmo que marca seja catalogada)
+FORA_TIPO_REGEX = [
+    re.compile(p, re.IGNORECASE) for p in [
+        r"\b(janela|janeleiro|window)\b",
+        r"\bport[aá]til\b",
+        r"\bcassete\b|\bcassette\b",
+        r"piso[ \-]teto",
+        r"multi[ \-]?split|multisplit",
+        r"bi[\s-]?split|\b2x9\b|\b2x12\b|\b2x18\b",
+        r"\b(36|32|34|48|57|60)\.?000\s*btu",
+        r"\b(36|32|34|48|57|60)k\s*btu",
+        r"\b(7|7\.500|16)\.?000?\s*btu",
+        r"\bsplit[aã]o\b|\btrif[aá]sico\b|\b7,?5\s*tr\b",
+    ]
+]
+
 # Tipo do mapa de famílias do catálogo injetado em `resolve_depara`:
 #   (marca_norm, btu, ciclo_code) → conjunto de `familia_linha` não-nulas.
 CatalogFamilias = Dict[Tuple[str, int, str], Set[str]]
