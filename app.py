@@ -2337,9 +2337,18 @@ def _evo_daily_floor(d: pd.DataFrame, src: str, skus: list[str],
     coletas → menor `preco` (Google Shopping excluído — agregador que não
     existe no PriceTrack). pricetrack → menor `min_price`.
     """
+    cols = ["data", "sku", "value", "source", "n"]
     if d.empty:
-        return pd.DataFrame(columns=["data", "sku", "value", "source", "n"])
-    d = d[d["sku"].astype("string").isin(skus)].copy()
+        return pd.DataFrame(columns=cols)
+    d = d.copy()
+    # coletas (query direta) traz `sku_resolvido`; pricetrack já traz `sku`.
+    # Sem normalizar, `d["sku"]` estoura KeyError e quebra o modo comparar.
+    if "sku" not in d.columns:
+        if "sku_resolvido" in d.columns:
+            d["sku"] = d["sku_resolvido"]
+        else:
+            return pd.DataFrame(columns=cols)
+    d = d[d["sku"].astype("string").isin(skus)]
     if src == "coletas":
         d = d[~d["plataforma"].astype("string").str.contains(
             "google", case=False, na=False)]
@@ -2349,9 +2358,14 @@ def _evo_daily_floor(d: pd.DataFrame, src: str, skus: list[str],
         price = pd.to_numeric(d.get(col), errors="coerce")
     d = d.assign(_p=price).dropna(subset=["_p", "data"])
     if clean_on and not d.empty:
-        d = d[~d["_p"].map(_is_placeholder_price)]
+        # Mesma guarda do gráfico principal: placeholder + outlier > 1,5× a
+        # mediana do próprio SKU (mantém o "Dados limpos" coerente entre modos).
+        med = d.groupby("sku")["_p"].transform("median")
+        ph = d["_p"].map(_is_placeholder_price)
+        outlier = (d["_p"] > 1.5 * med) & med.notna()
+        d = d[~(ph | outlier)]
     if d.empty:
-        return pd.DataFrame(columns=["data", "sku", "value", "source", "n"])
+        return pd.DataFrame(columns=cols)
     g = (d.groupby(["data", "sku"])
          .agg(value=("_p", "min"), n=("_p", "size"))
          .reset_index())
@@ -2391,14 +2405,28 @@ def _render_evo_compare_sources(df: pd.DataFrame, params: dict,
         st.info("Selecione ao menos um SKU para comparar.")
         return
 
-    plats = params.get("platforms")
-    brnds = params.get("brands")
+    # Repassa o MESMO escopo do dashboard (não só plataformas/marcas), senão a
+    # comparação sai de um recorte diferente do gráfico principal. `sel`
+    # (SKUs escolhidos) substitui skus_resolvidos/familias do params — já é o
+    # subconjunto mais estreito e evita AND conflitante com família.
     with st.spinner("Consultando as duas fontes…"):
         df_col = query_coletas(
-            start_date, end_date, platforms=plats, brands=brnds,
+            start_date, end_date,
+            platforms=params.get("platforms"),
+            platform_types=params.get("platform_types"),
+            brands=params.get("brands"),
+            sellers=params.get("sellers"),
+            keywords=params.get("keywords"),
+            btu_filter=params.get("btu_filter"),
+            product_types=params.get("product_types"),
             skus_resolvidos=sel, limit=50000)
         df_pt = query_pricetrack_daily(
-            start_date, end_date, platforms=plats, brands=brnds,
+            start_date, end_date,
+            platforms=params.get("platforms"),
+            brands=params.get("brands"),
+            sellers=params.get("sellers"),
+            btu_filter=params.get("btu_filter"),
+            product_types=params.get("product_types"),
             skus_resolvidos=sel)
 
     floors = []
@@ -2716,7 +2744,17 @@ def page_price_evolution():
             work = work[~g_mask]
         if not work.empty:
             ph = work["_basis"].map(_is_placeholder_price)
-            med = work.groupby(series_col)["_basis"].transform("median")
+            # Outlier é relativo à mediana do **próprio SKU** (não do grupo do
+            # gráfico): em Brand/Platform um grupo mistura SKUs de 9k a 60k BTUs,
+            # e uma mediana de grupo cortaria preços legítimos. Linhas sem SKU
+            # (views Brand/Platform) caem na coluna de agrupamento.
+            if "sku" in work.columns:
+                med_key = work["sku"].astype("string").str.strip()
+                med_key = med_key.where(
+                    med_key.fillna("") != "", work[series_col].astype("string"))
+            else:
+                med_key = work[series_col].astype("string")
+            med = work.groupby(med_key)["_basis"].transform("median")
             outlier = (work["_basis"] > 1.5 * med) & med.notna()
             drop_mask = ph | outlier
             removed_clean = int(drop_mask.sum())
