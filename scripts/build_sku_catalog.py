@@ -98,8 +98,7 @@ def build_refined_catalog(
         if ciclo_code is None and titles:
             modal_ciclo = Counter(_identify_cycle(t.lower()) for t, _b in titles).most_common(1)[0][0]
             ciclo_code = _CICLO_CODE.get(modal_ciclo.upper())
-            if not ciclo:
-                ciclo = modal_ciclo.upper()
+            ciclo = modal_ciclo.upper()   # sincroniza: nunca mantém ciclo vazio/inválido
         # linha modal a partir dos títulos REAIS do SKU no pricetrack
         modal_line = None
         if brand_title:
@@ -229,6 +228,7 @@ def main() -> None:
 
     # Report
     n_dup = sum(len(s) - 1 for _, _, s in dedup_groups)
+    _f = lambda n: f"{n:,}".replace(",", ".")  # noqa: E731 — milhar com ponto (PT-BR)
     lines = [f"| `{c}` (canônico) | {' · '.join(f'`{x}`' for x in skus if x != c)} | {k[0]} {k[1] or ''} |"
              for k, c, skus in sorted(dedup_groups)]
     report = f"""# Catálogo canônico de SKU — dedup + split (FASE 1, data-driven)
@@ -244,8 +244,8 @@ Gerado por `scripts/build_sku_catalog.py` (offline) · 2026-06-17.
 
 | catálogo | cravado | exato | **precisão** |
 |---|--:|--:|--:|
-| antes (curado, familia_linha original) | {before['cravado']} | {before['exato']} | {before['precisao']}% |
-| **depois (refinado + canônico)** | {after['cravado']} | {after['exato']} | **{after['precisao']}%** |
+| antes (curado, familia_linha original) | {_f(before['cravado'])} | {_f(before['exato'])} | {before['precisao']}% |
+| **depois (refinado + canônico)** | {_f(after['cravado'])} | {_f(after['exato'])} | **{after['precisao']}%** |
 
 ## Grupos de SKUs duplicados colapsados ({len(dedup_groups)} grupos, {n_dup} SKUs absorvidos)
 

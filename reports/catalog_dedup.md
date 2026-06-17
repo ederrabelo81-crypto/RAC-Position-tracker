@@ -11,8 +11,8 @@ Gerado por `scripts/build_sku_catalog.py` (offline) · 2026-06-17.
 
 | catálogo | cravado | exato | **precisão** |
 |---|--:|--:|--:|
-| antes (curado, familia_linha original) | 2283 | 1851 | 81.08% |
-| **depois (refinado + canônico)** | 6414 | 5902 | **92.02%** |
+| antes (curado, familia_linha original) | 2.283 | 1.851 | 81.08% |
+| **depois (refinado + canônico)** | 6.414 | 5.902 | **92.02%** |
 
 ## Grupos de SKUs duplicados colapsados (48 grupos, 71 SKUs absorvidos)
 
@@ -74,8 +74,8 @@ Gerado por `scripts/build_sku_catalog.py` (offline) · 2026-06-17.
 
 ## Erros remanescentes (após correções de review) — ~92%
 
-Cravado **6414** · exato **5902 (92.0%)** · família-correta **5905 (92.1%)**.
-Correções aplicadas (cubic review): ciclo derivado do título quando vazio no
+Cravado **6.414** · exato **5.902 (92.0%)** · família-correta **5.905 (92.1%)**.
+Correções aplicadas (review cubic): ciclo derivado do título quando vazio no
 catálogo (recupera ex.: S3-Q09AA31C, ~3.286 linhas) e voltagem normalizada
 (BI≡Bivolt, 110≡127) no desempate.
 
@@ -94,7 +94,7 @@ Maiores confusões de sub-linha (irredutíveis no título de marketplace):
 
 ### Conclusão (option 2 — final)
 
-Dedup + refino + correções: **SKU-exato 81% → 92,0%**, cobertura **2.283 → 6414**
+Dedup + refino + correções: **SKU-exato 81% → 92,0%**, cobertura **2.283 → 6.414**
 (2,8x), 48 grupos de duplicatas (71 SKUs). **98% segue inalcançável só por
 catálogo** — o resíduo (509) é ambiguidade de sub-linha (LG Voice/Compact,
 Elgin II/III, Midea Airvolution/Connect), parte irredutível. Grão **família**
