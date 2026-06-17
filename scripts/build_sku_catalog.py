@@ -41,7 +41,7 @@ from typing import Dict, List, Optional, Tuple
 _PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from utils.normalize_product import _identify_line  # noqa: E402
+from utils.normalize_product import _identify_cycle, _identify_line  # noqa: E402
 from utils.sku_matcher import build_catalog, resolve_sku  # noqa: E402
 
 # marca UPPER (produtos_catalogo) → chave title-case de _LINE_PATTERNS.
@@ -68,7 +68,8 @@ def _read_array(path: str, key: Optional[str] = None) -> list:
     except (json.JSONDecodeError, AttributeError):
         pass
     m = re.search(r"\[\s*\{.*\}\s*\]", raw, re.DOTALL)
-    return json.loads(m.group(0))[0][key]
+    arr = json.loads(m.group(0))
+    return arr[0][key] if key else arr
 
 
 def _line_token(line: str) -> str:
@@ -90,11 +91,20 @@ def build_refined_catalog(
         marca = (marca or "").upper()
         ciclo_code = _CICLO_CODE.get((ciclo or "").upper())
         brand_title = _MARCA_TITLE.get(marca)
+        titles = titles_by_sku.get(sku, [])
+        # ciclo ausente no catálogo fonte → deriva do título modal do pricetrack
+        # (recupera SKUs como S3-Q09AA31C, sem ciclo no catálogo, que ficavam sem
+        # familia_linha e, portanto, sem resolução por família).
+        if ciclo_code is None and titles:
+            modal_ciclo = Counter(_identify_cycle(t.lower()) for t, _b in titles).most_common(1)[0][0]
+            ciclo_code = _CICLO_CODE.get(modal_ciclo.upper())
+            if not ciclo:
+                ciclo = modal_ciclo.upper()
         # linha modal a partir dos títulos REAIS do SKU no pricetrack
         modal_line = None
         if brand_title:
             cnt = Counter()
-            for title, _b in titles_by_sku.get(sku, []):
+            for title, _b in titles:
                 ln = _identify_line(title.lower(), brand_title)
                 if ln:
                     cnt[ln] += 1

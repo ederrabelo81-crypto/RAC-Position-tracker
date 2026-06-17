@@ -120,7 +120,7 @@ FORA_TIPO_REGEX = [
         r"bi[\s-]?split|\b2x9\b|\b2x12\b|\b2x18\b",
         r"\b(36|32|34|48|57|60)\.?000\s*btu",
         r"\b(36|32|34|48|57|60)k\s*btu",
-        r"\b(7|7\.500|16)\.?000?\s*btu",
+        r"\b(7\.?000|7\.?500|16\.?000)\s*btu",
         r"\bsplit[aã]o\b|\btrif[aá]sico\b|\b7,?5\s*tr\b",
     ]
 ]

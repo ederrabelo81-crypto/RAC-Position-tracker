@@ -11,10 +11,10 @@ Gerado por `scripts/build_sku_catalog.py` (offline) · 2026-06-17.
 
 | catálogo | cravado | exato | **precisão** |
 |---|--:|--:|--:|
-| antes (curado, familia_linha original) | 2279 | 1847 | 81.04% |
-| **depois (refinado + canônico)** | 6381 | 5765 | **90.35%** |
+| antes (curado, familia_linha original) | 2283 | 1851 | 81.08% |
+| **depois (refinado + canônico)** | 6414 | 5902 | **92.02%** |
 
-## Grupos de SKUs duplicados colapsados (48 grupos, 69 SKUs absorvidos)
+## Grupos de SKUs duplicados colapsados (48 grupos, 71 SKUs absorvidos)
 
 | canônico | absorvidos | modelo |
 |---|---|---|
@@ -35,12 +35,12 @@ Gerado por `scripts/build_sku_catalog.py` (offline) · 2026-06-17.
 | `S3-Q12JA31K` (canônico) | `S3-Q12JA31E` · `S4-Q12JA315` · `S4-Q12JA31C` | LG-DUAL-INVERTER-AI-VOICE-12000-F 220V |
 | `S4-Q18KL31B` (canônico) | `S3-Q18KL33B` | LG-DUAL-INVERTER-AI-VOICE-18000-F 220V |
 | `S3-W18KL31A` (canônico) | `S4-W18KL31A` | LG-DUAL-INVERTER-AI-VOICE-18000-QF 220V |
-| `S3-Q09AA31A` (canônico) | `S3-Q09AA31F` · `S3-Q09AA33A` · `S3-Q09JA31E` · `S4-Q09AA31B` | LG-DUAL-INVERTER-AI-VOICE-9000-F 220V |
+| `S3-Q09AA31A` (canônico) | `S3-Q09AA31C` · `S3-Q09AA31F` · `S3-Q09AA33A` · `S3-Q09JA31E` · `S4-Q09AA31B` | LG-DUAL-INVERTER-AI-VOICE-9000-F 220V |
 | `S3-W18KLR7A` (canônico) | `S3-Q18KLR1B` · `S4-W18KLRXC` | LG-DUAL-INVERTER-ARTCOOL-18000-QF 220V |
 | `S3-W24K2R7A` (canônico) | `S4-W24K2RXD` | LG-DUAL-INVERTER-ARTCOOL-24000-QF 220V |
 | `S3-Q12JAQAL` (canônico) | `S3-Q12JA31L` · `S4-Q12JA3A5` · `S4-Q12JA3AD` | LG-DUAL-INVERTER-COMPACT-AI-12000-F 220V |
 | `S3-Q18KLQAL` (canônico) | `S3-Q18KL31B` | LG-DUAL-INVERTER-COMPACT-AI-18000-F 220V |
-| `S3-Q09AAQAL` (canônico) | `S4-Q09WA5AA` | LG-DUAL-INVERTER-COMPACT-AI-9000-F 220V |
+| `S3-Q09AAQAK` (canônico) | `S3-Q09AAQAL` · `S4-Q09WA5AA` | LG-DUAL-INVERTER-COMPACT-AI-9000-F 220V |
 | `42AFVCI12S5` (canônico) | `42AFFCI12S5` · `42EFVCA12M5` | MIDEA-AI-AIRVOLUTION-12000-F 220V |
 | `42AFVCI18S5` (canônico) | `42AFFCI18S5` · `42EFVCA18M5` | MIDEA-AI-AIRVOLUTION-18000-F 220V |
 | `42AFVCI22S5` (canônico) | `42AFFCI22S5` · `42EFVCA22M5` | MIDEA-AI-AIRVOLUTION-22000-F 220V |
@@ -72,32 +72,30 @@ Gerado por `scripts/build_sku_catalog.py` (offline) · 2026-06-17.
 > `sku_canonico`) é **gated** — revisar este relatório antes.
 
 
-## Erros remanescentes (dedup voltagem-tolerante) — por que ~90% e não 98%
+## Erros remanescentes (após correções de review) — ~92%
 
-Cravado **6.381** · exato **5.765 (90,35%)** · família-correta **5.768 (90,4%)**.
+Cravado **6414** · exato **5902 (92.0%)** · família-correta **5905 (92.1%)**.
+Correções aplicadas (cubic review): ciclo derivado do título quando vazio no
+catálogo (recupera ex.: S3-Q09AA31C, ~3.286 linhas) e voltagem normalizada
+(BI≡Bivolt, 110≡127) no desempate.
 
 | categoria de erro | qtde |
 |---|--:|
-| confusão de SUB-LINHA (linhas irmãs) | 496 |
-| mesma família, SKU não colapsado (voltagem) | 3 |
-| SKU-gabarito sem linha detectável | 117 |
+| confusão de SUB-LINHA (linhas irmãs) | 509 |
+| mesma família, SKU não colapsado | 3 |
+| SKU-gabarito sem linha detectável | 0 |
 
-Maiores confusões de sub-linha (o título de marketplace embaralha os termos —
-não são fusão Inverter/On-Off, são linhas irmãs Dual Inverter/Eco/Airvolution):
+Maiores confusões de sub-linha (irredutíveis no título de marketplace):
+- `LG-DUAL-INVERTER-COMPACT-AI-9000-F` ⟷ `LG-DUAL-INVERTER-AI-VOICE-9000-F` (48)
+- `LG-DUAL-INVERTER-AI-VOICE-12000-F` ⟷ `LG-DUAL-INVERTER-COMPACT-AI-12000-F` (33)
+- `LG-DUAL-INVERTER-AI-VOICE-18000-F` ⟷ `LG-DUAL-INVERTER-COMPACT-AI-18000-F` (33)
+- `LG-DUAL-INVERTER-COMPACT-AI-12000-F` ⟷ `LG-DUAL-INVERTER-AI-VOICE-12000-F` (32)
+- `ELGIN-ECO-INVERTER-II-12000-F` ⟷ `ELGIN-ECO-INVERTER-III-12000-F` (27)
 
-- LG `Dual Inverter Voice` ⟷ `Compact +AI`
-- Elgin `Eco Inverter II` ⟷ `III`
-- Midea `AI Airvolution` ⟷ `AI Airvolution Connect`
-- Midea `Xtreme Save Connect` ⟷ `…Black Edition`
+### Conclusão (option 2 — final)
 
-### Conclusão (option 2 — dedup do catálogo)
-
-Dedup + refino levou o **SKU-exato de 81% → 90,3%** e a cobertura de
-**2.279 → 6.381** (2,8x); **48 grupos** de SKUs duplicados colapsados (69 SKUs).
-**98% de SKU-exato NÃO é alcançável só por dedup**: o resíduo (496) é
-ambiguidade de SUB-LINHA, em parte irredutível no título. O grão **família**
-segue sendo o confiável (90,4%); cravar SKU só onde a sub-linha é inequívoca.
-
-Subir além de ~90% exige endurecer o vocabulário de sub-linha em
-normalize_product._LINE_PATTERNS — delicado, ganho marginal, risco de regressão.
-Recomendo iterar com testes, em PR à parte.
+Dedup + refino + correções: **SKU-exato 81% → 92,0%**, cobertura **2.283 → 6414**
+(2,8x), 48 grupos de duplicatas (71 SKUs). **98% segue inalcançável só por
+catálogo** — o resíduo (509) é ambiguidade de sub-linha (LG Voice/Compact,
+Elgin II/III, Midea Airvolution/Connect), parte irredutível. Grão **família**
+continua o confiável; cravar SKU só onde a sub-linha é inequívoca.

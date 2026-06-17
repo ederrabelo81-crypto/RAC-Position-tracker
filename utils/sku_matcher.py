@@ -24,6 +24,7 @@ Reusa `attr_parser` (tecnologia/voltagem/cor None-safe) e `resolve_depara`
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -37,6 +38,19 @@ from utils.depara_resolver import (
 )
 
 _CICLO_CODE = {"FRIO": "F", "QUENTE/FRIO": "QF", "QUENTE": "Q"}
+
+
+def _norm_volt(v: Optional[str]) -> Optional[str]:
+    """Normaliza voltagem para comparar aliases (BI≡Bivolt; 110≡115≡127)."""
+    if not v:
+        return None
+    s = re.sub(r"[^A-Z0-9]", "", str(v).upper())
+    if s.startswith("BI") or "BIVOLT" in s:
+        return "BIVOLT"
+    m = re.search(r"\d{3}", s)
+    if m:
+        return "110" if m.group(0) in ("110", "115", "120", "127") else m.group(0)
+    return s or None
 
 
 @dataclass(frozen=True)
@@ -85,7 +99,7 @@ def build_catalog(rows: List[dict]) -> Catalog:
             btu = None
         if btu is not None:
             cat.btus.add(btu)
-        if marca and btu is not None and ciclo and fam:
+        if sku and marca and btu is not None and ciclo and fam:
             cat.familias.setdefault((marca, btu, ciclo), set()).add(fam)
             cat.index.setdefault(fam, []).append(
                 CatalogSku(sku=sku, voltagem=(r.get("voltagem") or None))
@@ -188,9 +202,11 @@ def resolve_sku(
                              "familia_linha_unica", "1 SKU na família-linha",
                              candidatos=[cands[0].sku], atributos=attrs)
 
-    # >1 candidato: desempata por voltagem quando o título a traz.
+    # >1 candidato: desempata por voltagem quando o título a traz (aliases
+    # normalizados: BI≡Bivolt, 110≡115≡127).
     if volt:
-        vmatch = [c for c in cands if c.voltagem == volt]
+        nv = _norm_volt(volt)
+        vmatch = [c for c in cands if _norm_volt(c.voltagem) == nv]
         if len(vmatch) == 1:
             return SkuResolution("MAPEADO", familia, vmatch[0].sku, "alta",
                                  "familia_mais_voltagem",

@@ -100,8 +100,8 @@ CREATE TABLE IF NOT EXISTS public.coletas_sku_resolucao (
   produto      text PRIMARY KEY,         -- chave natural do de-para (= coletas.produto)
   sku_v2       text,                     -- só quando 1 SKU unívoco (confiança alta)
   familia_v2   text,                     -- granularidade honesta (cobertura ~100% MAPEADO)
-  estado       text,                     -- MAPEADO | FORA_ESCOPO | NAO_AC | REVISAR
-  confianca    text,                     -- alta | ambigua | baixa
+  estado       text CHECK (estado IN ('MAPEADO','FORA_ESCOPO','NAO_AC','REVISAR')),
+  confianca    text CHECK (confianca IN ('alta','ambigua','baixa')),
   metodo       text,
   motivo       text,
   candidatos   text,                     -- SKUs candidatos (pipe-separated) p/ revisão
@@ -141,7 +141,9 @@ SELECT
   r.sku_v2,
   r.familia_v2,
   r.confianca                              AS confianca_v2,
-  COALESCE(r.sku_v2, r.familia_v2)         AS chave_agrupamento_v2
+  -- fallback no próprio produto evita que linhas não resolvidas (sku/família
+  -- NULL, ou miss do LEFT JOIN) colapsem todas numa só chave NULL no dashboard.
+  COALESCE(r.sku_v2, r.familia_v2, c.produto)  AS chave_agrupamento_v2
 FROM public.coletas c
 LEFT JOIN public.coletas_sku_resolucao r ON r.produto = c.produto;
 

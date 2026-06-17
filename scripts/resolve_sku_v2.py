@@ -166,7 +166,13 @@ def _fetch_catalog(client) -> List[dict]:
     try:
         rows = _paged(client, "sku_catalog",
                       "sku,marca,capacidade_btu,ciclo,familia_linha,voltagem,sku_canonico")
-    except Exception:  # noqa: BLE001 — tabela ainda não criada
+    except Exception as exc:  # noqa: BLE001
+        # Só faz fallback se a tabela ainda não existe; erros reais (rede,
+        # permissão, SQL) são re-levantados, não mascarados.
+        msg = f"{getattr(exc, 'message', '')} {getattr(exc, 'code', '')} {exc}".lower()
+        if not any(s in msg for s in ("does not exist", "could not find the table",
+                                      "42p01", "pgrst205", "pgrst202")):
+            raise
         rows = []
     if rows:
         out = []

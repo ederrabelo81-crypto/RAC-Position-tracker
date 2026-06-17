@@ -186,8 +186,12 @@ _EDICAO = [(m, canon, re.compile(rx)) for m, canon, rx in _EDICAO]
 
 
 def parse_edicao(n: str, marca: Optional[str]) -> Optional[str]:
+    # Edições são específicas por marca: sem marca não dá para atribuir uma
+    # (tokens genéricos como LITE/ELITE contaminariam a chave). Sem marca → None.
+    if marca is None:
+        return None
     for m, canon, rx in _EDICAO:
-        if marca is not None and m != marca:
+        if m != marca:
             continue
         if rx.search(n):
             return canon
