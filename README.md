@@ -223,7 +223,7 @@ streamlit run app.py
 - **🏠 Overview** — métricas consolidadas, evolução de preços, tendências
 - **🚨 Top Movers** — SKUs com maior variação (janelas comparativas, confiança, sparkline)
 - **📊 Results** — detalhamento de coletas com filtros avançados
-- **📈 Price Evolution** — séries temporais (preço = PriceTrack)
+- **📈 Price Evolution** — séries temporais por **SKU** com métrica selecionável (**Buy Box** [default] / Moda / Mediana / Médio), guarda "Dados limpos", flag de série congelada e modo "Comparar fontes" (Coletas × PriceTrack)
 - **📊 Market Analytics** — share de marcas, posicionamento, benchmarking
 - **🗂️ Ficha do Produto** — SKU específico + screenshots
 - **🏆 BuyBox Position** — quem vence a posição #1 por produto/plataforma

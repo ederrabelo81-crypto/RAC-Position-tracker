@@ -152,6 +152,99 @@ def _mode_price(s: pd.Series) -> float:
     return float(s_clean[buckets.isin(top_buckets)].median())
 
 
+# ---------------------------------------------------------------------------
+# Price Evolution — métricas de preço por (SKU, dia)
+#
+# Substitui a antiga lógica "sempre moda, agrupado por NOME de produto".
+# A moda mascarava o piso real (uma validação read-only mostrou pricetrack
+# do SKU 42EZVQA12M5 travado em R$2.999,90 na moda enquanto o buy box
+# estava em R$2.199–2.289). Cada métrica define:
+#   - pt_col: coluna bruta do pricetrack_daily usada como base por linha
+#     (Buy Box/Moda/Mediana sobre `min_price`; Médio sobre `avg_price`);
+#   - agg:    função de agregação por (sku, dia) sobre a base;
+#   - title/ylabel: copy dinâmica do gráfico.
+# Em `coletas` a base é sempre o `preco` bruto.
+# ---------------------------------------------------------------------------
+
+_PRICE_METRICS: dict[str, dict] = {
+    "Buy Box (menor preço)": dict(
+        pt_col="min_price", agg="min", short="Buy Box",
+        title="Buy Box Price Evolution", ylabel="Buy Box (R$)",
+    ),
+    "Moda (teto 3P / MAP)": dict(
+        pt_col="min_price", agg=_mode_price, short="Moda",
+        title="Modal Price Evolution (teto 3P/MAP)", ylabel="Modal Price (R$)",
+    ),
+    "Mediana": dict(
+        pt_col="min_price", agg="median", short="Mediana",
+        title="Median Price Evolution", ylabel="Median Price (R$)",
+    ),
+    "Preço médio": dict(
+        pt_col="avg_price", agg="mean", short="Médio",
+        title="Average Price Evolution", ylabel="Average Price (R$)",
+    ),
+}
+
+
+def _metric_basis(df: pd.DataFrame, pt_col: str) -> pd.Series:
+    """Preço-base por linha para a métrica escolhida.
+
+    `pricetrack` usa a coluna bruta indicada (`min_price`/`avg_price`);
+    `coletas` usa o `preco` cru. Linhas de pricetrack sem a coluna bruta
+    (importações antigas) caem de volta no `preco` (= mode_price).
+    """
+    base = pd.to_numeric(df.get("preco"), errors="coerce")
+    if pt_col in df.columns and "source" in df.columns:
+        is_pt = df["source"].astype("string") == "pricetrack"
+        pt_vals = pd.to_numeric(df[pt_col], errors="coerce")
+        base = base.mask(is_pt, pt_vals.where(pt_vals.notna(), base))
+    return base
+
+
+def _is_placeholder_price(p) -> bool:
+    """Detecta preços-placeholder (cluster terminando em 999,00 ou 9999).
+
+    Lojas usam valores como R$2.999,00 / R$12.999,00 / R$19.999 como
+    "preço de gaveta" quando o item está indisponível. Sem filtrar, eles
+    inflam a média e estouram o eixo Y do gráfico.
+    """
+    try:
+        v = float(p)
+    except (TypeError, ValueError):
+        return False
+    if v != v:  # NaN
+        return False
+    ip = int(round(v))
+    cents = round((v - int(v)) * 100)
+    if cents == 0 and ip % 1000 == 999:      # ...999,00 (R$2.999,00)
+        return True
+    if ip % 10000 == 9999:                    # ...9999 (R$19.999)
+        return True
+    return False
+
+
+def _norm_platform_key(name) -> str:
+    """Chave canônica de plataforma p/ casar fontes (Apêndice A do relatório).
+
+    upper + remoção de acentos + remoção de não-alfanuméricos + aliases.
+    Ex.: "Magazine Luiza" e "MAGALU" → "MAGALU"; "Eletrozema" → "ZEMA".
+    """
+    if name is None:
+        return ""
+    s = str(name).upper().strip()
+    if not s:
+        return ""
+    acc = "ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ"
+    pln = "AAAAAEEEEIIIIOOOOOUUUUC"
+    s = s.translate(str.maketrans(acc, pln))
+    s = re.sub(r"[^A-Z0-9]", "", s)
+    _aliases = {
+        "MAGAZINELUIZA": "MAGALU",
+        "ELETROZEMA":    "ZEMA",
+    }
+    return _aliases.get(s, s)
+
+
 def _resolve_screenshot_path(raw) -> Path | None:
     """Resolve uma referência de screenshot armazenada para um Path local.
 
@@ -304,6 +397,10 @@ def _resolve_secret(name: str) -> str:
     return os.getenv(name, "").strip()
 
 
+# TODO(segurança, fora do escopo do módulo Price Evolution): a validação
+# read-only de 2026-06-16 apontou RLS DESABILITADO em todas as tabelas do
+# schema public (a anon key lê/escreve tudo: coletas, pricetrack_daily, etc).
+# Habilitar Row Level Security + policies por tabela. Ver docs/SECURITY_TODO_RLS.md.
 @st.cache_resource(show_spinner=False)
 def _get_supabase():
     url = _resolve_secret("SUPABASE_URL")
@@ -1106,6 +1203,14 @@ def query_pricetrack_daily(
             "posicao_organica": pd.array([pd.NA] * len(raw), dtype="Int64"),
             "tag":              pd.NA,
             "source":           "pricetrack",
+            # Estatísticas brutas da caixa de ofertas — preservadas por linha
+            # para que o módulo Price Evolution possa escolher a métrica
+            # (Buy Box = min(min_price); Moda/Mediana sobre min_price;
+            # Médio sobre avg_price) em vez de ficar preso à moda (`preco`).
+            "min_price":        pd.to_numeric(raw.get("min_price"), errors="coerce"),
+            "avg_price":        pd.to_numeric(raw.get("avg_price"), errors="coerce"),
+            "mode_price":       pd.to_numeric(raw.get("mode_price"), errors="coerce"),
+            "max_price":        pd.to_numeric(raw.get("max_price"), errors="coerce"),
         })
         if _MARCA_TO_CANONICAL:
             df["marca"] = df["marca"].map(
@@ -2225,6 +2330,140 @@ def page_results():
 # Page 3 — Price Evolution
 # ---------------------------------------------------------------------------
 
+def _evo_daily_floor(d: pd.DataFrame, src: str, skus: list[str],
+                     clean_on: bool) -> pd.DataFrame:
+    """Piso diário (buy box = menor preço) por (data, sku) de uma fonte.
+
+    coletas → menor `preco` (Google Shopping excluído — agregador que não
+    existe no PriceTrack). pricetrack → menor `min_price`.
+    """
+    if d.empty:
+        return pd.DataFrame(columns=["data", "sku", "value", "source", "n"])
+    d = d[d["sku"].astype("string").isin(skus)].copy()
+    if src == "coletas":
+        d = d[~d["plataforma"].astype("string").str.contains(
+            "google", case=False, na=False)]
+        price = pd.to_numeric(d.get("preco"), errors="coerce")
+    else:
+        col = "min_price" if "min_price" in d.columns else "preco"
+        price = pd.to_numeric(d.get(col), errors="coerce")
+    d = d.assign(_p=price).dropna(subset=["_p", "data"])
+    if clean_on and not d.empty:
+        d = d[~d["_p"].map(_is_placeholder_price)]
+    if d.empty:
+        return pd.DataFrame(columns=["data", "sku", "value", "source", "n"])
+    g = (d.groupby(["data", "sku"])
+         .agg(value=("_p", "min"), n=("_p", "size"))
+         .reset_index())
+    g["source"] = src
+    return g
+
+
+def _render_evo_compare_sources(df: pd.DataFrame, params: dict,
+                                start_date: date, end_date: date,
+                                clean_on: bool, group_default: str) -> None:
+    """Modo 'Comparar fontes': Coletas × PriceTrack na mesma figura + gap diário.
+
+    As duas fontes NÃO medem o mesmo piso (a validação achou mediana de gap
+    do mín ~R$271 no caso base). Esta visão deixa o gap explícito em vez de
+    escondê-lo atrás da precedência por (data, SKU).
+    """
+    if "sku" not in df.columns:
+        st.info("Sem coluna de SKU para comparar fontes.")
+        return
+    sku_clean = df["sku"].astype("string").str.strip()
+    sku_counts = (df.assign(_sku=sku_clean)[sku_clean.fillna("") != ""]
+                  .groupby("_sku").size().sort_values(ascending=False))
+    sku_opts = sku_counts.index.tolist()
+    if not sku_opts:
+        st.info("Nenhum SKU resolvido disponível para comparação.")
+        return
+
+    sel = st.multiselect(
+        "SKU(s) para comparar (Coletas × PriceTrack)",
+        sku_opts,
+        default=sku_opts[:1],
+        key="evo_compare_skus",
+        help="As fontes são consultadas isoladamente (sem a precedência por "
+             "data/SKU) para mostrar o gap real.",
+    )
+    if not sel:
+        st.info("Selecione ao menos um SKU para comparar.")
+        return
+
+    plats = params.get("platforms")
+    brnds = params.get("brands")
+    with st.spinner("Consultando as duas fontes…"):
+        df_col = query_coletas(
+            start_date, end_date, platforms=plats, brands=brnds,
+            skus_resolvidos=sel, limit=50000)
+        df_pt = query_pricetrack_daily(
+            start_date, end_date, platforms=plats, brands=brnds,
+            skus_resolvidos=sel)
+
+    floors = []
+    if not df_col.empty:
+        floors.append(_evo_daily_floor(df_col, "coletas", sel, clean_on))
+    if not df_pt.empty:
+        floors.append(_evo_daily_floor(df_pt, "pricetrack", sel, clean_on))
+    floors = [f for f in floors if not f.empty]
+    if not floors:
+        st.warning("Sem dados em nenhuma das fontes para os SKUs/filtros "
+                   "selecionados (verifique o filtro **Fonte de Dados**).")
+        return
+
+    comb = pd.concat(floors, ignore_index=True)
+    comb["data"] = pd.to_datetime(comb["data"])
+    multi = len(sel) > 1
+
+    fig = px.line(
+        comb.sort_values("data"),
+        x="data", y="value", color="source",
+        line_dash="sku" if multi else None,
+        markers=True, custom_data=["n", "sku"],
+        color_discrete_map={"coletas": _CHART_COLORS[1],
+                            "pricetrack": _CHART_COLORS[0]},
+        title="Buy Box (piso diário) — Coletas × PriceTrack",
+        labels={"data": "Date", "value": "Buy Box (R$)", "source": "Fonte"},
+    )
+    fig.update_traces(
+        line=dict(width=2.5), marker=dict(size=6),
+        hovertemplate=("<b>%{fullData.name}</b> · SKU %{customdata[1]}<br>"
+                       "%{x|%d/%m/%Y}<br>Buy Box: R$ %{y:.2f}<br>"
+                       "n: %{customdata[0]}<extra></extra>"))
+    _apply_chart_style(fig, height=440)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Gap diário: mín_coletas − mín_pricetrack.
+    piv = comb.pivot_table(index=["data", "sku"], columns="source",
+                           values="value").reset_index()
+    if {"coletas", "pricetrack"}.issubset(piv.columns):
+        piv["gap"] = piv["coletas"] - piv["pricetrack"]
+        gap_valid = piv.dropna(subset=["gap"])
+        if not gap_valid.empty:
+            med_gap = float(gap_valid["gap"].median())
+            c1, c2 = st.columns(2)
+            c1.metric("Mediana do gap (coletas − pricetrack)",
+                      f"R$ {med_gap:,.2f}".replace(",", "."))
+            c2.metric("Dias comparáveis", f"{gap_valid['data'].nunique()}")
+            gap_fig = px.bar(
+                gap_valid.sort_values("data"),
+                x="data", y="gap",
+                color="sku" if multi else None,
+                title="Gap diário do piso (coletas − pricetrack)",
+                labels={"data": "Date", "gap": "Gap (R$)"},
+            )
+            _apply_chart_style(gap_fig, height=300)
+            st.plotly_chart(gap_fig, use_container_width=True)
+            st.caption(
+                "Gap > 0: o piso das Coletas está acima do PriceTrack naquele "
+                "dia. As fontes medem caixas de oferta diferentes — o gap é "
+                "esperado, não um bug.")
+    else:
+        st.info("Só uma das fontes retornou dados — sem gap para calcular. "
+                "Confira o filtro **Fonte de Dados** no topo.")
+
+
 def page_price_evolution():
     st.title("📈 Price Evolution")
     st.caption("Track price changes over time by product or brand.")
@@ -2285,6 +2524,9 @@ def page_price_evolution():
             "Group chart by",
             ["Product", "Brand", "Platform"],
             horizontal=True,
+            key="evo_group_by",
+            help="**Product** agrupa por SKU do catálogo (não por nome) — "
+                 "variações de título do mesmo produto viram uma única série.",
         )
 
         st.divider()
@@ -2300,31 +2542,88 @@ def page_price_evolution():
                 "variações intra-turno."
             ),
         )
-        load_btn = st.button("🔄 Load Chart", type="primary", use_container_width=True)
 
-    if not load_btn:
-        st.info("Set your filters in the sidebar and click **Load Chart**.")
-        return
-
-    with st.spinner("Loading data..."):
-        df, evo_meta = query_price_evolution_data(
-            start_date,
-            end_date,
-            platforms=sel_platforms or None,
-            platform_types=sel_tipo or None,
-            brands=sel_brands or None,
-            sellers=sel_sellers or None,
-            keywords=sel_keywords or None,
-            products=sel_skus or None,
-            btu_filter=sel_btu or None,
-            product_types=sel_ptype or None,
-            familias_resolvidas=sel_familias or None,
-            skus_resolvidos=sel_skus_resolvidos or None,
-            limit=50000,
+        st.divider()
+        st.markdown("**Análise de preço**")
+        price_metric = st.radio(
+            "Métrica de preço",
+            list(_PRICE_METRICS.keys()),
+            index=0,
+            key="evo_metric",
+            help=(
+                "**Buy Box** = menor oferta do dia (o que o cliente realmente "
+                "paga). **Moda** = preço mais repetido (costuma ser o teto 3P / "
+                "MAP). **Mediana** e **Médio** dão a tendência central."
+            ),
+        )
+        clean_on = st.toggle(
+            "Dados limpos", value=True, key="evo_clean",
+            help=(
+                "Remove do gráfico placeholders (preços terminando em 999,00 / "
+                "9999) e outliers acima de 1,5× a mediana do próprio SKU. "
+                "O contador mostra quantos pontos saíram."
+            ),
+        )
+        excl_google = st.checkbox(
+            "Excluir Google Shopping (coletas)", value=False, key="evo_excl_google",
+            help="Google Shopping é agregador: devolve título/SKU de outro "
+                 "produto e suja a série. Só afeta a fonte Coletas.",
+        )
+        compare_sources = st.checkbox(
+            "Comparar fontes (Coletas × PriceTrack)", value=False,
+            key="evo_compare_sources",
+            help="Plota as duas fontes lado a lado para o(s) SKU(s) escolhido(s) "
+                 "e mostra o gap diário do piso. Google Shopping é excluído "
+                 "(não existe no PriceTrack).",
         )
 
-    if modo_evo == "Snapshot oficial (último run)":
-        df = _filter_latest_run(df)
+        load_btn = st.button("🔄 Load Chart", type="primary", use_container_width=True)
+
+    # Persistimos o dataframe carregado em session_state para que trocar a
+    # métrica ou ligar as guardas re-renderize SEM nova consulta ao Supabase
+    # (e sem mexer nos filtros Período/Plataformas/Marcas/Fonte já ativos).
+    if load_btn:
+        with st.spinner("Loading data..."):
+            df_loaded, evo_meta = query_price_evolution_data(
+                start_date,
+                end_date,
+                platforms=sel_platforms or None,
+                platform_types=sel_tipo or None,
+                brands=sel_brands or None,
+                sellers=sel_sellers or None,
+                keywords=sel_keywords or None,
+                products=sel_skus or None,
+                btu_filter=sel_btu or None,
+                product_types=sel_ptype or None,
+                familias_resolvidas=sel_familias or None,
+                skus_resolvidos=sel_skus_resolvidos or None,
+                limit=50000,
+            )
+        if modo_evo == "Snapshot oficial (último run)":
+            df_loaded = _filter_latest_run(df_loaded)
+        st.session_state["evo_df"] = df_loaded
+        st.session_state["evo_meta"] = evo_meta
+        st.session_state["evo_params"] = {
+            "start_date": start_date, "end_date": end_date,
+            "platforms": sel_platforms or None,
+            "platform_types": sel_tipo or None,
+            "brands": sel_brands or None,
+            "sellers": sel_sellers or None,
+            "keywords": sel_keywords or None,
+            "btu_filter": sel_btu or None,
+            "product_types": sel_ptype or None,
+            "familias_resolvidas": sel_familias or None,
+            "skus_resolvidos": sel_skus_resolvidos or None,
+        }
+
+    df = st.session_state.get("evo_df")
+    evo_meta = st.session_state.get("evo_meta", {})
+    params = st.session_state.get("evo_params", {})
+    if df is None:
+        st.info("Set your filters in the sidebar and click **Load Chart**.")
+        return
+    start_date = params.get("start_date", start_date)
+    end_date = params.get("end_date", end_date)
 
     if df.empty or "preco" not in df.columns:
         st.warning("No price data found for the selected filters.")
@@ -2357,69 +2656,135 @@ def page_price_evolution():
     st.markdown("""
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
     """, unsafe_allow_html=True)
-    
+
     days = (end_date - start_date).days + 1
-    unique_skus = df['produto'].nunique() if 'produto' in df.columns else 0
+    # KPI corrigido: conta SKUs distintos (não variações de nome de produto).
+    # A versão antiga (`produto.nunique()`) contava títulos — "…Frio" e
+    # "…Frio Preto" viravam dois; e a linha-fantasma de sku nulo entrava.
+    if "sku" in df.columns:
+        _sku_clean = df["sku"].astype("string").str.strip()
+        unique_skus = int(_sku_clean[_sku_clean.fillna("") != ""].nunique())
+    else:
+        unique_skus = 0
     unique_brands = df['marca'].nunique() if 'marca' in df.columns else 0
-    
+
     cols = st.columns(4)
-    
+
     with cols[0]:
-        st.metric(
-            label="📊 Total Records",
-            value=f"{len(df):,}",
-            delta=None
-        )
-    
+        st.metric(label="📊 Total Records", value=f"{len(df):,}", delta=None)
     with cols[1]:
-        st.metric(
-            label="📦 Unique SKUs",
-            value=f"{unique_skus:,}",
-            delta=None
-        )
-    
+        st.metric(label="📦 Unique SKUs", value=f"{unique_skus:,}", delta=None)
     with cols[2]:
-        st.metric(
-            label="🏷️ Brands",
-            value=str(unique_brands),
-            delta=None
-        )
-    
+        st.metric(label="🏷️ Brands", value=str(unique_brands), delta=None)
     with cols[3]:
-        st.metric(
-            label="📅 Time Range",
-            value=f"{days} days",
-            delta=None
-        )
-    
+        st.metric(label="📅 Time Range", value=f"{days} days", delta=None)
+
     st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
-    df_price = df.dropna(subset=["preco", "data"])
-    if df_price.empty:
+    # ── Métrica de preço + chave de agrupamento por SKU ──────────────────────
+    metric_cfg = _PRICE_METRICS.get(price_metric, _PRICE_METRICS["Buy Box (menor preço)"])
+    series_col = {"Brand": "marca", "Platform": "plataforma", "Product": "sku"}[group_by]
+    if series_col not in df.columns:
+        st.warning(f"Column '{series_col}' not available in data.")
+        return
+
+    work = df.dropna(subset=["data"]).copy()
+    work["_basis"] = _metric_basis(work, metric_cfg["pt_col"])
+    work = work.dropna(subset=["_basis"])
+    # Agrupar por SKU descarta linhas sem sku_resolvido (estado REVISAR / nulo):
+    # ~46% das coletas. Mantê-las criava séries-fantasma por nome de título
+    # (ex.: "Ecomaster Pro" do Google Shopping, sku nulo).
+    if group_by == "Product":
+        _sk = work["sku"].astype("string").str.strip()
+        work = work[_sk.fillna("") != ""]
+    work = work[work[series_col].notna()]
+    if work.empty:
         st.warning("No records with price data in this range.")
         return
 
-    # Aggregate: modal price per (date, group)
-    group_col_map = {
-        "Brand":    "marca",
-        "Platform": "plataforma",
-        "Product":  "produto",
-    }
-    group_col = group_col_map[group_by]
-
-    if group_col not in df_price.columns:
-        st.warning(f"Column '{group_col}' not available in data.")
+    # ── Guarda de qualidade ("Dados limpos") ─────────────────────────────────
+    removed_google = removed_clean = 0
+    if clean_on:
+        if excl_google:
+            g_mask = (
+                (work["source"].astype("string") == "coletas")
+                & work["plataforma"].astype("string").str.contains(
+                    "google", case=False, na=False)
+            )
+            removed_google = int(g_mask.sum())
+            work = work[~g_mask]
+        if not work.empty:
+            ph = work["_basis"].map(_is_placeholder_price)
+            med = work.groupby(series_col)["_basis"].transform("median")
+            outlier = (work["_basis"] > 1.5 * med) & med.notna()
+            drop_mask = ph | outlier
+            removed_clean = int(drop_mask.sum())
+            work = work[~drop_mask]
+    removed_total = removed_google + removed_clean
+    if work.empty:
+        st.warning("All rows were filtered out by the data-quality guard. "
+                   "Disable **Dados limpos** to inspect the raw series.")
         return
 
+    # ── Agregação por (data, série) ──────────────────────────────────────────
     agg = (
-        df_price
-        .groupby(["data", group_col])["preco"]
-        .agg(_mode_price)
+        work.groupby(["data", series_col])
+        .agg(value=("_basis", metric_cfg["agg"]),
+             n=("_basis", "size"))
         .reset_index()
-        .rename(columns={"preco": "Modal Price (R$)", group_col: group_by})
     )
+
+    # Rótulo amigável da série (Product = nome representativo + código do SKU).
+    if group_by == "Product":
+        name_src = work.dropna(subset=["produto"])
+        rep = (
+            name_src.groupby("sku")["produto"].agg(
+                lambda s: s.mode().iat[0] if not s.mode().empty else s.iat[0])
+            if not name_src.empty else pd.Series(dtype="object")
+        )
+
+        def _series_label(sku_code) -> str:
+            nm = rep.get(sku_code)
+            if isinstance(nm, str) and nm.strip():
+                short = (nm[:46] + "…") if len(nm) > 47 else nm
+                return f"{short} · {sku_code}"
+            return str(sku_code)
+
+        agg["series"] = agg["sku"].map(_series_label)
+    else:
+        agg["series"] = agg[series_col].astype(str)
+
+    # ── Flag de série CONGELADA (estática) ────────────────────────────────────
+    # 1 único valor diário em ≥10 dias ⇒ pode ser MAP real OU coleta travada.
+    freeze = agg.groupby("series").agg(
+        distinct=("value", "nunique"), n_days=("value", "size"))
+    frozen = set(freeze[(freeze["distinct"] <= 1) & (freeze["n_days"] >= 10)].index)
+    agg["frozen"] = agg["series"].isin(frozen)
+    agg["series_disp"] = agg.apply(
+        lambda r: ("⚠️ " + r["series"]) if r["frozen"] else r["series"], axis=1)
     agg["data"] = pd.to_datetime(agg["data"])
+
+    # ── Banners de cobertura ──────────────────────────────────────────────────
+    coverage_msgs: list[str] = []
+    _pt = df[df["source"].astype("string") == "pricetrack"] if "source" in df.columns else df.iloc[0:0]
+    if not _pt.empty:
+        pt_max = pd.to_datetime(_pt["data"]).max().date()
+        if pt_max < end_date:
+            coverage_msgs.append(
+                f"📭 **PriceTrack** sem dados após **{pt_max.strftime('%d/%m')}** "
+                f"(período pedido até {end_date.strftime('%d/%m')}) — a série do "
+                "PriceTrack não cobre o último dia.")
+    _col = df[df["source"].astype("string") == "coletas"] if "source" in df.columns else df.iloc[0:0]
+    if not _col.empty:
+        cov = _col.groupby("plataforma")["data"].nunique()
+        thresh = max(3, days // 4)
+        sparse = cov[cov < thresh].sort_values()
+        if not sparse.empty:
+            itens = ", ".join(f"{p} ({d}d)" for p, d in sparse.items())
+            coverage_msgs.append(
+                f"🕳️ Cobertura esparsa nas **Coletas** (< {thresh} dias úteis no "
+                f"período): {itens}. Séries dessas plataformas têm poucos pontos.")
 
     tab_chart, tab_summary, tab_detail = st.tabs(
         ["📈 Price Chart", "📊 Summary", "📋 Detail"]
@@ -2427,45 +2792,89 @@ def page_price_evolution():
 
     # ── Tab 1: Price Chart ───────────────────────────────────────────────────
     with tab_chart:
-        _cmap = _brand_color_map(agg[group_by]) if group_by == "Brand" else None
-        fig = px.line(
-            agg,
-            x="data",
-            y="Modal Price (R$)",
-            color=group_by,
-            color_discrete_map=_cmap,
-            markers=True,
-            title=f"Modal Price Evolution by {group_by}",
-            labels={"data": "Date"},
-        )
-        fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
-        _emphasize_midea_traces(fig)
-        _apply_chart_style(fig, height=460)
-        st.plotly_chart(fig, use_container_width=True)
+        badge_cols = st.columns([3, 1])
+        with badge_cols[0]:
+            st.caption(
+                f"**Métrica:** {metric_cfg['short']} · agrupado por "
+                f"**{'SKU' if group_by == 'Product' else group_by}**"
+                + (" · ⚠️ = série estática (MAP real ou coleta travada)"
+                   if frozen else ""))
+        with badge_cols[1]:
+            if clean_on and removed_total:
+                st.caption(
+                    f"🧹 **{removed_total} ponto(s) removido(s)** "
+                    f"(placeholder/outlier: {removed_clean}"
+                    + (f"; Google: {removed_google}" if removed_google else "")
+                    + ")")
+            elif clean_on:
+                st.caption("🧹 Dados limpos: nenhum ponto removido.")
+            else:
+                st.caption("⚠️ Guarda **desligada** — placeholders e outliers visíveis.")
+
+        for _m in coverage_msgs:
+            st.warning(_m)
+
+        if compare_sources:
+            _render_evo_compare_sources(
+                df, params, start_date, end_date,
+                clean_on=clean_on, group_default=group_by)
+        else:
+            _cmap = _brand_color_map(agg["series_disp"]) if group_by == "Brand" else None
+            fig = px.line(
+                agg,
+                x="data",
+                y="value",
+                color="series_disp",
+                color_discrete_map=_cmap,
+                markers=True,
+                custom_data=["n", "series"],
+                title=f"{metric_cfg['title']} by "
+                      f"{'SKU' if group_by == 'Product' else group_by}",
+                labels={"data": "Date", "value": metric_cfg["ylabel"],
+                        "series_disp": group_by},
+            )
+            fig.update_traces(
+                line=dict(width=2.5), marker=dict(size=6),
+                hovertemplate=(
+                    "<b>%{customdata[1]}</b><br>%{x|%d/%m/%Y}<br>"
+                    + metric_cfg["ylabel"] + ": R$ %{y:.2f}<br>"
+                    "ofertas no dia (n): %{customdata[0]}<extra></extra>"),
+            )
+            # Série congelada → linha tracejada.
+            for tr in fig.data:
+                if isinstance(tr.name, str) and tr.name.startswith("⚠️"):
+                    tr.line.dash = "dash"
+            _emphasize_midea_traces(fig)
+            _apply_chart_style(fig, height=460)
+            st.plotly_chart(fig, use_container_width=True)
 
     # ── Tab 2: Price Summary ─────────────────────────────────────────────────
     with tab_summary:
-        st.subheader("Price summary")
+        st.subheader(f"Price summary — base: {metric_cfg['short']}")
         summary = (
-            df_price
-            .groupby(group_col)["preco"]
+            work
+            .groupby(series_col)["_basis"]
             .agg(
                 Count="count",
                 Min="min",
                 Mode=_mode_price,
+                Median="median",
                 Max="max",
                 Avg="mean",
             )
             .round(2)
             .reset_index()
-            .rename(columns={group_col: group_by})
-            .sort_values("Mode", ascending=True)
+            .rename(columns={series_col: group_by})
+            .sort_values("Min", ascending=True)
         )
         _summary_styled = (
             _style_midea_df(summary, brand_col=group_by)
             if group_by == "Brand" else summary
         )
         st.dataframe(_summary_styled, use_container_width=True, hide_index=True)
+        st.caption(
+            "Buy Box (Min) ≤ Moda em toda linha — por construção, o menor "
+            "preço nunca supera o valor mais repetido.")
 
     # ── Tab 3: Detail ────────────────────────────────────────────────────────
     with tab_detail:
