@@ -7570,6 +7570,19 @@ def page_daily_vision() -> None:
             key="dv_periodos",
             help="Manhã=Abertura, Tarde=Fechamento, Diário=PriceTrack.",
         )
+        sel_grupo = st.radio(
+            "Agrupar por",
+            ["SKU (detalhado)", "Marca + Capacidade", "Marca"],
+            index=0,
+            key="dv_grupo",
+            help=(
+                "**SKU (detalhado)**: uma linha por SKU.\n\n"
+                "**Marca + Capacidade**: consolida o menor preço entre todos "
+                "os SKUs daquela marca + BTU.\n\n"
+                "**Marca**: consolida o menor preço entre todos os SKUs da "
+                "marca, independente da capacidade."
+            ),
+        )
 
     # Buscamos coletas e pricetrack SEPARADAMENTE — query_price_evolution_data
     # aplica precedência por (data, sku) que descarta linhas de coletas quando
@@ -7682,8 +7695,15 @@ def page_daily_vision() -> None:
         df["produto"].astype(str),
     )
 
-    group_cols = ["data", "source_label", "periodo", "marca",
-                  "capacidade", "sku_disp"]
+    # Granularidade do pivot — controlado pelo radio "Agrupar por".
+    # Data/Source/Turno/Marca são sempre dimensões; Capacidade/SKU entram
+    # conforme a escolha. Quando uma dimensão é tirada, o `min` por plataforma
+    # passa a consolidar todos os SKUs da marca naquele recorte.
+    group_cols = ["data", "source_label", "periodo", "marca"]
+    if sel_grupo in ("SKU (detalhado)", "Marca + Capacidade"):
+        group_cols.append("capacidade")
+    if sel_grupo == "SKU (detalhado)":
+        group_cols.append("sku_disp")
 
     # Menor preço por (linha de visão × plataforma).
     pivot = (
@@ -7705,17 +7725,26 @@ def page_daily_vision() -> None:
         "sku_disp":     "SKU",
     })
 
-    display_cols = ["Data", "Source", "Turno", "Marca", "Capacidade", "SKU"] \
-                   + _DAILY_VISION_PLATFORMS
+    base_cols = ["Data", "Source", "Turno", "Marca"]
+    if "Capacidade" in pivot.columns:
+        base_cols.append("Capacidade")
+    if "SKU" in pivot.columns:
+        base_cols.append("SKU")
+    display_cols = base_cols + _DAILY_VISION_PLATFORMS
+    sort_cols = [c for c in ["Data", "Marca", "Capacidade", "SKU", "Turno"]
+                 if c in pivot.columns]
     pivot = pivot[display_cols].sort_values(
-        ["Data", "Marca", "Capacidade", "SKU", "Turno"],
-        ascending=[False, True, True, True, True],
+        sort_cols,
+        ascending=[False] + [True] * (len(sort_cols) - 1),
     )
 
     # KPIs resumo.
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Linhas", f"{len(pivot):,}")
-    c2.metric("SKUs únicos", f"{pivot['SKU'].nunique():,}")
+    c2.metric(
+        "SKUs únicos",
+        f"{pivot['SKU'].nunique():,}" if "SKU" in pivot.columns else "—",
+    )
     c3.metric("Marcas", f"{pivot['Marca'].nunique():,}")
     plat_vals = pd.to_numeric(
         pivot[_DAILY_VISION_PLATFORMS].to_numpy().ravel(),
