@@ -7608,6 +7608,17 @@ def page_daily_vision() -> None:
         df_pt["preco"] = pd.to_numeric(df_pt["min_price"], errors="coerce") \
                            .fillna(df_pt["preco"])
 
+    # Normaliza schema antes do concat: coletas usa `sku_resolvido` (e nem
+    # sempre existe), enquanto pricetrack já traz `sku`. O resto do pipeline
+    # lê `df["sku"]` e `df["source"]`, então garantimos ambos nas duas pontas.
+    if not df_co.empty:
+        df_co = df_co.copy()
+        if "sku" not in df_co.columns:
+            df_co["sku"] = df_co["sku_resolvido"] \
+                if "sku_resolvido" in df_co.columns else pd.NA
+        if "source" not in df_co.columns:
+            df_co["source"] = "coletas"
+
     df = pd.concat([df_co, df_pt], ignore_index=True) \
         if not (df_co.empty and df_pt.empty) else pd.DataFrame()
 
