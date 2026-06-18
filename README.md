@@ -2,7 +2,7 @@
 
 Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ✅ Produção | **Última atualização:** 11 de Junho de 2026 (v4.0)
+**Status:** ✅ Produção | **Última atualização:** 18 de Junho de 2026 (v4.1)
 
 ---
 
@@ -20,7 +20,7 @@ O projeto monitora em 7 marketplaces:
 - **Preços** — coleta própria (secundário) + PriceTrack (fonte de verdade)
 - **Análise competitiva via IA** (Claude API) com relatório executivo
 
-Dados → CSV → Supabase (`coletas` + `pricetrack_daily`) → dashboard Streamlit (20 páginas) → notificações Telegram (N8N ou API direta).
+Dados → CSV → Supabase (`coletas` + `pricetrack_daily`) → dashboard Streamlit (18 páginas) → notificações Telegram (N8N ou API direta).
 
 ---
 
@@ -213,11 +213,13 @@ Campos de insight (protagonistas desde Mai/2026): `Patrocinado?`,
 `Buy Box Seller`, `Qtd Sellers`, `Tipo Seller`, `Reputação Seller`.
 Migrations do banco: `migrations/` + `docs/migrations/` (001→005).
 
-### Dashboard Streamlit — 20 páginas
+### Dashboard Streamlit — 18 páginas
 
 ```bash
 streamlit run app.py
 ```
+
+> **Filtros Globais (Jun/2026):** seletor global de **Fonte de Dados** (Coletas / PriceTrack / Combinado) + filtros enxutos no topo da sidebar — escolha uma vez e todas as páginas reagem. As páginas legadas **Run Collection** e **Competitive Intelligence** foram removidas (coleta agora é exclusivamente via cron/CLI; CI segue como camada de relatório no Overview).
 
 **INSIGHTS (12):**
 - **🏠 Overview** — métricas consolidadas, evolução de preços, tendências
@@ -244,10 +246,13 @@ streamlit run app.py
   não-AC, preços suspeitos, normalizações (produto/marca/plataforma), seed +
   resolução da fila REVISAR (regras → LLM → heurística) e refresh de cache.
   Dispara pós-coleta (`main.py`), via cron (`scripts/admin_auto.py`) e em
-  auto-run ao abrir a página (>24h). Auditoria em `admin_automation_runs`
-  (migration 006) + resumo no Telegram.
-- **🧬 Família & SKU** — auditoria/override pontual do de-para (a fila
-  REVISAR é resolvida pela automação)
+  auto-run ao abrir a página (>24h). **Mutex via `pg_try_advisory_lock`**
+  serializa execuções concorrentes e elimina timeouts 57014 (Jun/2026).
+  Auditoria em `admin_automation_runs` (migration 006) + resumo no Telegram.
+- **🧬 Família & SKU** — auditoria/override pontual do de-para. **Catálogo
+  refinado data-driven (Jun/2026):** dedup voltagem-tolerante elevou SKU-exato
+  de **88,3% → 90,3%**; resolver v2 com `attr_parser` + `sku_matcher` (FASES
+  0-4) tem dry-run e validação antes do `--apply`.
 
 ---
 
@@ -445,13 +450,18 @@ Dashboard usa o subset `requirements_app.txt`.
 
 ---
 
-## ✅ Validação Operacional — 11/06/2026
+## ✅ Validação Operacional — 18/06/2026
 
-- ✅ **20 páginas** de dashboard (13 Insights + 5 Operações + 2 Admin, com manutenção automática)
+- ✅ **18 páginas** de dashboard (12 Insights + 4 Operações + 2 Admin) — removidas Run Collection e Competitive Intelligence
+- ✅ **Filtros Globais enxutos** com seletor único de Fonte de Dados (Coletas / PriceTrack / Combinado)
 - ✅ **7 plataformas ativas** com buy box/seller (rollout fim de Mai/2026)
 - ✅ **PriceTrack diário** como fonte de verdade de preço (06:00 BRT + auto-heal)
 - ✅ **Coleta autenticada automatizada** Magalu+Shopee+CB via CDP (Jun/2026)
 - ✅ **Fix ML**: avaliação, reviews, patrocinado, Loja Oficial (Jun/2026)
+- ✅ **Price Evolution** com métrica Buy Box-first + agrupamento por SKU + guarda de outliers
+- ✅ **Catálogo SKU refinado** (dedup voltagem-tolerante): SKU-exato 88,3% → **90,3%**
+- ✅ **De-para v2** com `attr_parser` + `sku_matcher` (FASES 0-4) — dry-run, validação e relatório consistente
+- ✅ **Automação Admin com mutex** (`pg_try_advisory_lock`) — fim dos timeouts 57014
 - ✅ **Data Health** com matriz campo × plataforma + alerta de regressão
 - ✅ 31 keywords · 43 marcas · catálogo de-para com auto-resolver
 
@@ -459,4 +469,4 @@ Dashboard usa o subset `requirements_app.txt`.
 
 **Stack:** Python · Playwright/rebrowser · curl_cffi · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · GitHub Actions
 
-**Versão:** 4.0 | **Última atualização:** 11 de Junho de 2026 | @ederrabelo
+**Versão:** 4.1 | **Última atualização:** 18 de Junho de 2026 | @ederrabelo
