@@ -7669,11 +7669,18 @@ def page_daily_vision() -> None:
         df_pt = df_pt.copy()
         df_pt["periodo"] = df_pt["turno"].map(_TURNO_TO_PERIODO).fillna("Outro")
     if not df_co.empty and not df_pt.empty and "sku" in df_co.columns:
+        # Precedência por (data, sku, período, PLATAFORMA): o PriceTrack só
+        # "vence" a coleta na MESMA marketplace que ele cobre. Sem a plataforma
+        # na chave, um SKU coberto pelo PT no Mercado Livre descartaria a coleta
+        # do mesmo SKU no Magalu (que o PT pode não cobrir), abrindo buraco
+        # naquele marketplace — e a página pivota justamente por plataforma.
         pt_keys = set(zip(
-            df_pt["data"], df_pt["sku"].astype(str), df_pt["periodo"],
+            df_pt["data"], df_pt["sku"].astype(str),
+            df_pt["periodo"], df_pt["plataforma"].astype(str),
         ))
         co_keys = zip(
-            df_co["data"], df_co["sku"].astype(str), df_co["periodo"],
+            df_co["data"], df_co["sku"].astype(str),
+            df_co["periodo"], df_co["plataforma"].astype(str),
         )
         mask_dup = pd.Series(
             [k in pt_keys for k in co_keys], index=df_co.index,
