@@ -4,7 +4,9 @@ pricetrack_api_import.py — Importação histórica 2026 via PriceTrack API.
 
 Usa o endpoint bulk export (NDJSON.gz) para baixar ofertas dia a dia.
 Gerencia até 3 exports concorrentes, agrega preços (min/avg/mode/max)
-por (data, brand, sku, marketplace, seller) e persiste em `pricetrack_daily`.
+por (data, turno, brand, sku, marketplace, seller) e persiste em
+`pricetrack_daily`. O turno (Diário/Manhã/Tarde) recorta as ofertas por
+`collection_hour` (08–12h / 18–22h BRT) para alimentar os turnos do dashboard.
 
 Requer no .env:
     PRICETRACK_API_KEY=<token>   ← obrigatório
@@ -149,10 +151,22 @@ _TITLE_FIELDS = ("product_name", "productname", "title", "name", "produto", "tit
 _MARKETPLACE_FIELDS = ("marketplace", "market", "loja_marketplace")
 _SELLER_FIELDS = ("seller", "vendedor", "store", "loja")
 _CATEGORY_FIELDS = ("category", "categoria", "product_category", "productcategory")
+_HOUR_FIELDS = ("collection_hour", "collectionhour")
 
 # Categorias de ar condicionado aceitas (uppercase, comparação exata).
 # Configurável via --categories na CLI.
 DEFAULT_CATEGORIES: List[str] = ["AR CONDICIONADO"]
+
+# Janelas de turno por hora de coleta (`collection_hour`, em BRT). O PriceTrack
+# carimba a hora real do crawl — verificado no export bruto: `collection_hour`
+# == hora de `collection_hour_execution` em 100% das ofertas de AR CONDICIONADO,
+# com coletas distribuídas pelas 24h. Manhã = 08–12h, Tarde = 18–22h
+# (inclusivas). Horas fora das janelas entram só no agregado "Diário".
+TURNO_DIARIO = "Diário"
+TURNO_MANHA = "Manhã"
+TURNO_TARDE = "Tarde"
+TURNO_MANHA_HOURS: Set[int] = set(range(8, 13))    # 8, 9, 10, 11, 12
+TURNO_TARDE_HOURS: Set[int] = set(range(18, 23))   # 18, 19, 20, 21, 22
 
 
 def _mode(series: pd.Series) -> float:
@@ -190,7 +204,9 @@ def aggregate_offers(
     """
     Filtra por categoria e agrega ofertas para o formato daily.
 
-    Grupo: (collection_date, brand, sku, title, marketplace, seller).
+    Grupo: (collection_date, turno, brand, sku, title, marketplace, seller),
+    onde turno ∈ {Diário (dia inteiro), Manhã (08–12h), Tarde (18–22h)}
+    recortado por `collection_hour`.
     Resolve nomes de campo de forma case-insensitive para lidar com
     snake_case do NDJSON vs camelCase do schema OpenAPI.
 
@@ -258,6 +274,9 @@ def aggregate_offers(
 
     work = pd.DataFrame({
         "_price": price,
+        "_hour": pd.to_numeric(
+            _pick_text(df, lookup, _HOUR_FIELDS), errors="coerce"
+        ).astype("Int64"),
         "brand": _pick_text(df, lookup, _BRAND_FIELDS).str.upper(),
         "sku": _pick_text(df, lookup, _SKU_FIELDS),
         "title": _pick_text(df, lookup, _TITLE_FIELDS),
@@ -308,23 +327,38 @@ def aggregate_offers(
         logger.warning(f"{collection_date} — 0 linhas válidas após filtro de SKU.")
         return pd.DataFrame(), rejections
 
-    agg = (
-        work.groupby(["brand", "sku", "title", "marketplace", "seller"])["_price"]
-        .agg(
-            min_price="min",
-            avg_price="mean",
-            max_price="max",
-            mode_price=_mode,
+    def _agg_turno(rows: pd.DataFrame, turno: str) -> pd.DataFrame:
+        a = (
+            rows.groupby(["brand", "sku", "title", "marketplace", "seller"])["_price"]
+            .agg(
+                min_price="min",
+                avg_price="mean",
+                max_price="max",
+                mode_price=_mode,
+            )
+            .reset_index()
         )
-        .reset_index()
-    )
+        a["collection_date"] = collection_date
+        a["turno"] = turno
+        a["seller_canonical"] = a["seller"].apply(normalize_seller)
+        a["source_file"] = f"api-{collection_date}"
+        return a
 
-    agg["collection_date"] = collection_date
-    agg["seller_canonical"] = agg["seller"].apply(normalize_seller)
-    agg["source_file"] = f"api-{collection_date}"
+    # "Diário" = dia inteiro (comportamento histórico, 1 linha por grupo).
+    # Manhã/Tarde recortam por `collection_hour` para alimentar os turnos do
+    # dashboard — PriceTrack passa a ser a fonte de Manhã/Tarde; as coletas
+    # próprias viram fallback. Ofertas sem hora entram apenas no Diário.
+    parts = [_agg_turno(work, TURNO_DIARIO)]
+    manha = work[work["_hour"].isin(TURNO_MANHA_HOURS)]
+    if not manha.empty:
+        parts.append(_agg_turno(manha, TURNO_MANHA))
+    tarde = work[work["_hour"].isin(TURNO_TARDE_HOURS)]
+    if not tarde.empty:
+        parts.append(_agg_turno(tarde, TURNO_TARDE))
+    agg = pd.concat(parts, ignore_index=True)
 
     return agg[[
-        "collection_date", "brand", "sku", "title",
+        "collection_date", "turno", "brand", "sku", "title",
         "marketplace", "seller", "seller_canonical",
         "min_price", "avg_price", "mode_price", "max_price",
         "source_file",
@@ -425,7 +459,14 @@ def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
     for i in range(0, len(records), _BATCH_SIZE):
         batch = records[i : i + _BATCH_SIZE]
         try:
-            client.table(_TABLE).insert(batch).execute()
+            # Upsert idempotente: o conflict target casa a UNIQUE de
+            # pricetrack_daily (migration 003 inclui `turno`), então
+            # reimportar uma data (backfill/--force) atualiza em vez de
+            # estourar violação de unicidade nas linhas já presentes.
+            client.table(_TABLE).upsert(
+                batch,
+                on_conflict="collection_date,turno,brand,sku,marketplace,seller",
+            ).execute()
             inserted += len(batch)
         except Exception as e:
             logger.error(f"Erro ao inserir lote {i//500 + 1}: {e}")

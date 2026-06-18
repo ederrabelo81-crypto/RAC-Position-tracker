@@ -1033,6 +1033,7 @@ def query_pricetrack_daily(
     product_types: list[str] | None = None,
     familias_resolvidas: list[str] | None = None,
     skus_resolvidos: list[str] | None = None,
+    turnos: list[str] | None = None,
     limit: int = 200000,
 ) -> pd.DataFrame:
     """Query the pricetrack_daily table and remap to the coletas schema.
@@ -1075,7 +1076,7 @@ def query_pricetrack_daily(
         q = (
             client.table("pricetrack_daily")
             .select(
-                "collection_date,brand,sku,title,marketplace,seller,"
+                "collection_date,turno,brand,sku,title,marketplace,seller,"
                 "min_price,avg_price,mode_price,max_price,id"
             )
             .gte("collection_date", str(start_date))
@@ -1083,6 +1084,13 @@ def query_pricetrack_daily(
             .order("collection_date", desc=True)
             .order("id", desc=True)
         )
+        # Turno: por padrão só o agregado "Diário" (1 linha por data/grupo,
+        # comportamento histórico). A página Daily Price Vision opta pelos
+        # turnos passando turnos=["Diário", "Manhã", "Tarde"].
+        if turnos:
+            q = q.in_("turno", turnos)
+        else:
+            q = q.eq("turno", "Diário")
         if brands:
             # _expand_brands already registers upper/lower/title/capitalize
             # variants of every alias, so the pricetrack uppercase values
@@ -1187,9 +1195,17 @@ def query_pricetrack_daily(
         else:
             produto = title_series
 
+        # Back-compat: linhas "Diário" continuam saindo como "PriceTrack"
+        # (sentinela que _TURNO_TO_PERIODO mapeia para o período "Diário");
+        # Manhã/Tarde saem com o próprio rótulo para alimentar os turnos.
+        if "turno" in raw.columns:
+            turno_out = raw["turno"].where(raw["turno"] != "Diário", "PriceTrack")
+        else:
+            turno_out = pd.Series(["PriceTrack"] * len(raw), index=raw.index)
+
         df = pd.DataFrame({
             "data":             pd.to_datetime(raw["collection_date"]).dt.date,
-            "turno":            "PriceTrack",
+            "turno":            turno_out,
             "plataforma":       raw["marketplace"].map(_normalize_pt_platform)
                                 if "marketplace" in raw.columns else pd.NA,
             "marca":            raw.get("brand"),
@@ -7516,9 +7532,15 @@ _DAILY_VISION_PLATFORMS: list[str] = [
 ]
 
 _TURNO_TO_PERIODO: dict[str, str] = {
+    # Coletas Python
     "Abertura":   "Manhã",
     "Fechamento": "Tarde",
+    # PriceTrack: "PriceTrack" é o sentinela legado do agregado diário;
+    # Manhã/Tarde vêm do recorte por collection_hour (migration 003).
     "PriceTrack": "Diário",
+    "Diário":     "Diário",
+    "Manhã":      "Manhã",
+    "Tarde":      "Tarde",
 }
 
 
@@ -7526,8 +7548,9 @@ def page_daily_vision() -> None:
     st.title("📅 Daily Price Vision")
     st.caption(
         "Menor preço por marketplace, consolidado por marca, capacidade e SKU. "
-        "Coletas Python alimentam **Manhã/Tarde** (turnos Abertura/Fechamento); "
-        "PriceTrack alimenta a linha **Diário**."
+        "**PriceTrack** alimenta **Manhã** (08–12h) e **Tarde** (18–22h) — "
+        "recorte por hora de coleta — além da linha **Diário** (dia inteiro). "
+        "As coletas Python entram como **fallback** onde o PriceTrack não cobre."
     )
 
     with st.sidebar:
@@ -7568,7 +7591,8 @@ def page_daily_vision() -> None:
             ["Manhã", "Tarde", "Diário"],
             default=["Manhã", "Tarde", "Diário"],
             key="dv_periodos",
-            help="Manhã=Abertura, Tarde=Fechamento, Diário=PriceTrack.",
+            help="PriceTrack: Manhã=08–12h, Tarde=18–22h, Diário=dia inteiro. "
+                 "Coletas Python (Abertura/Fechamento) entram como fallback.",
         )
         sel_grupo = st.radio(
             "Agrupar por",
@@ -7584,11 +7608,12 @@ def page_daily_vision() -> None:
             ),
         )
 
-    # Buscamos coletas e pricetrack SEPARADAMENTE — query_price_evolution_data
-    # aplica precedência por (data, sku) que descarta linhas de coletas quando
-    # PriceTrack cobre o mesmo SKU/dia. Aqui precisamos das duas fontes lado a
-    # lado: coletas alimentam Manhã/Tarde (Abertura/Fechamento) e PriceTrack
-    # alimenta o "Diário" — esconder coletas esvaziaria os turnos.
+    # Buscamos coletas e pricetrack SEPARADAMENTE. O PriceTrack agora traz
+    # Manhã/Tarde (recorte por collection_hour) além do Diário, e é a FONTE
+    # dos turnos; as coletas entram só como fallback onde o PT não cobre
+    # aquele (data, sku, período) — precedência aplicada abaixo, antes do
+    # concat (espelha a regra por (data, sku) de query_price_evolution_data,
+    # acrescida da dimensão de período).
     with st.spinner("Carregando dados..."):
         df_co = query_coletas(
             start_date,
@@ -7610,6 +7635,7 @@ def page_daily_vision() -> None:
             btu_filter=sel_btu or None,
             familias_resolvidas=sel_familias or None,
             skus_resolvidos=sel_skus_resolvidos or None,
+            turnos=["Diário", "Manhã", "Tarde"],
             limit=80000,
         )
 
@@ -7631,6 +7657,28 @@ def page_daily_vision() -> None:
                 if "sku_resolvido" in df_co.columns else pd.NA
         if "source" not in df_co.columns:
             df_co["source"] = "coletas"
+
+    # Precedência (Q2 Jun/2026): PriceTrack é a fonte dos turnos; as coletas
+    # só preenchem lacunas. Calculamos o período nas duas fontes e descartamos
+    # as linhas de coletas cujo (data, sku, período) o PriceTrack já cobre.
+    # SKUs de coleta sem resolução (sku NULL) nunca casam um SKU canônico do
+    # PT, então permanecem como fallback legítimo (produto ainda em REVISAR).
+    if not df_co.empty:
+        df_co["periodo"] = df_co["turno"].map(_TURNO_TO_PERIODO).fillna("Outro")
+    if not df_pt.empty:
+        df_pt = df_pt.copy()
+        df_pt["periodo"] = df_pt["turno"].map(_TURNO_TO_PERIODO).fillna("Outro")
+    if not df_co.empty and not df_pt.empty and "sku" in df_co.columns:
+        pt_keys = set(zip(
+            df_pt["data"], df_pt["sku"].astype(str), df_pt["periodo"],
+        ))
+        co_keys = zip(
+            df_co["data"], df_co["sku"].astype(str), df_co["periodo"],
+        )
+        mask_dup = pd.Series(
+            [k in pt_keys for k in co_keys], index=df_co.index,
+        )
+        df_co = df_co[~mask_dup]
 
     df = pd.concat([df_co, df_pt], ignore_index=True) \
         if not (df_co.empty and df_pt.empty) else pd.DataFrame()

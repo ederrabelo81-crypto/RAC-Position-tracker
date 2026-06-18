@@ -74,10 +74,50 @@ class TestAggregateOffersAgrega:
             _offer(price=2200.0),
         ])
         agg, _ = ptai.aggregate_offers(df, "2026-06-10")
+        # Sem `collection_hour` as ofertas entram só no agregado Diário.
         assert len(agg) == 1
         row = agg.iloc[0]
+        assert row["turno"] == "Diário"
         assert row["min_price"] == 1800.0
         assert row["max_price"] == 2200.0
         assert row["avg_price"] == 2000.0
         assert row["collection_date"] == "2026-06-10"
         assert row["source_file"] == "api-2026-06-10"
+
+
+class TestAggregateOffersTurno:
+    """Recorte por turno via `collection_hour` (roadmap PRICETRACK_INSIGHTS §3 #10)."""
+
+    def test_split_diario_manha_tarde(self):
+        df = pd.DataFrame([
+            _offer(price=1000.0, collection_hour=9),    # Manhã (08–12)
+            _offer(price=1200.0, collection_hour=10),   # Manhã
+            _offer(price=900.0,  collection_hour=20),   # Tarde (18–22)
+            _offer(price=950.0,  collection_hour=15),   # fora das janelas → só Diário
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-06-17")
+        by_turno = {t: g.iloc[0] for t, g in agg.groupby("turno")}
+
+        assert set(by_turno) == {"Diário", "Manhã", "Tarde"}
+        # Diário = dia inteiro
+        assert by_turno["Diário"]["min_price"] == 900.0
+        assert by_turno["Diário"]["max_price"] == 1200.0
+        # Manhã = horas 9 e 10
+        assert by_turno["Manhã"]["min_price"] == 1000.0
+        assert by_turno["Manhã"]["max_price"] == 1200.0
+        # Tarde = hora 20
+        assert by_turno["Tarde"]["min_price"] == 900.0
+        assert by_turno["Tarde"]["max_price"] == 900.0
+
+    def test_sem_hora_apenas_diario(self):
+        df = pd.DataFrame([_offer(price=1500.0)])
+        agg, _ = ptai.aggregate_offers(df, "2026-06-17")
+        assert list(agg["turno"].unique()) == ["Diário"]
+
+    def test_apenas_manha_nao_cria_tarde(self):
+        df = pd.DataFrame([
+            _offer(price=1100.0, collection_hour=8),
+            _offer(price=1300.0, collection_hour=12),
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-06-17")
+        assert set(agg["turno"].unique()) == {"Diário", "Manhã"}
