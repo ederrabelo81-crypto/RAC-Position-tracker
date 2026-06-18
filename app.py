@@ -7775,11 +7775,14 @@ def page_daily_vision() -> None:
     else:
         champion_idx = None
 
-    # Marca a vencedora visualmente — Styler aplica CSS, e prefixamos 🏆
-    # diretamente no rótulo da Marca para que apareça também no CSV.
+    # Marca a vencedora visualmente — trabalhamos numa cópia para não
+    # contaminar o `pivot` original, que serve como base limpa do CSV
+    # (do contrário a coluna Marca exportaria "Midea" e "🏆 Midea" como
+    # rótulos distintos, quebrando agrupamentos downstream).
+    display_pivot = pivot.copy()
     if champion_idx is not None:
-        pivot.loc[champion_idx, "Marca"] = (
-            f"🏆 {pivot.loc[champion_idx, 'Marca']}"
+        display_pivot.loc[champion_idx, "Marca"] = (
+            f"🏆 {display_pivot.loc[champion_idx, 'Marca']}"
         )
 
     def _style_row_prices(row: pd.Series) -> list[str]:
@@ -7824,7 +7827,7 @@ def page_daily_vision() -> None:
     )
 
     styler = (
-        pivot.style
+        display_pivot.style
         .apply(_style_row_prices, axis=1, subset=_DAILY_VISION_PLATFORMS)
         .apply(_style_champion_brand, axis=0, subset=["Marca"])
         .format({plat: fmt_price for plat in _DAILY_VISION_PLATFORMS})
