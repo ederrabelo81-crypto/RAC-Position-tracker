@@ -7717,11 +7717,15 @@ def page_daily_vision() -> None:
     c1.metric("Linhas", f"{len(pivot):,}")
     c2.metric("SKUs únicos", f"{pivot['SKU'].nunique():,}")
     c3.metric("Marcas", f"{pivot['Marca'].nunique():,}")
-    plat_vals = pivot[_DAILY_VISION_PLATFORMS].stack(dropna=True)
+    plat_vals = pd.to_numeric(
+        pivot[_DAILY_VISION_PLATFORMS].to_numpy().ravel(),
+        errors="coerce",
+    )
+    plat_min = pd.Series(plat_vals).dropna()
     c4.metric(
         "Piso geral",
-        f"R$ {plat_vals.min():,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        if not plat_vals.empty else "—",
+        f"R$ {plat_min.min():,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        if not plat_min.empty else "—",
     )
     st.divider()
 
