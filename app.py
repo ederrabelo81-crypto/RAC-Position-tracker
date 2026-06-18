@@ -7507,7 +7507,7 @@ def page_product_sheet() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 1 Slide Daily Vision — menor preço por marketplace, por turno
+# Daily Price Vision — menor preço por marketplace, por turno
 # ---------------------------------------------------------------------------
 
 _DAILY_VISION_PLATFORMS: list[str] = [
@@ -7523,7 +7523,7 @@ _TURNO_TO_PERIODO: dict[str, str] = {
 
 
 def page_daily_vision() -> None:
-    st.title("📅 1 Slide Daily Vision")
+    st.title("📅 Daily Price Vision")
     st.caption(
         "Menor preço por marketplace, consolidado por marca, capacidade e SKU. "
         "Coletas Python alimentam **Manhã/Tarde** (turnos Abertura/Fechamento); "
@@ -7987,7 +7987,7 @@ def page_daily_vision() -> None:
 
 PAGES = {
     "🏠 Overview":                 page_overview,
-    "📅 1 Slide Daily Vision":     page_daily_vision,
+    "📅 Daily Price Vision":       page_daily_vision,
     "🚨 Top Movers":               page_top_movers,
     "📊 Results":                  page_results,
     "📈 Price Evolution":           page_price_evolution,
@@ -8010,7 +8010,7 @@ PAGES = {
 _NAV_GROUPS: dict[str, list[str]] = {
     "INSIGHTS": [
         "🏠 Overview",
-        "📅 1 Slide Daily Vision",
+        "📅 Daily Price Vision",
         "🚨 Top Movers",
         "📊 Results",
         "📈 Price Evolution",
