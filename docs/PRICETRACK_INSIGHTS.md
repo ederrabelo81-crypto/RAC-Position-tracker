@@ -2,10 +2,12 @@
 
 > **Contexto:** o projeto importa diariamente (06:00 BRT) o export da API da
 > Price Track (`pricetrack.com.br`) — preços min/avg/mode/max por
-> `(data, marca, sku, marketplace, seller)` da categoria AR CONDICIONADO —
+> `(data, turno, marca, sku, marketplace, seller)` da categoria AR CONDICIONADO —
 > para a tabela `pricetrack_daily` do Supabase. Desde 28/05/2026 o PriceTrack
 > é a **fonte de verdade de preço** nos dashboards (precedência por
-> `(data, sku_resolvido)` sobre as coletas próprias).
+> `(data, sku_resolvido)` sobre as coletas próprias). Desde 06/2026 o import
+> recorta `turno` (Diário/Manhã/Tarde) a partir de `collection_hour`, e o
+> PriceTrack passou a ser a fonte dos turnos Manhã/Tarde do dashboard.
 >
 > Este documento responde: **o que mais dá para extrair de um dado tão
 > robusto, e o que endurecer na engenharia.**
@@ -83,7 +85,7 @@ estoque no canal; explosão de sellers desconhecidos sinaliza mercado cinza.
 | 7 | **Retenção/arquivamento**: sumarizar linhas >12 meses em tabela agregada semanal | Custo Supabase + velocidade | Baixo |
 | 8 | **Métrica exata de insert vs update** no modo supabase-py (hoje `updated=0` sempre) — ou padronizar import via DSN psycopg2 | Auditoria imprecisa de reprocessamento | Baixo |
 | 9 | **SKU vazio**: rejeitar (ou marcar) linhas sem `sku` no validador — hoje entram e não reconciliam com o catálogo | Qualidade do join | Baixo |
-| 10 | **Histórico intra-dia** (se o plano PriceTrack expuser hora da oferta): hoje a agregação por dia perde o momento do reprice | Análise 2.4 ganharia precisão de "quem moveu primeiro" | Depende do fornecedor |
+| 10 | ✅ **Histórico intra-dia (turno)** — IMPLEMENTADO (06/2026). O export bruto expõe `collection_hour` (hora real do crawl, 24/7; verificado: `collection_hour` == hora de `collection_hour_execution` em 100% das ofertas de AC). `aggregate_offers` recorta Manhã (08–12h) e Tarde (18–22h) BRT além do Diário; migration `003_pricetrack_turno.sql` adiciona `turno` à UNIQUE. **Granularidade horária** (1 linha por hora) segue como evolução futura se algum insight pedir | Alimenta os turnos do dashboard a partir do PriceTrack (coletas viram fallback) | Feito |
 
 ## 4. Princípios de uso (para manter o sistema são)
 
