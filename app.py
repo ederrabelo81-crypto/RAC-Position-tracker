@@ -7845,10 +7845,13 @@ def page_daily_vision() -> None:
         .hide(axis="index")
     )
 
-    st.dataframe(
+    event = st.dataframe(
         styler,
         use_container_width=True,
         height=560,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="dv_table",
         column_config={
             "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
         },
@@ -7859,8 +7862,107 @@ def page_daily_vision() -> None:
         "🏆 marca com o menor preço do recorte · "
         "🟩 marketplace vencedor da linha · "
         "🟢 concorrente dentro de 2 % do piso · "
-        "— sem oferta."
+        "— sem oferta · "
+        "👆 clique numa linha para abrir os detalhes."
     )
+
+    # ── Drill-down — quem (SKU/seller) ofertou cada preço da linha ───────
+    sel_rows = (event.selection.rows
+                if getattr(event, "selection", None) else [])
+    if sel_rows:
+        row_pos = sel_rows[0]
+        if 0 <= row_pos < len(pivot):
+            sel = pivot.iloc[row_pos]
+            mask = (
+                (df["data"] == sel["Data"])
+                & (df["source_label"] == sel["Source"])
+                & (df["periodo"] == sel["Turno"])
+                & (df["marca"] == sel["Marca"])
+            )
+            if "Capacidade" in pivot.columns:
+                mask &= (df["capacidade"] == sel["Capacidade"])
+            if "SKU" in pivot.columns:
+                mask &= (df["sku_disp"] == sel["SKU"])
+            detail = df[mask].copy()
+
+            badge_parts = [
+                f"**Marca:** {sel['Marca']}",
+                f"**Turno:** {sel['Turno']}",
+                f"**Source:** {sel['Source']}",
+            ]
+            if "Capacidade" in pivot.columns:
+                badge_parts.insert(1, f"**Capacidade:** {sel['Capacidade']}")
+            if "SKU" in pivot.columns:
+                badge_parts.append(f"**SKU:** {sel['SKU']}")
+            st.markdown("### 🔎 Detalhes da linha selecionada")
+            st.markdown(" · ".join(badge_parts))
+
+            if detail.empty:
+                st.info("Sem ofertas detalhadas para esse recorte.")
+            else:
+                # Melhor oferta por (plataforma, sku, seller) — o piso real.
+                grp_cols = [c for c in ["plataforma", "sku", "produto",
+                                        "seller", "title"]
+                            if c in detail.columns]
+                detail_agg = (
+                    detail.groupby(grp_cols, dropna=False, as_index=False)
+                    .agg(preco=("preco", "min"))
+                    .sort_values(["plataforma", "preco"])
+                )
+
+                # Marca a oferta vencedora de cada plataforma.
+                detail_agg["Vencedora"] = (
+                    detail_agg["preco"]
+                    == detail_agg.groupby("plataforma")["preco"]
+                    .transform("min")
+                )
+                detail_agg["Vencedora"] = detail_agg["Vencedora"].map(
+                    {True: "🥇", False: ""}
+                )
+
+                rename_map = {
+                    "plataforma": "Marketplace",
+                    "sku":        "SKU",
+                    "produto":    "Produto",
+                    "seller":     "Seller",
+                    "title":      "Título anunciado",
+                    "preco":      "Preço",
+                }
+                detail_agg = detail_agg.rename(columns=rename_map)
+
+                cols_order = [c for c in [
+                    "Vencedora", "Marketplace", "SKU", "Produto",
+                    "Seller", "Título anunciado", "Preço",
+                ] if c in detail_agg.columns]
+                detail_agg = detail_agg[cols_order]
+
+                st.dataframe(
+                    detail_agg,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(420, 60 + 35 * len(detail_agg)),
+                    column_config={
+                        "Preço": st.column_config.NumberColumn(
+                            "Preço", format="R$ %.2f",
+                        ),
+                        "Vencedora": st.column_config.TextColumn(
+                            "🏅", width="small",
+                            help="Oferta vencedora dentro da plataforma",
+                        ),
+                        "Título anunciado": st.column_config.TextColumn(
+                            "Título anunciado", width="large",
+                        ),
+                    },
+                )
+                st.caption(
+                    f"{len(detail_agg)} oferta(s) agregada(s) por "
+                    f"(marketplace, SKU, seller) · 🥇 = piso por marketplace."
+                )
+    else:
+        st.caption(
+            "💡 Selecione uma linha acima para ver SKU, seller e título "
+            "do anúncio por marketplace."
+        )
 
     csv_bytes = pivot.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
     st.download_button(
