@@ -7900,13 +7900,21 @@ def page_daily_vision() -> None:
             if detail.empty:
                 st.info("Sem ofertas detalhadas para esse recorte.")
             else:
-                # Melhor oferta por (plataforma, sku, seller) — o piso real.
-                grp_cols = [c for c in ["plataforma", "sku", "produto",
-                                        "seller", "title"]
-                            if c in detail.columns]
+                # Agregamos por (plataforma, sku_disp, seller) — esta é a grão
+                # natural da oferta: `produto`/`title` variam por anúncio para
+                # o mesmo SKU+seller e, incluídos no groupby, inflavam linhas
+                # duplicadas e bagunçavam a marcação 🥇 por marketplace.
+                # `sku_disp` é o fallback canônico do pivot — usa `sku` quando
+                # presente e o nome amigável do produto para coletas sem SKU
+                # mapeado (caso contrário a coluna ficaria em branco).
+                base_cols = ["plataforma", "sku_disp", "seller"]
                 detail_agg = (
-                    detail.groupby(grp_cols, dropna=False, as_index=False)
-                    .agg(preco=("preco", "min"))
+                    detail.groupby(base_cols, dropna=False, as_index=False)
+                    .agg(
+                        preco=("preco", "min"),
+                        produto=("produto", "first"),
+                        title=("title", "first"),
+                    )
                     .sort_values(["plataforma", "preco"])
                 )
 
@@ -7922,7 +7930,7 @@ def page_daily_vision() -> None:
 
                 rename_map = {
                     "plataforma": "Marketplace",
-                    "sku":        "SKU",
+                    "sku_disp":   "SKU",
                     "produto":    "Produto",
                     "seller":     "Seller",
                     "title":      "Título anunciado",
