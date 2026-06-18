@@ -7571,8 +7571,13 @@ def page_daily_vision() -> None:
             help="Manhã=Abertura, Tarde=Fechamento, Diário=PriceTrack.",
         )
 
+    # Buscamos coletas e pricetrack SEPARADAMENTE — query_price_evolution_data
+    # aplica precedência por (data, sku) que descarta linhas de coletas quando
+    # PriceTrack cobre o mesmo SKU/dia. Aqui precisamos das duas fontes lado a
+    # lado: coletas alimentam Manhã/Tarde (Abertura/Fechamento) e PriceTrack
+    # alimenta o "Diário" — esconder coletas esvaziaria os turnos.
     with st.spinner("Carregando dados..."):
-        df, _meta = query_price_evolution_data(
+        df_co = query_coletas(
             start_date,
             end_date,
             platforms=_DAILY_VISION_PLATFORMS,
@@ -7583,6 +7588,28 @@ def page_daily_vision() -> None:
             skus_resolvidos=sel_skus_resolvidos or None,
             limit=80000,
         )
+        df_pt = query_pricetrack_daily(
+            start_date,
+            end_date,
+            platforms=_DAILY_VISION_PLATFORMS,
+            brands=sel_brands or None,
+            products=sel_skus or None,
+            btu_filter=sel_btu or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
+            limit=80000,
+        )
+
+    # Para PriceTrack o "menor preço" do dia é `min_price` (o piso/buy-box),
+    # não o `mode_price` que vira `preco` por padrão no remap. Sobrescrevemos
+    # antes de concatenar com coletas pra que o pivot reflita o piso real.
+    if not df_pt.empty and "min_price" in df_pt.columns:
+        df_pt = df_pt.copy()
+        df_pt["preco"] = pd.to_numeric(df_pt["min_price"], errors="coerce") \
+                           .fillna(df_pt["preco"])
+
+    df = pd.concat([df_co, df_pt], ignore_index=True) \
+        if not (df_co.empty and df_pt.empty) else pd.DataFrame()
 
     if df.empty:
         st.warning("Sem dados para os filtros selecionados.")
