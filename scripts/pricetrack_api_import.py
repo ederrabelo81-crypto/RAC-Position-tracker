@@ -640,13 +640,14 @@ def _process_date(
             return "empty", 0
 
         rows_agg = len(df_agg)
-        # Com o split de turno, df_agg pode ter até 3 linhas por grupo
-        # (Diário/Manhã/Tarde), então rows_agg não é 1:1 com as ofertas cruas e
-        # pode, em arquivos pequenos, superar rows_raw. Clampa em 0 para não
-        # gravar métrica de auditoria negativa (o rejection_log tem o detalhe).
-        rows_rejected = max(rows_raw - rows_agg, 0)
+        # rows_rejected = ofertas CRUAS efetivamente descartadas pelos filtros
+        # (fora de categoria + sem preço + sem sku), somadas do breakdown de
+        # rejeições. NÃO usamos rows_raw - rows_agg: com o split de turno o
+        # df_agg tem até 3 linhas por grupo (Diário/Manhã/Tarde) e é agregado,
+        # então aquela diferença confunde "colapso por agregação" com "rejeição".
+        rows_rejected = int(sum(rejections.values()))
         logger.info(f"{collection_date} — {rows_agg:,} linhas AC agregadas "
-                    f"({rows_rejected:,} cruas descartadas: outras categorias/sem preço)")
+                    f"({rows_rejected:,} ofertas cruas descartadas pelos filtros)")
 
     except Exception as e:
         logger.error(f"{collection_date} — erro no parse: {e}")
