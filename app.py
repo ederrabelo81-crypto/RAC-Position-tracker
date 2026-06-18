@@ -7507,11 +7507,217 @@ def page_product_sheet() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 1 Slide Daily Vision — menor preço por marketplace, por turno
+# ---------------------------------------------------------------------------
+
+_DAILY_VISION_PLATFORMS: list[str] = [
+    "Magalu", "Casas Bahia", "Shopee",
+    "Leroy Merlin", "Mercado Livre", "Amazon",
+]
+
+_TURNO_TO_PERIODO: dict[str, str] = {
+    "Abertura":   "Manhã",
+    "Fechamento": "Tarde",
+    "PriceTrack": "Diário",
+}
+
+
+def page_daily_vision() -> None:
+    st.title("📅 1 Slide Daily Vision")
+    st.caption(
+        "Menor preço por marketplace, consolidado por marca, capacidade e SKU. "
+        "Coletas Python alimentam **Manhã/Tarde** (turnos Abertura/Fechamento); "
+        "PriceTrack alimenta a linha **Diário**."
+    )
+
+    with st.sidebar:
+        st.subheader("Filtros")
+        date_range = st.date_input(
+            "Período",
+            value=(date.today(), date.today()),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
+            key="dv_dates",
+        )
+        start_date = date_range[0] if len(date_range) > 0 else date.today()
+        end_date   = date_range[1] if len(date_range) > 1 else start_date
+
+        opts = get_filter_options()
+
+        sel_brands = st.multiselect(
+            "Marcas", opts["brands"], key="dv_brands",
+        )
+        sel_btu = st.multiselect(
+            "Capacidade (BTU)", BTU_OPTIONS,
+            format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
+            key="dv_btu",
+        )
+        sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(
+            sel_brands, "dv",
+        )
+        sku_opts = get_sku_options(
+            tuple(sorted(sel_brands)), tuple(sorted(sel_btu)), (),
+        )
+        sel_skus = st.multiselect(
+            f"SKU  ({len(sku_opts)} disponíveis)" if sku_opts else "SKU",
+            sku_opts, key="dv_sku",
+            placeholder="Todos os SKUs",
+        )
+        sel_periodos = st.multiselect(
+            "Período (turno)",
+            ["Manhã", "Tarde", "Diário"],
+            default=["Manhã", "Tarde", "Diário"],
+            key="dv_periodos",
+            help="Manhã=Abertura, Tarde=Fechamento, Diário=PriceTrack.",
+        )
+
+    with st.spinner("Carregando dados..."):
+        df, _meta = query_price_evolution_data(
+            start_date,
+            end_date,
+            platforms=_DAILY_VISION_PLATFORMS,
+            brands=sel_brands or None,
+            products=sel_skus or None,
+            btu_filter=sel_btu or None,
+            familias_resolvidas=sel_familias or None,
+            skus_resolvidos=sel_skus_resolvidos or None,
+            limit=80000,
+        )
+
+    if df.empty:
+        st.warning("Sem dados para os filtros selecionados.")
+        return
+
+    # Linhas sem preço ou plataforma não contribuem para o piso.
+    df = df[df["preco"].notna() & df["plataforma"].notna()].copy()
+    df = df[df["plataforma"].isin(_DAILY_VISION_PLATFORMS)]
+    if df.empty:
+        st.warning("Sem preços válidos nas plataformas monitoradas.")
+        return
+
+    # Mapeia turno → período amigável. Turnos desconhecidos viram "Outro".
+    df["periodo"] = df["turno"].map(_TURNO_TO_PERIODO).fillna("Outro")
+    if sel_periodos:
+        df = df[df["periodo"].isin(sel_periodos)]
+        if df.empty:
+            st.warning("Nenhuma linha no(s) período(s) selecionado(s).")
+            return
+
+    # Capacidade (BTU) via catálogo — pricetrack já traz SKU canônico;
+    # coletas traz `sku_resolvido` em algumas linhas (não no schema atual
+    # devolvido pela query_coletas, então fallback para extração no título).
+    cat = get_catalogo()
+    sku_to_btu: dict = {}
+    if not cat.empty and {"sku", "capacidade_btu"}.issubset(cat.columns):
+        sku_to_btu = dict(zip(
+            cat["sku"].astype(str),
+            cat["capacidade_btu"].astype("Int64").astype(str)
+                .where(cat["capacidade_btu"].notna(), None),
+        ))
+
+    def _resolve_btu(row) -> str:
+        sku_val = row.get("sku")
+        if sku_val and str(sku_val) in sku_to_btu:
+            v = sku_to_btu[str(sku_val)]
+            if v and v != "<NA>":
+                return f"{int(float(v)):,}".replace(",", ".")
+        # Fallback: extrai do título.
+        title = str(row.get("title") or row.get("produto") or "")
+        for btu in BTU_OPTIONS:
+            dotted = f"{int(btu):,}".replace(",", ".")
+            if btu in title or dotted in title:
+                return dotted
+        return "—"
+
+    df["capacidade"] = df.apply(_resolve_btu, axis=1)
+
+    # Rótulo de origem da linha (PriceTrack vs Coletas Python).
+    df["source_label"] = df["source"].map({
+        "pricetrack": "PriceTrack",
+        "coletas":    "Coletas",
+    }).fillna(df["source"].astype(str))
+
+    # SKU de exibição: prefere o canônico; senão usa o produto.
+    sku_display = df["sku"].astype(str)
+    df["sku_disp"] = sku_display.where(
+        df["sku"].notna() & (sku_display.str.strip() != ""),
+        df["produto"].astype(str),
+    )
+
+    group_cols = ["data", "source_label", "periodo", "marca",
+                  "capacidade", "sku_disp"]
+
+    # Menor preço por (linha de visão × plataforma).
+    pivot = (
+        df.groupby(group_cols + ["plataforma"], dropna=False)["preco"]
+        .min()
+        .unstack("plataforma")
+        .reset_index()
+    )
+    for plat in _DAILY_VISION_PLATFORMS:
+        if plat not in pivot.columns:
+            pivot[plat] = pd.NA
+
+    pivot = pivot.rename(columns={
+        "data":         "Data",
+        "source_label": "Source",
+        "periodo":      "Turno",
+        "marca":        "Marca",
+        "capacidade":   "Capacidade",
+        "sku_disp":     "SKU",
+    })
+
+    display_cols = ["Data", "Source", "Turno", "Marca", "Capacidade", "SKU"] \
+                   + _DAILY_VISION_PLATFORMS
+    pivot = pivot[display_cols].sort_values(
+        ["Data", "Marca", "Capacidade", "SKU", "Turno"],
+        ascending=[False, True, True, True, True],
+    )
+
+    # KPIs resumo.
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Linhas", f"{len(pivot):,}")
+    c2.metric("SKUs únicos", f"{pivot['SKU'].nunique():,}")
+    c3.metric("Marcas", f"{pivot['Marca'].nunique():,}")
+    plat_vals = pivot[_DAILY_VISION_PLATFORMS].stack(dropna=True)
+    c4.metric(
+        "Piso geral",
+        f"R$ {plat_vals.min():,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        if not plat_vals.empty else "—",
+    )
+    st.divider()
+
+    price_cfg = {
+        plat: st.column_config.NumberColumn(plat, format="R$ %.2f")
+        for plat in _DAILY_VISION_PLATFORMS
+    }
+    st.dataframe(
+        pivot,
+        use_container_width=True,
+        height=560,
+        hide_index=True,
+        column_config={
+            "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+            **price_cfg,
+        },
+    )
+
+    csv_bytes = pivot.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+    st.download_button(
+        "⬇️ Baixar CSV",
+        data=csv_bytes,
+        file_name=f"daily_vision_{start_date}_{end_date}.csv",
+        mime="text/csv",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Page registry & grouped navigation
 # ---------------------------------------------------------------------------
 
 PAGES = {
     "🏠 Overview":                 page_overview,
+    "📅 1 Slide Daily Vision":     page_daily_vision,
     "🚨 Top Movers":               page_top_movers,
     "📊 Results":                  page_results,
     "📈 Price Evolution":           page_price_evolution,
@@ -7534,6 +7740,7 @@ PAGES = {
 _NAV_GROUPS: dict[str, list[str]] = {
     "INSIGHTS": [
         "🏠 Overview",
+        "📅 1 Slide Daily Vision",
         "🚨 Top Movers",
         "📊 Results",
         "📈 Price Evolution",
