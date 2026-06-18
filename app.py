@@ -7758,19 +7758,108 @@ def page_daily_vision() -> None:
     )
     st.divider()
 
-    price_cfg = {
-        plat: st.column_config.NumberColumn(plat, format="R$ %.2f")
-        for plat in _DAILY_VISION_PLATFORMS
-    }
+    # ── Styler — highlights modernos ──────────────────────────────────────
+    # 1) Verde forte na célula vencedora (menor preço da linha) e verde
+    #    suave nas concorrentes dentro de ±2 % do piso da linha (tier 2).
+    # 2) Linha campeã geral (menor preço global do recorte) ganha borda
+    #    lateral âmbar + ícone 🏆 prefixado à Marca para chamar o olho.
+    # 3) Células sem oferta ficam discretas (cinza claro, itálico).
+    price_matrix = pivot[_DAILY_VISION_PLATFORMS].apply(
+        pd.to_numeric, errors="coerce",
+    )
+    row_min = price_matrix.min(axis=1)
+
+    # Linha vencedora global = linha cujo piso é o menor de todos.
+    if row_min.notna().any():
+        champion_idx = row_min.idxmin()
+    else:
+        champion_idx = None
+
+    # Marca a vencedora visualmente — trabalhamos numa cópia para não
+    # contaminar o `pivot` original, que serve como base limpa do CSV
+    # (do contrário a coluna Marca exportaria "Midea" e "🏆 Midea" como
+    # rótulos distintos, quebrando agrupamentos downstream).
+    display_pivot = pivot.copy()
+    if champion_idx is not None:
+        display_pivot.loc[champion_idx, "Marca"] = (
+            f"🏆 {display_pivot.loc[champion_idx, 'Marca']}"
+        )
+
+    def _style_row_prices(row: pd.Series) -> list[str]:
+        """Pinta a célula vencedora e os concorrentes próximos por linha."""
+        vals = pd.to_numeric(row, errors="coerce")
+        if vals.notna().sum() == 0:
+            return ["color:#94a3b8; font-style:italic;"] * len(row)
+        rmin = vals.min()
+        styles = []
+        for v in vals:
+            if pd.isna(v):
+                styles.append("color:#cbd5e1; font-style:italic;")
+            elif v == rmin:
+                # Vencedor: verde esmeralda, negrito, borda lateral
+                styles.append(
+                    "background-color:#d1fae5; color:#065f46; "
+                    "font-weight:700; border-left:3px solid #10b981;"
+                )
+            elif rmin > 0 and (v - rmin) / rmin <= 0.02:
+                # Dentro de 2 % do piso → "match" — verde água suave
+                styles.append("background-color:#ecfdf5; color:#047857;")
+            else:
+                styles.append("")
+        return styles
+
+    def _style_champion_brand(col: pd.Series) -> list[str]:
+        """Destaca a marca da linha campeã com gradient âmbar."""
+        out = [""] * len(col)
+        if champion_idx is None or champion_idx not in col.index:
+            return out
+        pos = list(col.index).index(champion_idx)
+        out[pos] = (
+            "background: linear-gradient(90deg, #fef3c7 0%, #fde68a 100%); "
+            "color:#78350f; font-weight:700; "
+            "border-left:4px solid #f59e0b;"
+        )
+        return out
+
+    fmt_price = lambda v: (
+        "—" if pd.isna(v)
+        else f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    )
+
+    styler = (
+        display_pivot.style
+        .apply(_style_row_prices, axis=1, subset=_DAILY_VISION_PLATFORMS)
+        .apply(_style_champion_brand, axis=0, subset=["Marca"])
+        .format({plat: fmt_price for plat in _DAILY_VISION_PLATFORMS})
+        .set_table_styles([
+            {"selector": "thead th",
+             "props": "background-color:#0f172a; color:#f8fafc; "
+                      "font-weight:600; text-transform:uppercase; "
+                      "font-size:0.72rem; letter-spacing:0.06em; "
+                      "border-bottom:2px solid #1e293b;"},
+            {"selector": "tbody td",
+             "props": "padding:0.55rem 0.75rem; font-size:0.88rem;"},
+            {"selector": "tbody tr:hover",
+             "props": "background-color:#f1f5f9;"},
+        ])
+        .hide(axis="index")
+    )
+
     st.dataframe(
-        pivot,
+        styler,
         use_container_width=True,
         height=560,
-        hide_index=True,
         column_config={
             "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-            **price_cfg,
         },
+    )
+
+    # Legenda das marcações.
+    st.caption(
+        "🏆 marca com o menor preço do recorte · "
+        "🟩 marketplace vencedor da linha · "
+        "🟢 concorrente dentro de 2 % do piso · "
+        "— sem oferta."
     )
 
     csv_bytes = pivot.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
