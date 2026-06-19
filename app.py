@@ -7664,13 +7664,47 @@ def _fmt_brl(v) -> str:
     return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _fmt_price_with_delta(price, delta) -> str:
+    """Formata célula como ``"R$ 1.738,17  ▼ R$ 41"`` (preço + delta inline).
+
+    ▼ = preço caiu vs ontem (boa notícia p/ consumidor).
+    ▲ = preço subiu vs ontem.
+    Deltas com módulo abaixo de 1 BRL são suprimidos (ruído de arredondamento
+    no PriceTrack). Sem preço atual → travessão. Sem delta (NaN/None) → só preço.
+    """
+    base = _fmt_brl(price)
+    if price is None or pd.isna(price):
+        return base
+    if delta is None or pd.isna(delta) or abs(delta) < 1:
+        return base
+    arrow = "▼" if delta < 0 else "▲"
+    delta_int = int(round(abs(float(delta))))
+    delta_str = f"R$ {delta_int:,}".replace(",", ".")
+    return f"{base}  {arrow} {delta_str}"
+
+
+_BRL_FIRST_RE = re.compile(r"R\$\s*([0-9][0-9.\xa0\s]*(?:,\d{2})?)")
+
+
 def _parse_brl(s) -> float | None:
-    """Reverte `_fmt_brl` para float (usado pelo styler de winner)."""
+    """Reverte `_fmt_brl` para float (usado pelo styler de winner).
+
+    Usa regex pra extrair o PRIMEIRO valor `R$ X.XXX,XX` da string.
+    Indispensável porque a célula passou a carregar preço + delta
+    inline (ex.: ``"R$ 1.738,17  ▼ R$ 41"``) — sem o regex o parser
+    misturaria os dígitos dos dois números.
+    """
     if isinstance(s, (int, float)):
         return None if pd.isna(s) else float(s)
     if not isinstance(s, str) or s.strip() in ("", "—"):
         return None
-    cleaned = s.replace("R$", "").replace(".", "").replace(",", ".").strip()
+    match = _BRL_FIRST_RE.search(s)
+    if not match:
+        return None
+    cleaned = (
+        match.group(1).replace(".", "").replace("\xa0", "").replace(" ", "")
+        .replace(",", ".").strip()
+    )
     try:
         return float(cleaned)
     except ValueError:
@@ -7683,15 +7717,17 @@ def _query_sparkline_7d(
     end_date: date,
     brands_key: tuple[str, ...],
     sku_set_key: tuple[str, ...],
+    btu_keys: tuple[str, ...] = (),
 ) -> pd.DataFrame:
     """Query enxuta p/ alimentar o sparkline 7d do Daily Vision.
 
     Roda separada da query principal pra evitar `statement_timeout` no
     PostgREST: pega só 3 colunas de `pricetrack_daily` (brand,
-    collection_date, min_price) restrito por SKU se o usuário filtrou BTU
-    (que vira sku_set). Sem SKU filtra só por brand — ainda é leve
-    porque o índice por brand+date cobre. Cache de 15 min protege
-    contra repintura quando o usuário só muda filtros visuais.
+    collection_date, min_price). Filtra por marca, por SKU (quando o
+    usuário escolheu SKU/família) **e/ou por BTU via `title.ilike`** —
+    este último espelha o filtro do pivot principal e cobre marcas cujos
+    SKUs não estão no catálogo (sem ele a sparkline ficava vazia para
+    Hisense/Agratto quando o usuário filtrava por BTU). Cache de 15 min.
 
     Falha silenciosa: timeout/error → DataFrame vazio, sparkline some
     da tabela sem warning vermelho.
@@ -7710,6 +7746,18 @@ def _query_sparkline_7d(
             q = q.in_("brand", _expand_brands(list(brands_key)))
         if sku_set_key:
             q = q.in_("sku", list(sku_set_key))
+        if btu_keys:
+            parts: list[str] = []
+            for btu in btu_keys:
+                parts.append(f"title.ilike.%{btu}%")
+                try:
+                    dotted = f"{int(btu):,}".replace(",", ".")
+                    if dotted != btu:
+                        parts.append(f"title.ilike.%{dotted}%")
+                except ValueError:
+                    pass
+            if parts:
+                q = q.or_(",".join(parts))
         resp = q.limit(20000).execute()
         if not resp.data:
             return pd.DataFrame()
@@ -8059,42 +8107,23 @@ def page_daily_vision() -> None:
     # SEPARADA enxuta (3 colunas, cache 15min) p/ não estourar o
     # `statement_timeout` que afetava a query principal de 7 dias.
     #
-    # Filtro de BTU é traduzido para SKU set via catálogo — sem isso o
-    # sparkline ignoraria o BTU pedido (e o título.ilike sobre 7 dias
-    # voltaria a estourar timeout). União com sku_set canônico cobre
-    # cenários "marca + BTU" e "marca + SKU explícito" sem conflito.
+    # Filtro de BTU vai DIRETO pra query do sparkline como `title.ilike`
+    # (mesmo critério do pivot principal). A versão anterior traduzia BTU
+    # → SKU set via catálogo, mas marcas cujos SKUs não estão catalogados
+    # (Hisense, Agratto em algumas capacidades) saíam com sparkline vazia
+    # enquanto o pivot — que usa título — mostrava o piso normalmente.
     window_dates = [spark_start + timedelta(days=i) for i in range(7)]
     sku_set_for_spark = _collect_pt_skus(
         products=sel_skus or None,
         familias_resolvidas=sel_familias or None,
         skus_resolvidos=sel_skus_resolvidos or None,
     )
-    if sel_btu:
-        cat_for_btu = get_catalogo()
-        if (not cat_for_btu.empty
-                and {"sku", "capacidade_btu"}.issubset(cat_for_btu.columns)):
-            try:
-                btu_ints = [int(b) for b in sel_btu]
-                sku_by_btu = set(
-                    cat_for_btu.loc[
-                        cat_for_btu["capacidade_btu"].isin(btu_ints), "sku"
-                    ].astype(str)
-                )
-                # Intersecção espelha o que a query principal faz (SKU AND
-                # BTU). Se o usuário escolheu SKU+BTU incompatíveis, o
-                # resultado é vazio e o sparkline some — mesmo
-                # comportamento do pivot.
-                if sku_set_for_spark:
-                    sku_set_for_spark = sku_set_for_spark & sku_by_btu
-                else:
-                    sku_set_for_spark = sku_by_btu
-            except (ValueError, KeyError):
-                pass
     df_spark = _query_sparkline_7d(
         spark_start,
         end_date,
         tuple(sorted(sel_brands or [])),
         tuple(sorted(sku_set_for_spark)) if sku_set_for_spark else (),
+        tuple(sorted(sel_btu or [])),
     )
     spark_by_brand: dict[str, list[float]] = {}
     nan = float("nan")
@@ -8206,15 +8235,85 @@ def page_daily_vision() -> None:
             f"🏆 {display_pivot.loc[champion_idx, 'Marca']}"
         )
 
+    # ── Delta vs ontem por (linha do pivot × marketplace) ────────────────
+    # Reaproveita `df_window` (que cobre [start_date - 1, end_date]) para
+    # calcular o preço-mínimo do dia ANTERIOR nas mesmas dimensões do
+    # pivot atual. O delta vira parte do label da célula (ex.:
+    # ``"R$ 1.738,17  ▼ R$ 41"``). Quando não há dado de ontem para
+    # comparar, a célula sai só com o preço atual (sem seta).
+    #
+    # IMPORTANTE: o "ontem" é POR LINHA — `row.Data - 1 dia`, NÃO um
+    # `prev_day` fixo. Em ranges com múltiplos dias o pivot tem linhas
+    # de várias datas e cada uma compara com seu próprio dia anterior.
+    join_cols = [
+        c for c in ["Source", "Turno", "Marca", "Capacidade", "SKU"]
+        if c in pivot.columns
+    ]
+    _display_to_raw = {
+        "Source":      "source_label",
+        "Turno":       "periodo",
+        "Marca":       "marca",
+        "Capacidade":  "capacidade",
+        "SKU":         "sku_disp",
+    }
+    delta_matrix = pd.DataFrame(
+        index=pivot.index, columns=_DAILY_VISION_PLATFORMS, dtype=float,
+    )
+    if not df_window.empty and join_cols:
+        raw_key_cols = [_display_to_raw[c] for c in join_cols]
+        # Agrega a janela inteira por (data, dims, plataforma) → min(preco).
+        # Mantemos a data na chave para permitir lookup row-a-row do dia
+        # anterior à própria data de cada linha do pivot.
+        window_agg = (
+            df_window.groupby(
+                ["data"] + raw_key_cols + ["plataforma"], dropna=False,
+            )["preco"]
+            .min()
+            .unstack("plataforma")
+            .reset_index()
+        )
+        for plat in _DAILY_VISION_PLATFORMS:
+            if plat not in window_agg.columns:
+                window_agg[plat] = pd.NA
+        window_agg["data"] = pd.to_datetime(
+            window_agg["data"], errors="coerce",
+        ).dt.date
+        window_agg = window_agg.rename(
+            columns={"data": "Data",
+                     **dict(zip(raw_key_cols, join_cols))}
+        )
+        # `pivot_prev` carrega `Data = row.Data - 1 dia` para fazer o
+        # merge bater com o dia anterior de CADA linha do pivot.
+        pivot_prev = pivot[["Data"] + join_cols].copy()
+        pivot_prev["_pos"] = pivot_prev.index
+        pivot_prev["Data"] = (
+            pd.to_datetime(pivot_prev["Data"], errors="coerce").dt.date
+            - timedelta(days=1)
+        )
+        merged = pivot_prev.merge(
+            window_agg[["Data"] + join_cols + _DAILY_VISION_PLATFORMS],
+            on=["Data"] + join_cols, how="left",
+        ).set_index("_pos")
+        for plat in _DAILY_VISION_PLATFORMS:
+            curr = pd.to_numeric(pivot[plat], errors="coerce")
+            prev = pd.to_numeric(merged[plat], errors="coerce").reindex(
+                pivot.index
+            )
+            delta_matrix[plat] = curr - prev
+
     # Pré-formata MPs e Gap em BRL ANTES de virarem colunas exibidas.
     # Motivo: `st.dataframe` ignora `Styler.format()` em colunas numéricas
     # — os valores chegavam ao frontend como `1738.170000`. Convertendo
     # pra string aqui ganhamos o formato BR correto; o styler de winner
     # passa a parsear via `_parse_brl` para identificar o piso por linha.
+    # A célula carrega preço + delta inline (ex.: "R$ 1.738,17  ▼ R$ 41").
     for plat in _DAILY_VISION_PLATFORMS:
-        display_pivot[plat] = pd.to_numeric(
-            display_pivot[plat], errors="coerce",
-        ).map(_fmt_brl)
+        prices = pd.to_numeric(display_pivot[plat], errors="coerce")
+        deltas = delta_matrix[plat].reindex(prices.index)
+        display_pivot[plat] = [
+            _fmt_price_with_delta(prices.iat[i], deltas.iat[i])
+            for i in range(len(prices))
+        ]
     display_pivot["Gap 1º→2º"] = pd.to_numeric(
         display_pivot["Gap 1º→2º"], errors="coerce",
     ).map(_fmt_brl)
