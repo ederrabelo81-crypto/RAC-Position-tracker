@@ -7591,31 +7591,6 @@ _BRAND_COLORS: dict[str, str] = {
     "Britania":        "#be123c",
 }
 
-# Emoji por marca — prefixado ao nome da marca p/ dar identidade visual
-# na célula. Mesma motivação do `_MP_EMOJI`: `st.dataframe` não respeita
-# Styler.format e ignora background-color via .apply em texto, mas renderiza
-# emoji "as-is". Cores escolhidas pra aproximar a paleta da marca.
-_BRAND_EMOJI: dict[str, str] = {
-    "Agratto":         "🟥",
-    "Electrolux":      "🟦",
-    "Elgin":           "🟨",
-    "Gree":            "🟩",
-    "LG":              "🟪",
-    "Midea":           "🟦",
-    "Philco":          "🟧",
-    "Samsung":         "⬛",
-    "TCL":             "🟦",
-    "Springer Midea":  "🟦",
-    "Consul":          "🟦",
-    "Komeco":          "🟪",
-    "Carrier":         "🟦",
-    "Daikin":          "🟦",
-    "Fujitsu":         "🟥",
-    "Britânia":        "🟥",
-    "Britania":        "🟥",
-}
-
-
 def _brand_color(brand: str | None) -> str:
     """Cor primária da marca (fallback cinza neutro)."""
     if not brand:
@@ -7626,11 +7601,60 @@ def _brand_color(brand: str | None) -> str:
     return _BRAND_COLORS.get(norm, "#64748b")
 
 
-def _brand_emoji(brand: str | None) -> str:
-    """Emoji-chip da marca (fallback círculo branco neutro)."""
+# Códigos curtos de marca p/ o chip (look do mockup): texto fica
+# "AG  Agratto" dentro de uma célula tonalizada na cor da marca.
+_BRAND_INITIALS: dict[str, str] = {
+    "Agratto":         "AG",
+    "Electrolux":      "EL",
+    "Elgin":           "EG",
+    "Gree":            "GR",
+    "LG":              "LG",
+    "Midea":           "MD",
+    "Philco":          "PH",
+    "Samsung":         "SS",
+    "TCL":             "TC",
+    "Springer Midea":  "SM",
+    "Consul":          "CS",
+    "Komeco":          "KM",
+    "Carrier":         "CR",
+    "Daikin":          "DK",
+    "Fujitsu":         "FJ",
+    "Britânia":        "BR",
+    "Britania":        "BR",
+}
+
+
+def _brand_initials(brand: str | None) -> str:
+    """Código de 2 letras p/ o chip da marca (fallback = 2 primeiras letras)."""
     if not brand:
-        return "⚪"
-    return _BRAND_EMOJI.get(str(brand).strip(), "⚪")
+        return "—"
+    norm = str(brand).strip()
+    if norm in _BRAND_INITIALS:
+        return _BRAND_INITIALS[norm]
+    # Marca não mapeada — usa as 2 primeiras letras uppercase como aproximação.
+    return norm[:2].upper() if norm else "—"
+
+
+def _hex_tint(hex_color: str, ratio: float = 0.88) -> str:
+    """Mistura cor hex com branco. `ratio=0` → cor pura, `1` → branco puro.
+
+    Usado pra gerar a versão "tonalizada" do chip da marca: fundo claro
+    derivado da cor primária mantém a identidade visual sem comprometer a
+    leitura do texto. ratio=0.88 dá ~12% da cor com 88% branco —
+    equivalente a um Tailwind `-100` (ex.: red-600 → red-100).
+    """
+    if not hex_color or not hex_color.startswith("#") or len(hex_color) != 7:
+        return "#f1f5f9"  # cinza-200 neutro
+    try:
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+    except ValueError:
+        return "#f1f5f9"
+    r2 = int(round(r + (255 - r) * ratio))
+    g2 = int(round(g + (255 - g) * ratio))
+    b2 = int(round(b + (255 - b) * ratio))
+    return f"#{r2:02x}{g2:02x}{b2:02x}"
 
 
 def _fmt_brl(v) -> str:
@@ -8072,7 +8096,8 @@ def page_daily_vision() -> None:
         tuple(sorted(sel_brands or [])),
         tuple(sorted(sku_set_for_spark)) if sku_set_for_spark else (),
     )
-    spark_by_brand: dict[str, list[float | None]] = {}
+    spark_by_brand: dict[str, list[float]] = {}
+    nan = float("nan")
     if not df_spark.empty:
         df_spark = df_spark.copy()
         df_spark["_d"] = pd.to_datetime(
@@ -8086,13 +8111,19 @@ def page_daily_vision() -> None:
             by_date = dict(zip(g["_d"], g["_p"]))
             # Normaliza chave para o título-case usado em `pivot["Marca"]`
             # — pricetrack_daily publica em CAIXA ALTA ("MIDEA") e o
-            # pivot lê "Midea". Sem isso o map devolve sempre None.
+            # pivot lê "Midea". Sem isso o map devolve sempre vazio.
+            #
+            # Dias sem dado viram `NaN` (não `None`): o
+            # `st.column_config.LineChartColumn` exige array uniforme de
+            # números — Nones quebram com "value can not be interpreted
+            # as a number array". NaN é float válido e o widget pula no
+            # gráfico (deixa o traço com lacuna).
             spark_by_brand[str(brand_v).strip().title()] = [
-                float(by_date[d]) if d in by_date and pd.notna(by_date[d]) else None
+                float(by_date[d]) if d in by_date and pd.notna(by_date[d]) else nan
                 for d in window_dates
             ]
     pivot["Tendência 7d"] = pivot["Marca"].astype(str).map(
-        lambda b: spark_by_brand.get(b.strip().title(), [None] * len(window_dates))
+        lambda b: spark_by_brand.get(b.strip().title(), [nan] * len(window_dates))
     )
 
     # ── KPIs ──────────────────────────────────────────────────────────────
@@ -8163,13 +8194,12 @@ def page_daily_vision() -> None:
     # contaminar `pivot`, que continua como base limpa pro CSV.
     display_pivot = pivot.copy()
 
-    # Emoji por marca prefixa o nome ANTES de pintar a campeã com 🏆 — a
-    # campeã vira "🏆 🟦 LG", as outras "🟦 LG". `st.dataframe` não
-    # respeita Styler.apply CSS em texto p/ pintar o fundo da célula, mas
-    # renderiza emoji em qualquer caso — daí ser a forma confiável de
-    # carregar identidade visual da marca.
+    # Chip de marca = código 2-letras + nome ("AG  Agratto"). Combinado
+    # com o background tonalizado + texto na cor primária aplicados pelo
+    # `_style_brand_chip` abaixo, o efeito visual fica equivalente ao
+    # chip do mockup (sem precisar de PNG/SVG real).
     display_pivot["Marca"] = display_pivot["Marca"].astype(str).map(
-        lambda m: f"{_brand_emoji(m)} {m}"
+        lambda m: f"{_brand_initials(m)}  {m}"
     )
     if champion_idx is not None:
         display_pivot.loc[champion_idx, "Marca"] = (
@@ -8202,7 +8232,9 @@ def page_daily_vision() -> None:
                 pd.to_numeric(pivot["Gap 1º→2º"], errors="coerce").mean()
             )
         elif c == "Tendência 7d":
-            avg_row[c] = []
+            # Mesma motivação do `spark_by_brand`: lista DEVE ser de floats
+            # uniformes. Lista vazia/None faria o `LineChartColumn` errar.
+            avg_row[c] = [nan] * len(window_dates)
         elif c == "Marca":
             avg_row[c] = "📊 Média por MP"
         else:
@@ -8261,9 +8293,14 @@ def page_daily_vision() -> None:
         return styles
 
     def _style_brand_chip(col: pd.Series) -> list[str]:
-        """Borda lateral colorida por marca + destaque âmbar na campeã."""
+        """Borda lateral colorida por marca + destaque âmbar na campeã.
+
+        Consulta o nome RAW da marca em `pivot` pelo índice — evita
+        parsear a string display ("AG  Agratto") que pode mudar de
+        formato no futuro.
+        """
         out = []
-        for idx, val in col.items():
+        for idx, _val in col.items():
             if idx == avg_idx:
                 out.append(
                     "background-color:#f8fafc; color:#475569; "
@@ -8277,15 +8314,20 @@ def page_daily_vision() -> None:
                     "border-left:4px solid #f59e0b;"
                 )
                 continue
-            # Tira prefixos visuais (🏆, emoji chip) p/ achar a cor da marca.
-            raw = str(val)
-            for prefix in ("🏆 ", "🟥 ", "🟦 ", "🟨 ", "🟩 ", "🟪 ", "🟧 ", "⬛ ", "⚪ "):
-                raw = raw.replace(prefix, "")
-            raw = raw.strip()
+            # Lookup do nome RAW em `pivot` (sem prefixos visuais).
+            raw = (
+                str(pivot.iloc[idx]["Marca"]).strip()
+                if 0 <= idx < len(pivot) else ""
+            )
             color = _brand_color(raw)
+            bg = _hex_tint(color, 0.88)
+            # Chip "completo" — fundo tonalizado + texto na cor primária da
+            # marca + borda lateral grossa. Carrega a identidade visual
+            # da marca (look do mockup) mantendo o nome legível.
             out.append(
-                f"border-left:4px solid {color}; "
-                "padding-left:10px; font-weight:600;"
+                f"background-color:{bg}; color:{color}; "
+                f"border-left:5px solid {color}; "
+                "padding:4px 10px; font-weight:700;"
             )
         return out
 
@@ -8327,9 +8369,10 @@ def page_daily_vision() -> None:
 
     # column_config: sparkline 7d como mini-gráfico de linha + Data como
     # data BR. Os MPs ficam sem column_config (Styler já formata o valor).
+    # `pd.isna` cobre tanto None (legado) quanto NaN (formato atual da lista).
     spark_floats = [
         v for series in pivot["Tendência 7d"] if isinstance(series, list)
-        for v in series if v is not None
+        for v in series if not pd.isna(v)
     ]
     spark_min = min(spark_floats) if spark_floats else 0
     spark_max = max(spark_floats) if spark_floats else 1
