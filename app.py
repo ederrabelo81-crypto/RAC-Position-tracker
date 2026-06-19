@@ -7664,14 +7664,20 @@ def page_daily_vision() -> None:
     # concat (espelha a regra por (data, sku) de query_price_evolution_data,
     # acrescida da dimensão de período).
     #
-    # Janela estendida 7d termina em `end_date` e é usada (a) para o
-    # sparkline 7d por marca e (b) para o delta vs período anterior do
-    # KPI "Piso geral". Fora dessas duas vistas continuamos restritos a
-    # [start_date, end_date].
-    spark_start = start_date - timedelta(days=7)
+    # A janela de query precisa cobrir dois usos secundários, além de
+    # [start_date, end_date]: (a) os 7 dias terminados em `end_date` que
+    # alimentam o sparkline e (b) o dia imediatamente anterior a
+    # `start_date` para o delta vs ontem do KPI "Piso geral". Pegamos o
+    # mínimo dos dois para uma query só. As janelas conceituais de cada
+    # uso vivem separadas — sparkline sempre opera em 7 dias FIXOS, o
+    # delta sempre lê o dia D-1 — assim a rotulagem "7d" não escorrega
+    # quando o usuário expande o range.
+    prev_day = start_date - timedelta(days=1)
+    spark_start = end_date - timedelta(days=6)   # 7 dias inclusivos
+    query_start = min(prev_day, spark_start)
     with st.spinner("Carregando dados..."):
         df_co = query_coletas(
-            spark_start,
+            query_start,
             end_date,
             platforms=_DAILY_VISION_PLATFORMS,
             brands=sel_brands or None,
@@ -7682,7 +7688,7 @@ def page_daily_vision() -> None:
             limit=80000,
         )
         df_pt = query_pricetrack_daily(
-            spark_start,
+            query_start,
             end_date,
             platforms=_DAILY_VISION_PLATFORMS,
             brands=sel_brands or None,
@@ -7922,11 +7928,10 @@ def page_daily_vision() -> None:
     # Sparkline 7d por Marca: piso diário (min entre todos os MPs e SKUs)
     # nos 7 dias terminados em `end_date`. Mesma série vale para todas as
     # linhas da mesma Marca, independente do modo (Marca / Marca+Cap / SKU)
-    # — é um sinal de saúde da marca, não da linha.
-    window_dates = [
-        spark_start + timedelta(days=i)
-        for i in range((end_date - spark_start).days + 1)
-    ]
+    # — é um sinal de saúde da marca, não da linha. Tamanho FIXO em 7 dias
+    # — não deixe a janela do usuário esticar o sparkline (o rótulo "7d"
+    # seria mentiroso e a tendência diluiria com mais pontos).
+    window_dates = [spark_start + timedelta(days=i) for i in range(7)]
     window_data_dates = pd.to_datetime(
         df_window["data"], errors="coerce",
     ).dt.date
@@ -7950,8 +7955,8 @@ def page_daily_vision() -> None:
     # Delta vs período anterior: comparamos o piso do recorte atual com o
     # piso do mesmo recorte de FILTROS no dia anterior a `start_date`. Se
     # `start_date == end_date`, o "anterior" é o dia D-1; se for uma janela,
-    # é o dia imediatamente antes da janela.
-    prev_day = start_date - timedelta(days=1)
+    # é o dia imediatamente antes da janela (`prev_day` foi calculado na
+    # carga de dados pra dimensionar a query).
     prev_mask = window_data_dates == prev_day
     prev_min = pd.to_numeric(
         df_window.loc[prev_mask, "preco"], errors="coerce",
