@@ -7555,6 +7555,19 @@ _MP_COLORS: dict[str, tuple[str, str]] = {
     "Amazon":        ("#fef3c7", "#78350f"),  # âmbar Amazon
 }
 
+# Emoji por marketplace — prefixado ao nome da coluna p/ dar identidade
+# visual no header. CSS nth-child via Styler não rende em `st.dataframe`
+# (Streamlit reescreve a tabela), então emoji no rótulo é o caminho que
+# de fato pinta o header sem perder sort/seleção.
+_MP_EMOJI: dict[str, str] = {
+    "Magalu":        "🟦",
+    "Casas Bahia":   "🟦",
+    "Shopee":        "🟧",
+    "Leroy Merlin":  "🟩",
+    "Mercado Livre": "🟨",
+    "Amazon":        "🟧",
+}
+
 # Cor primária por marca para o chip de Marca (borda lateral colorida).
 # Cores aproximam o branding sem precisar de PNG real — substitua por
 # `assets/logos/marcas/{slug}.png` numa 2ª iteração se quiser logo de verdade.
@@ -7578,6 +7591,30 @@ _BRAND_COLORS: dict[str, str] = {
     "Britania":        "#be123c",
 }
 
+# Emoji por marca — prefixado ao nome da marca p/ dar identidade visual
+# na célula. Mesma motivação do `_MP_EMOJI`: `st.dataframe` não respeita
+# Styler.format e ignora background-color via .apply em texto, mas renderiza
+# emoji "as-is". Cores escolhidas pra aproximar a paleta da marca.
+_BRAND_EMOJI: dict[str, str] = {
+    "Agratto":         "🟥",
+    "Electrolux":      "🟦",
+    "Elgin":           "🟨",
+    "Gree":            "🟩",
+    "LG":              "🟪",
+    "Midea":           "🟦",
+    "Philco":          "🟧",
+    "Samsung":         "⬛",
+    "TCL":             "🟦",
+    "Springer Midea":  "🟦",
+    "Consul":          "🟦",
+    "Komeco":          "🟪",
+    "Carrier":         "🟦",
+    "Daikin":          "🟦",
+    "Fujitsu":         "🟥",
+    "Britânia":        "🟥",
+    "Britania":        "🟥",
+}
+
 
 def _brand_color(brand: str | None) -> str:
     """Cor primária da marca (fallback cinza neutro)."""
@@ -7587,6 +7624,77 @@ def _brand_color(brand: str | None) -> str:
     # o dicionário enxuto (uma entrada por canônico).
     norm = str(brand).strip()
     return _BRAND_COLORS.get(norm, "#64748b")
+
+
+def _brand_emoji(brand: str | None) -> str:
+    """Emoji-chip da marca (fallback círculo branco neutro)."""
+    if not brand:
+        return "⚪"
+    return _BRAND_EMOJI.get(str(brand).strip(), "⚪")
+
+
+def _fmt_brl(v) -> str:
+    """Formata número como moeda BR (R$ 1.738,17). NaN/None → travessão."""
+    if v is None or pd.isna(v):
+        return "—"
+    return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _parse_brl(s) -> float | None:
+    """Reverte `_fmt_brl` para float (usado pelo styler de winner)."""
+    if isinstance(s, (int, float)):
+        return None if pd.isna(s) else float(s)
+    if not isinstance(s, str) or s.strip() in ("", "—"):
+        return None
+    cleaned = s.replace("R$", "").replace(".", "").replace(",", ".").strip()
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _query_sparkline_7d(
+    spark_start: date,
+    end_date: date,
+    brands_key: tuple[str, ...],
+    sku_set_key: tuple[str, ...],
+) -> pd.DataFrame:
+    """Query enxuta p/ alimentar o sparkline 7d do Daily Vision.
+
+    Roda separada da query principal pra evitar `statement_timeout` no
+    PostgREST: pega só 3 colunas de `pricetrack_daily` (brand,
+    collection_date, min_price) restrito por SKU se o usuário filtrou BTU
+    (que vira sku_set). Sem SKU filtra só por brand — ainda é leve
+    porque o índice por brand+date cobre. Cache de 15 min protege
+    contra repintura quando o usuário só muda filtros visuais.
+
+    Falha silenciosa: timeout/error → DataFrame vazio, sparkline some
+    da tabela sem warning vermelho.
+    """
+    client = _get_supabase()
+    if client is None:
+        return pd.DataFrame()
+    try:
+        q = (
+            client.table("pricetrack_daily")
+            .select("brand,collection_date,min_price")
+            .gte("collection_date", str(spark_start))
+            .lte("collection_date", str(end_date))
+        )
+        if brands_key:
+            q = q.in_("brand", _expand_brands(list(brands_key)))
+        if sku_set_key:
+            q = q.in_("sku", list(sku_set_key))
+        resp = q.limit(20000).execute()
+        if not resp.data:
+            return pd.DataFrame()
+        return pd.DataFrame(resp.data)
+    except Exception:
+        # Falha silenciosa: sparkline é feature secundária. Sem ele a
+        # coluna "Tendência 7d" fica vazia mas o resto da página segue
+        # funcionando normalmente.
+        return pd.DataFrame()
 
 
 def page_daily_vision() -> None:
@@ -7664,20 +7772,16 @@ def page_daily_vision() -> None:
     # concat (espelha a regra por (data, sku) de query_price_evolution_data,
     # acrescida da dimensão de período).
     #
-    # A janela de query precisa cobrir dois usos secundários, além de
-    # [start_date, end_date]: (a) os 7 dias terminados em `end_date` que
-    # alimentam o sparkline e (b) o dia imediatamente anterior a
-    # `start_date` para o delta vs ontem do KPI "Piso geral". Pegamos o
-    # mínimo dos dois para uma query só. As janelas conceituais de cada
-    # uso vivem separadas — sparkline sempre opera em 7 dias FIXOS, o
-    # delta sempre lê o dia D-1 — assim a rotulagem "7d" não escorrega
-    # quando o usuário expande o range.
+    # Janela de query principal = D-1 do start_date (precisamos do dia
+    # anterior pro delta KPI) até end_date. O sparkline 7d roda numa
+    # query SEPARADA enxuta (`_query_sparkline_7d`) p/ evitar o
+    # `statement_timeout` que estoura quando se estende a janela cheia
+    # cobrindo 7 dias × ilike(title, %BTU%).
     prev_day = start_date - timedelta(days=1)
     spark_start = end_date - timedelta(days=6)   # 7 dias inclusivos
-    query_start = min(prev_day, spark_start)
     with st.spinner("Carregando dados..."):
         df_co = query_coletas(
-            query_start,
+            prev_day,
             end_date,
             platforms=_DAILY_VISION_PLATFORMS,
             brands=sel_brands or None,
@@ -7688,7 +7792,7 @@ def page_daily_vision() -> None:
             limit=80000,
         )
         df_pt = query_pricetrack_daily(
-            query_start,
+            prev_day,
             end_date,
             platforms=_DAILY_VISION_PLATFORMS,
             brands=sel_brands or None,
@@ -7927,36 +8031,78 @@ def page_daily_vision() -> None:
 
     # Sparkline 7d por Marca: piso diário (min entre todos os MPs e SKUs)
     # nos 7 dias terminados em `end_date`. Mesma série vale para todas as
-    # linhas da mesma Marca, independente do modo (Marca / Marca+Cap / SKU)
-    # — é um sinal de saúde da marca, não da linha. Tamanho FIXO em 7 dias
-    # — não deixe a janela do usuário esticar o sparkline (o rótulo "7d"
-    # seria mentiroso e a tendência diluiria com mais pontos).
+    # linhas da mesma Marca, independente do modo. Roda numa query
+    # SEPARADA enxuta (3 colunas, cache 15min) p/ não estourar o
+    # `statement_timeout` que afetava a query principal de 7 dias.
+    #
+    # Filtro de BTU é traduzido para SKU set via catálogo — sem isso o
+    # sparkline ignoraria o BTU pedido (e o título.ilike sobre 7 dias
+    # voltaria a estourar timeout). União com sku_set canônico cobre
+    # cenários "marca + BTU" e "marca + SKU explícito" sem conflito.
     window_dates = [spark_start + timedelta(days=i) for i in range(7)]
-    window_data_dates = pd.to_datetime(
-        df_window["data"], errors="coerce",
-    ).dt.date
-    df_window_indexed = df_window.assign(_d=window_data_dates)
-    brand_day_min = (
-        df_window_indexed.groupby(["marca", "_d"])["preco"]
-        .min().reset_index()
+    sku_set_for_spark = _collect_pt_skus(
+        products=sel_skus or None,
+        familias_resolvidas=sel_familias or None,
+        skus_resolvidos=sel_skus_resolvidos or None,
+    )
+    if sel_btu:
+        cat_for_btu = get_catalogo()
+        if (not cat_for_btu.empty
+                and {"sku", "capacidade_btu"}.issubset(cat_for_btu.columns)):
+            try:
+                btu_ints = [int(b) for b in sel_btu]
+                sku_by_btu = set(
+                    cat_for_btu.loc[
+                        cat_for_btu["capacidade_btu"].isin(btu_ints), "sku"
+                    ].astype(str)
+                )
+                # Intersecção espelha o que a query principal faz (SKU AND
+                # BTU). Se o usuário escolheu SKU+BTU incompatíveis, o
+                # resultado é vazio e o sparkline some — mesmo
+                # comportamento do pivot.
+                if sku_set_for_spark:
+                    sku_set_for_spark = sku_set_for_spark & sku_by_btu
+                else:
+                    sku_set_for_spark = sku_by_btu
+            except (ValueError, KeyError):
+                pass
+    df_spark = _query_sparkline_7d(
+        spark_start,
+        end_date,
+        tuple(sorted(sel_brands or [])),
+        tuple(sorted(sku_set_for_spark)) if sku_set_for_spark else (),
     )
     spark_by_brand: dict[str, list[float | None]] = {}
-    for marca_v, g in brand_day_min.groupby("marca"):
-        by_date = dict(zip(g["_d"], g["preco"]))
-        spark_by_brand[str(marca_v)] = [
-            float(by_date[d]) if d in by_date and pd.notna(by_date[d]) else None
-            for d in window_dates
-        ]
+    if not df_spark.empty:
+        df_spark = df_spark.copy()
+        df_spark["_d"] = pd.to_datetime(
+            df_spark["collection_date"], errors="coerce",
+        ).dt.date
+        df_spark["_p"] = pd.to_numeric(df_spark["min_price"], errors="coerce")
+        brand_day_min = (
+            df_spark.groupby(["brand", "_d"])["_p"].min().reset_index()
+        )
+        for brand_v, g in brand_day_min.groupby("brand"):
+            by_date = dict(zip(g["_d"], g["_p"]))
+            # Normaliza chave para o título-case usado em `pivot["Marca"]`
+            # — pricetrack_daily publica em CAIXA ALTA ("MIDEA") e o
+            # pivot lê "Midea". Sem isso o map devolve sempre None.
+            spark_by_brand[str(brand_v).strip().title()] = [
+                float(by_date[d]) if d in by_date and pd.notna(by_date[d]) else None
+                for d in window_dates
+            ]
     pivot["Tendência 7d"] = pivot["Marca"].astype(str).map(
-        lambda b: spark_by_brand.get(b, [None] * len(window_dates))
+        lambda b: spark_by_brand.get(b.strip().title(), [None] * len(window_dates))
     )
 
     # ── KPIs ──────────────────────────────────────────────────────────────
     # Delta vs período anterior: comparamos o piso do recorte atual com o
     # piso do mesmo recorte de FILTROS no dia anterior a `start_date`. Se
-    # `start_date == end_date`, o "anterior" é o dia D-1; se for uma janela,
-    # é o dia imediatamente antes da janela (`prev_day` foi calculado na
-    # carga de dados pra dimensionar a query).
+    # `start_date == end_date`, o "anterior" é o dia D-1. `df_window`
+    # cobre [D-1, end_date] depois do split feito na carga.
+    window_data_dates = pd.to_datetime(
+        df_window["data"], errors="coerce",
+    ).dt.date
     prev_mask = window_data_dates == prev_day
     prev_min = pd.to_numeric(
         df_window.loc[prev_mask, "preco"], errors="coerce",
@@ -8012,14 +8158,36 @@ def page_daily_vision() -> None:
     # 5) Células sem oferta ficam discretas (cinza claro, itálico).
     # 6) Linha "Média" no rodapé com top border destacado.
 
-    # Cópia de exibição: aqui aplicamos rótulos visuais (🏆 na campeã,
-    # linha "📊 Média" no rodapé) sem contaminar `pivot`, que continua
-    # como base limpa pro CSV.
+    # Cópia de exibição: aqui aplicamos rótulos visuais (🏆 + emoji de
+    # marca, linha "📊 Média" no rodapé, MPs pré-formatados em BR) sem
+    # contaminar `pivot`, que continua como base limpa pro CSV.
     display_pivot = pivot.copy()
+
+    # Emoji por marca prefixa o nome ANTES de pintar a campeã com 🏆 — a
+    # campeã vira "🏆 🟦 LG", as outras "🟦 LG". `st.dataframe` não
+    # respeita Styler.apply CSS em texto p/ pintar o fundo da célula, mas
+    # renderiza emoji em qualquer caso — daí ser a forma confiável de
+    # carregar identidade visual da marca.
+    display_pivot["Marca"] = display_pivot["Marca"].astype(str).map(
+        lambda m: f"{_brand_emoji(m)} {m}"
+    )
     if champion_idx is not None:
         display_pivot.loc[champion_idx, "Marca"] = (
             f"🏆 {display_pivot.loc[champion_idx, 'Marca']}"
         )
+
+    # Pré-formata MPs e Gap em BRL ANTES de virarem colunas exibidas.
+    # Motivo: `st.dataframe` ignora `Styler.format()` em colunas numéricas
+    # — os valores chegavam ao frontend como `1738.170000`. Convertendo
+    # pra string aqui ganhamos o formato BR correto; o styler de winner
+    # passa a parsear via `_parse_brl` para identificar o piso por linha.
+    for plat in _DAILY_VISION_PLATFORMS:
+        display_pivot[plat] = pd.to_numeric(
+            display_pivot[plat], errors="coerce",
+        ).map(_fmt_brl)
+    display_pivot["Gap 1º→2º"] = pd.to_numeric(
+        display_pivot["Gap 1º→2º"], errors="coerce",
+    ).map(_fmt_brl)
 
     # Linha "Média" — anexada só ao display_pivot. Usa um índice inteiro
     # único (max + 1) p/ Styler funcionar com .loc, e fica fora do CSV
@@ -8028,9 +8196,11 @@ def page_daily_vision() -> None:
     avg_row: dict = {}
     for c in display_pivot.columns:
         if c in _DAILY_VISION_PLATFORMS:
-            avg_row[c] = price_matrix[c].mean()
+            avg_row[c] = _fmt_brl(price_matrix[c].mean())
         elif c == "Gap 1º→2º":
-            avg_row[c] = pd.to_numeric(pivot["Gap 1º→2º"], errors="coerce").mean()
+            avg_row[c] = _fmt_brl(
+                pd.to_numeric(pivot["Gap 1º→2º"], errors="coerce").mean()
+            )
         elif c == "Tendência 7d":
             avg_row[c] = []
         elif c == "Marca":
@@ -8039,15 +8209,30 @@ def page_daily_vision() -> None:
             avg_row[c] = ""
     display_pivot.loc[avg_idx] = avg_row
 
+    # Rename: emoji no header de cada MP. Mantém os 6 nomes consecutivos
+    # entre "Tendência 7d" e "Gap 1º→2º" — o styler abaixo continua
+    # passando os nomes RENOMEADOS no subset.
+    mp_renamed = {
+        plat: f"{_MP_EMOJI.get(plat, '')} {plat}".strip()
+        for plat in _DAILY_VISION_PLATFORMS
+    }
+    mp_cols_renamed = [mp_renamed[p] for p in _DAILY_VISION_PLATFORMS]
+    display_pivot = display_pivot.rename(columns=mp_renamed)
+
     # Ordem de colunas com sparkline ANTES dos MPs (contexto à esquerda)
     # e gap DEPOIS (insight competitivo à direita).
     display_cols = (
-        base_cols + ["Tendência 7d"] + _DAILY_VISION_PLATFORMS + ["Gap 1º→2º"]
+        base_cols + ["Tendência 7d"] + mp_cols_renamed + ["Gap 1º→2º"]
     )
     display_pivot = display_pivot[display_cols]
 
     def _style_row_prices(row: pd.Series) -> list[str]:
-        """Pinta a célula vencedora e os concorrentes próximos por linha."""
+        """Pinta a célula vencedora e os concorrentes próximos por linha.
+
+        Os valores chegam como strings BR ("R$ 1.738,17") porque o
+        Streamlit não respeita Styler.format() em st.dataframe. Parseamos
+        via `_parse_brl` p/ recuperar o numérico e calcular o vencedor.
+        """
         # A linha "Média" não tem vencedor — sai cinza neutro p/ não
         # competir com as linhas reais por atenção.
         if row.name == avg_idx:
@@ -8055,35 +8240,28 @@ def page_daily_vision() -> None:
                 "background-color:#f8fafc; color:#475569; "
                 "font-weight:600; border-top:2px solid #cbd5e1;"
             ] * len(row)
-        vals = pd.to_numeric(row, errors="coerce")
-        if vals.notna().sum() == 0:
+        nums = [_parse_brl(v) for v in row]
+        valid = [n for n in nums if n is not None]
+        if not valid:
             return ["color:#94a3b8; font-style:italic;"] * len(row)
-        rmin = vals.min()
+        rmin = min(valid)
         styles = []
-        for v in vals:
-            if pd.isna(v):
+        for v in nums:
+            if v is None:
                 styles.append("color:#cbd5e1; font-style:italic;")
             elif v == rmin:
-                # Vencedor: verde esmeralda, negrito, borda lateral
                 styles.append(
                     "background-color:#d1fae5; color:#065f46; "
                     "font-weight:700; border-left:3px solid #10b981;"
                 )
             elif rmin > 0 and (v - rmin) / rmin <= 0.02:
-                # Dentro de 2 % do piso → "match" — verde água suave
                 styles.append("background-color:#ecfdf5; color:#047857;")
             else:
                 styles.append("")
         return styles
 
     def _style_brand_chip(col: pd.Series) -> list[str]:
-        """Borda lateral colorida por marca + destaque âmbar na campeã.
-
-        O chip de cor "carrega" a identidade visual da marca sem precisar
-        de PNG/SVG real. Numa 2ª iteração dá pra plugar logos reais em
-        `assets/logos/marcas/{slug}.png` via `ImageColumn` numa coluna
-        nova (sem perder o chip aqui — eles convivem).
-        """
+        """Borda lateral colorida por marca + destaque âmbar na campeã."""
         out = []
         for idx, val in col.items():
             if idx == avg_idx:
@@ -8093,15 +8271,17 @@ def page_daily_vision() -> None:
                 )
                 continue
             if idx == champion_idx:
-                # Campeã: gradient âmbar (sobrescreve o chip por hierarquia)
                 out.append(
                     "background: linear-gradient(90deg, #fef3c7 0%, #fde68a 100%); "
                     "color:#78350f; font-weight:700; "
                     "border-left:4px solid #f59e0b;"
                 )
                 continue
-            # Chip por marca: extrai o nome (sem 🏆) p/ achar a cor.
-            raw = str(val).replace("🏆 ", "").strip()
+            # Tira prefixos visuais (🏆, emoji chip) p/ achar a cor da marca.
+            raw = str(val)
+            for prefix in ("🏆 ", "🟥 ", "🟦 ", "🟨 ", "🟩 ", "🟪 ", "🟧 ", "⬛ ", "⚪ "):
+                raw = raw.replace(prefix, "")
+            raw = raw.strip()
             color = _brand_color(raw)
             out.append(
                 f"border-left:4px solid {color}; "
@@ -8110,8 +8290,7 @@ def page_daily_vision() -> None:
         return out
 
     def _style_avg_dim(col: pd.Series) -> list[str]:
-        """Pinta as colunas de dimensão (Data/Source/Turno/Cap/SKU/Gap) na
-        linha de média p/ ficarem visualmente integradas à faixa cinza."""
+        """Faixa cinza nas dimensões não-Marca da linha Média."""
         out = [""] * len(col)
         if avg_idx in col.index:
             pos = list(col.index).index(avg_idx)
@@ -8121,39 +8300,17 @@ def page_daily_vision() -> None:
             )
         return out
 
-    fmt_price = lambda v: (
-        "—" if pd.isna(v)
-        else f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    )
-    fmt_gap = lambda v: (
-        "—" if pd.isna(v)
-        else f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    )
-
-    # Cores de header por marketplace: `nth-child` no thead pinta o <th>
-    # do MP correspondente. As posições começam em 1 e dependem da
-    # ordem de `display_cols`: base_cols + 1 (Tendência) + N (MPs) + 1 (Gap).
-    mp_header_styles = []
-    base_offset = len(base_cols) + 1  # +1 = "Tendência 7d"
-    for i, mp in enumerate(_DAILY_VISION_PLATFORMS, start=1):
-        bg, ink = _MP_COLORS.get(mp, ("#0f172a", "#f8fafc"))
-        mp_header_styles.append({
-            "selector": f"thead th:nth-child({base_offset + i})",
-            "props": f"background-color:{bg}; color:{ink}; "
-                     f"border-bottom:3px solid {ink};",
-        })
-
-    # Subset de dimensões não-Marca pra aplicar o estilo da linha Média
-    dim_subset = [c for c in display_cols
-                  if c not in (_DAILY_VISION_PLATFORMS + ["Marca", "Tendência 7d"])]
+    # Subset de dimensões não-Marca pra aplicar o estilo da linha Média.
+    dim_subset = [
+        c for c in display_cols
+        if c not in (mp_cols_renamed + ["Marca", "Tendência 7d"])
+    ]
 
     styler = (
         display_pivot.style
-        .apply(_style_row_prices, axis=1, subset=_DAILY_VISION_PLATFORMS)
+        .apply(_style_row_prices, axis=1, subset=mp_cols_renamed)
         .apply(_style_brand_chip, axis=0, subset=["Marca"])
         .apply(_style_avg_dim, axis=0, subset=dim_subset)
-        .format({plat: fmt_price for plat in _DAILY_VISION_PLATFORMS})
-        .format({"Gap 1º→2º": fmt_gap})
         .set_table_styles([
             {"selector": "thead th",
              "props": "background-color:#0f172a; color:#f8fafc; "
@@ -8164,7 +8321,7 @@ def page_daily_vision() -> None:
              "props": "padding:0.55rem 0.75rem; font-size:0.88rem;"},
             {"selector": "tbody tr:hover",
              "props": "background-color:#f1f5f9;"},
-        ] + mp_header_styles)
+        ])
         .hide(axis="index")
     )
 
@@ -8205,9 +8362,9 @@ def page_daily_vision() -> None:
     # Legenda das marcações.
     st.caption(
         "🏆 marca com o menor preço do recorte · "
-        "🟩 marketplace vencedor da linha · "
-        "🟢 concorrente dentro de 2 % do piso · "
-        "🟫 borda lateral colorida = cor primária da marca · "
+        "🟦🟧🟩… emoji = identidade visual da marca/marketplace · "
+        "fundo verde forte = MP vencedor da linha · "
+        "fundo verde claro = concorrente dentro de 2% do piso · "
         "— sem oferta · "
         "📊 média por MP no rodapé · "
         "👆 clique numa linha para abrir os detalhes."
