@@ -7550,7 +7550,11 @@ def page_daily_vision() -> None:
         "Menor preço por marketplace, consolidado por marca, capacidade e SKU. "
         "**PriceTrack** alimenta **Manhã** (08–12h) e **Tarde** (18–22h) — "
         "recorte por hora de coleta — além da linha **Diário** (dia inteiro). "
-        "As coletas Python entram como **fallback** onde o PriceTrack não cobre."
+        "Nos modos **Marca** e **Marca + Capacidade**, o PriceTrack é "
+        "autoridade: existindo qualquer linha PT no recorte (data, marca, "
+        "capacidade, período), as coletas do mesmo recorte são suprimidas. "
+        "No modo **SKU (detalhado)** as coletas continuam preenchendo "
+        "(data, SKU, período, plataforma) onde o PriceTrack não cobre."
     )
 
     with st.sidebar:
@@ -7736,6 +7740,40 @@ def page_daily_vision() -> None:
         return "—"
 
     df["capacidade"] = df.apply(_resolve_btu, axis=1)
+
+    # Precedência ampliada para vistas agrupadas: quando o pivot é por Marca
+    # ou Marca + Capacidade (sem SKU), o PriceTrack manda no recorte inteiro.
+    # Para cada (data, marca, [capacidade], período) coberto por qualquer
+    # linha PT, descartamos todas as coletas do mesmo recorte — inclusive
+    # nas plataformas que o PT não cobriu (trade-off escolhido: clareza
+    # vence completude, evita pintar duas linhas "Agratto Manhã" no pivot).
+    # Modo SKU (detalhado) mantém a regra fina por (data, sku, período,
+    # plataforma) aplicada antes do concat — coletas continuam cobrindo
+    # SKUs/plataformas que o PriceTrack não alcança.
+    if sel_grupo in ("Marca", "Marca + Capacidade") and not df.empty:
+        key_cols = ["data", "marca", "periodo"]
+        if sel_grupo == "Marca + Capacidade":
+            key_cols.append("capacidade")
+        pt_rows = df[df["source"] == "pricetrack"]
+        if not pt_rows.empty:
+            pt_keys = {
+                tuple(r) for r in
+                pt_rows[key_cols].astype(str)
+                .itertuples(index=False, name=None)
+            }
+            df_keys = (
+                tuple(r) for r in
+                df[key_cols].astype(str)
+                .itertuples(index=False, name=None)
+            )
+            keep_mask = [
+                not (src == "coletas" and k in pt_keys)
+                for src, k in zip(df["source"], df_keys)
+            ]
+            df = df[keep_mask]
+            if df.empty:
+                st.warning("Sem dados após aplicar precedência PriceTrack.")
+                return
 
     # Rótulo de origem da linha (PriceTrack vs Coletas Python).
     df["source_label"] = df["source"].map({
