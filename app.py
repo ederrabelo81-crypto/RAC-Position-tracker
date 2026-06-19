@@ -7591,31 +7591,6 @@ _BRAND_COLORS: dict[str, str] = {
     "Britania":        "#be123c",
 }
 
-# Emoji por marca — prefixado ao nome da marca p/ dar identidade visual
-# na célula. Mesma motivação do `_MP_EMOJI`: `st.dataframe` não respeita
-# Styler.format e ignora background-color via .apply em texto, mas renderiza
-# emoji "as-is". Cores escolhidas pra aproximar a paleta da marca.
-_BRAND_EMOJI: dict[str, str] = {
-    "Agratto":         "🟥",
-    "Electrolux":      "🟦",
-    "Elgin":           "🟨",
-    "Gree":            "🟩",
-    "LG":              "🟪",
-    "Midea":           "🟦",
-    "Philco":          "🟧",
-    "Samsung":         "⬛",
-    "TCL":             "🟦",
-    "Springer Midea":  "🟦",
-    "Consul":          "🟦",
-    "Komeco":          "🟪",
-    "Carrier":         "🟦",
-    "Daikin":          "🟦",
-    "Fujitsu":         "🟥",
-    "Britânia":        "🟥",
-    "Britania":        "🟥",
-}
-
-
 def _brand_color(brand: str | None) -> str:
     """Cor primária da marca (fallback cinza neutro)."""
     if not brand:
@@ -7624,13 +7599,6 @@ def _brand_color(brand: str | None) -> str:
     # o dicionário enxuto (uma entrada por canônico).
     norm = str(brand).strip()
     return _BRAND_COLORS.get(norm, "#64748b")
-
-
-def _brand_emoji(brand: str | None) -> str:
-    """Emoji-chip da marca (fallback círculo branco neutro)."""
-    if not brand:
-        return "⚪"
-    return _BRAND_EMOJI.get(str(brand).strip(), "⚪")
 
 
 # Códigos curtos de marca p/ o chip (look do mockup): texto fica
