@@ -7543,6 +7543,51 @@ _TURNO_TO_PERIODO: dict[str, str] = {
     "Tarde":      "Tarde",
 }
 
+# Cores de marca por marketplace para header em chip. Usadas pelo Styler
+# (set_table_styles) para pintar cada coluna de MP com a cor primária dele.
+_MP_COLORS: dict[str, tuple[str, str]] = {
+    # (background, ink)
+    "Magalu":        ("#dbeafe", "#1e3a8a"),  # azul Magalu
+    "Casas Bahia":   ("#dbeafe", "#1e3a8a"),  # azul CB
+    "Shopee":        ("#ffedd5", "#9a3412"),  # laranja Shopee
+    "Leroy Merlin":  ("#dcfce7", "#14532d"),  # verde Leroy
+    "Mercado Livre": ("#fef9c3", "#854d0e"),  # amarelo ML
+    "Amazon":        ("#fef3c7", "#78350f"),  # âmbar Amazon
+}
+
+# Cor primária por marca para o chip de Marca (borda lateral colorida).
+# Cores aproximam o branding sem precisar de PNG real — substitua por
+# `assets/logos/marcas/{slug}.png` numa 2ª iteração se quiser logo de verdade.
+_BRAND_COLORS: dict[str, str] = {
+    "Agratto":         "#dc2626",
+    "Electrolux":      "#1e40af",
+    "Elgin":           "#d97706",
+    "Gree":            "#15803d",
+    "LG":              "#a21caf",
+    "Midea":           "#4338ca",
+    "Philco":          "#ea580c",
+    "Samsung":         "#0f172a",
+    "TCL":             "#0369a1",
+    "Springer Midea":  "#1d4ed8",
+    "Consul":          "#0e7490",
+    "Komeco":          "#6d28d9",
+    "Carrier":         "#0891b2",
+    "Daikin":          "#0c4a6e",
+    "Fujitsu":         "#7f1d1d",
+    "Britânia":        "#be123c",
+    "Britania":        "#be123c",
+}
+
+
+def _brand_color(brand: str | None) -> str:
+    """Cor primária da marca (fallback cinza neutro)."""
+    if not brand:
+        return "#64748b"
+    # Normaliza marca para tolerar variações de caixa/acento mantendo
+    # o dicionário enxuto (uma entrada por canônico).
+    norm = str(brand).strip()
+    return _BRAND_COLORS.get(norm, "#64748b")
+
 
 def page_daily_vision() -> None:
     st.title("📅 Daily Price Vision")
@@ -7618,9 +7663,21 @@ def page_daily_vision() -> None:
     # aquele (data, sku, período) — precedência aplicada abaixo, antes do
     # concat (espelha a regra por (data, sku) de query_price_evolution_data,
     # acrescida da dimensão de período).
+    #
+    # A janela de query precisa cobrir dois usos secundários, além de
+    # [start_date, end_date]: (a) os 7 dias terminados em `end_date` que
+    # alimentam o sparkline e (b) o dia imediatamente anterior a
+    # `start_date` para o delta vs ontem do KPI "Piso geral". Pegamos o
+    # mínimo dos dois para uma query só. As janelas conceituais de cada
+    # uso vivem separadas — sparkline sempre opera em 7 dias FIXOS, o
+    # delta sempre lê o dia D-1 — assim a rotulagem "7d" não escorrega
+    # quando o usuário expande o range.
+    prev_day = start_date - timedelta(days=1)
+    spark_start = end_date - timedelta(days=6)   # 7 dias inclusivos
+    query_start = min(prev_day, spark_start)
     with st.spinner("Carregando dados..."):
         df_co = query_coletas(
-            start_date,
+            query_start,
             end_date,
             platforms=_DAILY_VISION_PLATFORMS,
             brands=sel_brands or None,
@@ -7631,7 +7688,7 @@ def page_daily_vision() -> None:
             limit=80000,
         )
         df_pt = query_pricetrack_daily(
-            start_date,
+            query_start,
             end_date,
             platforms=_DAILY_VISION_PLATFORMS,
             brands=sel_brands or None,
@@ -7788,6 +7845,17 @@ def page_daily_vision() -> None:
         df["produto"].astype(str),
     )
 
+    # Janela 7d é preservada em `df_window` antes de cortar `df` ao recorte
+    # pedido pelo usuário. Usamos `df_window` adiante para o sparkline 7d
+    # por marca e para o delta vs período anterior do KPI "Piso geral";
+    # o pivot principal continua plotando só [start_date, end_date].
+    data_dates = pd.to_datetime(df["data"], errors="coerce").dt.date
+    df_window = df.copy()
+    df = df[data_dates >= start_date].copy()
+    if df.empty:
+        st.warning("Sem dados no recorte selecionado.")
+        return
+
     # Granularidade do pivot — controlado pelo radio "Agrupar por".
     # Data/Source/Turno/Marca são sempre dimensões; Capacidade/SKU entram
     # conforme a escolha. Quando uma dimensão é tirada, o `min` por plataforma
@@ -7823,31 +7891,112 @@ def page_daily_vision() -> None:
         base_cols.append("Capacidade")
     if "SKU" in pivot.columns:
         base_cols.append("SKU")
-    display_cols = base_cols + _DAILY_VISION_PLATFORMS
     sort_cols = [c for c in ["Data", "Marca", "Capacidade", "SKU", "Turno"]
                  if c in pivot.columns]
-    pivot = pivot[display_cols].sort_values(
+    pivot = pivot[base_cols + _DAILY_VISION_PLATFORMS].sort_values(
         sort_cols,
         ascending=[False] + [True] * (len(sort_cols) - 1),
+    ).reset_index(drop=True)
+
+    # ── Métricas derivadas ────────────────────────────────────────────────
+    # `price_matrix` é a matriz numérica (linhas × 6 MPs) que alimenta:
+    # (1) destaque do vencedor por linha, (2) gap 1º→2º, (3) campeã global,
+    # (4) médias por MP no rodapé. Calculada uma vez antes do Styler.
+    price_matrix = pivot[_DAILY_VISION_PLATFORMS].apply(
+        pd.to_numeric, errors="coerce",
+    )
+    row_min = price_matrix.min(axis=1)
+    champion_idx = int(row_min.idxmin()) if row_min.notna().any() else None
+    champion_brand = (
+        str(pivot.loc[champion_idx, "Marca"]) if champion_idx is not None else None
+    )
+    champion_mp = (
+        price_matrix.loc[champion_idx].idxmin()
+        if champion_idx is not None and price_matrix.loc[champion_idx].notna().any()
+        else None
     )
 
-    # KPIs resumo.
+    # Gap 1º→2º por linha: diferença entre o 2º menor preço e o vencedor.
+    # Linhas com menos de 2 ofertas viram NaN (não há gap a comparar).
+    def _row_gap(row: pd.Series) -> float | None:
+        s = pd.to_numeric(row, errors="coerce").dropna().sort_values()
+        if len(s) < 2:
+            return None
+        return float(s.iloc[1] - s.iloc[0])
+    pivot["Gap 1º→2º"] = price_matrix.apply(_row_gap, axis=1)
+
+    # Sparkline 7d por Marca: piso diário (min entre todos os MPs e SKUs)
+    # nos 7 dias terminados em `end_date`. Mesma série vale para todas as
+    # linhas da mesma Marca, independente do modo (Marca / Marca+Cap / SKU)
+    # — é um sinal de saúde da marca, não da linha. Tamanho FIXO em 7 dias
+    # — não deixe a janela do usuário esticar o sparkline (o rótulo "7d"
+    # seria mentiroso e a tendência diluiria com mais pontos).
+    window_dates = [spark_start + timedelta(days=i) for i in range(7)]
+    window_data_dates = pd.to_datetime(
+        df_window["data"], errors="coerce",
+    ).dt.date
+    df_window_indexed = df_window.assign(_d=window_data_dates)
+    brand_day_min = (
+        df_window_indexed.groupby(["marca", "_d"])["preco"]
+        .min().reset_index()
+    )
+    spark_by_brand: dict[str, list[float | None]] = {}
+    for marca_v, g in brand_day_min.groupby("marca"):
+        by_date = dict(zip(g["_d"], g["preco"]))
+        spark_by_brand[str(marca_v)] = [
+            float(by_date[d]) if d in by_date and pd.notna(by_date[d]) else None
+            for d in window_dates
+        ]
+    pivot["Tendência 7d"] = pivot["Marca"].astype(str).map(
+        lambda b: spark_by_brand.get(b, [None] * len(window_dates))
+    )
+
+    # ── KPIs ──────────────────────────────────────────────────────────────
+    # Delta vs período anterior: comparamos o piso do recorte atual com o
+    # piso do mesmo recorte de FILTROS no dia anterior a `start_date`. Se
+    # `start_date == end_date`, o "anterior" é o dia D-1; se for uma janela,
+    # é o dia imediatamente antes da janela (`prev_day` foi calculado na
+    # carga de dados pra dimensionar a query).
+    prev_mask = window_data_dates == prev_day
+    prev_min = pd.to_numeric(
+        df_window.loc[prev_mask, "preco"], errors="coerce",
+    ).dropna().min()
+    current_min = float(row_min.min()) if row_min.notna().any() else None
+    delta_str: str | None = None
+    if pd.notna(prev_min) and current_min is not None:
+        delta_v = current_min - float(prev_min)
+        sign = "+" if delta_v >= 0 else "−"
+        delta_str = f"{sign} R$ {abs(delta_v):,.2f}".replace(
+            ",", "X").replace(".", ",").replace("X", ".")
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Linhas", f"{len(pivot):,}")
     c2.metric(
         "SKUs únicos",
         f"{pivot['SKU'].nunique():,}" if "SKU" in pivot.columns else "—",
     )
-    c3.metric("Marcas", f"{pivot['Marca'].nunique():,}")
-    plat_vals = pd.to_numeric(
-        pivot[_DAILY_VISION_PLATFORMS].to_numpy().ravel(),
-        errors="coerce",
-    )
-    plat_min = pd.Series(plat_vals).dropna()
+    if champion_brand and champion_mp:
+        c3.metric(
+            "🏆 Marca campeã",
+            champion_brand,
+            f"em {champion_mp}",
+            delta_color="off",
+        )
+    else:
+        c3.metric("Marcas", f"{pivot['Marca'].nunique():,}")
     c4.metric(
         "Piso geral",
-        f"R$ {plat_min.min():,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        if not plat_min.empty else "—",
+        f"R$ {current_min:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        if current_min is not None else "—",
+        delta=delta_str if delta_str else None,
+        # `inverse`: queda do piso (delta_v < 0) é positivo p/ o consumidor
+        # e renderiza verde; alta renderiza vermelho. Bate com a leitura
+        # do dashboard ("queda de preço = boa notícia").
+        delta_color="inverse",
+        help=(
+            f"Comparado ao piso de {prev_day.strftime('%d/%m/%Y')}"
+            if delta_str else None
+        ),
     )
     st.divider()
 
@@ -7856,30 +8005,56 @@ def page_daily_vision() -> None:
     #    suave nas concorrentes dentro de ±2 % do piso da linha (tier 2).
     # 2) Linha campeã geral (menor preço global do recorte) ganha borda
     #    lateral âmbar + ícone 🏆 prefixado à Marca para chamar o olho.
-    # 3) Células sem oferta ficam discretas (cinza claro, itálico).
-    price_matrix = pivot[_DAILY_VISION_PLATFORMS].apply(
-        pd.to_numeric, errors="coerce",
-    )
-    row_min = price_matrix.min(axis=1)
+    # 3) Cada marca ganha uma borda lateral colorida (chip), com cor
+    #    primária definida em `_BRAND_COLORS`.
+    # 4) Headers dos 6 marketplaces recebem cor primária do MP via
+    #    nth-child (pintura no `<th>` correspondente).
+    # 5) Células sem oferta ficam discretas (cinza claro, itálico).
+    # 6) Linha "Média" no rodapé com top border destacado.
 
-    # Linha vencedora global = linha cujo piso é o menor de todos.
-    if row_min.notna().any():
-        champion_idx = row_min.idxmin()
-    else:
-        champion_idx = None
-
-    # Marca a vencedora visualmente — trabalhamos numa cópia para não
-    # contaminar o `pivot` original, que serve como base limpa do CSV
-    # (do contrário a coluna Marca exportaria "Midea" e "🏆 Midea" como
-    # rótulos distintos, quebrando agrupamentos downstream).
+    # Cópia de exibição: aqui aplicamos rótulos visuais (🏆 na campeã,
+    # linha "📊 Média" no rodapé) sem contaminar `pivot`, que continua
+    # como base limpa pro CSV.
     display_pivot = pivot.copy()
     if champion_idx is not None:
         display_pivot.loc[champion_idx, "Marca"] = (
             f"🏆 {display_pivot.loc[champion_idx, 'Marca']}"
         )
 
+    # Linha "Média" — anexada só ao display_pivot. Usa um índice inteiro
+    # único (max + 1) p/ Styler funcionar com .loc, e fica fora do CSV
+    # (que é gerado a partir do `pivot` original).
+    avg_idx = int(display_pivot.index.max()) + 1 if len(display_pivot) else 0
+    avg_row: dict = {}
+    for c in display_pivot.columns:
+        if c in _DAILY_VISION_PLATFORMS:
+            avg_row[c] = price_matrix[c].mean()
+        elif c == "Gap 1º→2º":
+            avg_row[c] = pd.to_numeric(pivot["Gap 1º→2º"], errors="coerce").mean()
+        elif c == "Tendência 7d":
+            avg_row[c] = []
+        elif c == "Marca":
+            avg_row[c] = "📊 Média por MP"
+        else:
+            avg_row[c] = ""
+    display_pivot.loc[avg_idx] = avg_row
+
+    # Ordem de colunas com sparkline ANTES dos MPs (contexto à esquerda)
+    # e gap DEPOIS (insight competitivo à direita).
+    display_cols = (
+        base_cols + ["Tendência 7d"] + _DAILY_VISION_PLATFORMS + ["Gap 1º→2º"]
+    )
+    display_pivot = display_pivot[display_cols]
+
     def _style_row_prices(row: pd.Series) -> list[str]:
         """Pinta a célula vencedora e os concorrentes próximos por linha."""
+        # A linha "Média" não tem vencedor — sai cinza neutro p/ não
+        # competir com as linhas reais por atenção.
+        if row.name == avg_idx:
+            return [
+                "background-color:#f8fafc; color:#475569; "
+                "font-weight:600; border-top:2px solid #cbd5e1;"
+            ] * len(row)
         vals = pd.to_numeric(row, errors="coerce")
         if vals.notna().sum() == 0:
             return ["color:#94a3b8; font-style:italic;"] * len(row)
@@ -7901,29 +8076,84 @@ def page_daily_vision() -> None:
                 styles.append("")
         return styles
 
-    def _style_champion_brand(col: pd.Series) -> list[str]:
-        """Destaca a marca da linha campeã com gradient âmbar."""
+    def _style_brand_chip(col: pd.Series) -> list[str]:
+        """Borda lateral colorida por marca + destaque âmbar na campeã.
+
+        O chip de cor "carrega" a identidade visual da marca sem precisar
+        de PNG/SVG real. Numa 2ª iteração dá pra plugar logos reais em
+        `assets/logos/marcas/{slug}.png` via `ImageColumn` numa coluna
+        nova (sem perder o chip aqui — eles convivem).
+        """
+        out = []
+        for idx, val in col.items():
+            if idx == avg_idx:
+                out.append(
+                    "background-color:#f8fafc; color:#475569; "
+                    "font-weight:700; border-top:2px solid #cbd5e1;"
+                )
+                continue
+            if idx == champion_idx:
+                # Campeã: gradient âmbar (sobrescreve o chip por hierarquia)
+                out.append(
+                    "background: linear-gradient(90deg, #fef3c7 0%, #fde68a 100%); "
+                    "color:#78350f; font-weight:700; "
+                    "border-left:4px solid #f59e0b;"
+                )
+                continue
+            # Chip por marca: extrai o nome (sem 🏆) p/ achar a cor.
+            raw = str(val).replace("🏆 ", "").strip()
+            color = _brand_color(raw)
+            out.append(
+                f"border-left:4px solid {color}; "
+                "padding-left:10px; font-weight:600;"
+            )
+        return out
+
+    def _style_avg_dim(col: pd.Series) -> list[str]:
+        """Pinta as colunas de dimensão (Data/Source/Turno/Cap/SKU/Gap) na
+        linha de média p/ ficarem visualmente integradas à faixa cinza."""
         out = [""] * len(col)
-        if champion_idx is None or champion_idx not in col.index:
-            return out
-        pos = list(col.index).index(champion_idx)
-        out[pos] = (
-            "background: linear-gradient(90deg, #fef3c7 0%, #fde68a 100%); "
-            "color:#78350f; font-weight:700; "
-            "border-left:4px solid #f59e0b;"
-        )
+        if avg_idx in col.index:
+            pos = list(col.index).index(avg_idx)
+            out[pos] = (
+                "background-color:#f8fafc; color:#475569; "
+                "font-weight:600; border-top:2px solid #cbd5e1;"
+            )
         return out
 
     fmt_price = lambda v: (
         "—" if pd.isna(v)
         else f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     )
+    fmt_gap = lambda v: (
+        "—" if pd.isna(v)
+        else f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    )
+
+    # Cores de header por marketplace: `nth-child` no thead pinta o <th>
+    # do MP correspondente. As posições começam em 1 e dependem da
+    # ordem de `display_cols`: base_cols + 1 (Tendência) + N (MPs) + 1 (Gap).
+    mp_header_styles = []
+    base_offset = len(base_cols) + 1  # +1 = "Tendência 7d"
+    for i, mp in enumerate(_DAILY_VISION_PLATFORMS, start=1):
+        bg, ink = _MP_COLORS.get(mp, ("#0f172a", "#f8fafc"))
+        mp_header_styles.append({
+            "selector": f"thead th:nth-child({base_offset + i})",
+            "props": f"background-color:{bg}; color:{ink}; "
+                     f"border-bottom:3px solid {ink};",
+        })
+
+    # Subset de dimensões não-Marca pra aplicar o estilo da linha Média
+    dim_subset = [c for c in display_cols
+                  if c not in (_DAILY_VISION_PLATFORMS + ["Marca", "Tendência 7d"])]
 
     styler = (
         display_pivot.style
         .apply(_style_row_prices, axis=1, subset=_DAILY_VISION_PLATFORMS)
-        .apply(_style_champion_brand, axis=0, subset=["Marca"])
+        .apply(_style_brand_chip, axis=0, subset=["Marca"])
+        .apply(_style_avg_dim, axis=0, subset=dim_subset)
         .format({plat: fmt_price for plat in _DAILY_VISION_PLATFORMS})
+        .format({"Gap 1º→2º": fmt_gap})
         .set_table_styles([
             {"selector": "thead th",
              "props": "background-color:#0f172a; color:#f8fafc; "
@@ -7934,19 +8164,41 @@ def page_daily_vision() -> None:
              "props": "padding:0.55rem 0.75rem; font-size:0.88rem;"},
             {"selector": "tbody tr:hover",
              "props": "background-color:#f1f5f9;"},
-        ])
+        ] + mp_header_styles)
         .hide(axis="index")
     )
+
+    # column_config: sparkline 7d como mini-gráfico de linha + Data como
+    # data BR. Os MPs ficam sem column_config (Styler já formata o valor).
+    spark_floats = [
+        v for series in pivot["Tendência 7d"] if isinstance(series, list)
+        for v in series if v is not None
+    ]
+    spark_min = min(spark_floats) if spark_floats else 0
+    spark_max = max(spark_floats) if spark_floats else 1
 
     event = st.dataframe(
         styler,
         use_container_width=True,
-        height=560,
+        height=600,
         on_select="rerun",
         selection_mode="single-row",
         key="dv_table",
         column_config={
             "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+            "Tendência 7d": st.column_config.LineChartColumn(
+                "Tendência 7d",
+                width="small",
+                help="Piso diário da marca nos últimos 7 dias (todos os MPs)",
+                y_min=spark_min * 0.98,
+                y_max=spark_max * 1.02,
+            ),
+            "Gap 1º→2º": st.column_config.TextColumn(
+                "Gap 1º→2º",
+                width="small",
+                help="Diferença entre o piso da linha e o 2º colocado — "
+                     "mede o espaço competitivo do vencedor.",
+            ),
         },
     )
 
@@ -7955,7 +8207,9 @@ def page_daily_vision() -> None:
         "🏆 marca com o menor preço do recorte · "
         "🟩 marketplace vencedor da linha · "
         "🟢 concorrente dentro de 2 % do piso · "
+        "🟫 borda lateral colorida = cor primária da marca · "
         "— sem oferta · "
+        "📊 média por MP no rodapé · "
         "👆 clique numa linha para abrir os detalhes."
     )
 
@@ -8065,7 +8319,12 @@ def page_daily_vision() -> None:
             "do anúncio por marketplace."
         )
 
-    csv_bytes = pivot.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+    # CSV omite "Tendência 7d" (lista de floats que serializaria feio) e
+    # mantém o "Gap 1º→2º" como número limpo p/ análise downstream.
+    csv_cols = [c for c in pivot.columns if c != "Tendência 7d"]
+    csv_bytes = pivot[csv_cols].to_csv(
+        index=False, sep=";", decimal=",",
+    ).encode("utf-8-sig")
     st.download_button(
         "⬇️ Baixar CSV",
         data=csv_bytes,
