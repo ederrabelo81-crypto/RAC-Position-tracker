@@ -7601,40 +7601,6 @@ def _brand_color(brand: str | None) -> str:
     return _BRAND_COLORS.get(norm, "#64748b")
 
 
-# Códigos curtos de marca p/ o chip (look do mockup): texto fica
-# "AG  Agratto" dentro de uma célula tonalizada na cor da marca.
-_BRAND_INITIALS: dict[str, str] = {
-    "Agratto":         "AG",
-    "Electrolux":      "EL",
-    "Elgin":           "EG",
-    "Gree":            "GR",
-    "LG":              "LG",
-    "Midea":           "MD",
-    "Philco":          "PH",
-    "Samsung":         "SS",
-    "TCL":             "TC",
-    "Springer Midea":  "SM",
-    "Consul":          "CS",
-    "Komeco":          "KM",
-    "Carrier":         "CR",
-    "Daikin":          "DK",
-    "Fujitsu":         "FJ",
-    "Britânia":        "BR",
-    "Britania":        "BR",
-}
-
-
-def _brand_initials(brand: str | None) -> str:
-    """Código de 2 letras p/ o chip da marca (fallback = 2 primeiras letras)."""
-    if not brand:
-        return "—"
-    norm = str(brand).strip()
-    if norm in _BRAND_INITIALS:
-        return _BRAND_INITIALS[norm]
-    # Marca não mapeada — usa as 2 primeiras letras uppercase como aproximação.
-    return norm[:2].upper() if norm else "—"
-
-
 def _hex_tint(hex_color: str, ratio: float = 0.88) -> str:
     """Mistura cor hex com branco. `ratio=0` → cor pura, `1` → branco puro.
 
@@ -7711,6 +7677,44 @@ def _parse_brl(s) -> float | None:
         return None
 
 
+# Blocos Unicode do mais baixo (▁) ao mais alto (█) — 8 níveis.
+_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+
+
+def _unicode_sparkline(values) -> str:
+    """Mini-sparkline em blocos Unicode a partir da série de pisos diários.
+
+    Renderizada como TEXTO simples — diferente de
+    `st.column_config.LineChartColumn`, que o Streamlit **não desenha**
+    quando a tabela é passada como `Styler` (o gráfico degrada para o
+    dump cru da lista, tipo ``"1648,,,,,,"``). Como o Daily Vision precisa
+    do Styler para pintar o MP vencedor e o chip de marca, blocos Unicode
+    são o caminho que sempre renderiza.
+
+    - NaN/None viram ``·`` (lacuna no traço).
+    - Série normalizada pelo próprio min/max p/ ressaltar a forma.
+    - Série constante (preço estável) → linha reta no meio (▄).
+    - Menos de 2 pontos válidos → ``""`` (não há tendência a desenhar).
+    """
+    if not isinstance(values, (list, tuple)):
+        return ""
+    nums = [float(v) for v in values if v is not None and not pd.isna(v)]
+    if len(nums) < 2:
+        return ""
+    lo, hi = min(nums), max(nums)
+    span = hi - lo
+    chars: list[str] = []
+    for v in values:
+        if v is None or pd.isna(v):
+            chars.append("·")
+        elif span == 0:
+            chars.append("▄")
+        else:
+            level = int(round((float(v) - lo) / span * (len(_SPARK_BLOCKS) - 1)))
+            chars.append(_SPARK_BLOCKS[level])
+    return "".join(chars)
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def _query_sparkline_7d(
     spark_start: date,
@@ -7719,49 +7723,44 @@ def _query_sparkline_7d(
     sku_set_key: tuple[str, ...],
     btu_keys: tuple[str, ...] = (),
 ) -> pd.DataFrame:
-    """Query enxuta p/ alimentar o sparkline 7d do Daily Vision.
+    """Piso diário por marca p/ o sparkline 7d do Daily Vision.
 
-    Roda separada da query principal pra evitar `statement_timeout` no
-    PostgREST: pega só 3 colunas de `pricetrack_daily` (brand,
-    collection_date, min_price). Filtra por marca, por SKU (quando o
-    usuário escolheu SKU/família) **e/ou por BTU via `title.ilike`** —
-    este último espelha o filtro do pivot principal e cobre marcas cujos
-    SKUs não estão no catálogo (sem ele a sparkline ficava vazia para
-    Hisense/Agratto quando o usuário filtrava por BTU). Cache de 15 min.
+    Chama a RPC `pricetrack_brand_daily_floor` (migration 004), que faz
+    `MIN(min_price) GROUP BY (collection_date, brand)` no Postgres e
+    devolve ~marcas×7 ≈ 100 linhas.
 
-    Falha silenciosa: timeout/error → DataFrame vazio, sparkline some
-    da tabela sem warning vermelho.
+    Por que RPC e não `client.table(...).select(...)`: a versão anterior
+    puxava linhas cruas com um único `.limit(20000)`, mas o PostgREST capa
+    a resposta em 1000 linhas (max_rows). Uma só marca popular (Midea:
+    2,6k–8,6k linhas/dia) já estourava esse teto, então o recorte de 1000
+    linhas cobria só um punhado de (marca, dia) — o sparkline saía esparso
+    ou vazio (lista [1648, NaN×6]). Agregar server-side elimina o problema.
+
+    Retorna colunas (`brand`, `collection_date`, `min_price`) p/ manter o
+    pipeline a jusante inalterado. Cache de 15 min. Falha silenciosa:
+    erro/timeout → DataFrame vazio, sparkline some sem warning vermelho.
     """
     client = _get_supabase()
     if client is None:
         return pd.DataFrame()
     try:
-        q = (
-            client.table("pricetrack_daily")
-            .select("brand,collection_date,min_price")
-            .gte("collection_date", str(spark_start))
-            .lte("collection_date", str(end_date))
-        )
-        if brands_key:
-            q = q.in_("brand", _expand_brands(list(brands_key)))
-        if sku_set_key:
-            q = q.in_("sku", list(sku_set_key))
-        if btu_keys:
-            parts: list[str] = []
-            for btu in btu_keys:
-                parts.append(f"title.ilike.%{btu}%")
-                try:
-                    dotted = f"{int(btu):,}".replace(",", ".")
-                    if dotted != btu:
-                        parts.append(f"title.ilike.%{dotted}%")
-                except ValueError:
-                    pass
-            if parts:
-                q = q.or_(",".join(parts))
-        resp = q.limit(20000).execute()
+        params: dict = {
+            "p_start": str(spark_start),
+            "p_end":   str(end_date),
+            # RPC filtra no `brand` RAW; expandimos os aliases aqui
+            # (mesma regra da query principal: "Midea" → MIDEA/SPRINGER…).
+            "p_brands": _expand_brands(list(brands_key)) if brands_key else None,
+            "p_btus":   list(btu_keys) if btu_keys else None,
+            "p_skus":   list(sku_set_key) if sku_set_key else None,
+        }
+        resp = client.rpc("pricetrack_brand_daily_floor", params).execute()
         if not resp.data:
             return pd.DataFrame()
-        return pd.DataFrame(resp.data)
+        df = pd.DataFrame(resp.data)
+        # Normaliza o nome da coluna de preço pro que o builder espera.
+        if "floor_price" in df.columns:
+            df = df.rename(columns={"floor_price": "min_price"})
+        return df
     except Exception:
         # Falha silenciosa: sparkline é feature secundária. Sem ele a
         # coluna "Tendência 7d" fica vazia mas o resto da página segue
@@ -8142,11 +8141,9 @@ def page_daily_vision() -> None:
             # — pricetrack_daily publica em CAIXA ALTA ("MIDEA") e o
             # pivot lê "Midea". Sem isso o map devolve sempre vazio.
             #
-            # Dias sem dado viram `NaN` (não `None`): o
-            # `st.column_config.LineChartColumn` exige array uniforme de
-            # números — Nones quebram com "value can not be interpreted
-            # as a number array". NaN é float válido e o widget pula no
-            # gráfico (deixa o traço com lacuna).
+            # Dias sem dado viram `NaN` (não `None`): `_unicode_sparkline`
+            # trata NaN como lacuna (·) no traço, mantendo as 7 posições
+            # alinhadas às datas da janela.
             spark_by_brand[str(brand_v).strip().title()] = [
                 float(by_date[d]) if d in by_date and pd.notna(by_date[d]) else nan
                 for d in window_dates
@@ -8223,13 +8220,12 @@ def page_daily_vision() -> None:
     # contaminar `pivot`, que continua como base limpa pro CSV.
     display_pivot = pivot.copy()
 
-    # Chip de marca = código 2-letras + nome ("AG  Agratto"). Combinado
-    # com o background tonalizado + texto na cor primária aplicados pelo
-    # `_style_brand_chip` abaixo, o efeito visual fica equivalente ao
-    # chip do mockup (sem precisar de PNG/SVG real).
-    display_pivot["Marca"] = display_pivot["Marca"].astype(str).map(
-        lambda m: f"{_brand_initials(m)}  {m}"
-    )
+    # Chip de marca = SÓ o nome, em negrito na cor primária da marca,
+    # sobre fundo tonalizado + borda lateral colorida (aplicados pelo
+    # `_style_brand_chip` abaixo). A versão antiga prefixava as iniciais
+    # ("AG  Agratto"), mas em texto puro (sem o badge 26×26 do mockup, que
+    # `st.dataframe` não renderiza) o código repetido só poluía. O nome
+    # colorido + chip carrega a identidade visual sem a redundância.
     if champion_idx is not None:
         display_pivot.loc[champion_idx, "Marca"] = (
             f"🏆 {display_pivot.loc[champion_idx, 'Marca']}"
@@ -8325,6 +8321,11 @@ def page_daily_vision() -> None:
         display_pivot["Gap 1º→2º"], errors="coerce",
     ).map(_fmt_brl)
 
+    # Tendência 7d → sparkline de blocos Unicode (TEXTO). Substitui o
+    # `LineChartColumn`, que não renderiza sob Styler. A lista de pisos
+    # diários (`pivot["Tendência 7d"]`) vira a string ▁▂▃… aqui.
+    display_pivot["Tendência 7d"] = pivot["Tendência 7d"].map(_unicode_sparkline)
+
     # Linha "Média" — anexada só ao display_pivot. Usa um índice inteiro
     # único (max + 1) p/ Styler funcionar com .loc, e fica fora do CSV
     # (que é gerado a partir do `pivot` original).
@@ -8338,9 +8339,8 @@ def page_daily_vision() -> None:
                 pd.to_numeric(pivot["Gap 1º→2º"], errors="coerce").mean()
             )
         elif c == "Tendência 7d":
-            # Mesma motivação do `spark_by_brand`: lista DEVE ser de floats
-            # uniformes. Lista vazia/None faria o `LineChartColumn` errar.
-            avg_row[c] = [nan] * len(window_dates)
+            # Linha Média não tem sparkline próprio.
+            avg_row[c] = ""
         elif c == "Marca":
             avg_row[c] = "📊 Média por MP"
         else:
@@ -8449,9 +8449,11 @@ def page_daily_vision() -> None:
         return out
 
     # Subset de dimensões não-Marca pra aplicar o estilo da linha Média.
+    # "Tendência 7d" agora é texto (entra na faixa cinza da Média); só
+    # Marca (chip próprio) e os MPs (winner highlight) ficam de fora.
     dim_subset = [
         c for c in display_cols
-        if c not in (mp_cols_renamed + ["Marca", "Tendência 7d"])
+        if c not in (mp_cols_renamed + ["Marca"])
     ]
 
     styler = (
@@ -8473,16 +8475,10 @@ def page_daily_vision() -> None:
         .hide(axis="index")
     )
 
-    # column_config: sparkline 7d como mini-gráfico de linha + Data como
-    # data BR. Os MPs ficam sem column_config (Styler já formata o valor).
-    # `pd.isna` cobre tanto None (legado) quanto NaN (formato atual da lista).
-    spark_floats = [
-        v for series in pivot["Tendência 7d"] if isinstance(series, list)
-        for v in series if not pd.isna(v)
-    ]
-    spark_min = min(spark_floats) if spark_floats else 0
-    spark_max = max(spark_floats) if spark_floats else 1
-
+    # column_config: Data em formato BR. A "Tendência 7d" agora é texto
+    # (blocos Unicode) — não precisa de config especial; o `LineChartColumn`
+    # foi abandonado porque o Streamlit não o desenha quando a tabela é um
+    # Styler (degradava para o dump cru da lista, "1648,,,,,,").
     event = st.dataframe(
         styler,
         use_container_width=True,
@@ -8492,12 +8488,11 @@ def page_daily_vision() -> None:
         key="dv_table",
         column_config={
             "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-            "Tendência 7d": st.column_config.LineChartColumn(
+            "Tendência 7d": st.column_config.TextColumn(
                 "Tendência 7d",
                 width="small",
-                help="Piso diário da marca nos últimos 7 dias (todos os MPs)",
-                y_min=spark_min * 0.98,
-                y_max=spark_max * 1.02,
+                help="Piso diário da marca nos últimos 7 dias (todos os MPs). "
+                     "▁▂▃▄▅▆▇ = forma da tendência · · = dia sem dado.",
             ),
             "Gap 1º→2º": st.column_config.TextColumn(
                 "Gap 1º→2º",
@@ -8511,7 +8506,9 @@ def page_daily_vision() -> None:
     # Legenda das marcações.
     st.caption(
         "🏆 marca com o menor preço do recorte · "
-        "🟦🟧🟩… emoji = identidade visual da marca/marketplace · "
+        "chip colorido = identidade da marca · "
+        "▁▂▃▄▅▆▇ = tendência do piso nos últimos 7 dias (· = dia sem dado) · "
+        "preço + ▼/▲ R$ = variação vs ontem · "
         "fundo verde forte = MP vencedor da linha · "
         "fundo verde claro = concorrente dentro de 2% do piso · "
         "— sem oferta · "
