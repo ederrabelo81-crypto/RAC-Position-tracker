@@ -8245,12 +8245,18 @@ def page_daily_vision() -> None:
     # IMPORTANTE: o "ontem" é POR LINHA — `row.Data - 1 dia`, NÃO um
     # `prev_day` fixo. Em ranges com múltiplos dias o pivot tem linhas
     # de várias datas e cada uma compara com seu próprio dia anterior.
+    #
+    # `Source` é DELIBERADAMENTE OMITIDA da chave (e do groupby): se
+    # hoje é PriceTrack e ontem só tem Coletas (ou vice-versa, comum
+    # quando a ingestão do PT atrasa um dia), exigir match de Source
+    # quebra o merge silenciosamente e a célula sai sem delta apesar
+    # de termos o preço de ontem. Sem Source, basta casar
+    # (Data, Turno, Marca, [Capacidade, SKU]).
     join_cols = [
-        c for c in ["Source", "Turno", "Marca", "Capacidade", "SKU"]
+        c for c in ["Turno", "Marca", "Capacidade", "SKU"]
         if c in pivot.columns
     ]
     _display_to_raw = {
-        "Source":      "source_label",
         "Turno":       "periodo",
         "Marca":       "marca",
         "Capacidade":  "capacidade",
@@ -8261,9 +8267,10 @@ def page_daily_vision() -> None:
     )
     if not df_window.empty and join_cols:
         raw_key_cols = [_display_to_raw[c] for c in join_cols]
-        # Agrega a janela inteira por (data, dims, plataforma) → min(preco).
-        # Mantemos a data na chave para permitir lookup row-a-row do dia
-        # anterior à própria data de cada linha do pivot.
+        # Agrega a janela inteira por (data, dims SEM source, plataforma)
+        # → min(preco). Colapsar Source no `min` é seguro: se hoje e
+        # ontem tiverem fontes diferentes para o mesmo recorte, o piso
+        # ainda representa o melhor preço daquele dia/MP.
         window_agg = (
             df_window.groupby(
                 ["data"] + raw_key_cols + ["plataforma"], dropna=False,
