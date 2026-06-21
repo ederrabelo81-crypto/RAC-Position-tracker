@@ -2,7 +2,7 @@
 
 Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ✅ Produção | **Última atualização:** 18 de Junho de 2026 (v4.1)
+**Status:** ✅ Produção | **Última atualização:** 21 de Junho de 2026 (v4.2)
 
 ---
 
@@ -20,7 +20,7 @@ O projeto monitora em 7 marketplaces:
 - **Preços** — coleta própria (secundário) + PriceTrack (fonte de verdade)
 - **Análise competitiva via IA** (Claude API) com relatório executivo
 
-Dados → CSV → Supabase (`coletas` + `pricetrack_daily`) → dashboard Streamlit (18 páginas) → notificações Telegram (N8N ou API direta).
+Dados → CSV → Supabase (`coletas` + `pricetrack_daily`) → dashboard Streamlit (19 páginas) → notificações Telegram (N8N ou API direta).
 
 ---
 
@@ -74,10 +74,11 @@ cobertura de campos de insight com alerta de regressão).
 ## 💰 PriceTrack — fonte de verdade de preço
 
 Import diário (06:00 BRT) do export da API Price Track: preços
-min/avg/mode/max por `(data, marca, sku, marketplace, seller)` da categoria
-AR CONDICIONADO → tabela `pricetrack_daily`.
+min/avg/mode/max por `(data, turno, marca, sku, marketplace, seller)` da
+categoria AR CONDICIONADO → tabela `pricetrack_daily`.
 
 - **Pipeline:** `scripts/pricetrack_api_import.py` (export assíncrono → NDJSON.gz → agrega → upsert) + `--gaps-only` auto-heal dos últimos 14 dias
+- **Turnos intra-dia (Jun/2026):** `aggregate_offers()` deriva o turno do `collection_hour` e emite linhas **Manhã** (08–12h BRT) e **Tarde** (18–22h BRT) além do agregado **Diário** (dia inteiro), alimentando os turnos manhã/tarde do dashboard. Migration `migrations/003_pricetrack_turno.sql`
 - **Importador manual** (md/xlsx): `python -m pricetrack_importer arquivo.md`
 - **Precedência (28/05/2026):** para cada `(data, sku_resolvido)` presente no PriceTrack, os dashboards de preço descartam a linha equivalente das coletas
 - **Reconciliação:** de-para de marketplace (`_PT_TO_CANONICAL_PLATFORM` no `app.py`) e de seller (`pricetrack_importer/seller_map.py`, ~103 variantes → ~30 canônicos)
@@ -211,9 +212,10 @@ Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto
 
 Campos de insight (protagonistas desde Mai/2026): `Patrocinado?`,
 `Buy Box Seller`, `Qtd Sellers`, `Tipo Seller`, `Reputação Seller`.
-Migrations do banco: `migrations/` + `docs/migrations/` (001→005).
+Migrations do banco: `migrations/` (PriceTrack: 001→004, inclui turno e RPC de
+piso por marca) + `docs/migrations/` (coletas: 001→009).
 
-### Dashboard Streamlit — 18 páginas
+### Dashboard Streamlit — 19 páginas
 
 ```bash
 streamlit run app.py
@@ -221,8 +223,16 @@ streamlit run app.py
 
 > **Filtros Globais (Jun/2026):** seletor global de **Fonte de Dados** (Coletas / PriceTrack / Combinado) + filtros enxutos no topo da sidebar — escolha uma vez e todas as páginas reagem. As páginas legadas **Run Collection** e **Competitive Intelligence** foram removidas (coleta agora é exclusivamente via cron/CLI; CI segue como camada de relatório no Overview).
 
-**INSIGHTS (12):**
+**INSIGHTS (13):**
 - **🏠 Overview** — métricas consolidadas, evolução de preços, tendências
+- **📅 Daily Price Vision** 🆕 — menor preço por marketplace consolidado por
+  marca (default) / marca+capacidade / SKU, com recorte de turno **Manhã /
+  Tarde / Diário** (PriceTrack como autoridade, coletas preenchem lacunas).
+  Visual fiel ao mockup: KPIs em cards com gradiente, tabela HTML (`st.html`
+  via DOMPurify) com chips de logo por marca/marketplace, headers de MP
+  coloridos, sparkline SVG 7d por marca (verde=caiu/vermelho=subiu), destaque
+  do MP vencedor + match ±2%, badge de Gap 1º→2º, delta vs ontem, drill-down
+  (SKU/seller por MP) e export CSV
 - **🚨 Top Movers** — SKUs com maior variação (janelas comparativas, confiança, sparkline)
 - **📊 Results** — detalhamento de coletas com filtros avançados
 - **📈 Price Evolution** — séries temporais por **SKU** com métrica selecionável (**Buy Box** [default] / Moda / Mediana / Médio), guarda "Dados limpos", flag de série congelada e modo "Comparar fontes" (Coletas × PriceTrack)
@@ -324,7 +334,7 @@ python scripts/daily_status_check.py --data 2026-05-14 --no-notify
 ```
 rac-position-tracker/
 ├── main.py                       # CLI (argparse, registry de scrapers, CSV, upload)
-├── app.py                        # Dashboard Streamlit (20 páginas + CI Claude)
+├── app.py                        # Dashboard Streamlit (19 páginas + CI Claude)
 ├── config.py                     # Keywords, plataformas, marcas, delays
 │
 ├── scrapers/
@@ -450,9 +460,11 @@ Dashboard usa o subset `requirements_app.txt`.
 
 ---
 
-## ✅ Validação Operacional — 18/06/2026
+## ✅ Validação Operacional — 21/06/2026
 
-- ✅ **18 páginas** de dashboard (12 Insights + 4 Operações + 2 Admin) — removidas Run Collection e Competitive Intelligence
+- ✅ **19 páginas** de dashboard (13 Insights + 4 Operações + 2 Admin) — removidas Run Collection e Competitive Intelligence
+- ✅ **Daily Price Vision** 🆕 — vista de menor preço por marketplace com turnos Manhã/Tarde/Diário, visual fiel ao mockup (KPIs, chips, sparkline SVG 7d, drill-down)
+- ✅ **PriceTrack com turnos intra-dia** (Manhã 08–12h / Tarde 18–22h) derivados do `collection_hour` + RPC de piso por marca (sparkline server-side)
 - ✅ **Filtros Globais enxutos** com seletor único de Fonte de Dados (Coletas / PriceTrack / Combinado)
 - ✅ **7 plataformas ativas** com buy box/seller (rollout fim de Mai/2026)
 - ✅ **PriceTrack diário** como fonte de verdade de preço (06:00 BRT + auto-heal)
@@ -469,4 +481,4 @@ Dashboard usa o subset `requirements_app.txt`.
 
 **Stack:** Python · Playwright/rebrowser · curl_cffi · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · GitHub Actions
 
-**Versão:** 4.1 | **Última atualização:** 18 de Junho de 2026 | @ederrabelo
+**Versão:** 4.2 | **Última atualização:** 21 de Junho de 2026 | @ederrabelo
