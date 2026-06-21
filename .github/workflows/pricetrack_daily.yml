@@ -84,8 +84,14 @@ jobs:
           START="${START:-$YESTERDAY}"
           END="${END:-$YESTERDAY}"
 
+          # O run agendado SEMPRE força: o import intra-dia (pricetrack_intraday.yml)
+          # pode ter gravado linhas provisórias para o dia (parciais, só manhã/tarde
+          # coletadas até ali). Sem --force, date_exists() pularia esse D-1 e a versão
+          # parcial ficaria como definitiva. Forçar re-importa o dia já fechado e
+          # sobrescreve (upsert) a provisória pela completa — também auto-cura
+          # primeiros imports parciais.
           FORCE_FLAG=""
-          if [ "$FORCE" = "true" ]; then
+          if [ "$FORCE" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
             FORCE_FLAG="--force"
           fi
 

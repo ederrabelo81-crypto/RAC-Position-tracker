@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Instala (ou atualiza) a entrada de cron do import diário do PriceTrack na VM.
+# Instala (ou atualiza) as entradas de cron do import do PriceTrack na VM.
 # Horário em UTC; Brasil = UTC-3 (sem horário de verão desde 2019).
-#   06:00 BRT → 09:00 UTC  (espelha o GitHub Actions pricetrack_daily.yml)
+#   06:00 BRT → 09:00 UTC  D-1 (definitivo) — espelha pricetrack_daily.yml
+#   13:10 BRT → 16:10 UTC  hoje (intra-dia, após a manhã) — pricetrack_intraday.yml
+#   23:10 BRT → 02:10 UTC  hoje (intra-dia, após a tarde) — pricetrack_intraday.yml
 #
 # Uso:
 #   bash scripts/setup_pricetrack_cron.sh          # instala
@@ -20,7 +22,10 @@ chmod +x "$IMPORT_SCRIPT"
 # Marcador para identificar a linha gerenciada por este script
 MARKER="# RAC-pricetrack-cron"
 
+# D-1 (definitivo) às 06:00 BRT + intra-dia (hoje) às 13:10 e 23:10 BRT
 CRON_IMPORT="0 9 * * * $IMPORT_SCRIPT $MARKER"
+CRON_INTRADAY_AM="10 16 * * * $IMPORT_SCRIPT today $MARKER"
+CRON_INTRADAY_PM="10 2 * * * $IMPORT_SCRIPT today $MARKER"
 
 remove_entries() {
     crontab -l 2>/dev/null | grep -v "$MARKER" | crontab -
@@ -34,8 +39,9 @@ install_entries() {
     # Remove entrada antiga (idempotente)
     CLEANED="$(echo "$EXISTING" | grep -v "$MARKER" || true)"
 
-    # Adiciona a nova
-    NEW_CRONTAB="$(printf '%s\n%s\n' "$CLEANED" "$CRON_IMPORT")"
+    # Adiciona as novas (D-1 + 2 intra-dia)
+    NEW_CRONTAB="$(printf '%s\n%s\n%s\n%s\n' \
+        "$CLEANED" "$CRON_IMPORT" "$CRON_INTRADAY_AM" "$CRON_INTRADAY_PM")"
 
     echo "$NEW_CRONTAB" | crontab -
 
@@ -49,7 +55,9 @@ else
     install_entries
     echo ""
     echo "Import PriceTrack agendado:"
-    echo "  Diário: 06:00 BRT (09:00 UTC) → importa a coleta do dia anterior para pricetrack_daily"
+    echo "  06:00 BRT (09:00 UTC) → D-1 definitivo (dia anterior, --force)"
+    echo "  13:10 BRT (16:10 UTC) → hoje, intra-dia (após a manhã)"
+    echo "  23:10 BRT (02:10 UTC) → hoje, intra-dia (após a tarde)"
     echo ""
     echo "Pré-requisito: PRICETRACK_API_KEY + SUPABASE_URL + SUPABASE_KEY no $PROJECT_DIR/.env"
     echo "Log: $PROJECT_DIR/logs/cron_pricetrack.log"

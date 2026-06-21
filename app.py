@@ -8160,6 +8160,44 @@ def page_daily_vision() -> None:
             limit=80000,
         )
 
+    # Transparência D-1: o PriceTrack é importado no dia seguinte (06h BRT) e,
+    # provisoriamente, intra-dia (~13h/23h BRT). Enquanto não chega, os turnos
+    # do dia exibidos vêm das Coletas (fallback parcial — menos marketplaces),
+    # o que distorce a comparação vs. dias 100% PriceTrack (ex.: o "vs ontem"
+    # do KPI Piso geral). Avisamos quais dias do recorte ainda não têm PT.
+    # Só faz sentido quando a fonte PriceTrack está ativa no filtro global.
+    if "pricetrack" in _gf_sources():
+        pt_dates = set(df_pt["data"]) if not df_pt.empty else set()
+        requested_dates = {
+            start_date + timedelta(days=i)
+            for i in range((end_date - start_date).days + 1)
+        }
+        missing_pt = sorted(d for d in requested_dates if d not in pt_dates)
+        if missing_pt:
+            dias = ", ".join(d.strftime("%d/%m") for d in missing_pt)
+            if "coletas" in _gf_sources():
+                # Coletas ativa → ela preenche o(s) dia(s) sem PriceTrack.
+                corpo = (
+                    "Os turnos exibidos nesse(s) dia(s) vêm das **Coletas** "
+                    "(fallback, geralmente menos marketplaces) — compare com "
+                    "cautela contra dias 100% PriceTrack."
+                )
+            else:
+                # Coletas desligada no filtro global → não há fallback, o(s)
+                # dia(s) ficam sem dados (não afirmar que vêm das Coletas).
+                corpo = (
+                    "Com a fonte **Coletas** desligada no filtro global, "
+                    "esse(s) dia(s) ficam **sem dados** até o PriceTrack ser "
+                    "importado."
+                )
+            msg = f"📭 **PriceTrack** ainda não cobre: **{dias}**. {corpo}"
+            if date.today() in missing_pt:
+                msg += (
+                    " O PriceTrack de **hoje** entra no import intra-dia "
+                    "(~13h/23h BRT) ou no D-1 (06h BRT de amanhã)."
+                )
+            st.warning(msg)
+
     # Para PriceTrack o "menor preço" do dia é `min_price` (o piso/buy-box),
     # não o `mode_price` que vira `preco` por padrão no remap. Sobrescrevemos
     # antes de concatenar com coletas pra que o pivot reflita o piso real.

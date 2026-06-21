@@ -9,6 +9,7 @@ rejection_log de `pricetrack_import_log`.
 Rode: pytest tests/test_pricetrack_api_import.py
 """
 import importlib.util
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -121,3 +122,47 @@ class TestAggregateOffersTurno:
         ])
         agg, _ = ptai.aggregate_offers(df, "2026-06-17")
         assert set(agg["turno"].unique()) == {"Diário", "Manhã"}
+
+
+class TestShouldRedownload:
+    """Re-download dos 2 dias voláteis (hoje/ontem); cache para dias antigos."""
+
+    _TODAY = date(2026, 6, 21)
+
+    def test_arquivo_inexistente_sempre_baixa(self):
+        # Mesmo um dia antigo precisa baixar se o arquivo não existe localmente.
+        assert ptai._should_redownload(
+            "2026-01-01", file_exists=False, today=self._TODAY
+        ) is True
+
+    def test_hoje_com_cache_rebaixa(self):
+        # Export do dia corrente ainda cresce → ignora cache parcial.
+        assert ptai._should_redownload(
+            "2026-06-21", file_exists=True, today=self._TODAY
+        ) is True
+
+    def test_ontem_com_cache_rebaixa(self):
+        # D-1 pode ter sido importado provisoriamente intra-dia → re-baixa.
+        assert ptai._should_redownload(
+            "2026-06-20", file_exists=True, today=self._TODAY
+        ) is True
+
+    def test_dia_antigo_com_cache_reaproveita(self):
+        # Anteontem para trás é imutável no PriceTrack → usa o cache.
+        assert ptai._should_redownload(
+            "2026-06-19", file_exists=True, today=self._TODAY
+        ) is False
+
+    def test_default_today_usa_hoje_real(self):
+        # Sem injetar `today`, a data de HOJE deve re-baixar. Usar "hoje" (e não
+        # "ontem") evita flakiness à meia-noite: se o relógio virar entre este
+        # cálculo e o date.today() interno, a data passa a valer no máximo como
+        # "ontem" para a referência interna — e tanto hoje quanto ontem dão True.
+        hoje = date.today().isoformat()
+        assert ptai._should_redownload(hoje, file_exists=True) is True
+
+    def test_data_invalida_com_cache_reaproveita(self):
+        # Data malformada não derruba o import: cai no cache existente.
+        assert ptai._should_redownload(
+            "nao-e-data", file_exists=True, today=self._TODAY
+        ) is False

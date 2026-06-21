@@ -79,6 +79,7 @@ categoria AR CONDICIONADO → tabela `pricetrack_daily`.
 
 - **Pipeline:** `scripts/pricetrack_api_import.py` (export assíncrono → NDJSON.gz → agrega → upsert) + `--gaps-only` auto-heal dos últimos 14 dias
 - **Turnos intra-dia (Jun/2026):** `aggregate_offers()` deriva o turno do `collection_hour` e emite linhas **Manhã** (08–12h BRT) e **Tarde** (18–22h BRT) além do agregado **Diário** (dia inteiro), alimentando os turnos manhã/tarde do dashboard. Migration `migrations/003_pricetrack_turno.sql`
+- **Import intra-dia do dia corrente (Jun/2026):** além do D-1 (06:00 BRT, definitivo), o PriceTrack de **hoje** é importado provisoriamente às **13:10** (após a manhã) e **23:10 BRT** (após a tarde) — `.github/workflows/pricetrack_intraday.yml` (e `pricetrack_import_linux.sh today` na VM). Assim, passado o meio-dia, a Manhã de hoje já vem do PriceTrack (não mais do fallback de Coletas). As linhas provisórias são sobrescritas pela versão completa no D-1 do dia seguinte (`--force`); `_should_redownload()` re-baixa hoje/ontem para não reaproveitar export parcial em cache
 - **Importador manual** (md/xlsx): `python -m pricetrack_importer arquivo.md`
 - **Precedência (28/05/2026):** para cada `(data, sku_resolvido)` presente no PriceTrack, os dashboards de preço descartam a linha equivalente das coletas
 - **Reconciliação:** de-para de marketplace (`_PT_TO_CANONICAL_PLATFORM` no `app.py`) e de seller (`pricetrack_importer/seller_map.py`, ~103 variantes → ~30 canônicos)
@@ -290,7 +291,8 @@ chmod +x oracle_setup.sh
 |--------|-------------|--------|
 | `collect_manha_linux.sh` | 10:00 | Coleta alta+media, 2 páginas (xvfb p/ ML/Magalu) |
 | `collect_noite_linux.sh` | 21:00 | Coleta alta, 1 página |
-| `pricetrack_import_linux.sh` | 06:00 | Import PriceTrack D-1 (espelho do GH Actions) |
+| `pricetrack_import_linux.sh` | 06:00 | Import PriceTrack D-1 definitivo (`--force`; espelho do GH Actions) |
+| `pricetrack_import_linux.sh today` | 13:10 / 23:10 | Import PriceTrack do dia corrente (intra-dia: manhã/tarde) |
 | `daily_status_check.py` | diário | PASS/FAIL por plataforma + cobertura de campos → Telegram |
 
 ```bash
@@ -307,7 +309,8 @@ python scripts/daily_status_check.py --data 2026-05-14 --no-notify
 | Workflow | Trigger | Função |
 |----------|---------|--------|
 | `collect.yml` | cron 13:00/00:00 UTC + manual | Coleta (sem ML — IP bloqueado); Magalu com `MAGALU_HEADLESS=false` + xvfb; inputs: platforms/pages/priority |
-| `pricetrack_daily.yml` | cron 09:00 UTC + manual | Import PriceTrack D-1 + auto-heal `--gaps-only` (14 dias); inputs: start/end/force |
+| `pricetrack_daily.yml` | cron 09:00 UTC + manual | Import PriceTrack D-1 (agendado `--force`) + auto-heal `--gaps-only` (14 dias); inputs: start/end/force |
+| `pricetrack_intraday.yml` | cron 16:10/02:10 UTC + manual | Import PriceTrack do dia corrente (intra-dia: 13:10/23:10 BRT) p/ a Manhã/Tarde de hoje virem do PriceTrack |
 
 ---
 

@@ -1,0 +1,99 @@
+name: PriceTrack Intraday Import
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Importa o PriceTrack do PRÓPRIO DIA (provisório) para que o dashboard mostre
+# os turnos Manhã/Tarde de hoje já com a fonte de verdade de preço (PriceTrack)
+# em vez de cair no fallback de Coletas.
+#
+# Por que existe (além do pricetrack_daily.yml que roda D-1):
+#   • pricetrack_daily.yml importa ONTEM às 06:00 BRT — hoje fica sem PriceTrack
+#     até o dia seguinte, então a página "Daily Price Vision" exibia a Manhã de
+#     hoje vinda das Coletas (parcial → comparação enganosa vs. ontem 100% PT).
+#   • Este workflow importa HOJE logo após cada janela de coleta fechar, de modo
+#     que, passado o meio-dia, a Manhã já venha do PriceTrack (precedência PT no
+#     dashboard suprime as Coletas equivalentes automaticamente).
+#
+# Provisório → definitivo:
+#   As linhas gravadas aqui são parciais (só as horas coletadas até o run). No dia
+#   seguinte, pricetrack_daily.yml roda com --force e re-importa o dia já fechado,
+#   sobrescrevendo (upsert) a versão provisória pela completa. O import marca
+#   hoje/ontem como "voláteis" e sempre re-baixa o NDJSON fresco
+#   (_should_redownload), evitando reaproveitar um arquivo de cache parcial.
+#
+# Schedule (cron sempre em UTC; a data-alvo é calculada em BRT no step):
+#   16:10 UTC = 13:10 BRT  → após a janela da MANHÃ (08–12h BRT)
+#   02:10 UTC = 23:10 BRT  → após a janela da TARDE (18–22h BRT)
+#
+# Variáveis obrigatórias (Settings → Secrets and variables → Actions):
+#   PRICETRACK_API_KEY · SUPABASE_URL · SUPABASE_KEY
+#
+# NOTA: depende de a API do PriceTrack disponibilizar export do dia corrente.
+# Se ainda não houver dados (HTTP 409), o import sai como "no_data" sem erro e o
+# dashboard segue exibindo o banner de "PriceTrack de hoje pendente".
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '10 16 * * *'   # 13:10 BRT — após a janela da manhã
+    - cron: '10 2 * * *'    # 23:10 BRT — após a janela da tarde
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.11'
+  TZ: America/Sao_Paulo
+
+# Não concorre com o import diário (D-1) nem consigo mesmo
+concurrency:
+  group: pricetrack-daily
+  cancel-in-progress: false
+
+jobs:
+  import:
+    name: Import PriceTrack (hoje) → Supabase
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests pandas supabase python-dotenv loguru
+
+      - name: Resolve target date (BRT)
+        id: params
+        run: |
+          # TZ=America/Sao_Paulo está no env do job, então `date +%F` = data BRT.
+          # No run das 02:10 UTC isso resolve para o dia que termina (23:10 BRT),
+          # não para o dia seguinte que `date -u` retornaria.
+          TODAY=$(date +%F)
+          echo "today=$TODAY" >> "$GITHUB_OUTPUT"
+          echo "=== Import intra-dia (hoje, BRT): $TODAY ==="
+
+      - name: Run PriceTrack intraday import (today, --force)
+        env:
+          PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python scripts/pricetrack_api_import.py \
+            --start "${{ steps.params.outputs.today }}" \
+            --end "${{ steps.params.outputs.today }}" \
+            --force
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pricetrack-intraday-logs-${{ github.run_id }}
+          path: logs/pricetrack_api_import_*.log
+          retention-days: 14
+          if-no-files-found: ignore
