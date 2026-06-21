@@ -530,6 +530,40 @@ class ExportJob:
         self.started_at: Optional[float] = None
 
 
+def _should_redownload(
+    collection_date: str,
+    file_exists: bool,
+    today: Optional[date] = None,
+) -> bool:
+    """Decide se o NDJSON.gz da data deve ser (re)baixado.
+
+    Sempre baixa quando o arquivo ainda não existe. Além disso, força o
+    re-download dos 2 dias mais recentes (hoje e ontem): o export do dia
+    corrente ainda *cresce* ao longo do dia — o import intra-dia (~13h BRT)
+    baixa só as ofertas coletadas até ali, então um arquivo já em cache é
+    parcial — e o D-1 pode ter sido importado provisoriamente intra-dia,
+    precisando ser substituído pela versão completa. Dias mais antigos são
+    imutáveis no PriceTrack e reaproveitam o cache (economia de banda no
+    backfill da VM).
+
+    Args:
+        collection_date: data alvo em ISO (YYYY-MM-DD).
+        file_exists: se o arquivo local já existe.
+        today: injeção de data para teste (default: ``date.today()``).
+
+    Returns:
+        True se deve baixar; False se pode reaproveitar o cache.
+    """
+    if not file_exists:
+        return True
+    ref = today or date.today()
+    try:
+        cd = date.fromisoformat(collection_date)
+    except ValueError:
+        return False
+    return cd >= ref - timedelta(days=1)
+
+
 def _process_date(
     token: str,
     collection_date: str,
@@ -549,8 +583,9 @@ def _process_date(
     """
     dest_path = _DOWNLOAD_DIR / f"offers-{collection_date}.ndjson.gz"
 
-    # Se arquivo já foi baixado, pula o download
-    if not dest_path.exists():
+    # Re-baixa hoje/ontem mesmo com cache (export do dia ainda cresce); dias
+    # antigos reaproveitam o arquivo já baixado. Ver _should_redownload.
+    if _should_redownload(collection_date, dest_path.exists()):
         if dry_run:
             logger.info(f"[DRY-RUN] {collection_date} — criaria export e baixaria arquivo")
             return "dry_run", 0
