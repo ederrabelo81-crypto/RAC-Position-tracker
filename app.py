@@ -12,6 +12,7 @@ Usage (remote access):
 import json
 import os
 import re
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -7543,31 +7544,6 @@ _TURNO_TO_PERIODO: dict[str, str] = {
     "Tarde":      "Tarde",
 }
 
-# Cores de marca por marketplace para header em chip. Usadas pelo Styler
-# (set_table_styles) para pintar cada coluna de MP com a cor primária dele.
-_MP_COLORS: dict[str, tuple[str, str]] = {
-    # (background, ink)
-    "Magalu":        ("#dbeafe", "#1e3a8a"),  # azul Magalu
-    "Casas Bahia":   ("#dbeafe", "#1e3a8a"),  # azul CB
-    "Shopee":        ("#ffedd5", "#9a3412"),  # laranja Shopee
-    "Leroy Merlin":  ("#dcfce7", "#14532d"),  # verde Leroy
-    "Mercado Livre": ("#fef9c3", "#854d0e"),  # amarelo ML
-    "Amazon":        ("#fef3c7", "#78350f"),  # âmbar Amazon
-}
-
-# Emoji por marketplace — prefixado ao nome da coluna p/ dar identidade
-# visual no header. CSS nth-child via Styler não rende em `st.dataframe`
-# (Streamlit reescreve a tabela), então emoji no rótulo é o caminho que
-# de fato pinta o header sem perder sort/seleção.
-_MP_EMOJI: dict[str, str] = {
-    "Magalu":        "🟦",
-    "Casas Bahia":   "🟦",
-    "Shopee":        "🟧",
-    "Leroy Merlin":  "🟩",
-    "Mercado Livre": "🟨",
-    "Amazon":        "🟧",
-}
-
 # Cor primária por marca para o chip de Marca (borda lateral colorida).
 # Cores aproximam o branding sem precisar de PNG real — substitua por
 # `assets/logos/marcas/{slug}.png` numa 2ª iteração se quiser logo de verdade.
@@ -7630,91 +7606,6 @@ def _fmt_brl(v) -> str:
     return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def _fmt_price_with_delta(price, delta) -> str:
-    """Formata célula como ``"R$ 1.738,17  ▼ R$ 41"`` (preço + delta inline).
-
-    ▼ = preço caiu vs ontem (boa notícia p/ consumidor).
-    ▲ = preço subiu vs ontem.
-    Deltas com módulo abaixo de 1 BRL são suprimidos (ruído de arredondamento
-    no PriceTrack). Sem preço atual → travessão. Sem delta (NaN/None) → só preço.
-    """
-    base = _fmt_brl(price)
-    if price is None or pd.isna(price):
-        return base
-    if delta is None or pd.isna(delta) or abs(delta) < 1:
-        return base
-    arrow = "▼" if delta < 0 else "▲"
-    delta_int = int(round(abs(float(delta))))
-    delta_str = f"R$ {delta_int:,}".replace(",", ".")
-    return f"{base}  {arrow} {delta_str}"
-
-
-_BRL_FIRST_RE = re.compile(r"R\$\s*([0-9][0-9.\xa0\s]*(?:,\d{2})?)")
-
-
-def _parse_brl(s) -> float | None:
-    """Reverte `_fmt_brl` para float (usado pelo styler de winner).
-
-    Usa regex pra extrair o PRIMEIRO valor `R$ X.XXX,XX` da string.
-    Indispensável porque a célula passou a carregar preço + delta
-    inline (ex.: ``"R$ 1.738,17  ▼ R$ 41"``) — sem o regex o parser
-    misturaria os dígitos dos dois números.
-    """
-    if isinstance(s, (int, float)):
-        return None if pd.isna(s) else float(s)
-    if not isinstance(s, str) or s.strip() in ("", "—"):
-        return None
-    match = _BRL_FIRST_RE.search(s)
-    if not match:
-        return None
-    cleaned = (
-        match.group(1).replace(".", "").replace("\xa0", "").replace(" ", "")
-        .replace(",", ".").strip()
-    )
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
-
-
-# Blocos Unicode do mais baixo (▁) ao mais alto (█) — 8 níveis.
-_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
-
-
-def _unicode_sparkline(values) -> str:
-    """Mini-sparkline em blocos Unicode a partir da série de pisos diários.
-
-    Renderizada como TEXTO simples — diferente de
-    `st.column_config.LineChartColumn`, que o Streamlit **não desenha**
-    quando a tabela é passada como `Styler` (o gráfico degrada para o
-    dump cru da lista, tipo ``"1648,,,,,,"``). Como o Daily Vision precisa
-    do Styler para pintar o MP vencedor e o chip de marca, blocos Unicode
-    são o caminho que sempre renderiza.
-
-    - NaN/None viram ``·`` (lacuna no traço).
-    - Série normalizada pelo próprio min/max p/ ressaltar a forma.
-    - Série constante (preço estável) → linha reta no meio (▄).
-    - Menos de 2 pontos válidos → ``""`` (não há tendência a desenhar).
-    """
-    if not isinstance(values, (list, tuple)):
-        return ""
-    nums = [float(v) for v in values if v is not None and not pd.isna(v)]
-    if len(nums) < 2:
-        return ""
-    lo, hi = min(nums), max(nums)
-    span = hi - lo
-    chars: list[str] = []
-    for v in values:
-        if v is None or pd.isna(v):
-            chars.append("·")
-        elif span == 0:
-            chars.append("▄")
-        else:
-            level = int(round((float(v) - lo) / span * (len(_SPARK_BLOCKS) - 1)))
-            chars.append(_SPARK_BLOCKS[level])
-    return "".join(chars)
-
-
 @st.cache_data(ttl=900, show_spinner=False)
 def _query_sparkline_7d(
     spark_start: date,
@@ -7766,6 +7657,398 @@ def _query_sparkline_7d(
         # coluna "Tendência 7d" fica vazia mas o resto da página segue
         # funcionando normalmente.
         return pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# Daily Vision — render HTML (mockup "Daily Price Vision")
+# ---------------------------------------------------------------------------
+# O mockup pede recursos que `st.dataframe`/Styler não renderiza: logos em
+# chip, headers de marketplace com badge colorida, sparkline SVG, badge-pílula
+# de gap e cards de KPI com gradiente. Por isso KPIs + tabela são montados
+# como HTML e injetados via `st.html`. Todas as classes recebem prefixo `dv-`
+# para não colidir com o CSS global do Streamlit.
+
+# Marketplace → (iniciais do logo, fundo do chip, cor do texto) — chip 18×18.
+_MP_LOGO: dict[str, tuple[str, str, str]] = {
+    "Magalu":        ("M",  "#0086ff", "#ffffff"),
+    "Casas Bahia":   ("CB", "#1e3a8a", "#ffffff"),
+    "Shopee":        ("S",  "#ee4d2d", "#ffffff"),
+    "Leroy Merlin":  ("LM", "#78bf00", "#003a1f"),
+    "Mercado Livre": ("ML", "#ffe600", "#2d3277"),
+    "Amazon":        ("A",  "#131921", "#ff9900"),
+}
+
+# Marketplace → (fundo da badge do header, cor do texto da badge).
+_MP_BADGE: dict[str, tuple[str, str]] = {
+    "Magalu":        ("#fff7ed", "#c2410c"),
+    "Casas Bahia":   ("#fef2f2", "#b91c1c"),
+    "Shopee":        ("#fff1ed", "#ea580c"),
+    "Leroy Merlin":  ("#f0fdf4", "#15803d"),
+    "Mercado Livre": ("#fefce8", "#a16207"),
+    "Amazon":        ("#fff7ed", "#9a3412"),
+}
+
+# Rótulo curto exibido no header (Leroy Merlin → "Leroy", como no mockup).
+_MP_HEAD_LABEL: dict[str, str] = {
+    "Leroy Merlin": "Leroy",
+}
+
+# Marca → (iniciais, fundo do chip, cor do texto) — paleta exata do mockup.
+_BRAND_LOGO: dict[str, tuple[str, str, str]] = {
+    "Agratto":    ("AG", "#fee2e2", "#991b1b"),
+    "Electrolux": ("EL", "#dbeafe", "#1e40af"),
+    "Elgin":      ("EG", "#fef3c7", "#92400e"),
+    "Gree":       ("GR", "#d1fae5", "#065f46"),
+    "LG":         ("LG", "#fce7f3", "#9d174d"),
+    "Midea":      ("MD", "#e0e7ff", "#3730a3"),
+    "Philco":     ("PH", "#fed7aa", "#9a3412"),
+    "Samsung":    ("SS", "#1e3a8a", "#ffffff"),
+    "TCL":        ("TC", "#0c4a6e", "#ffffff"),
+}
+
+# Folha de estilo do componente (injetada uma vez por render; prefixo dv-).
+_DV_CSS = """<style>
+.dv-root { font-family:'Inter',-apple-system,'Segoe UI',sans-serif; color:#0f172a; }
+.dv-kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; }
+.dv-kpi { background:linear-gradient(135deg,#fff 0%,#f8fafc 100%); border:1px solid #e2e8f0;
+  border-left:4px solid #1a56db; border-radius:16px; padding:18px 20px;
+  box-shadow:0 4px 12px rgba(0,0,0,.04); }
+.dv-kpi.good { border-left-color:#10b981; }
+.dv-kpi.bad  { border-left-color:#dc2626; }
+.dv-kpi-label { font-size:11px; font-weight:700; color:#475569; text-transform:uppercase; letter-spacing:.08em; }
+.dv-kpi-value { font-size:26px; font-weight:800; margin-top:6px; letter-spacing:-.02em; color:#0f172a; line-height:1.15; }
+.dv-kpi-value.sm { font-size:21px; }
+.dv-kpi-delta { font-size:12px; font-weight:600; margin-top:6px; color:#475569; }
+.dv-kpi-delta.down { color:#16a34a; }
+.dv-kpi-delta.up   { color:#dc2626; }
+.dv-twrap { background:#fff; border:1px solid #e2e8f0; border-radius:16px; overflow-x:auto;
+  box-shadow:0 4px 12px rgba(0,0,0,.04); margin-top:18px; }
+.dv-table { width:100%; border-collapse:collapse; font-size:13px; }
+.dv-table thead th { background:#0f172a; color:#f8fafc; font-weight:600; text-transform:uppercase;
+  font-size:11px; letter-spacing:.06em; padding:12px 10px; border-bottom:2px solid #1e293b;
+  text-align:left; vertical-align:middle; white-space:nowrap; }
+.dv-table thead th.num { text-align:right; }
+.dv-mphead { display:inline-flex; align-items:center; gap:6px; padding:4px 9px; border-radius:999px;
+  font-weight:700; font-size:11px; letter-spacing:.02em; }
+.dv-logo { width:18px; height:18px; border-radius:4px; display:inline-flex; align-items:center;
+  justify-content:center; font-weight:800; font-size:9px; flex-shrink:0; }
+.dv-table tbody td { padding:9px 10px; border-bottom:1px solid #f1f5f9; vertical-align:middle; color:#0f172a; }
+.dv-table tbody tr:hover { background:#f8fafc; }
+.dv-table tbody tr.dv-champ td:first-child { border-left:4px solid #fbbf24; }
+.dv-bpill { display:inline-flex; align-items:center; gap:10px; font-weight:600; }
+.dv-blogo { width:26px; height:26px; border-radius:6px; display:inline-flex; align-items:center;
+  justify-content:center; font-weight:800; font-size:11px; flex-shrink:0; }
+.dv-champ-brand { background:linear-gradient(90deg,#fef3c7 0%,#fde68a 100%); color:#78350f; font-weight:700; }
+.dv-num { text-align:right; font-variant-numeric:tabular-nums; }
+.dv-price { font-weight:600; }
+.dv-delta { display:block; font-size:10px; font-weight:500; color:#475569; margin-top:2px; }
+.dv-delta.down { color:#16a34a; }
+.dv-delta.up { color:#dc2626; }
+.dv-win { background:#d1fae5; border-left:3px solid #10b981; }
+.dv-win .dv-price { color:#065f46; font-weight:700; }
+.dv-match { background:#ecfdf5; }
+.dv-match .dv-price { color:#047857; }
+.dv-empty .dv-price { color:#cbd5e1; font-style:italic; font-weight:400; }
+.dv-gap { display:inline-block; padding:3px 8px; border-radius:999px; background:#f1f5f9;
+  color:#475569; font-size:11px; font-weight:600; }
+.dv-gap.big { background:#fef3c7; color:#92400e; }
+.dv-spark { display:block; }
+.dv-table tfoot td { background:#f8fafc; font-weight:700; color:#475569; padding:11px 10px;
+  border-top:2px solid #e2e8f0; font-size:12px; }
+.dv-table tfoot td.num { text-align:right; }
+.dv-legend { margin-top:12px; font-size:12px; color:#475569; display:flex; gap:16px; flex-wrap:wrap; }
+.dv-legi { display:inline-flex; align-items:center; gap:6px; }
+.dv-sw { width:14px; height:14px; border-radius:3px; display:inline-block; }
+</style>"""
+
+
+def _dv_brand_logo(brand: str) -> tuple[str, str, str]:
+    """(iniciais, fundo, cor) do chip de marca. Fora do mockup → deriva.
+
+    Marcas não mapeadas usam a cor primária de `_BRAND_COLORS` (com fundo
+    tonalizado via `_hex_tint`) e as duas primeiras letras como sigla.
+    """
+    norm = str(brand or "").strip()
+    if norm in _BRAND_LOGO:
+        return _BRAND_LOGO[norm]
+    color = _brand_color(norm)
+    letters = "".join(ch for ch in norm if ch.isalnum())[:2].upper() or "?"
+    return letters, _hex_tint(color, 0.85), color
+
+
+def _dv_sparkline_svg(values) -> str:
+    """Sparkline SVG (polyline) da série de pisos 7d — look do mockup.
+
+    Verde se o piso CAIU no período (boa notícia p/ consumidor), vermelho se
+    subiu, cinza se estável. NaN viram lacuna (a linha liga só pontos
+    válidos). Menos de 2 pontos válidos → string vazia (coluna em branco).
+
+    Args:
+        values: lista de floats (pisos diários), podendo conter NaN.
+
+    Returns:
+        Marcação ``<svg>`` pronta p/ embutir na célula, ou ``""``.
+    """
+    if not isinstance(values, (list, tuple)):
+        return ""
+    pairs = [
+        (i, float(v)) for i, v in enumerate(values)
+        if v is not None and not pd.isna(v)
+    ]
+    if len(pairs) < 2:
+        return ""
+    n = len(values)
+    vals = [p[1] for p in pairs]
+    lo, hi = min(vals), max(vals)
+    span = hi - lo
+    w, h, pad = 80.0, 24.0, 4.0
+    step = w / (n - 1) if n > 1 else w
+    pts = " ".join(
+        f"{i * step:.0f},"
+        f"{(h / 2) if span == 0 else (pad + (hi - v) / span * (h - 2 * pad)):.0f}"
+        for i, v in pairs
+    )
+    first, last = pairs[0][1], pairs[-1][1]
+    stroke = "#64748b"
+    if last < first - 0.01:
+        stroke = "#10b981"
+    elif last > first + 0.01:
+        stroke = "#dc2626"
+    return (
+        f'<svg class="dv-spark" width="80" height="24" viewBox="0 0 80 24">'
+        f'<polyline fill="none" stroke="{stroke}" stroke-width="1.5" '
+        f'stroke-linecap="round" stroke-linejoin="round" points="{pts}"/></svg>'
+    )
+
+
+def _dv_mp_header_html(plat: str) -> str:
+    """<th> do marketplace: badge colorida + logo em chip (look do mockup)."""
+    badge_bg, badge_ink = _MP_BADGE.get(plat, ("#f1f5f9", "#475569"))
+    logo_txt, logo_bg, logo_ink = _MP_LOGO.get(plat, ("?", "#64748b", "#ffffff"))
+    label = _MP_HEAD_LABEL.get(plat, plat)
+    return (
+        f'<th class="num"><span class="dv-mphead" '
+        f'style="background:{badge_bg};color:{badge_ink};">'
+        f'<span class="dv-logo" style="background:{logo_bg};color:{logo_ink};">'
+        f'{_esc(logo_txt)}</span>{_esc(label)}</span></th>'
+    )
+
+
+@dataclass
+class _DVContext:
+    """Tudo que o `_dv_build_html` precisa para montar a página Daily Vision.
+
+    Agregado num dataclass (em vez de ~12 parâmetros soltos) para manter a
+    assinatura enxuta e a função de render testável isoladamente.
+    """
+    pivot: pd.DataFrame
+    base_cols: list[str]          # dimensões à esquerda (Data, Source, …)
+    price_matrix: pd.DataFrame    # preços numéricos (linhas × 6 MPs)
+    delta_matrix: pd.DataFrame    # delta vs ontem por (linha × MP)
+    champion_idx: int | None      # índice da linha campeã (menor piso global)
+    champion_brand: str | None
+    champion_mp: object           # rótulo da coluna MP vencedora da campeã
+    current_min: float | None     # piso geral do recorte
+    delta_v: float | None         # variação do piso vs período anterior
+    delta_str: str | None         # "R$ 73,64" (módulo, já formatado)
+    pct_str: str | None           # "-4,6%"
+    sel_grupo: str                # modo de agrupamento (rótulo do radio)
+
+
+def _dv_build_html(ctx: _DVContext) -> str:
+    """Monta o HTML completo (CSS + KPIs + tabela + legenda) do Daily Vision.
+
+    Reproduz o mockup `daily_vision_mockup.html`: cards de KPI com gradiente
+    e cor de status, tabela com logos em chip, headers de marketplace
+    coloridos, sparkline SVG por marca, destaque do MP vencedor, badge de
+    gap competitivo, linha campeã em âmbar e rodapé com média por MP.
+    """
+    pivot = ctx.pivot
+    base_cols = ctx.base_cols
+    price_matrix = ctx.price_matrix
+    delta_matrix = ctx.delta_matrix
+    champion_idx = ctx.champion_idx
+
+    # ── KPIs como cards (look do mockup) ─────────────────────────────────
+    n_brands = int(pivot["Marca"].nunique())
+    n_mps = int(price_matrix.notna().any(axis=0).sum())
+    kpi_cards: list[str] = []
+    kpi_cards.append(
+        '<div class="dv-kpi"><div class="dv-kpi-label">Linhas</div>'
+        f'<div class="dv-kpi-value">{len(pivot):,}</div>'
+        f'<div class="dv-kpi-delta">{n_brands} marcas · '
+        f'{n_mps} marketplaces</div></div>'
+    )
+    if "SKU" in pivot.columns:
+        sku_val = f"{pivot['SKU'].nunique():,}"
+        sku_sub = "SKUs no recorte"
+    else:
+        sku_val = "—"
+        sku_sub = f"modo {ctx.sel_grupo}"
+    kpi_cards.append(
+        '<div class="dv-kpi"><div class="dv-kpi-label">SKUs únicos</div>'
+        f'<div class="dv-kpi-value">{sku_val}</div>'
+        f'<div class="dv-kpi-delta">{_esc(sku_sub)}</div></div>'
+    )
+    piso_val = _fmt_brl(ctx.current_min) if ctx.current_min is not None else "—"
+    if ctx.delta_v is not None and ctx.delta_str:
+        down = ctx.delta_v < 0
+        arrow = "▼" if down else "▲"
+        status_cls = "good" if down else "bad"
+        delta_cls = "down" if down else "up"
+        pct_part = f" ({ctx.pct_str})" if ctx.pct_str else ""
+        delta_line = (
+            f'<div class="dv-kpi-delta {delta_cls}">{arrow} {ctx.delta_str} '
+            f'vs ontem{pct_part}</div>'
+        )
+    else:
+        status_cls = ""
+        delta_line = '<div class="dv-kpi-delta">sem base de ontem</div>'
+    kpi_cards.append(
+        f'<div class="dv-kpi {status_cls}"><div class="dv-kpi-label">'
+        f'Piso geral</div><div class="dv-kpi-value">{piso_val}</div>'
+        f'{delta_line}</div>'
+    )
+    if ctx.champion_brand and ctx.champion_mp:
+        kpi_cards.append(
+            '<div class="dv-kpi good"><div class="dv-kpi-label">'
+            'Marca campeã</div>'
+            f'<div class="dv-kpi-value sm">🏆 {_esc(ctx.champion_brand)}</div>'
+            f'<div class="dv-kpi-delta">{_esc(str(ctx.champion_mp))} · '
+            'menor preço do recorte</div></div>'
+        )
+    else:
+        kpi_cards.append(
+            '<div class="dv-kpi"><div class="dv-kpi-label">Marcas</div>'
+            f'<div class="dv-kpi-value">{n_brands:,}</div>'
+            '<div class="dv-kpi-delta">no recorte</div></div>'
+        )
+    kpis_html = f'<div class="dv-kpis">{"".join(kpi_cards)}</div>'
+
+    # ── Tabela ───────────────────────────────────────────────────────────
+    gap_series = pd.to_numeric(pivot["Gap 1º→2º"], errors="coerce")
+
+    head_cells = [f"<th>{_esc(c)}</th>" for c in base_cols]
+    head_cells.append("<th>Tendência 7d</th>")
+    head_cells += [_dv_mp_header_html(p) for p in _DAILY_VISION_PLATFORMS]
+    head_cells.append('<th class="num">Gap 1º→2º</th>')
+    thead = f"<thead><tr>{''.join(head_cells)}</tr></thead>"
+
+    body_rows: list[str] = []
+    for idx in pivot.index:
+        is_champ = champion_idx is not None and idx == champion_idx
+        cells: list[str] = []
+        for c in base_cols:
+            val = pivot.loc[idx, c]
+            if c == "Data":
+                try:
+                    txt = pd.to_datetime(val).strftime("%d/%m/%Y")
+                except (ValueError, TypeError):
+                    txt = _esc(val)
+                cells.append(f"<td>{txt}</td>")
+            elif c == "Marca":
+                if is_champ:
+                    cells.append(
+                        f'<td class="dv-champ-brand">🏆 {_esc(val)}</td>'
+                    )
+                else:
+                    letters, bg, ink = _dv_brand_logo(str(val))
+                    cells.append(
+                        '<td><span class="dv-bpill">'
+                        f'<span class="dv-blogo" '
+                        f'style="background:{bg};color:{ink};">{_esc(letters)}'
+                        f'</span>{_esc(val)}</span></td>'
+                    )
+            else:
+                cells.append(f"<td>{_esc(val)}</td>")
+
+        cells.append(
+            f"<td>{_dv_sparkline_svg(pivot.loc[idx, 'Tendência 7d'])}</td>"
+        )
+
+        row_prices = price_matrix.loc[idx]
+        valid = row_prices.dropna()
+        rmin = float(valid.min()) if not valid.empty else None
+        for plat in _DAILY_VISION_PLATFORMS:
+            v = row_prices.get(plat)
+            if v is None or pd.isna(v):
+                cells.append(
+                    '<td class="num dv-empty"><span class="dv-price">—'
+                    '</span></td>'
+                )
+                continue
+            v = float(v)
+            cell_cls = ""
+            if rmin is not None and v == rmin:
+                cell_cls = " dv-win"
+            elif rmin is not None and rmin > 0 and (v - rmin) / rmin <= 0.02:
+                cell_cls = " dv-match"
+            d = (delta_matrix.loc[idx, plat]
+                 if plat in delta_matrix.columns else None)
+            delta_html = ""
+            if d is not None and not pd.isna(d) and abs(d) >= 1:
+                d_down = d < 0
+                d_arrow = "▼" if d_down else "▲"
+                d_cls = "down" if d_down else "up"
+                d_amt = f"R$ {int(round(abs(float(d)))):,}".replace(",", ".")
+                delta_html = (
+                    f'<span class="dv-delta {d_cls}">{d_arrow} {d_amt}</span>'
+                )
+            cells.append(
+                f'<td class="num{cell_cls}"><span class="dv-price">'
+                f'{_fmt_brl(v)}</span>{delta_html}</td>'
+            )
+
+        g = gap_series.loc[idx]
+        if g is None or pd.isna(g):
+            cells.append('<td class="num"><span class="dv-gap">—</span></td>')
+        else:
+            # Gap >= R$ 50 destaca o espaço competitivo amplo do vencedor.
+            big_cls = " big" if float(g) >= 50 else ""
+            cells.append(
+                f'<td class="num"><span class="dv-gap{big_cls}">'
+                f'{_fmt_brl(g)}</span></td>'
+            )
+
+        row_cls = ' class="dv-champ"' if is_champ else ""
+        body_rows.append(f"<tr{row_cls}>{''.join(cells)}</tr>")
+    tbody = f"<tbody>{''.join(body_rows)}</tbody>"
+
+    # Rodapé: média de preço por marketplace (Gap fica em branco).
+    foot_cells = [
+        f'<td colspan="{len(base_cols) + 1}">Média por marketplace</td>'
+    ]
+    foot_cells += [
+        f'<td class="num">{_fmt_brl(price_matrix[p].mean())}</td>'
+        for p in _DAILY_VISION_PLATFORMS
+    ]
+    foot_cells.append("<td></td>")
+    tfoot = f"<tfoot><tr>{''.join(foot_cells)}</tr></tfoot>"
+
+    table_html = (
+        f'<div class="dv-twrap"><table class="dv-table">'
+        f'{thead}{tbody}{tfoot}</table></div>'
+    )
+
+    legend_html = (
+        '<div class="dv-legend">'
+        '<span class="dv-legi"><span class="dv-sw" '
+        'style="background:#fde68a;border:1px solid #fbbf24;"></span> '
+        'marca campeã do recorte</span>'
+        '<span class="dv-legi"><span class="dv-sw" '
+        'style="background:#d1fae5;border-left:3px solid #10b981;"></span> '
+        'marketplace vencedor da linha</span>'
+        '<span class="dv-legi"><span class="dv-sw" '
+        'style="background:#ecfdf5;"></span> dentro de 2% do piso (match)</span>'
+        '<span class="dv-legi">▼ ▲ delta vs ontem (mesmo MP/marca)</span>'
+        '<span class="dv-legi">Gap = piso vs 2º colocado</span>'
+        '</div>'
+    )
+
+    return (
+        f'{_DV_CSS}<div class="dv-root">{kpis_html}{table_html}'
+        f'{legend_html}</div>'
+    )
 
 
 def page_daily_vision() -> None:
@@ -7825,7 +8108,9 @@ def page_daily_vision() -> None:
         sel_grupo = st.radio(
             "Agrupar por",
             ["SKU (detalhado)", "Marca + Capacidade", "Marca"],
-            index=0,
+            # Default "Marca" → vista consolidada por marca (uma linha por
+            # marca), que é exatamente o recorte do mockup Daily Price Vision.
+            index=2,
             key="dv_grupo",
             help=(
                 "**SKU (detalhado)**: uma linha por SKU.\n\n"
@@ -8141,9 +8426,9 @@ def page_daily_vision() -> None:
             # — pricetrack_daily publica em CAIXA ALTA ("MIDEA") e o
             # pivot lê "Midea". Sem isso o map devolve sempre vazio.
             #
-            # Dias sem dado viram `NaN` (não `None`): `_unicode_sparkline`
-            # trata NaN como lacuna (·) no traço, mantendo as 7 posições
-            # alinhadas às datas da janela.
+            # Dias sem dado viram `NaN` (não `None`): `_dv_sparkline_svg`
+            # trata NaN como lacuna no traço (a linha liga só pontos
+            # válidos), mantendo as 7 posições alinhadas às datas da janela.
             spark_by_brand[str(brand_v).strip().title()] = [
                 float(by_date[d]) if d in by_date and pd.notna(by_date[d]) else nan
                 for d in window_dates
@@ -8165,71 +8450,18 @@ def page_daily_vision() -> None:
         df_window.loc[prev_mask, "preco"], errors="coerce",
     ).dropna().min()
     current_min = float(row_min.min()) if row_min.notna().any() else None
+    # `delta_v` (sinalizado), `delta_str` ("R$ x" formatado) e `pct_str`
+    # ("-4,6%") alimentam o card "Piso geral" no HTML mais abaixo. Queda do
+    # piso (delta_v < 0) é boa notícia p/ o consumidor → card/seta verdes.
+    delta_v: float | None = None
     delta_str: str | None = None
+    pct_str: str | None = None
     if pd.notna(prev_min) and current_min is not None:
         delta_v = current_min - float(prev_min)
-        sign = "+" if delta_v >= 0 else "−"
-        delta_str = f"{sign} R$ {abs(delta_v):,.2f}".replace(
+        delta_str = f"R$ {abs(delta_v):,.2f}".replace(
             ",", "X").replace(".", ",").replace("X", ".")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Linhas", f"{len(pivot):,}")
-    c2.metric(
-        "SKUs únicos",
-        f"{pivot['SKU'].nunique():,}" if "SKU" in pivot.columns else "—",
-    )
-    if champion_brand and champion_mp:
-        c3.metric(
-            "🏆 Marca campeã",
-            champion_brand,
-            f"em {champion_mp}",
-            delta_color="off",
-        )
-    else:
-        c3.metric("Marcas", f"{pivot['Marca'].nunique():,}")
-    c4.metric(
-        "Piso geral",
-        f"R$ {current_min:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        if current_min is not None else "—",
-        delta=delta_str if delta_str else None,
-        # `inverse`: queda do piso (delta_v < 0) é positivo p/ o consumidor
-        # e renderiza verde; alta renderiza vermelho. Bate com a leitura
-        # do dashboard ("queda de preço = boa notícia").
-        delta_color="inverse",
-        help=(
-            f"Comparado ao piso de {prev_day.strftime('%d/%m/%Y')}"
-            if delta_str else None
-        ),
-    )
-    st.divider()
-
-    # ── Styler — highlights modernos ──────────────────────────────────────
-    # 1) Verde forte na célula vencedora (menor preço da linha) e verde
-    #    suave nas concorrentes dentro de ±2 % do piso da linha (tier 2).
-    # 2) Linha campeã geral (menor preço global do recorte) ganha borda
-    #    lateral âmbar + ícone 🏆 prefixado à Marca para chamar o olho.
-    # 3) Cada marca ganha uma borda lateral colorida (chip), com cor
-    #    primária definida em `_BRAND_COLORS`.
-    # 4) Headers dos 6 marketplaces recebem cor primária do MP via
-    #    nth-child (pintura no `<th>` correspondente).
-    # 5) Células sem oferta ficam discretas (cinza claro, itálico).
-    # 6) Linha "Média" no rodapé com top border destacado.
-
-    # Cópia de exibição: aqui aplicamos rótulos visuais (🏆 + emoji de
-    # marca, linha "📊 Média" no rodapé, MPs pré-formatados em BR) sem
-    # contaminar `pivot`, que continua como base limpa pro CSV.
-    display_pivot = pivot.copy()
-
-    # Chip de marca = SÓ o nome, em negrito na cor primária da marca,
-    # sobre fundo tonalizado + borda lateral colorida (aplicados pelo
-    # `_style_brand_chip` abaixo). A versão antiga prefixava as iniciais
-    # ("AG  Agratto"), mas em texto puro (sem o badge 26×26 do mockup, que
-    # `st.dataframe` não renderiza) o código repetido só poluía. O nome
-    # colorido + chip carrega a identidade visual sem a redundância.
-    if champion_idx is not None:
-        display_pivot.loc[champion_idx, "Marca"] = (
-            f"🏆 {display_pivot.loc[champion_idx, 'Marca']}"
-        )
+        if float(prev_min) > 0:
+            pct_str = f"{delta_v / float(prev_min) * 100:+.1f}%".replace(".", ",")
 
     # ── Delta vs ontem por (linha do pivot × marketplace) ────────────────
     # Reaproveita `df_window` (que cobre [start_date - 1, end_date]) para
@@ -8304,223 +8536,51 @@ def page_daily_vision() -> None:
             )
             delta_matrix[plat] = curr - prev
 
-    # Pré-formata MPs e Gap em BRL ANTES de virarem colunas exibidas.
-    # Motivo: `st.dataframe` ignora `Styler.format()` em colunas numéricas
-    # — os valores chegavam ao frontend como `1738.170000`. Convertendo
-    # pra string aqui ganhamos o formato BR correto; o styler de winner
-    # passa a parsear via `_parse_brl` para identificar o piso por linha.
-    # A célula carrega preço + delta inline (ex.: "R$ 1.738,17  ▼ R$ 41").
-    for plat in _DAILY_VISION_PLATFORMS:
-        prices = pd.to_numeric(display_pivot[plat], errors="coerce")
-        deltas = delta_matrix[plat].reindex(prices.index)
-        display_pivot[plat] = [
-            _fmt_price_with_delta(prices.iat[i], deltas.iat[i])
-            for i in range(len(prices))
-        ]
-    display_pivot["Gap 1º→2º"] = pd.to_numeric(
-        display_pivot["Gap 1º→2º"], errors="coerce",
-    ).map(_fmt_brl)
-
-    # Tendência 7d → sparkline de blocos Unicode (TEXTO). Substitui o
-    # `LineChartColumn`, que não renderiza sob Styler. A lista de pisos
-    # diários (`pivot["Tendência 7d"]`) vira a string ▁▂▃… aqui.
-    display_pivot["Tendência 7d"] = pivot["Tendência 7d"].map(_unicode_sparkline)
-
-    # Linha "Média" — anexada só ao display_pivot. Usa um índice inteiro
-    # único (max + 1) p/ Styler funcionar com .loc, e fica fora do CSV
-    # (que é gerado a partir do `pivot` original).
-    avg_idx = int(display_pivot.index.max()) + 1 if len(display_pivot) else 0
-    avg_row: dict = {}
-    for c in display_pivot.columns:
-        if c in _DAILY_VISION_PLATFORMS:
-            avg_row[c] = _fmt_brl(price_matrix[c].mean())
-        elif c == "Gap 1º→2º":
-            avg_row[c] = _fmt_brl(
-                pd.to_numeric(pivot["Gap 1º→2º"], errors="coerce").mean()
-            )
-        elif c == "Tendência 7d":
-            # Linha Média não tem sparkline próprio.
-            avg_row[c] = ""
-        elif c == "Marca":
-            avg_row[c] = "📊 Média por MP"
-        else:
-            avg_row[c] = ""
-    display_pivot.loc[avg_idx] = avg_row
-
-    # Rename: emoji no header de cada MP. Mantém os 6 nomes consecutivos
-    # entre "Tendência 7d" e "Gap 1º→2º" — o styler abaixo continua
-    # passando os nomes RENOMEADOS no subset.
-    mp_renamed = {
-        plat: f"{_MP_EMOJI.get(plat, '')} {plat}".strip()
-        for plat in _DAILY_VISION_PLATFORMS
-    }
-    mp_cols_renamed = [mp_renamed[p] for p in _DAILY_VISION_PLATFORMS]
-    display_pivot = display_pivot.rename(columns=mp_renamed)
-
-    # Ordem de colunas com sparkline ANTES dos MPs (contexto à esquerda)
-    # e gap DEPOIS (insight competitivo à direita).
-    display_cols = (
-        base_cols + ["Tendência 7d"] + mp_cols_renamed + ["Gap 1º→2º"]
-    )
-    display_pivot = display_pivot[display_cols]
-
-    def _style_row_prices(row: pd.Series) -> list[str]:
-        """Pinta a célula vencedora e os concorrentes próximos por linha.
-
-        Os valores chegam como strings BR ("R$ 1.738,17") porque o
-        Streamlit não respeita Styler.format() em st.dataframe. Parseamos
-        via `_parse_brl` p/ recuperar o numérico e calcular o vencedor.
-        """
-        # A linha "Média" não tem vencedor — sai cinza neutro p/ não
-        # competir com as linhas reais por atenção.
-        if row.name == avg_idx:
-            return [
-                "background-color:#f8fafc; color:#475569; "
-                "font-weight:600; border-top:2px solid #cbd5e1;"
-            ] * len(row)
-        nums = [_parse_brl(v) for v in row]
-        valid = [n for n in nums if n is not None]
-        if not valid:
-            return ["color:#94a3b8; font-style:italic;"] * len(row)
-        rmin = min(valid)
-        styles = []
-        for v in nums:
-            if v is None:
-                styles.append("color:#cbd5e1; font-style:italic;")
-            elif v == rmin:
-                styles.append(
-                    "background-color:#d1fae5; color:#065f46; "
-                    "font-weight:700; border-left:3px solid #10b981;"
-                )
-            elif rmin > 0 and (v - rmin) / rmin <= 0.02:
-                styles.append("background-color:#ecfdf5; color:#047857;")
-            else:
-                styles.append("")
-        return styles
-
-    def _style_brand_chip(col: pd.Series) -> list[str]:
-        """Borda lateral colorida por marca + destaque âmbar na campeã.
-
-        Consulta o nome RAW da marca em `pivot` pelo índice — evita
-        parsear a string display ("AG  Agratto") que pode mudar de
-        formato no futuro.
-        """
-        out = []
-        for idx, _val in col.items():
-            if idx == avg_idx:
-                out.append(
-                    "background-color:#f8fafc; color:#475569; "
-                    "font-weight:700; border-top:2px solid #cbd5e1;"
-                )
-                continue
-            if idx == champion_idx:
-                out.append(
-                    "background: linear-gradient(90deg, #fef3c7 0%, #fde68a 100%); "
-                    "color:#78350f; font-weight:700; "
-                    "border-left:4px solid #f59e0b;"
-                )
-                continue
-            # Lookup do nome RAW em `pivot` (sem prefixos visuais).
-            raw = (
-                str(pivot.iloc[idx]["Marca"]).strip()
-                if 0 <= idx < len(pivot) else ""
-            )
-            color = _brand_color(raw)
-            bg = _hex_tint(color, 0.88)
-            # Chip "completo" — fundo tonalizado + texto na cor primária da
-            # marca + borda lateral grossa. Carrega a identidade visual
-            # da marca (look do mockup) mantendo o nome legível.
-            out.append(
-                f"background-color:{bg}; color:{color}; "
-                f"border-left:5px solid {color}; "
-                "padding:4px 10px; font-weight:700;"
-            )
-        return out
-
-    def _style_avg_dim(col: pd.Series) -> list[str]:
-        """Faixa cinza nas dimensões não-Marca da linha Média."""
-        out = [""] * len(col)
-        if avg_idx in col.index:
-            pos = list(col.index).index(avg_idx)
-            out[pos] = (
-                "background-color:#f8fafc; color:#475569; "
-                "font-weight:600; border-top:2px solid #cbd5e1;"
-            )
-        return out
-
-    # Subset de dimensões não-Marca pra aplicar o estilo da linha Média.
-    # "Tendência 7d" agora é texto (entra na faixa cinza da Média); só
-    # Marca (chip próprio) e os MPs (winner highlight) ficam de fora.
-    dim_subset = [
-        c for c in display_cols
-        if c not in (mp_cols_renamed + ["Marca"])
-    ]
-
-    styler = (
-        display_pivot.style
-        .apply(_style_row_prices, axis=1, subset=mp_cols_renamed)
-        .apply(_style_brand_chip, axis=0, subset=["Marca"])
-        .apply(_style_avg_dim, axis=0, subset=dim_subset)
-        .set_table_styles([
-            {"selector": "thead th",
-             "props": "background-color:#0f172a; color:#f8fafc; "
-                      "font-weight:600; text-transform:uppercase; "
-                      "font-size:0.72rem; letter-spacing:0.06em; "
-                      "border-bottom:2px solid #1e293b;"},
-            {"selector": "tbody td",
-             "props": "padding:0.55rem 0.75rem; font-size:0.88rem;"},
-            {"selector": "tbody tr:hover",
-             "props": "background-color:#f1f5f9;"},
-        ])
-        .hide(axis="index")
-    )
-
-    # column_config: Data em formato BR. A "Tendência 7d" agora é texto
-    # (blocos Unicode) — não precisa de config especial; o `LineChartColumn`
-    # foi abandonado porque o Streamlit não o desenha quando a tabela é um
-    # Styler (degradava para o dump cru da lista, "1648,,,,,,").
-    event = st.dataframe(
-        styler,
-        use_container_width=True,
-        height=600,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="dv_table",
-        column_config={
-            "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-            "Tendência 7d": st.column_config.TextColumn(
-                "Tendência 7d",
-                width="small",
-                help="Piso diário da marca nos últimos 7 dias (todos os MPs). "
-                     "▁▂▃▄▅▆▇ = forma da tendência · · = dia sem dado.",
-            ),
-            "Gap 1º→2º": st.column_config.TextColumn(
-                "Gap 1º→2º",
-                width="small",
-                help="Diferença entre o piso da linha e o 2º colocado — "
-                     "mede o espaço competitivo do vencedor.",
-            ),
-        },
-    )
-
-    # Legenda das marcações.
-    st.caption(
-        "🏆 marca com o menor preço do recorte · "
-        "chip colorido = identidade da marca · "
-        "▁▂▃▄▅▆▇ = tendência do piso nos últimos 7 dias (· = dia sem dado) · "
-        "preço + ▼/▲ R$ = variação vs ontem · "
-        "fundo verde forte = MP vencedor da linha · "
-        "fundo verde claro = concorrente dentro de 2% do piso · "
-        "— sem oferta · "
-        "📊 média por MP no rodapé · "
-        "👆 clique numa linha para abrir os detalhes."
-    )
+    # ── Render HTML (mockup "Daily Price Vision") ────────────────────────
+    # KPIs + tabela + legenda são montados como HTML por `_dv_build_html`
+    # (logos em chip, headers coloridos, sparkline SVG, badge de gap, linha
+    # campeã em âmbar, rodapé com média por MP) e injetados via `st.html`.
+    st.html(_dv_build_html(_DVContext(
+        pivot=pivot,
+        base_cols=base_cols,
+        price_matrix=price_matrix,
+        delta_matrix=delta_matrix,
+        champion_idx=champion_idx,
+        champion_brand=champion_brand,
+        champion_mp=champion_mp,
+        current_min=current_min,
+        delta_v=delta_v,
+        delta_str=delta_str,
+        pct_str=pct_str,
+        sel_grupo=sel_grupo,
+    )))
 
     # ── Drill-down — quem (SKU/seller) ofertou cada preço da linha ───────
-    sel_rows = (event.selection.rows
-                if getattr(event, "selection", None) else [])
-    if sel_rows:
-        row_pos = sel_rows[0]
+    # A tabela agora é HTML (sem seleção nativa de linha), então o
+    # drill-down usa um selectbox: cada opção corresponde a uma linha do
+    # recorte (posição + dimensões), mapeada de volta à posição no `pivot`.
+    row_labels: list[str] = []
+    label_to_pos: dict[str, int] = {}
+    for pos, idx in enumerate(pivot.index):
+        parts = [str(pivot.loc[idx, "Marca"])]
+        if "Capacidade" in pivot.columns:
+            parts.append(f"{pivot.loc[idx, 'Capacidade']} BTU")
+        if "SKU" in pivot.columns:
+            parts.append(str(pivot.loc[idx, "SKU"]))
+        parts.append(str(pivot.loc[idx, "Turno"]))
+        lbl = f"{pos + 1}. " + " · ".join(
+            p for p in parts if p and p not in ("—", "— BTU")
+        )
+        row_labels.append(lbl)
+        label_to_pos[lbl] = pos
+    sel_label = st.selectbox(
+        "🔎 Ver detalhes de uma linha (SKU · seller · título por marketplace)",
+        ["— selecione —"] + row_labels,
+        index=0,
+        key="dv_detail_pick",
+    )
+    if sel_label != "— selecione —" and sel_label in label_to_pos:
+        row_pos = label_to_pos[sel_label]
         if 0 <= row_pos < len(pivot):
             sel = pivot.iloc[row_pos]
             mask = (
