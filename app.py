@@ -8175,12 +8175,22 @@ def page_daily_vision() -> None:
         missing_pt = sorted(d for d in requested_dates if d not in pt_dates)
         if missing_pt:
             dias = ", ".join(d.strftime("%d/%m") for d in missing_pt)
-            msg = (
-                f"📭 **PriceTrack** ainda não cobre: **{dias}**. "
-                "Os turnos exibidos nesse(s) dia(s) vêm das **Coletas** "
-                "(fallback, geralmente menos marketplaces) — compare com cautela "
-                "contra dias 100% PriceTrack."
-            )
+            if "coletas" in _gf_sources():
+                # Coletas ativa → ela preenche o(s) dia(s) sem PriceTrack.
+                corpo = (
+                    "Os turnos exibidos nesse(s) dia(s) vêm das **Coletas** "
+                    "(fallback, geralmente menos marketplaces) — compare com "
+                    "cautela contra dias 100% PriceTrack."
+                )
+            else:
+                # Coletas desligada no filtro global → não há fallback, o(s)
+                # dia(s) ficam sem dados (não afirmar que vêm das Coletas).
+                corpo = (
+                    "Com a fonte **Coletas** desligada no filtro global, "
+                    "esse(s) dia(s) ficam **sem dados** até o PriceTrack ser "
+                    "importado."
+                )
+            msg = f"📭 **PriceTrack** ainda não cobre: **{dias}**. {corpo}"
             if date.today() in missing_pt:
                 msg += (
                     " O PriceTrack de **hoje** entra no import intra-dia "

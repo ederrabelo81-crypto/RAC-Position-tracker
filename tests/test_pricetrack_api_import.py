@@ -9,7 +9,7 @@ rejection_log de `pricetrack_import_log`.
 Rode: pytest tests/test_pricetrack_api_import.py
 """
 import importlib.util
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -154,9 +154,12 @@ class TestShouldRedownload:
         ) is False
 
     def test_default_today_usa_hoje_real(self):
-        # Sem injetar `today`, ontem real ainda deve re-baixar.
-        ontem = (date.today() - timedelta(days=1)).isoformat()
-        assert ptai._should_redownload(ontem, file_exists=True) is True
+        # Sem injetar `today`, a data de HOJE deve re-baixar. Usar "hoje" (e não
+        # "ontem") evita flakiness à meia-noite: se o relógio virar entre este
+        # cálculo e o date.today() interno, a data passa a valer no máximo como
+        # "ontem" para a referência interna — e tanto hoje quanto ontem dão True.
+        hoje = date.today().isoformat()
+        assert ptai._should_redownload(hoje, file_exists=True) is True
 
     def test_data_invalida_com_cache_reaproveita(self):
         # Data malformada não derruba o import: cai no cache existente.
