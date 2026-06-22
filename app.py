@@ -9,6 +9,7 @@ Usage (remote access):
     Then open: http://<your-ip>:8501
 """
 
+import base64
 import json
 import os
 import re
@@ -7777,17 +7778,24 @@ def _dv_brand_logo(brand: str) -> tuple[str, str, str]:
 
 
 def _dv_sparkline_svg(values) -> str:
-    """Sparkline SVG (polyline) da série de pisos 7d — look do mockup.
+    """Sparkline da série de pisos 7d como ``<img>`` (data URI) — look do mockup.
 
     Verde se o piso CAIU no período (boa notícia p/ consumidor), vermelho se
     subiu, cinza se estável. NaN viram lacuna (a linha liga só pontos
     válidos). Menos de 2 pontos válidos → string vazia (coluna em branco).
 
+    Por que ``<img>`` e não ``<svg>`` inline: o Streamlit sanitiza/descarta
+    SVG solto dentro de ``st.html`` (e rebaixa atributos camelCase como
+    ``viewBox`` → ``viewbox``), então o traço sumia e a coluna ficava vazia
+    apesar de haver série. ``<img src="data:image/svg+xml;base64,…">`` é o
+    caminho que o Streamlit renderiza sem sanitizar — o sparkline volta a
+    aparecer mantendo a tabela HTML do mockup intacta.
+
     Args:
         values: lista de floats (pisos diários), podendo conter NaN.
 
     Returns:
-        Marcação ``<svg>`` pronta p/ embutir na célula, ou ``""``.
+        Marcação ``<img>`` pronta p/ embutir na célula, ou ``""``.
     """
     if not isinstance(values, (list, tuple)):
         return ""
@@ -7814,10 +7822,30 @@ def _dv_sparkline_svg(values) -> str:
         stroke = "#10b981"
     elif last > first + 0.01:
         stroke = "#dc2626"
-    return (
-        f'<svg class="dv-spark" width="80" height="24" viewBox="0 0 80 24">'
+
+    # SVG STANDALONE: dentro de um data URI o markup é parseado como documento
+    # isolado, então `xmlns` é obrigatório (inline ele é opcional). viewBox é
+    # preservado aqui — o rebaixamento camelCase do sanitizer do st.html não
+    # alcança o conteúdo do data URI.
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        'width="80" height="24" viewBox="0 0 80 24">'
         f'<polyline fill="none" stroke="{stroke}" stroke-width="1.5" '
         f'stroke-linecap="round" stroke-linejoin="round" points="{pts}"/></svg>'
+    )
+    b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+
+    # Tooltip nativo com a variação do piso no período (queda/alta/estável).
+    pct = (last - first) / first * 100 if first else 0.0
+    if last < first - 0.01:
+        tip = f"Piso 7d em queda ({pct:+.1f}%)"
+    elif last > first + 0.01:
+        tip = f"Piso 7d em alta ({pct:+.1f}%)"
+    else:
+        tip = "Piso 7d estável"
+    return (
+        f'<img class="dv-spark" width="80" height="24" alt="{tip}" '
+        f'title="{tip}" src="data:image/svg+xml;base64,{b64}"/>'
     )
 
 
