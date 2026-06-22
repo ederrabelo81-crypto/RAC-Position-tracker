@@ -1,28 +1,39 @@
-name: PriceTrack Intraday Import
+name: PriceTrack Hourly Refresh
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Importa o PriceTrack do PRÓPRIO DIA (provisório) para que o dashboard mostre
-# os turnos Manhã/Tarde de hoje já com a fonte de verdade de preço (PriceTrack)
-# em vez de cair no fallback de Coletas.
+# Mantém o PriceTrack do dashboard "Daily Price Vision" sempre fresco, de hora
+# em hora, em vez de depender de 2-3 disparos fixos por dia.
 #
-# Por que existe (além do pricetrack_daily.yml que roda D-1):
-#   • pricetrack_daily.yml importa ONTEM às 06:00 BRT — hoje fica sem PriceTrack
-#     até o dia seguinte, então a página "Daily Price Vision" exibia a Manhã de
-#     hoje vinda das Coletas (parcial → comparação enganosa vs. ontem 100% PT).
-#   • Este workflow importa HOJE logo após cada janela de coleta fechar, de modo
-#     que, passado o meio-dia, a Manhã já venha do PriceTrack (precedência PT no
-#     dashboard suprime as Coletas equivalentes automaticamente).
+# Por que de hora em hora (substitui os dois crons fixos 13:10/23:10 BRT):
+#   • O export do PriceTrack do DIA CORRENTE cresce ao longo do dia: às 13h só
+#     tem a Manhã (08–12h), à noite ganha a Tarde (18–22h). Reimportar de hora
+#     em hora faz o dashboard refletir Manhã/Tarde do PriceTrack assim que a API
+#     publica, sem esperar o D-1 do dia seguinte (que caía no fallback Coletas).
+#   • O cron agendado do GitHub Actions é BEST-EFFORT e atrasa 2–6h em horários
+#     de pico. O cron fixo das 23:10 BRT (02:10 UTC) chegou a rodar só às 07:39
+#     UTC do dia seguinte — quando o relógio BRT já tinha virado, o run importava
+#     o dia ERRADO (hoje em vez de ontem) e o dia-alvo (ex.: 21/06) ficava SEM
+#     PriceTrack. Rodar de hora em hora + janela móvel torna o atraso inofensivo:
+#     o próximo run cobre o que o anterior perdeu.
 #
-# Provisório → definitivo:
-#   As linhas gravadas aqui são parciais (só as horas coletadas até o run). No dia
-#   seguinte, pricetrack_daily.yml roda com --force e re-importa o dia já fechado,
-#   sobrescrevendo (upsert) a versão provisória pela completa. O import marca
-#   hoje/ontem como "voláteis" e sempre re-baixa o NDJSON fresco
-#   (_should_redownload), evitando reaproveitar um arquivo de cache parcial.
+# O que cada run faz (idempotente — upsert ON CONFLICT em pricetrack_daily):
+#   1) Importa HOJE com --force (o export do dia ainda cresce → re-baixa fresco).
+#   2) Cura buracos dos últimos 3 dias com --gaps-only: barato (date_exists pula
+#      datas já presentes), só baixa um dia se ele estiver REALMENTE faltando —
+#      é o que tampa um D-1 perdido (ex.: 21/06) no minuto em que a API publica,
+#      sem re-baixar dias já fechados a cada hora.
+#
+# Divisão de responsabilidades:
+#   • Este workflow (hora em hora) = FRESCOR de hoje + cura rápida de buracos.
+#   • pricetrack_daily.yml (06:00 BRT) = FINALIZAÇÃO definitiva do D-1 (--force)
+#     + auto-heal de 14 dias. Continua sendo a autoridade do dia fechado.
+#
+# Reprodutibilidade na VM Oracle (scheduler confiável, sem atraso do GH):
+#   scripts/pricetrack_import_linux.sh refresh   → mesma lógica (today + heal)
+#   bash scripts/setup_pricetrack_cron.sh        → instala o cron de hora em hora
 #
 # Schedule (cron sempre em UTC; a data-alvo é calculada em BRT no step):
-#   16:10 UTC = 13:10 BRT  → após a janela da MANHÃ (08–12h BRT)
-#   02:10 UTC = 23:10 BRT  → após a janela da TARDE (18–22h BRT)
+#   '0 * * * *'  → de hora em hora (best-effort; o GH pode atrasar/agrupar runs).
 #
 # Variáveis obrigatórias (Settings → Secrets and variables → Actions):
 #   PRICETRACK_API_KEY · SUPABASE_URL · SUPABASE_KEY
@@ -34,24 +45,25 @@ name: PriceTrack Intraday Import
 
 on:
   schedule:
-    - cron: '10 16 * * *'   # 13:10 BRT — após a janela da manhã
-    - cron: '10 2 * * *'    # 23:10 BRT — após a janela da tarde
+    - cron: '0 * * * *'   # de hora em hora (best-effort — GH atrasa em pico)
   workflow_dispatch:
 
 env:
   PYTHON_VERSION: '3.11'
   TZ: America/Sao_Paulo
 
-# Não concorre com o import diário (D-1) nem consigo mesmo
+# Não concorre com o import diário (D-1) nem consigo mesmo. cancel-in-progress
+# false: nunca aborta um import no meio (deixaria o dia parcial); runs em
+# excesso apenas enfileiram — cada um leva ~2-4 min, então não acumula.
 concurrency:
   group: pricetrack-daily
   cancel-in-progress: false
 
 jobs:
-  import:
-    name: Import PriceTrack (hoje) → Supabase
+  refresh:
+    name: Refresh PriceTrack (hoje + heal) → Supabase
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repo
@@ -68,17 +80,22 @@ jobs:
           pip install --upgrade pip
           pip install requests pandas supabase python-dotenv loguru
 
-      - name: Resolve target date (BRT)
+      - name: Resolve target dates (BRT)
         id: params
         run: |
-          # TZ=America/Sao_Paulo está no env do job, então `date +%F` = data BRT.
-          # No run das 02:10 UTC isso resolve para o dia que termina (23:10 BRT),
-          # não para o dia seguinte que `date -u` retornaria.
+          # TZ=America/Sao_Paulo no env do job → `date` opera em BRT, então a
+          # data-alvo NÃO depende do horário (atrasado) em que o GH disparar.
           TODAY=$(date +%F)
-          echo "today=$TODAY" >> "$GITHUB_OUTPUT"
-          echo "=== Import intra-dia (hoje, BRT): $TODAY ==="
+          HEAL_START=$(date -d '3 days ago' +%F)
+          YESTERDAY=$(date -d 'yesterday' +%F)
+          echo "today=$TODAY"           >> "$GITHUB_OUTPUT"
+          echo "heal_start=$HEAL_START" >> "$GITHUB_OUTPUT"
+          echo "yesterday=$YESTERDAY"   >> "$GITHUB_OUTPUT"
+          echo "=== Refresh horário (BRT) — hoje: $TODAY | heal: $HEAL_START → $YESTERDAY ==="
 
-      - name: Run PriceTrack intraday import (today, --force)
+      # 1) Frescor: re-baixa o export de HOJE (cresce ao longo do dia) e
+      #    sobrescreve Diário/Manhã/Tarde provisórios via upsert.
+      - name: Import today (--force)
         env:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -89,11 +106,25 @@ jobs:
             --end "${{ steps.params.outputs.today }}" \
             --force
 
+      # 2) Cura buracos recentes (ex.: um D-1 perdido por atraso de schedule).
+      #    --gaps-only só baixa datas AUSENTES no banco → barato quando não há
+      #    buraco; tampa 21/06-like no minuto em que a API publica.
+      - name: Heal recent gaps (last 3 days, --gaps-only)
+        env:
+          PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python scripts/pricetrack_api_import.py \
+            --start "${{ steps.params.outputs.heal_start }}" \
+            --end "${{ steps.params.outputs.yesterday }}" \
+            --gaps-only
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pricetrack-intraday-logs-${{ github.run_id }}
+          name: pricetrack-hourly-logs-${{ github.run_id }}
           path: logs/pricetrack_api_import_*.log
-          retention-days: 14
+          retention-days: 7
           if-no-files-found: ignore
