@@ -1,13 +1,19 @@
 # PriceTrack — Insights de Implementação e Roadmap de Melhorias
 
-> **Contexto:** o projeto importa diariamente (06:00 BRT) o export da API da
-> Price Track (`pricetrack.com.br`) — preços min/avg/mode/max por
+> **Contexto:** o projeto importa o export da API da Price Track
+> (`pricetrack.com.br`) — preços min/avg/mode/max por
 > `(data, turno, marca, sku, marketplace, seller)` da categoria AR CONDICIONADO —
-> para a tabela `pricetrack_daily` do Supabase. Desde 28/05/2026 o PriceTrack
-> é a **fonte de verdade de preço** nos dashboards (precedência por
-> `(data, sku_resolvido)` sobre as coletas próprias). Desde 06/2026 o import
-> recorta `turno` (Diário/Manhã/Tarde) a partir de `collection_hour`, e o
-> PriceTrack passou a ser a fonte dos turnos Manhã/Tarde do dashboard.
+> para a tabela `pricetrack_daily` do Supabase. A coleta roda em **duas
+> cadências**: (a) **D-1 definitivo às 06:00 BRT** (`pricetrack_daily.yml`,
+> `--force` + auto-heal 14 dias) finaliza o dia fechado; (b) **refresh de hora
+> em hora** (`pricetrack_intraday.yml` no GH + cron `refresh` na VM) re-importa
+> HOJE com `--force` e cura buracos recentes com `--gaps-only`, mantendo
+> Manhã/Tarde do dia frescos e tampando um D-1 perdido em até ~1h. Desde
+> 28/05/2026 o PriceTrack é a **fonte de verdade de preço** nos dashboards
+> (precedência por `(data, sku_resolvido)` sobre as coletas próprias). Desde
+> 06/2026 o import recorta `turno` (Diário/Manhã/Tarde) a partir de
+> `collection_hour`, e o PriceTrack passou a ser a fonte dos turnos Manhã/Tarde
+> do dashboard.
 >
 > Este documento responde: **o que mais dá para extrair de um dado tão
 > robusto, e o que endurecer na engenharia.**
@@ -17,8 +23,9 @@
 | Componente | Arquivo | Função |
 |------------|---------|--------|
 | Import diário via API | `scripts/pricetrack_api_import.py` + `.github/workflows/pricetrack_daily.yml` | Export assíncrono → NDJSON.gz → agrega → upsert em `pricetrack_daily`; auto-heal `--gaps-only` (14 dias) |
+| Refresh horário | `.github/workflows/pricetrack_intraday.yml` (`0 * * * *`) | De hora em hora: hoje `--force` + cura buracos 3 dias `--gaps-only`. Janela móvel = imune ao atraso de schedule do GH |
 | Import manual (md/xlsx) | `pricetrack_importer/` | Parser streaming + validador + dedup + upsert idempotente |
-| Espelho na VM | `scripts/pricetrack_import_linux.sh` + cron 06:00 | Redundância do GH Actions |
+| Espelho na VM | `scripts/pricetrack_import_linux.sh` (`refresh`) + cron 06:00 + cron `:30` horário | Scheduler CONFIÁVEL (sem o atraso 2–6h do GH Actions) |
 | Reconciliação | `app.py` (`_PT_TO_CANONICAL_PLATFORM`, `seller_map.py`) | De-para marketplace (22 mapas) e seller (~103 variantes → ~30 canônicos) |
 | Consumo | `query_pricetrack_daily()` / `query_price_evolution_data()` | Preço PT com precedência; coletas preenchem gaps e posições |
 | Auditoria | `pricetrack_import_log` | rows_total/inserted/rejected + rejection_log JSONB |
@@ -98,6 +105,15 @@ estoque no canal; explosão de sellers desconhecidos sinaliza mercado cinza.
    insights da seção 2.
 3. **Monitorar o import como produção**: `pricetrack_import_log` + Data Health.
    Dado de preço com buraco corrói a confiança do dashboard inteiro.
+4. **Cadência tolerante a atraso, não horário fixo.** O cron agendado do GitHub
+   Actions é best-effort e atrasa 2–6h em pico (observado: D-1 09:00 UTC rodando
+   11–14 UTC; intra-dia 02:10 UTC rodando 07:39 UTC). Um run que calcula a
+   data-alvo pelo relógio no momento da execução (`date +%F`) importa o **dia
+   errado** quando o atraso cruza a meia-noite BRT — foi assim que 21/06 ficou
+   sem PriceTrack (o run das 23:10 BRT virou 04:39 BRT e importou 22/06). Regra:
+   importar sempre uma **janela móvel** (hoje + cura dos últimos dias), nunca uma
+   única data sensível ao horário, e rodar de hora em hora. A VM (cron real, sem
+   atraso) é o caminho confiável; o GH Actions horário é o backup.
 
 *Criado em Jun/2026. Fontes: `scripts/pricetrack_api_import.py`,
 `pricetrack_importer/`, `app.py` (queries PT), `migrations/001_pricetrack.sql`.*
