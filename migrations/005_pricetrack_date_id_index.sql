@@ -1,0 +1,31 @@
+-- Migration 005: índice composto (collection_date, id) em pricetrack_daily
+-- Roadmap: desbloqueio do statement_timeout no Daily Price Vision.
+--
+-- Problema (diagnóstico 2026-06-23): a página Daily Price Vision e demais
+-- leitores de `pricetrack_daily` paginam por keyset ordenando por
+-- `collection_date DESC, id DESC` (PostgREST capa a resposta em 1000 linhas).
+-- O único índice com `collection_date` à frente era idx_ptd_date_turno
+-- (collection_date, turno) — sem o `id`, o planner resolvia o ORDER BY com
+-- um Incremental Sort que LIA O DIA INTEIRO por página (33k linhas/dia em
+-- Jun/2026) e ainda re-lia tudo a cada página seguinte. Com a tabela em
+-- ~3,7M linhas / 1,7 GB, uma janela de 2 dias custava ~27 páginas × ~1,1s e
+-- estourava o `statement_timeout` do papel PostgREST (anon=3s / authenticated
+-- =8s) → erro 57014 ("canceling statement due to statement timeout"). O efeito
+-- visível era o Daily Vision achar que "o PriceTrack não cobre o dia" (a query
+-- voltava vazia por timeout, não por falta de dado).
+--
+-- Solução: índice composto (collection_date, id). O ORDER BY
+-- `collection_date DESC, id DESC` vira um Index Scan Backward puro (sem sort) e
+-- o keyset `(collection_date, id) < (cursor)` vira uma busca direta. Medido na
+-- base de produção: página 1 caiu de ~1098 ms → ~35 ms (~32×); páginas
+-- profundas também ~35 ms. Beneficia todo keyset que ordena por (data, id):
+-- query_pricetrack_daily e _query_top_movers_pt.
+--
+-- Aplicação: em tabela grande sob escrita ativa, use CONCURRENTLY (fora de
+-- transação) para não travar o importer:
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ptd_date_id
+--       ON pricetrack_daily (collection_date, id);
+-- Já aplicado em produção (projeto RAC) via CONCURRENTLY em 2026-06-23.
+
+CREATE INDEX IF NOT EXISTS idx_ptd_date_id
+    ON pricetrack_daily (collection_date, id);
