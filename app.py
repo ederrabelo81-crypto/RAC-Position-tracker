@@ -1048,6 +1048,11 @@ def query_pricetrack_daily(
     Marketplace/seller matching is case-insensitive (pricetrack uses
     uppercase; coletas uses title-case).
     """
+    # Sinaliza o estado da última consulta PT para a UI distinguir
+    # "a query falhou (ex.: statement_timeout)" de "o PriceTrack realmente
+    # não cobre o dia". Sem isso, um timeout devolvia DataFrame vazio e a
+    # página concluía, erroneamente, que faltava dado no PriceTrack.
+    st.session_state["pt_query_error"] = None
     client = _get_supabase()
     if client is None:
         return pd.DataFrame()
@@ -1236,7 +1241,15 @@ def query_pricetrack_daily(
             )
         return df
     except Exception as exc:
-        st.warning(f"Erro consultando pricetrack_daily: {exc}")
+        # Registra o erro para a UI não confundir falha de consulta com
+        # ausência de cobertura. Timeout (57014) é o caso típico em janelas
+        # grandes; o dado costuma existir, só não foi lido a tempo.
+        st.session_state["pt_query_error"] = str(exc)
+        st.warning(
+            "Erro consultando pricetrack_daily — a consulta pode ter "
+            "expirado (statement_timeout). Os dados provavelmente existem; "
+            f"tente recarregar ou reduzir o período. Detalhe: {exc}"
+        )
         return pd.DataFrame()
 
 
@@ -8195,13 +8208,27 @@ def page_daily_vision() -> None:
     # do KPI Piso geral). Avisamos quais dias do recorte ainda não têm PT.
     # Só faz sentido quando a fonte PriceTrack está ativa no filtro global.
     if "pricetrack" in _gf_sources():
+        pt_error = st.session_state.get("pt_query_error")
         pt_dates = set(df_pt["data"]) if not df_pt.empty else set()
         requested_dates = {
             start_date + timedelta(days=i)
             for i in range((end_date - start_date).days + 1)
         }
         missing_pt = sorted(d for d in requested_dates if d not in pt_dates)
-        if missing_pt:
+        if pt_error:
+            # A consulta ao PriceTrack FALHOU (ex.: timeout) — o df veio vazio
+            # por erro, não por falta de cobertura. NÃO afirmar "ainda não
+            # cobre": isso induz o analista a achar que falta dado quando, na
+            # verdade, ele existe e só não foi lido. Mensagem específica e o
+            # detalhe técnico já saíram no st.warning de query_pricetrack_daily.
+            st.warning(
+                "⚠️ A consulta ao **PriceTrack** não completou neste recorte "
+                "(provável tempo de consulta esgotado). Os turnos exibidos "
+                "podem estar vindo apenas das **Coletas**. Recarregue a página "
+                "ou estreite o período/marca — o dado do PriceTrack "
+                "normalmente existe, só não foi lido a tempo."
+            )
+        elif missing_pt:
             dias = ", ".join(d.strftime("%d/%m") for d in missing_pt)
             if "coletas" in _gf_sources():
                 # Coletas ativa → ela preenche o(s) dia(s) sem PriceTrack.
