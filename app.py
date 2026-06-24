@@ -517,7 +517,7 @@ _SUPABASE_PAGE = 1000  # PostgREST default server-side max_rows cap
 _ESTADOS_RESOLVIDOS = ["MAPEADO", "FORA_ESCOPO", "NAO_AC", "REVISAR"]
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_catalogo() -> pd.DataFrame:
     """Carrega produtos_catalogo (241 SKUs RAC High Wall)."""
     client = _get_supabase()
@@ -530,7 +530,7 @@ def get_catalogo() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_depara() -> pd.DataFrame:
     """Carrega o de-para nome→família (paginado)."""
     client = _get_supabase()
@@ -583,7 +583,7 @@ def _familia_display(familia: str | None) -> str:
     return f"{familia} (genérica)" if _familia_is_generica(familia) else familia
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_familia_options(brands: tuple = (), estados: tuple = ()) -> list:
     """Famílias disponíveis (catálogo + genéricas em uso), filtradas por marca/estado."""
     depara = get_depara()
@@ -599,7 +599,7 @@ def get_familia_options(brands: tuple = (), estados: tuple = ()) -> list:
     return fams
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_sku_resolvido_options(familias: tuple = ()) -> list:
     """SKUs do catálogo filtrados pelas famílias selecionadas."""
     cat = get_catalogo()
@@ -700,7 +700,7 @@ def _apply_sku_filter_with_expansion(q, skus: list):
     return q.in_("sku_resolvido", skus)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_cobertura_resolucao() -> dict:
     """Conta linhas de coletas por estado_match — usado no banner do topo."""
     client = _get_supabase()
@@ -1384,16 +1384,16 @@ def query_price_evolution_data(
     return df, meta
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_filter_options() -> dict:
-    """Fetch distinct values for filter dropdowns (last 90 days), paginated."""
+    """Fetch distinct values for filter dropdowns (last 30 days), paginated."""
     empty = {"platforms": [], "platform_types": [], "brands": [], "keywords": [], "sellers": []}
     client = _get_supabase()
     if client is None:
         return empty
     # Caminho rápido: RPC server-side com DISTINCT (evita timeout em ~261k linhas)
     try:
-        rpc = client.rpc("get_filter_options_fast", {"window_days": 90}).execute()
+        rpc = client.rpc("get_filter_options_fast", {"window_days": 30}).execute()
         data = rpc.data if isinstance(rpc.data, dict) else (rpc.data[0] if rpc.data else None)
         if data:
             raw_brands     = data.get("brands") or []
@@ -1408,7 +1408,7 @@ def get_filter_options() -> dict:
     except Exception:
         pass  # cai no fallback paginado abaixo
     try:
-        since = str(date.today() - timedelta(days=90))
+        since = str(date.today() - timedelta(days=30))
         all_rows: list = []
         offset = 0
         while True:
@@ -1455,18 +1455,18 @@ def get_filter_options() -> dict:
         return empty
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_sku_options(
     brands: tuple = (),
     btu_filter: tuple = (),
     product_types: tuple = (),
 ) -> list:
-    """Fetch distinct product names (last 90 days), paginated past the 1000-row cap."""
+    """Fetch distinct product names (last 30 days), paginated past the 1000-row cap."""
     client = _get_supabase()
     if client is None:
         return []
     try:
-        since = str(date.today() - timedelta(days=90))
+        since = str(date.today() - timedelta(days=30))
 
         def _base_q():
             q = (
@@ -1691,6 +1691,21 @@ def _gf_sources_key() -> tuple:
     return tuple(_gf_sources())
 
 
+def _gf_estados_key() -> tuple:
+    """Tupla estável dos estados_match globais (chave de cache)."""
+    return tuple(_gf_estados())
+
+
+def _gf_familias_key() -> tuple:
+    """Tupla estável das famílias globais (chave de cache)."""
+    return tuple(_gf_familias())
+
+
+def _gf_skus_resolvidos_key() -> tuple:
+    """Tupla estável dos SKUs resolvidos globais (chave de cache)."""
+    return tuple(_gf_skus_resolvidos())
+
+
 def _gf_compare() -> bool:
     return bool(st.session_state.get("gf_compare", False))
 
@@ -1735,7 +1750,7 @@ def _fmt_brl(value: float) -> str:
         return "—"
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _overview_data(
     start_str: str,
     end_str: str,
@@ -1745,12 +1760,19 @@ def _overview_data(
     familias_tuple: tuple = (),
     skus_resolvidos_tuple: tuple = (),
     sources_tuple: tuple = ("coletas", "pricetrack"),
+    estados_tuple: tuple = (),
 ) -> pd.DataFrame:
     """Cached Supabase query for overview / top-movers pages.
 
     `sources_tuple` espelha o filtro global de Fonte de Dados: entra na chave
     de cache e, como esta função lê só a tabela `coletas`, devolve vazio quando
     "coletas" está desligada.
+
+    `estados_tuple`, `familias_tuple` e `skus_resolvidos_tuple` precisam ser
+    passados explicitamente pelos chamadores (use `_gf_*_key()`). Nunca lemos
+    `_gf_*()` aqui dentro porque o resultado entra como chave de cache; ler
+    session state internamente daria respostas stale quando o filtro global
+    muda dentro da janela do TTL.
     """
     client = _get_supabase()
     if client is None:
@@ -1773,10 +1795,9 @@ def _overview_data(
             q = q.in_("plataforma", _expand_platforms(list(platforms_tuple)))
         if brands_tuple:
             q = q.in_("marca", _expand_brands(list(brands_tuple)))
-        # Filtros novos do catálogo normalizado — explícito tem precedência
-        final_estados  = _gf_estados()
-        final_familias = list(familias_tuple)        if familias_tuple        else _gf_familias()
-        final_skus     = list(skus_resolvidos_tuple) if skus_resolvidos_tuple else _gf_skus_resolvidos()
+        final_estados  = list(estados_tuple)
+        final_familias = list(familias_tuple)
+        final_skus     = list(skus_resolvidos_tuple)
         if final_estados:
             q = q.in_("estado_match", final_estados)
         if final_familias:
@@ -1828,7 +1849,7 @@ def _overview_data(
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _price_data(
     start_str: str,
     end_str: str,
@@ -1859,10 +1880,16 @@ def _price_data(
     Nota: `sources_tuple` entra apenas como discriminador da chave de cache —
     o recorte de fonte em si acontece nas funções-folha (`query_coletas` /
     `query_pricetrack_daily`), que `query_price_evolution_data` chama.
+
+    `familias_tuple` e `skus_resolvidos_tuple` precisam ser passados
+    explicitamente pelos chamadores (use `_gf_familias_key()` /
+    `_gf_skus_resolvidos_key()`). Nunca lemos `_gf_*()` aqui dentro porque o
+    resultado entra como chave de cache; ler session state internamente daria
+    respostas stale quando o filtro global muda dentro da janela do TTL.
     """
     _ = sources_tuple  # cache-key only (ver docstring)
-    familias = list(familias_tuple) or _gf_familias() or None
-    skus     = list(skus_resolvidos_tuple) or _gf_skus_resolvidos() or None
+    familias = list(familias_tuple) or None
+    skus     = list(skus_resolvidos_tuple) or None
     df, _ = query_price_evolution_data(
         date.fromisoformat(start_str),
         date.fromisoformat(end_str),
@@ -3358,7 +3385,7 @@ def _render_pricetrack_results(results: list[dict]) -> None:
 # Page — Data Health (cobertura/preenchimento dos campos por plataforma)
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _query_health(window_days: int) -> pd.DataFrame:
     """Amostra recente com colunas mínimas para análise de cobertura.
 
@@ -5592,7 +5619,7 @@ def page_sov_patrocinado() -> None:
 # Page — 🛡️ Price Compliance (monitor de preço-piso PriceTrack)
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _query_pt_compliance(
     window_days: int,
     sources_tuple: tuple = ("coletas", "pricetrack"),
@@ -5843,11 +5870,16 @@ def page_overview() -> None:
         df  = _overview_data(
             str(start_date), str(end_date),
             tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+            familias_tuple=_gf_familias_key(),
+            skus_resolvidos_tuple=_gf_skus_resolvidos_key(),
             sources_tuple=_gf_sources_key(),
+            estados_tuple=_gf_estados_key(),
         )
         dfp = _price_data(
             str(start_date), str(end_date),
             tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+            familias_tuple=_gf_familias_key(),
+            skus_resolvidos_tuple=_gf_skus_resolvidos_key(),
             sources_tuple=_gf_sources_key(),
         )
 
@@ -5868,11 +5900,16 @@ def page_overview() -> None:
             df_cmp  = _overview_data(
                 str(cmp_start), str(cmp_end),
                 tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+                familias_tuple=_gf_familias_key(),
+                skus_resolvidos_tuple=_gf_skus_resolvidos_key(),
                 sources_tuple=_gf_sources_key(),
+                estados_tuple=_gf_estados_key(),
             )
             dfp_cmp = _price_data(
                 str(cmp_start), str(cmp_end),
                 tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
+                familias_tuple=_gf_familias_key(),
+                skus_resolvidos_tuple=_gf_skus_resolvidos_key(),
                 sources_tuple=_gf_sources_key(),
             )
 
@@ -6069,7 +6106,7 @@ def _streamlit_supports_linechart() -> bool:
     return cc is not None and hasattr(cc, "LineChartColumn")
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _pt_top_movers_data(
     start_str: str,
     end_str_exclusive: str,
@@ -6819,10 +6856,22 @@ def page_email_digest() -> None:
     with st.spinner("Building digest…"):
         # Contagens / BuyBox vêm das coletas (posicao_geral só existe lá);
         # o cálculo de movers de **preço** usa a precedência PriceTrack.
-        df_cur   = _overview_data(str(window_start), str(window_end), (), (), sources_tuple=_gf_sources_key())
-        df_prev  = _overview_data(str(prev_start), str(prev_end), (), (), sources_tuple=_gf_sources_key())
-        dfp_cur  = _price_data(str(window_start), str(window_end), (), (), sources_tuple=_gf_sources_key())
-        dfp_prev = _price_data(str(prev_start), str(prev_end), (), (), sources_tuple=_gf_sources_key())
+        _fam_k, _sku_k, _src_k, _est_k = (
+            _gf_familias_key(), _gf_skus_resolvidos_key(),
+            _gf_sources_key(), _gf_estados_key(),
+        )
+        df_cur   = _overview_data(str(window_start), str(window_end), (), (),
+                                  familias_tuple=_fam_k, skus_resolvidos_tuple=_sku_k,
+                                  sources_tuple=_src_k, estados_tuple=_est_k)
+        df_prev  = _overview_data(str(prev_start), str(prev_end), (), (),
+                                  familias_tuple=_fam_k, skus_resolvidos_tuple=_sku_k,
+                                  sources_tuple=_src_k, estados_tuple=_est_k)
+        dfp_cur  = _price_data(str(window_start), str(window_end), (), (),
+                               familias_tuple=_fam_k, skus_resolvidos_tuple=_sku_k,
+                               sources_tuple=_src_k)
+        dfp_prev = _price_data(str(prev_start), str(prev_end), (), (),
+                               familias_tuple=_fam_k, skus_resolvidos_tuple=_sku_k,
+                               sources_tuple=_src_k)
 
     if df_cur.empty:
         st.warning("No records found in the active window.")
@@ -6975,8 +7024,15 @@ def page_price_anomalies() -> None:
     prev_day = target_day - timedelta(days=1)
 
     with st.spinner("Loading price records…"):
-        df_today = _price_data(str(target_day), str(target_day), (), (), sources_tuple=_gf_sources_key())
-        df_prev  = _price_data(str(prev_day), str(prev_day), (), (), sources_tuple=_gf_sources_key())
+        _fam_k, _sku_k, _src_k = (
+            _gf_familias_key(), _gf_skus_resolvidos_key(), _gf_sources_key(),
+        )
+        df_today = _price_data(str(target_day), str(target_day), (), (),
+                               familias_tuple=_fam_k, skus_resolvidos_tuple=_sku_k,
+                               sources_tuple=_src_k)
+        df_prev  = _price_data(str(prev_day), str(prev_day), (), (),
+                               familias_tuple=_fam_k, skus_resolvidos_tuple=_sku_k,
+                               sources_tuple=_src_k)
 
     def _agg(df):
         if df.empty or not {"preco", "produto"}.issubset(df.columns):
@@ -7127,7 +7183,7 @@ def _enrich_specs(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _query_products_history(
     products: tuple, start_str: str, end_str: str,
     sources_tuple: tuple = ("coletas", "pricetrack"),
@@ -7620,7 +7676,7 @@ def _fmt_brl(v) -> str:
     return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _query_sparkline_7d(
     spark_start: date,
     end_date: date,
