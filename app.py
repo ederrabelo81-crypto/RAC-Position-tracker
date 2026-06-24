@@ -517,7 +517,7 @@ _SUPABASE_PAGE = 1000  # PostgREST default server-side max_rows cap
 _ESTADOS_RESOLVIDOS = ["MAPEADO", "FORA_ESCOPO", "NAO_AC", "REVISAR"]
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_catalogo() -> pd.DataFrame:
     """Carrega produtos_catalogo (241 SKUs RAC High Wall)."""
     client = _get_supabase()
@@ -530,7 +530,7 @@ def get_catalogo() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_depara() -> pd.DataFrame:
     """Carrega o de-para nome→família (paginado)."""
     client = _get_supabase()
@@ -583,7 +583,7 @@ def _familia_display(familia: str | None) -> str:
     return f"{familia} (genérica)" if _familia_is_generica(familia) else familia
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_familia_options(brands: tuple = (), estados: tuple = ()) -> list:
     """Famílias disponíveis (catálogo + genéricas em uso), filtradas por marca/estado."""
     depara = get_depara()
@@ -599,7 +599,7 @@ def get_familia_options(brands: tuple = (), estados: tuple = ()) -> list:
     return fams
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_sku_resolvido_options(familias: tuple = ()) -> list:
     """SKUs do catálogo filtrados pelas famílias selecionadas."""
     cat = get_catalogo()
@@ -700,7 +700,7 @@ def _apply_sku_filter_with_expansion(q, skus: list):
     return q.in_("sku_resolvido", skus)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_cobertura_resolucao() -> dict:
     """Conta linhas de coletas por estado_match — usado no banner do topo."""
     client = _get_supabase()
@@ -1384,16 +1384,16 @@ def query_price_evolution_data(
     return df, meta
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_filter_options() -> dict:
-    """Fetch distinct values for filter dropdowns (last 90 days), paginated."""
+    """Fetch distinct values for filter dropdowns (last 30 days), paginated."""
     empty = {"platforms": [], "platform_types": [], "brands": [], "keywords": [], "sellers": []}
     client = _get_supabase()
     if client is None:
         return empty
     # Caminho rápido: RPC server-side com DISTINCT (evita timeout em ~261k linhas)
     try:
-        rpc = client.rpc("get_filter_options_fast", {"window_days": 90}).execute()
+        rpc = client.rpc("get_filter_options_fast", {"window_days": 30}).execute()
         data = rpc.data if isinstance(rpc.data, dict) else (rpc.data[0] if rpc.data else None)
         if data:
             raw_brands     = data.get("brands") or []
@@ -1408,7 +1408,7 @@ def get_filter_options() -> dict:
     except Exception:
         pass  # cai no fallback paginado abaixo
     try:
-        since = str(date.today() - timedelta(days=90))
+        since = str(date.today() - timedelta(days=30))
         all_rows: list = []
         offset = 0
         while True:
@@ -1455,18 +1455,18 @@ def get_filter_options() -> dict:
         return empty
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_sku_options(
     brands: tuple = (),
     btu_filter: tuple = (),
     product_types: tuple = (),
 ) -> list:
-    """Fetch distinct product names (last 90 days), paginated past the 1000-row cap."""
+    """Fetch distinct product names (last 30 days), paginated past the 1000-row cap."""
     client = _get_supabase()
     if client is None:
         return []
     try:
-        since = str(date.today() - timedelta(days=90))
+        since = str(date.today() - timedelta(days=30))
 
         def _base_q():
             q = (
@@ -1735,7 +1735,7 @@ def _fmt_brl(value: float) -> str:
         return "—"
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _overview_data(
     start_str: str,
     end_str: str,
@@ -1828,7 +1828,7 @@ def _overview_data(
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _price_data(
     start_str: str,
     end_str: str,
@@ -3358,7 +3358,7 @@ def _render_pricetrack_results(results: list[dict]) -> None:
 # Page — Data Health (cobertura/preenchimento dos campos por plataforma)
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _query_health(window_days: int) -> pd.DataFrame:
     """Amostra recente com colunas mínimas para análise de cobertura.
 
@@ -5592,7 +5592,7 @@ def page_sov_patrocinado() -> None:
 # Page — 🛡️ Price Compliance (monitor de preço-piso PriceTrack)
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _query_pt_compliance(
     window_days: int,
     sources_tuple: tuple = ("coletas", "pricetrack"),
@@ -6069,7 +6069,7 @@ def _streamlit_supports_linechart() -> bool:
     return cc is not None and hasattr(cc, "LineChartColumn")
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _pt_top_movers_data(
     start_str: str,
     end_str_exclusive: str,
@@ -7127,7 +7127,7 @@ def _enrich_specs(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _query_products_history(
     products: tuple, start_str: str, end_str: str,
     sources_tuple: tuple = ("coletas", "pricetrack"),
@@ -7620,7 +7620,7 @@ def _fmt_brl(v) -> str:
     return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _query_sparkline_7d(
     spark_start: date,
     end_date: date,
