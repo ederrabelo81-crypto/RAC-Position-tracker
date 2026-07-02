@@ -8327,6 +8327,15 @@ def page_daily_vision() -> None:
                 if "sku_resolvido" in df_co.columns else pd.NA
         if "source" not in df_co.columns:
             df_co["source"] = "coletas"
+        # A tabela `coletas` não tem coluna `title` — nela o título anunciado
+        # É o próprio `produto`. Sem este espelho, quando o PriceTrack não
+        # contribui com nenhuma linha (fonte desligada no filtro global ou
+        # dia sem cobertura PT), o concat sai sem `title` e o drill-down
+        # "Ver detalhes de uma linha" quebra com KeyError no
+        # `agg(title=("title", "first"))`.
+        if "title" not in df_co.columns:
+            df_co["title"] = df_co["produto"] \
+                if "produto" in df_co.columns else pd.NA
 
     # Precedência (Q2 Jun/2026): PriceTrack é a fonte dos turnos; as coletas
     # só preenchem lacunas. Calculamos o período nas duas fontes e descartamos
