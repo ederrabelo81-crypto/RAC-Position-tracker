@@ -119,7 +119,7 @@ SUPABASE_URL=https://seu-projeto.supabase.co
 SUPABASE_KEY=sua_service_role_key
 
 # PriceTrack (import diário de preços) — ver pricetrack_api/README.md p/ tuning opcional
-# (PRICETRACK_BASE_URL, _EXPORT_THRESHOLD_ROWS, _MAX_RETRIES, _MAX_CONCURRENT_EXPORTS…)
+# (PRICETRACK_BASE_URL, PRICETRACK_EXPORT_THRESHOLD_ROWS, PRICETRACK_MAX_RETRIES, PRICETRACK_MAX_CONCURRENT_EXPORTS…)
 PRICETRACK_API_KEY=...
 
 # Anthropic (opcional — camada LLM da Automação Admin)
