@@ -78,6 +78,7 @@ min/avg/mode/max por `(data, turno, marca, sku, marketplace, seller)` da
 categoria AR CONDICIONADO → tabela `pricetrack_daily`.
 
 - **Pipeline:** `scripts/pricetrack_api_import.py` (export assíncrono → NDJSON.gz → agrega → upsert) + `--gaps-only` auto-heal dos últimos 14 dias
+- **Camada de API (Jul/2026):** `pricetrack_api/` — cliente tipado (schemas Offer/Shipping), retry com backoff exponencial, tratamento de 401/400/409/429, até 3 exports concorrentes com renovação de downloadUrl (TTL 1h), estratégia paginado × export por threshold e métricas/alertas. Docs: `pricetrack_api/README.md`
 - **Turnos intra-dia (Jun/2026):** `aggregate_offers()` deriva o turno do `collection_hour` e emite linhas **Manhã** (08–12h BRT) e **Tarde** (18–22h BRT) além do agregado **Diário** (dia inteiro), alimentando os turnos manhã/tarde do dashboard. Migration `migrations/003_pricetrack_turno.sql`
 - **Import intra-dia do dia corrente (Jun/2026):** além do D-1 (06:00 BRT, definitivo), o PriceTrack de **hoje** é importado provisoriamente às **13:10** (após a manhã) e **23:10 BRT** (após a tarde) — `.github/workflows/pricetrack_intraday.yml` (e `pricetrack_import_linux.sh today` na VM). Assim, passado o meio-dia, a Manhã de hoje já vem do PriceTrack (não mais do fallback de Coletas). As linhas provisórias são sobrescritas pela versão completa no D-1 do dia seguinte (`--force`); `_should_redownload()` re-baixa hoje/ontem para não reaproveitar export parcial em cache
 - **Importador manual** (md/xlsx): `python -m pricetrack_importer arquivo.md`

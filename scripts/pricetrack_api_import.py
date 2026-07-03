@@ -2,11 +2,14 @@
 """
 pricetrack_api_import.py — Importação histórica 2026 via PriceTrack API.
 
-Usa o endpoint bulk export (NDJSON.gz) para baixar ofertas dia a dia.
-Gerencia até 3 exports concorrentes, agrega preços (min/avg/mode/max)
-por (data, turno, brand, sku, marketplace, seller) e persiste em
-`pricetrack_daily`. O turno (Diário/Manhã/Tarde) recorta as ofertas por
-`collection_hour` (08–12h / 18–22h BRT) para alimentar os turnos do dashboard.
+Usa o endpoint bulk export (NDJSON.gz) para baixar ofertas dia a dia,
+através do pacote ``pricetrack_api`` (cliente tipado com retry/backoff,
+polling assíncrono, renovação de downloadUrl expirada e até 3 exports
+concorrentes — o pipeline de download roda em lote via ExportManager).
+Depois agrega preços (min/avg/mode/max) por (data, turno, brand, sku,
+marketplace, seller) e persiste em `pricetrack_daily`. O turno
+(Diário/Manhã/Tarde) recorta as ofertas por `collection_hour`
+(08–12h / 18–22h BRT) para alimentar os turnos do dashboard.
 
 Requer no .env:
     PRICETRACK_API_KEY=<token>   ← obrigatório
@@ -26,8 +29,6 @@ import gzip
 import json
 import os
 import sys
-import time
-import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -43,8 +44,16 @@ except ImportError:
     pass
 
 import pandas as pd
-import requests
 from loguru import logger
+
+from pricetrack_api import (
+    OUTCOME_NO_DATA,
+    OUTCOME_OK,
+    ExportManager,
+    ExportRequest,
+    PriceTrackClient,
+    PriceTrackSettings,
+)
 
 try:
     from supabase import create_client
@@ -66,10 +75,7 @@ except ImportError:
 
 
 # ── Constantes ──────────────────────────────────────────────────────────────
-_BASE_URL = "https://api.pricetrack.com.br"
-_MAX_CONCURRENT = 3
-_POLL_INTERVAL = 30       # segundos entre polls de status
-_POLL_TIMEOUT = 7200      # 2 horas por export
+_MAX_CONCURRENT = 3       # limite da API (exports concorrentes por organização)
 _DOWNLOAD_DIR = _PROJECT_ROOT / "imports" / "pricetrack" / "api" / "raw"
 _PROGRESS_FILE = _PROJECT_ROOT / "imports" / "pricetrack" / "api" / "progress.json"
 _BATCH_SIZE = 500
@@ -77,45 +83,63 @@ _TABLE = "pricetrack_daily"
 _LOG_TABLE = "pricetrack_import_log"
 
 
-# ── Helpers de API ──────────────────────────────────────────────────────────
+# ── Download em lote via pricetrack_api ─────────────────────────────────────
 
-def _headers(token: str) -> Dict[str, str]:
-    return {"token": token, "Content-Type": "application/json"}
+def _offers_dest(collection_date: str) -> Path:
+    return _DOWNLOAD_DIR / f"offers-{collection_date}.ndjson.gz"
 
 
-def create_export(token: str, collection_date: str) -> Dict:
-    """POST /exports-external/collects-offers → retorna {exportId, status, statusUrl}."""
-    resp = requests.post(
-        f"{_BASE_URL}/exports-external/collects-offers",
-        headers=_headers(token),
-        json={"collectionDate": collection_date},
-        timeout=30,
+def prefetch_exports(token: str, dates: List[str], concurrent: int) -> Dict[str, str]:
+    """Baixa em lote os NDJSON.gz das datas que precisam de (re)download.
+
+    Delegado ao ``ExportManager`` do pacote ``pricetrack_api``: até
+    ``concurrent`` exports em voo (respeitando o limite de 3 da API),
+    retry com backoff exponencial, tratamento tipado de 401/400/409/429 e
+    renovação da downloadUrl expirada (TTL 1h).
+
+    Args:
+        token: PRICETRACK_API_KEY (nunca é logado).
+        dates: datas ISO a garantir em disco.
+        concurrent: exports simultâneos (1-3).
+
+    Returns:
+        {data: status} com status ∈ {"ok", "cached", "no_data", "failed"}.
+    """
+    statuses: Dict[str, str] = {}
+    to_fetch: List[str] = []
+    for ds in dates:
+        if _should_redownload(ds, _offers_dest(ds).exists()):
+            to_fetch.append(ds)
+        else:
+            statuses[ds] = "cached"
+            logger.info(f"{ds} — arquivo já existe, pulando download")
+
+    if not to_fetch:
+        return statuses
+
+    settings = PriceTrackSettings.from_env(api_key=token)
+    manager = ExportManager(
+        PriceTrackClient(settings), dataset="offers", max_concurrent=concurrent
     )
-    if resp.status_code == 429:
-        raise RuntimeError("Limite de 3 exports concorrentes atingido")
-    resp.raise_for_status()
-    return resp.json()
-
-
-def get_export_status(token: str, export_id: str) -> Dict:
-    """GET /exports-external/{exportId} → retorna status atual."""
-    resp = requests.get(
-        f"{_BASE_URL}/exports-external/{export_id}",
-        headers=_headers(token),
-        timeout=30,
+    logger.info(
+        f"Baixando {len(to_fetch)} export(s) com até {concurrent} em voo: "
+        f"{', '.join(to_fetch)}"
     )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def download_file(url: str, dest: Path) -> None:
-    """Baixa arquivo de URL pré-assinada (sem autenticação)."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with requests.get(url, stream=True, timeout=300) as r:
-        r.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(chunk_size=65536):
-                f.write(chunk)
+    outcomes = manager.run_many(
+        [ExportRequest(collection_date=ds) for ds in to_fetch],
+        dest_fn=lambda req: _offers_dest(req.collection_date.isoformat()),
+    )
+    for outcome in outcomes:
+        ds = outcome.request.collection_date.isoformat()
+        if outcome.status == OUTCOME_OK:
+            statuses[ds] = "ok"
+        elif outcome.status == OUTCOME_NO_DATA:
+            statuses[ds] = "no_data"
+            logger.warning(f"{ds} — sem dados na API (409)")
+        else:
+            statuses[ds] = "failed"
+            logger.error(f"{ds} — export/download falhou: {outcome.error}")
+    return statuses
 
 
 # ── Parsing e agregação ─────────────────────────────────────────────────────
@@ -517,18 +541,7 @@ def save_progress(progress: Dict) -> None:
         json.dump(progress, f, indent=2)
 
 
-# ── Export Manager ──────────────────────────────────────────────────────────
-
-class ExportJob:
-    """Representa um job de export em andamento."""
-    __slots__ = ("export_id", "collection_date", "created_at", "started_at")
-
-    def __init__(self, export_id: str, collection_date: str):
-        self.export_id = export_id
-        self.collection_date = collection_date
-        self.created_at = time.time()
-        self.started_at: Optional[float] = None
-
+# ── Ciclo de download/processamento ─────────────────────────────────────────
 
 def _should_redownload(
     collection_date: str,
@@ -565,85 +578,33 @@ def _should_redownload(
 
 
 def _process_date(
-    token: str,
     collection_date: str,
     dry_run: bool,
     no_upload: bool,
-    progress: Dict,
+    download_status: str,
     categories: Optional[List[str]] = None,
 ) -> Tuple[str, int]:
     """
-    Executa o ciclo completo para uma data:
-      1. Cria export
-      2. Polling até DONE
-      3. Baixa NDJSON.gz
-      4. Agrega e insere
+    Processa uma data cujo download já foi resolvido por ``prefetch_exports``:
+      1. Confere o resultado do download (ok/cached/no_data/failed)
+      2. Parse do NDJSON.gz + agregação
+      3. Insere no Supabase
+
+    Args:
+        download_status: resultado do prefetch ("ok", "cached", "no_data",
+            "failed" ou "dry_run").
 
     Retorna (status, rows_inserted).
     """
-    dest_path = _DOWNLOAD_DIR / f"offers-{collection_date}.ndjson.gz"
+    dest_path = _offers_dest(collection_date)
 
-    # Re-baixa hoje/ontem mesmo com cache (export do dia ainda cresce); dias
-    # antigos reaproveitam o arquivo já baixado. Ver _should_redownload.
-    if _should_redownload(collection_date, dest_path.exists()):
-        if dry_run:
-            logger.info(f"[DRY-RUN] {collection_date} — criaria export e baixaria arquivo")
-            return "dry_run", 0
-
-        # ── Cria export ──────────────────────────────────────────────────
-        try:
-            resp = create_export(token, collection_date)
-        except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code == 409:
-                logger.warning(f"{collection_date} — sem dados na API (409)")
-                return "no_data", 0
-            logger.error(f"{collection_date} — erro ao criar export: {e}")
-            return "failed", 0
-
-        export_id = resp["exportId"]
-        logger.info(f"{collection_date} — export criado: {export_id[:8]}...")
-
-        # ── Polling ──────────────────────────────────────────────────────
-        deadline = time.time() + _POLL_TIMEOUT
-        download_url: Optional[str] = None
-
-        while time.time() < deadline:
-            time.sleep(_POLL_INTERVAL)
-            try:
-                status_resp = get_export_status(token, export_id)
-            except Exception as e:
-                logger.warning(f"{collection_date} — poll falhou: {e}, aguardando...")
-                continue
-
-            status = status_resp.get("status", "")
-            progress_pct = status_resp.get("progress", 0)
-            logger.debug(f"{collection_date} — status: {status} ({progress_pct}%)")
-
-            if status == "DONE":
-                download_url = status_resp.get("downloadUrl")
-                break
-            elif status == "FAILED":
-                logger.error(f"{collection_date} — export FAILED")
-                return "failed", 0
-
-        if not download_url:
-            logger.error(f"{collection_date} — timeout aguardando export")
-            return "failed", 0
-
-        # ── Download ─────────────────────────────────────────────────────
-        logger.info(f"{collection_date} — baixando arquivo...")
-        try:
-            download_file(download_url, dest_path)
-            size_kb = dest_path.stat().st_size // 1024
-            logger.success(f"{collection_date} — download OK ({size_kb} KB)")
-        except Exception as e:
-            logger.error(f"{collection_date} — falha no download: {e}")
-            if dest_path.exists():
-                dest_path.unlink()
-            return "failed", 0
-
-    else:
-        logger.info(f"{collection_date} — arquivo já existe, pulando download")
+    if download_status == "dry_run":
+        logger.info(f"[DRY-RUN] {collection_date} — criaria export e baixaria arquivo")
+        return "dry_run", 0
+    if download_status == "no_data":
+        return "no_data", 0
+    if download_status == "failed" or not dest_path.exists():
+        return "failed", 0
 
     if no_upload:
         return "downloaded", 0
@@ -763,13 +724,26 @@ def run(
         logger.success("Nada a importar — tudo já está no banco.")
         return
 
+    # ── Fase 1: downloads em lote (até `concurrent` exports em voo) ────────
+    if dry_run:
+        download_statuses = {
+            ds: ("dry_run" if _should_redownload(ds, _offers_dest(ds).exists())
+                 else "cached")
+            for ds in dates_to_process
+        }
+    else:
+        download_statuses = prefetch_exports(token, dates_to_process, concurrent)
+
+    # ── Fase 2: parse + agregação + upsert, data a data ────────────────────
     stats = {"completed": 0, "failed": 0, "no_data": 0, "total_rows": 0}
 
     for i, ds in enumerate(dates_to_process, 1):
         logger.info(f"[{i}/{total}] Processando {ds} ...")
 
         result, rows = _process_date(
-            token, ds, dry_run, no_upload, progress, categories=categories
+            ds, dry_run, no_upload,
+            download_status=download_statuses.get(ds, "failed"),
+            categories=categories,
         )
 
         if result in ("completed", "downloaded", "dry_run"):
@@ -790,10 +764,6 @@ def run(
             stats["failed"] += 1
 
         save_progress(progress)
-
-        # Pequena pausa entre requisições para não sobrecarregar a API
-        if i < total and not dry_run:
-            time.sleep(5)
 
     logger.success(
         f"Importação concluída — "

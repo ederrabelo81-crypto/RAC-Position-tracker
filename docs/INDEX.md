@@ -46,7 +46,8 @@
 
 ### "I need to work with PriceTrack data (price source of truth)"
 1. Load `docs/PRICETRACK_INSIGHTS.md` (pipeline + insight/improvement roadmap)
-2. Key files: `scripts/pricetrack_api_import.py`, `pricetrack_importer/`
+2. Key files: `pricetrack_api/` (typed API client — see `pricetrack_api/README.md`),
+   `scripts/pricetrack_api_import.py`, `pricetrack_importer/`
 
 ### "I need to diagnose broken field coverage (buy box, rating, sponsored)"
 1. Load `docs/DIAGNOSTICO_COLETA_JUN2026.md` (root causes per platform)
