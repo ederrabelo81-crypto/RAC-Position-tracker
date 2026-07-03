@@ -2,7 +2,7 @@
 
 Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ✅ Produção | **Última atualização:** 21 de Junho de 2026 (v4.2)
+**Status:** ✅ Produção | **Última atualização:** 3 de Julho de 2026 (v4.3)
 
 ---
 
@@ -78,7 +78,7 @@ min/avg/mode/max por `(data, turno, marca, sku, marketplace, seller)` da
 categoria AR CONDICIONADO → tabela `pricetrack_daily`.
 
 - **Pipeline:** `scripts/pricetrack_api_import.py` (export assíncrono → NDJSON.gz → agrega → upsert) + `--gaps-only` auto-heal dos últimos 14 dias
-- **Camada de API (Jul/2026):** `pricetrack_api/` — cliente tipado (schemas Offer/Shipping), retry com backoff exponencial, tratamento de 401/400/409/429, até 3 exports concorrentes com renovação de downloadUrl (TTL 1h), estratégia paginado × export por threshold e métricas/alertas. Docs: `pricetrack_api/README.md`
+- **Camada de API — pacote `pricetrack_api/` (Jul/2026):** cliente tipado da API Externa PriceTrack v1.2.0 (schemas `Offer`/`Shipping`, `PriceTrackClient`, `SmartCollector`), com paginação sempre via `meta.hasNextPage` + guarda anti-loop por assinatura completa de página, `ExportManager` com até 3 exports em voo e renovação automática de `downloadUrl` (TTL 1h), retry com backoff exponencial + jitter e erros tipados (400/401/409/429 — 429 honra `Retry-After` com teto), `SmartCollector` decide paginado × export em massa por threshold configurável, métricas estruturadas + alertas Telegram/log. 88 testes sem rede. `scripts/pricetrack_api_import.py` delega os exports do import diário a essa camada (`--concurrent` agora funciona de verdade). Docs: `pricetrack_api/README.md`; variáveis `PRICETRACK_*` opcionais no `.env.example`
 - **Turnos intra-dia (Jun/2026):** `aggregate_offers()` deriva o turno do `collection_hour` e emite linhas **Manhã** (08–12h BRT) e **Tarde** (18–22h BRT) além do agregado **Diário** (dia inteiro), alimentando os turnos manhã/tarde do dashboard. Migration `migrations/003_pricetrack_turno.sql`
 - **Import intra-dia do dia corrente (Jun/2026):** além do D-1 (06:00 BRT, definitivo), o PriceTrack de **hoje** é importado provisoriamente às **13:10** (após a manhã) e **23:10 BRT** (após a tarde) — `.github/workflows/pricetrack_intraday.yml` (e `pricetrack_import_linux.sh today` na VM). Assim, passado o meio-dia, a Manhã de hoje já vem do PriceTrack (não mais do fallback de Coletas). As linhas provisórias são sobrescritas pela versão completa no D-1 do dia seguinte (`--force`); `_should_redownload()` re-baixa hoje/ontem para não reaproveitar export parcial em cache
 - **Importador manual** (md/xlsx): `python -m pricetrack_importer arquivo.md`
@@ -118,7 +118,8 @@ python -m playwright install chromium
 SUPABASE_URL=https://seu-projeto.supabase.co
 SUPABASE_KEY=sua_service_role_key
 
-# PriceTrack (import diário de preços)
+# PriceTrack (import diário de preços) — ver pricetrack_api/README.md p/ tuning opcional
+# (PRICETRACK_BASE_URL, _EXPORT_THRESHOLD_ROWS, _MAX_RETRIES, _MAX_CONCURRENT_EXPORTS…)
 PRICETRACK_API_KEY=...
 
 # Anthropic (opcional — camada LLM da Automação Admin)
@@ -354,6 +355,7 @@ rac-position-tracker/
 │   ├── dealers.py                # DealerScraper (⏸️ fora do foco)
 │   └── fast_shop.py              # ⏸️ PerimeterX
 │
+├── pricetrack_api/               # Cliente tipado da API PriceTrack (client/collector/exports/store) 🆕
 ├── pricetrack_importer/          # Importador md/xlsx (parser/validator/seller_map)
 ├── scripts/
 │   ├── pricetrack_api_import.py  # Import diário via API PriceTrack
@@ -444,6 +446,7 @@ Utilitários: `cleanup_supabase.py`, `normalize_supabase.py`,
 | Documento | Finalidade |
 |-----------|------------|
 | `docs/INDEX.md` | Navegação por tarefa |
+| `pricetrack_api/README.md` | Cliente tipado da API PriceTrack — arquitetura, uso, config, robustez 🆕 |
 | `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md` | Automação Shopee/Magalu/CB (CDP + sessões) 🆕 |
 | `docs/PRICETRACK_INSIGHTS.md` | Pipeline PriceTrack + roadmap de insights 🆕 |
 | `docs/DIAGNOSTICO_COLETA_JUN2026.md` | Diagnóstico de cobertura por campo/plataforma |
@@ -464,12 +467,13 @@ Dashboard usa o subset `requirements_app.txt`.
 
 ---
 
-## ✅ Validação Operacional — 21/06/2026
+## ✅ Validação Operacional — 03/07/2026
 
+- ✅ **Cliente `pricetrack_api/`** 🆕 — camada tipada da API Externa PriceTrack v1.2.0 (paginação/export/retry/métricas, 88 testes); `pricetrack_api_import.py` delega os exports do import diário a ela e `--concurrent` passa a valer de fato
 - ✅ **19 páginas** de dashboard (13 Insights + 4 Operações + 2 Admin) — removidas Run Collection e Competitive Intelligence
-- ✅ **Daily Price Vision** 🆕 — vista de menor preço por marketplace com turnos Manhã/Tarde/Diário, visual fiel ao mockup (KPIs, chips, sparkline SVG 7d, drill-down)
-- ✅ **PriceTrack com turnos intra-dia** (Manhã 08–12h / Tarde 18–22h) derivados do `collection_hour` + RPC de piso por marca (sparkline server-side)
-- ✅ **Filtros Globais enxutos** com seletor único de Fonte de Dados (Coletas / PriceTrack / Combinado)
+- ✅ **Daily Price Vision** — vista de menor preço por marketplace com turnos Manhã/Tarde/Diário, visual fiel ao mockup (KPIs, chips, sparkline 7d embutido como `<img>` base64, drill-down); drill-down corrigido com fonte "Coletas" isolada (schema `produto`↔`title` normalizado)
+- ✅ **PriceTrack com turnos intra-dia** (Manhã 08–12h / Tarde 18–22h) derivados do `collection_hour` + RPC de piso por marca (sparkline server-side) + índice `(collection_date, id)` eliminando statement timeout
+- ✅ **Filtros Globais enxutos** com seletor único de Fonte de Dados (Coletas / PriceTrack / Combinado); cache de preço/overview com TTL maior e chaves corrigidas para filtros globais de família/SKU (menor egress no Supabase)
 - ✅ **7 plataformas ativas** com buy box/seller (rollout fim de Mai/2026)
 - ✅ **PriceTrack diário** como fonte de verdade de preço (06:00 BRT + auto-heal)
 - ✅ **Coleta autenticada automatizada** Magalu+Shopee+CB via CDP (Jun/2026)
@@ -485,4 +489,4 @@ Dashboard usa o subset `requirements_app.txt`.
 
 **Stack:** Python · Playwright/rebrowser · curl_cffi · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · GitHub Actions
 
-**Versão:** 4.2 | **Última atualização:** 21 de Junho de 2026 | @ederrabelo
+**Versão:** 4.3 | **Última atualização:** 3 de Julho de 2026 | @ederrabelo
