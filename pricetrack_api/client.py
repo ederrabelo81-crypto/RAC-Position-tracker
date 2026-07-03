@@ -124,7 +124,7 @@ class PriceTrackClient:
         take = query.take if query.take and query.take > 0 else self.settings.page_take
         current = replace_query(query, page=max(1, query.page), take=take)
         pages_seen = 0
-        prev_first_id: Optional[str] = None
+        prev_signature: Optional[tuple] = None
         while True:
             page = self._collect_page(path, current, parse)
             pages_seen += 1
@@ -140,16 +140,19 @@ class PriceTrackClient:
                     f"com pageCount={page.meta.page_count} — interrompendo."
                 )
                 return
-            # Guarda anti-loop 2: mesma primeira oferta em páginas
-            # consecutivas = API ignorando o param `page`.
-            first_id = pick(page.raw[0], "id") if page.raw else None
-            if first_id is not None and first_id == prev_first_id:
+            # Guarda anti-loop 2: página com TODOS os ids idênticos à anterior
+            # = API ignorando o param `page`. A assinatura completa evita
+            # falso positivo por sobreposição de borda do primeiro item.
+            signature = (
+                tuple(pick(raw, "id") for raw in page.raw) if page.raw else None
+            )
+            if signature is not None and signature == prev_signature:
                 logger.warning(
-                    f"PriceTrack {path}: página {page.meta.page} repetiu o "
-                    f"conteúdo da anterior (id={first_id}) — interrompendo."
+                    f"PriceTrack {path}: página {page.meta.page} repetiu "
+                    f"integralmente o conteúdo da anterior — interrompendo."
                 )
                 return
-            prev_first_id = first_id
+            prev_signature = signature
             next_page = (page.meta.page or current.page) + 1
             current = replace_query(current, page=next_page)
 

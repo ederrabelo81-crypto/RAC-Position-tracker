@@ -131,6 +131,12 @@ class ExportManager:
             hit_limit, suggested_wait = self._fill_slots(
                 pending, in_flight, dest_fn, outcomes
             )
+            # Retry-After vem do servidor: limita a um teto seguro para um
+            # valor inválido/extremo não travar o loop num sleep gigante.
+            if suggested_wait and suggested_wait > 0:
+                suggested_wait = min(suggested_wait, settings.backoff_max_seconds)
+            else:
+                suggested_wait = None
 
             if hit_limit and not in_flight:
                 # Slots ocupados por terceiros na organização: espera com

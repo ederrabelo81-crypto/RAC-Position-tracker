@@ -82,6 +82,25 @@ class TestIterOffers:
         assert len(session.calls) == 2
         assert len(collected) == 2
 
+    def test_overlap_de_borda_nao_interrompe(self, settings):
+        # Páginas consecutivas podem repetir o PRIMEIRO item (overlap de
+        # borda / ordenação instável) sem serem a mesma página — a guarda
+        # usa a assinatura completa de ids e NÃO deve abortar aqui.
+        session = FakeSession(responses=[
+            FakeResponse(json_data=paged_payload(
+                [offer_payload(oid="A"), offer_payload(oid="B")],
+                page=1, take=2, total=5)),
+            FakeResponse(json_data=paged_payload(
+                [offer_payload(oid="A"), offer_payload(oid="C")],
+                page=2, take=2, total=5)),
+            FakeResponse(json_data=paged_payload(
+                [offer_payload(oid="D")], page=3, take=2, total=5)),
+        ])
+        client = _client(settings, session)
+        collected = list(client.iter_offers(CollectQuery("2026-07-01")))
+        assert len(session.calls) == 3          # percorreu tudo, sem abortar
+        assert [o.id for o in collected] == ["A", "B", "A", "C", "D"]
+
     def test_take_default_vem_dos_settings(self, settings):
         session = FakeSession(responses=[
             FakeResponse(json_data=paged_payload([], page=1, take=2, total=0)),
