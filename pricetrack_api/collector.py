@@ -109,8 +109,12 @@ class SmartCollector:
     def _collect(self, dataset: str, collection_date, query, strategy) -> CollectionResult:
         if strategy not in (STRATEGY_AUTO, STRATEGY_PAGINATED, STRATEGY_EXPORT):
             raise ValueError(f"Estratégia inválida: {strategy!r}")
-        query = query or CollectQuery(collection_date=collection_date)
-        query = replace(query, collection_date=query.collection_date)
+        # O argumento collection_date é a autoridade: sobrescreve a data da
+        # query para evitar coletar silenciosamente um dia diferente do pedido.
+        if query is None:
+            query = CollectQuery(collection_date=collection_date)
+        else:
+            query = replace(query, collection_date=collection_date)
         cd = query.collection_date.isoformat()
 
         metrics = CollectionMetrics(dataset=dataset, collection_date=cd)
@@ -269,6 +273,10 @@ def _client_side_predicate(dataset: str, query: CollectQuery) -> Optional[Callab
     if query.status:
         checks.append(lambda r, w=query.status.upper(): r.status == w)
     if dataset == _DATASET_OFFERS:
+        if query.color:
+            checks.append(
+                lambda r, a=_norm_set(query.color): (r.color or "").upper() in a
+            )
         if query.spot_price_min is not None:
             checks.append(
                 lambda r: r.spot_price is not None

@@ -93,7 +93,7 @@ def main() -> int:
         logger.error(str(e))
         return 2
 
-    if getattr(args, "threshold", None):
+    if getattr(args, "threshold", None) is not None:
         settings.export_threshold_rows = args.threshold
 
     client = PriceTrackClient(settings)
@@ -147,6 +147,10 @@ def main() -> int:
                 logger.info("Nenhum export encontrado.")
             return 0
 
+    except ValueError as e:
+        # Data/filtro inválido no CollectQuery: falha de input, sem traceback
+        logger.error(f"Parâmetros inválidos: {e}")
+        return 2
     except PriceTrackError as e:
         logger.error(f"Falha: {e}")
         return 1

@@ -21,6 +21,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -138,7 +139,7 @@ class NdjsonStore:
                       records: Iterable[Dict[str, Any]]) -> None:
         dest = self.data_path(dataset, cd)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_suffix(f".tmp-{os.getpid()}")
+        tmp = dest.with_name(dest.name + f".tmp-{uuid.uuid4().hex[:8]}")
         try:
             with gzip.open(tmp, "wt", encoding="utf-8") as fh:
                 for raw in records:
@@ -166,7 +167,7 @@ class NdjsonStore:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         path = self.manifest_path(dataset, cd)
-        tmp = path.with_suffix(f".tmp-{os.getpid()}")
+        tmp = path.with_name(path.name + f".tmp-{uuid.uuid4().hex[:8]}")
         tmp.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )

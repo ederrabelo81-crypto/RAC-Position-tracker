@@ -110,6 +110,19 @@ class TestExportLifecycle:
         assert outcomes[0].status == OUTCOME_NO_DATA
 
 
+class TestDefaultDest:
+    def test_filtros_diferentes_nao_sobrescrevem_arquivo(self, settings, clock):
+        manager = _manager(settings, FakeSession(responses=[]), clock)
+        plain = manager._default_dest(ExportRequest("2026-07-01"))
+        by_mp = manager._default_dest(
+            ExportRequest("2026-07-01", marketplaces=["AMAZON"]))
+        by_other_mp = manager._default_dest(
+            ExportRequest("2026-07-01", marketplaces=["SHOPEE"]))
+        # sem filtro mantém o nome limpo (compat com cache existente)
+        assert plain.name == "offers-2026-07-01.ndjson.gz"
+        assert len({plain, by_mp, by_other_mp}) == 3
+
+
 class TestDownloadUrlRenewal:
     def test_url_expirada_no_download_renova_via_status(self, settings, clock,
                                                         tmp_path):

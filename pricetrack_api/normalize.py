@@ -13,6 +13,7 @@ Regras:
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -20,14 +21,14 @@ from .models import Offer, STATUS_AVAILABLE
 
 
 def clean_price(value: Optional[float]) -> Optional[float]:
-    """Saneia um preço: None/NaN/≤0 → None; senão arredonda a 2 casas."""
+    """Saneia um preço: None/NaN/±inf/≤0 → None; senão arredonda a 2 casas."""
     if value is None:
         return None
     try:
         price = float(value)
     except (TypeError, ValueError):
         return None
-    if price != price or price <= 0:  # NaN ou não-positivo
+    if not math.isfinite(price) or price <= 0:
         return None
     return round(price, 2)
 
