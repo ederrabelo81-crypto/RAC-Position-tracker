@@ -35,6 +35,7 @@ from .models import (
     Page,
     PageMeta,
     Shipping,
+    pick,
 )
 
 OFFERS_PATH = "/collects-offers-external"
@@ -108,28 +109,50 @@ class PriceTrackClient:
             meta=meta,
         )
 
+    # Teto absoluto de páginas quando a API não informa pageCount — evita
+    # loop infinito com metadata malformada (hasNextPage=true perpétuo).
+    _HARD_PAGE_CAP = 100_000
+
     def _iter_pages(self, path: str, query: CollectQuery, parse) -> Iterator[Page]:
         """Loop de paginação guiado por ``meta.hasNextPage``.
 
-        Nunca confia em ``take``/``pageCount`` para decidir parada; um guarda
-        de segurança interrompe caso a API repita páginas indefinidamente.
+        Nunca confia em ``take``/``pageCount`` para decidir parada; guardas
+        de segurança interrompem caso a API repita páginas indefinidamente:
+        pageCount excedido, mesmo primeiro ``id`` em páginas consecutivas
+        (API ignorando o param ``page``) ou teto absoluto de páginas.
         """
         take = query.take if query.take and query.take > 0 else self.settings.page_take
         current = replace_query(query, page=max(1, query.page), take=take)
         pages_seen = 0
+        prev_signature: Optional[tuple] = None
         while True:
             page = self._collect_page(path, current, parse)
             pages_seen += 1
             yield page
             if not page.meta.has_next_page:
                 return
-            # Guarda anti-loop: hasNextPage nunca deveria exceder pageCount.
-            if page.meta.page_count and pages_seen > page.meta.page_count:
+            # Guarda anti-loop 1: hasNextPage nunca deveria exceder pageCount
+            # (teto absoluto quando a API não informa pageCount).
+            limit = page.meta.page_count or self._HARD_PAGE_CAP
+            if pages_seen > limit:
                 logger.warning(
                     f"PriceTrack {path}: hasNextPage após {pages_seen} páginas "
                     f"com pageCount={page.meta.page_count} — interrompendo."
                 )
                 return
+            # Guarda anti-loop 2: página com TODOS os ids idênticos à anterior
+            # = API ignorando o param `page`. A assinatura completa evita
+            # falso positivo por sobreposição de borda do primeiro item.
+            signature = (
+                tuple(pick(raw, "id") for raw in page.raw) if page.raw else None
+            )
+            if signature is not None and signature == prev_signature:
+                logger.warning(
+                    f"PriceTrack {path}: página {page.meta.page} repetiu "
+                    f"integralmente o conteúdo da anterior — interrompendo."
+                )
+                return
+            prev_signature = signature
             next_page = (page.meta.page or current.page) + 1
             current = replace_query(current, page=next_page)
 

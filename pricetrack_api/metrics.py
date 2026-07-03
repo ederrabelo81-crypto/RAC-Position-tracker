@@ -143,7 +143,10 @@ class TelegramAlertSink:
             from utils.n8n_notify import _send_direct_telegram
         except ImportError:
             return LogAlertSink().send(subject, message)
-        sent = _send_direct_telegram(f"🚨 <b>{subject}</b>\n\n{message}")
+        # parse_mode=HTML: escapa o conteúdo (erros podem conter <>&)
+        import html
+        text = f"🚨 <b>{html.escape(subject)}</b>\n\n{html.escape(message)}"
+        sent = _send_direct_telegram(text)
         if not sent:
             return LogAlertSink().send(subject, message)
         return True

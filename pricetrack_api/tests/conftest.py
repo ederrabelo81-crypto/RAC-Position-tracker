@@ -42,6 +42,9 @@ class FakeResponse:
         for i in range(0, len(data), chunk_size):
             yield data[i : i + chunk_size]
 
+    def close(self) -> None:
+        pass
+
 
 @dataclass
 class RecordedCall:

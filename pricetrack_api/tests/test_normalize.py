@@ -22,6 +22,9 @@ class TestCleanPrice:
         (-10.0, None),
         (None, None),
         (float("nan"), None),
+        (float("inf"), None),     # não-finito não contamina mínimos
+        (float("-inf"), None),
+        ("Infinity", None),
         ("1999.90", 1999.90),
         ("abc", None),
     ])

@@ -65,6 +65,42 @@ class TestIterOffers:
         assert len(collected) == 3          # pageCount(2) + 1 e para
         assert len(session.calls) == 3
 
+    def test_guarda_anti_loop_quando_api_ignora_param_page(self, settings):
+        # API defeituosa: devolve SEMPRE a mesma página (mesmo primeiro id)
+        # com hasNextPage=True e pageCount alto. A detecção de conteúdo
+        # repetido interrompe na 2ª página.
+        def handler(call):
+            return FakeResponse(json_data={
+                "data": [offer_payload(oid="sempre-o-mesmo")],
+                "meta": {"page": call.params["page"], "take": 2, "pageCount": 50,
+                         "hasNextPage": True, "hasPreviousPage": False},
+            })
+        session = FakeSession(handler=handler)
+        client = _client(settings, session)
+
+        collected = list(client.iter_offers(CollectQuery("2026-07-01")))
+        assert len(session.calls) == 2
+        assert len(collected) == 2
+
+    def test_overlap_de_borda_nao_interrompe(self, settings):
+        # Páginas consecutivas podem repetir o PRIMEIRO item (overlap de
+        # borda / ordenação instável) sem serem a mesma página — a guarda
+        # usa a assinatura completa de ids e NÃO deve abortar aqui.
+        session = FakeSession(responses=[
+            FakeResponse(json_data=paged_payload(
+                [offer_payload(oid="A"), offer_payload(oid="B")],
+                page=1, take=2, total=5)),
+            FakeResponse(json_data=paged_payload(
+                [offer_payload(oid="A"), offer_payload(oid="C")],
+                page=2, take=2, total=5)),
+            FakeResponse(json_data=paged_payload(
+                [offer_payload(oid="D")], page=3, take=2, total=5)),
+        ])
+        client = _client(settings, session)
+        collected = list(client.iter_offers(CollectQuery("2026-07-01")))
+        assert len(session.calls) == 3          # percorreu tudo, sem abortar
+        assert [o.id for o in collected] == ["A", "B", "A", "C", "D"]
+
     def test_take_default_vem_dos_settings(self, settings):
         session = FakeSession(responses=[
             FakeResponse(json_data=paged_payload([], page=1, take=2, total=0)),

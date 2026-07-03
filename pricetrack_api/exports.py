@@ -131,6 +131,12 @@ class ExportManager:
             hit_limit, suggested_wait = self._fill_slots(
                 pending, in_flight, dest_fn, outcomes
             )
+            # Retry-After vem do servidor: limita a um teto seguro para um
+            # valor inválido/extremo não travar o loop num sleep gigante.
+            if suggested_wait and suggested_wait > 0:
+                suggested_wait = min(suggested_wait, settings.backoff_max_seconds)
+            else:
+                suggested_wait = None
 
             if hit_limit and not in_flight:
                 # Slots ocupados por terceiros na organização: espera com
@@ -151,7 +157,12 @@ class ExportManager:
 
             if not in_flight:
                 continue
-            self._sleep(settings.poll_interval_seconds)
+            # 429 com jobs locais em voo: honra o Retry-After sugerido antes
+            # de tentar criar de novo (o poll dos jobs acontece junto).
+            wait = settings.poll_interval_seconds
+            if hit_limit and suggested_wait:
+                wait = max(wait, suggested_wait)
+            self._sleep(wait)
             self._poll_in_flight(in_flight, outcomes)
 
         return [outcomes[i] for i in sorted(outcomes)]
@@ -159,8 +170,17 @@ class ExportManager:
     # ── internals ────────────────────────────────────────────────────────
 
     def _default_dest(self, request: ExportRequest) -> Path:
+        """Destino padrão do arquivo. Requests filtrados ganham um hash no
+        nome para que dois exports do mesmo dia com filtros diferentes não
+        se sobrescrevam em disco."""
         root = self._client.settings.data_dir / "raw"
-        return root / f"{self._dataset}-{request.collection_date}.ndjson.gz"
+        suffix = ""
+        if request.marketplaces or request.collection_hour_execution_range:
+            import hashlib
+            import json
+            key = json.dumps(request.to_body(), sort_keys=True, ensure_ascii=False)
+            suffix = "-" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+        return root / f"{self._dataset}-{request.collection_date}{suffix}.ndjson.gz"
 
     def _create(self, request: ExportRequest) -> ExportJob:
         if self._dataset == "offers":

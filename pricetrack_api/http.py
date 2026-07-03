@@ -210,30 +210,38 @@ class HttpTransport:
                 last_error = PriceTrackNetworkError(f"Falha de rede no download: {e}")
                 continue
 
-            if resp.status_code in (403, 404):
-                raise DownloadUrlExpiredError(
-                    f"downloadUrl retornou {resp.status_code} — URL pré-assinada "
-                    f"expirada (TTL 1h). Renove via GET /exports-external/{{id}}."
-                )
+            # stream=True mantém o socket aberto até close() explícito —
+            # fecha em TODOS os caminhos (retry/erro) para não vazar conexões.
             try:
-                raise_for_api_status(resp, "download")
-            except PriceTrackServerError as e:
-                last_error = e
-                continue
+                if resp.status_code in (403, 404):
+                    raise DownloadUrlExpiredError(
+                        f"downloadUrl retornou {resp.status_code} — URL "
+                        f"pré-assinada expirada (TTL 1h). Renove via "
+                        f"GET /exports-external/{{id}}."
+                    )
+                try:
+                    raise_for_api_status(resp, "download")
+                except PriceTrackServerError as e:
+                    last_error = e
+                    continue
 
-            try:
-                with open(tmp, "wb") as fh:
-                    for chunk in resp.iter_content(chunk_size=1 << 16):
-                        if chunk:
-                            fh.write(chunk)
-                os.replace(tmp, dest)
-                return dest.stat().st_size
-            except _RETRYABLE_EXCEPTIONS as e:
-                last_error = PriceTrackNetworkError(f"Stream interrompido: {e}")
-                continue
+                try:
+                    with open(tmp, "wb") as fh:
+                        for chunk in resp.iter_content(chunk_size=1 << 16):
+                            if chunk:
+                                fh.write(chunk)
+                    os.replace(tmp, dest)
+                    return dest.stat().st_size
+                except _RETRYABLE_EXCEPTIONS as e:
+                    last_error = PriceTrackNetworkError(f"Stream interrompido: {e}")
+                    continue
+                finally:
+                    if tmp.exists():
+                        tmp.unlink(missing_ok=True)
             finally:
-                if tmp.exists():
-                    tmp.unlink(missing_ok=True)
+                close = getattr(resp, "close", None)
+                if callable(close):
+                    close()
 
         assert last_error is not None
         raise last_error

@@ -61,9 +61,9 @@ class PriceTrackSettings:
         self.api_key = str(self.api_key).strip()
         self.base_url = self.base_url.rstrip("/")
         self.data_dir = Path(self.data_dir)
-        if self.max_concurrent_exports > 3:
+        if not 1 <= self.max_concurrent_exports <= 3:
             raise PriceTrackConfigError(
-                "max_concurrent_exports não pode exceder 3 (limite da API)."
+                "max_concurrent_exports deve estar entre 1 e 3 (limite da API)."
             )
 
     @classmethod

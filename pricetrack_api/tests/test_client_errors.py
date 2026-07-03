@@ -138,6 +138,16 @@ class TestRetryBackoff:
         assert page.meta.page_count == 0
 
 
+class TestSettingsValidation:
+    def test_max_concurrent_fora_do_intervalo_falha_cedo(self, tmp_path):
+        from pricetrack_api.config import PriceTrackSettings
+        from pricetrack_api.exceptions import PriceTrackConfigError
+        for invalid in (0, -1, 4):
+            with pytest.raises(PriceTrackConfigError, match="entre 1 e 3"):
+                PriceTrackSettings(api_key="k", max_concurrent_exports=invalid,
+                                   data_dir=tmp_path)
+
+
 class TestAuthHeader:
     def test_api_key_viaja_no_header_configurado(self, settings):
         session = FakeSession(responses=[

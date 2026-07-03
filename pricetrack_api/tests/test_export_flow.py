@@ -110,6 +110,19 @@ class TestExportLifecycle:
         assert outcomes[0].status == OUTCOME_NO_DATA
 
 
+class TestDefaultDest:
+    def test_filtros_diferentes_nao_sobrescrevem_arquivo(self, settings, clock):
+        manager = _manager(settings, FakeSession(responses=[]), clock)
+        plain = manager._default_dest(ExportRequest("2026-07-01"))
+        by_mp = manager._default_dest(
+            ExportRequest("2026-07-01", marketplaces=["AMAZON"]))
+        by_other_mp = manager._default_dest(
+            ExportRequest("2026-07-01", marketplaces=["SHOPEE"]))
+        # sem filtro mantém o nome limpo (compat com cache existente)
+        assert plain.name == "offers-2026-07-01.ndjson.gz"
+        assert len({plain, by_mp, by_other_mp}) == 3
+
+
 class TestDownloadUrlRenewal:
     def test_url_expirada_no_download_renova_via_status(self, settings, clock,
                                                         tmp_path):
@@ -192,7 +205,7 @@ class TestConcurrencyLimit:
             if call.method == "POST":
                 state["creates"] += 1
                 if state["creates"] == 1:
-                    return FakeResponse(status_code=429, headers={"Retry-After": "7"},
+                    return FakeResponse(status_code=429, headers={"Retry-After": "3"},
                                         json_data={"message": "limit"})
                 return FakeResponse(json_data=_status("exp-9", "pending"))
             if call.stream:
@@ -206,7 +219,31 @@ class TestConcurrencyLimit:
                               dest=tmp_path / "w.gz")
         assert outcome.ok
         assert state["creates"] == 2
-        assert 7.0 in clock.sleeps                 # honrou o Retry-After
+        assert 3.0 in clock.sleeps                 # honrou o Retry-After
+
+    def test_retry_after_extremo_tem_teto(self, settings, clock, tmp_path):
+        """Retry-After absurdo (ex.: 1e9) não trava o loop num sleep gigante."""
+        state = {"creates": 0}
+
+        def handler(call):
+            if call.method == "POST":
+                state["creates"] += 1
+                if state["creates"] == 1:
+                    return FakeResponse(
+                        status_code=429,
+                        headers={"Retry-After": "999999999"},
+                        json_data={"message": "limit"})
+                return FakeResponse(json_data=_status("exp-10", "pending"))
+            if call.stream:
+                return FakeResponse(content=NDJSON_BODY)
+            return FakeResponse(json_data=_status("exp-10", "DONE"))
+
+        manager = _manager(settings, FakeSession(handler=handler), clock)
+        outcome = manager.run(ExportRequest("2026-07-01"),
+                              dest=tmp_path / "x.gz")
+        assert outcome.ok
+        # nenhum sleep individual excede o teto de backoff dos settings
+        assert max(clock.sleeps) <= settings.backoff_max_seconds
 
     def test_respeita_max_concurrent_customizado(self, settings, clock, tmp_path):
         state = {"active": {}, "max_active": 0, "created": 0}
