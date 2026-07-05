@@ -1,5 +1,13 @@
 # Automação das Coletas Autenticadas — Shopee, Magalu e Casas Bahia
 
+> ⚠️ **Superado (Jul/2026).** Esta página descreve o caminho **antigo** (CDP +
+> perfil COPIADO), que falhava porque o Chrome 136+ ignora
+> `--remote-debugging-port` no perfil padrão e a cópia do perfil DESLOGA as
+> contas (Shopee → 403). Para rodar no notebook com o seu Chrome logado, use
+> **`docs/COLETA_LOCAL_AUTENTICADA.md`** (Chrome real + perfil dedicado, sem
+> CDP). Mantido aqui como referência histórica / caminho da VM.
+
+
 > **Problema (Jun/2026):** os 3 marketplaces protegidos por antibot só coletavam
 > esporadicamente porque dependiam de o analista estar logado em conta pessoal,
 > num perfil autenticado do Chrome (coleta manual/extensão). No banco: Magalu

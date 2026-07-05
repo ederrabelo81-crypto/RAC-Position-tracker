@@ -82,6 +82,20 @@ periodicamente. `captcha_hit=True` aborta keywords restantes.
 `sellers[]`, official_store_id do ML, is_official_shop da Shopee, etc.).
 **Files:** `scrapers/base.py` `_build_record()`, `utils/supabase_client.py` `_COLUMN_MAP`
 
+## 10. CDP no perfil padrão do Chrome (Chrome 136+) / cópia de perfil desloga
+
+**Wrong:** Ligar `--remote-debugging-port` apontando pro perfil padrão do
+usuário, OU copiar o perfil pra outra pasta pra contornar isso.
+**Why:** O Chrome 136+ IGNORA `--remote-debugging-port` quando o
+`--user-data-dir` é o perfil padrão (correção de segurança). E copiar o perfil
+dispara a proteção "perfil realocado" que INVALIDA os logins → Shopee 403.
+**Right:** No notebook, use um perfil DEDICADO e estável aberto pelo próprio
+Python via `launch_persistent_context` (Chrome real, sem porta de debug). Login
+1x persiste. Ligue com `RAC_LOCAL_CHROME=1`. Shopee coleta DENTRO do browser
+logado (intercepta a API v4 nativa, que tem o `af-ac-enc-dat`).
+**Files:** `scrapers/local_browser.py`, `scripts/setup_local_profile.py`,
+`docs/COLETA_LOCAL_AUTENTICADA.md`
+
 ## 8. Amazon Seller Field Captures Rating
 
 **Wrong:** Use `.a-size-small.a-color-base` selector for seller name.

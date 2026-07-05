@@ -1,0 +1,85 @@
+@echo off
+:: -----------------------------------------------------------------------------
+:: collect_local_authenticated.bat - Coleta AUTENTICADA no notebook do usuario.
+::
+:: Roda Magalu + Shopee + Casas Bahia usando UM Chrome real, persistente e
+:: LOGADO (perfil dedicado do projeto: data\chrome_profile), com o IP
+:: residencial do notebook. Substitui a coleta manual via extensao do Chrome.
+::
+:: Diferente da abordagem antiga (CDP + perfil copiado), aqui:
+::   - NAO copia o perfil (a copia deslogava as contas).
+::   - NAO usa --remote-debugging-port (o Chrome 136+ ignora isso no perfil
+::     padrao - era a causa de "liguei o CDP e nao conectou").
+::   - O proprio Python abre o Chrome persistente logado.
+::
+:: PRE-REQUISITO (uma vez):
+::   python scripts\setup_local_profile.py   -> abra e FACA LOGIN na Shopee.
+::
+:: Uso:
+::   scripts\collect_local_authenticated.bat            -> 2 paginas
+::   scripts\collect_local_authenticated.bat 1          -> 1 pagina
+::   scripts\collect_local_authenticated.bat 2 alta media
+:: -----------------------------------------------------------------------------
+
+setlocal enabledelayedexpansion
+
+:: Raiz do projeto = pasta pai deste script
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..") do set "BASE_DIR=%%~fI"
+cd /d "%BASE_DIR%"
+
+set "PAGES=%~1"
+if "%PAGES%"=="" set "PAGES=2"
+
+set "PRIORITY=%~2"
+if not "%~3"=="" set "PRIORITY=%PRIORITY% %~3"
+if not "%~4"=="" set "PRIORITY=%PRIORITY% %~4"
+
+:: Liga o modo Chrome local logado para TODA a coleta.
+set "RAC_LOCAL_CHROME=1"
+
+:: Ativa a venv (aceita .venv ou venv)
+if exist ".venv\Scripts\activate.bat" (
+    call .venv\Scripts\activate.bat
+) else if exist "venv\Scripts\activate.bat" (
+    call venv\Scripts\activate.bat
+) else (
+    echo [AVISO] Nenhuma venv encontrada (.venv/venv) - usando Python do sistema.
+)
+
+:: Confere se o perfil ja tem login na Shopee (nao bloqueia; so avisa)
+echo === Verificando login no perfil local (Shopee) ===
+python scripts\setup_local_profile.py --headless-check
+if errorlevel 1 (
+    echo [AVISO] Nao consegui verificar o perfil. Se a Shopee der 403, rode:
+    echo         python scripts\setup_local_profile.py
+)
+
+echo.
+echo === Coleta local autenticada: magalu shopee casasbahia - %PAGES% pagina(s) ===
+echo.
+
+if "%PRIORITY%"=="" (
+    python main.py --platforms magalu shopee casasbahia --pages %PAGES%
+) else (
+    python main.py --platforms magalu shopee casasbahia --pages %PAGES% --priority %PRIORITY%
+)
+set "COLLECT_EXIT=%ERRORLEVEL%"
+
+echo.
+echo === Coleta concluida (exit=%COLLECT_EXIT%) ===
+
+:: Upload do CSV mais recente (main.py ja sobe pro Supabase se .env tiver as
+:: credenciais; este passo e um reforco para quem coleta sem SUPABASE_* no .env)
+if %COLLECT_EXIT% EQU 0 (
+    if exist "scripts\upload_csv.py" (
+        set "LATEST_CSV="
+        for /f "delims=" %%F in ('dir /b /od /a-d "output\rac_monitoramento_*.csv" 2^>nul') do set "LATEST_CSV=output\%%F"
+        if defined LATEST_CSV (
+            echo === Upload do CSV para Supabase: !LATEST_CSV! ===
+            python scripts\upload_csv.py "!LATEST_CSV!"
+        )
+    )
+)
+
+endlocal & exit /b %COLLECT_EXIT%

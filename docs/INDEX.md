@@ -32,11 +32,15 @@
 3. Example: `scrapers/amazon.py` (well-structured marketplace scraper)
 
 ### "I need to automate Shopee / Magalu / Casas Bahia collection"
-1. Load `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md` (CDP + auto session refresh)
-2. Key files: `scripts/refresh_sessions_cdp.py`,
-   `scripts/collect_authenticated_cdp.bat`,
-   `scripts/setup_authenticated_scheduler.ps1`
-3. Background: `docs/cdp_magalu_collection.md` (CDP setup + troubleshooting)
+1. **Notebook (recomendado, Jul/2026):** `docs/COLETA_LOCAL_AUTENTICADA.md`
+   — Chrome real logado (perfil dedicado), sem CDP/porta de debug.
+   Key files: `scrapers/local_browser.py`, `scripts/setup_local_profile.py`,
+   `scripts/collect_local_authenticated.bat`, `scripts/setup_local_scheduler.ps1`
+   Liga com `RAC_LOCAL_CHROME=1`.
+2. **Legado (CDP + perfil copiado):** `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md`
+   e `docs/cdp_magalu_collection.md`. Falhava por Chrome 136+ ignorar
+   `--remote-debugging-port` no perfil padrão e a cópia deslogar as contas —
+   ver a seção "Por que as tentativas anteriores falhavam" do doc novo.
 
 ### "I need to run a manual collection via the Claude Chrome Extension"
 1. Load the platform guide: `docs/manual_magalu_collection.md`,
@@ -91,7 +95,8 @@ CLAUDE.md                                  ← Project overview + session protoc
 .claude/templates/                         ← Templates for completions/sessions
 docs/INDEX.md                              ← This file
 docs/QUICK_REFERENCE.md                    ← Fast lookups
-docs/AUTOMACAO_COLETAS_AUTENTICADAS.md     ← Shopee/Magalu/CB automation (CDP + sessions)
+docs/COLETA_LOCAL_AUTENTICADA.md           ← Shopee/Magalu/CB no notebook (Chrome real logado) ⭐
+docs/AUTOMACAO_COLETAS_AUTENTICADAS.md     ← Legado: automation via CDP + sessions
 docs/PRICETRACK_INSIGHTS.md                ← PriceTrack pipeline + insight roadmap
 docs/DIAGNOSTICO_COLETA_JUN2026.md         ← Field coverage diagnosis (buy box, ML fix)
 docs/cdp_magalu_collection.md              ← Chrome CDP setup (Windows + Task Scheduler)
