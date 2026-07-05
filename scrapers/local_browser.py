@@ -337,10 +337,14 @@ class LocalBrowser:
                 )
                 logger.info(f"[LocalBrowser] _abck validado pelo sensor.js ✓ ({key})")
             except Exception:
+                # Não valido = sessão que o Akamai ainda pode bloquear. NÃO
+                # cacheia como aquecido: a próxima chamada re-tenta o warm-up
+                # (dá mais tempo ao sensor.js) em vez de seguir com sessão fria.
                 logger.warning(
                     f"[LocalBrowser] _abck não validou em 20s ({key}) — "
-                    "a busca pode ser bloqueada"
+                    "não cacheando o warm-up; a próxima keyword re-tenta"
                 )
+                return False
 
         self._warmed_hosts.add(key)
         return True

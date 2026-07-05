@@ -22,10 +22,24 @@
 # =============================================================================
 
 param(
-    [switch]$Remove
+    [switch]$Remove,
+    # Usuario Windows dono das tarefas. Preenchido automaticamente no hop de
+    # elevacao (ver abaixo) para preservar o usuario INTERATIVO original —
+    # se a UAC usar credenciais de outro admin, $env:USERNAME apos a elevacao
+    # seria o admin, e as tarefas rodariam na sessao errada (Chrome nao abriria).
+    [string]$TaskUser = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+# Pausa so quando ha console interativo — evita travar/erro em execucao
+# agendada/nao-interativa (a tarefa que chama este script nao tem teclado).
+function Wait-Key {
+    if ([Environment]::UserInteractive -and $Host.Name -eq "ConsoleHost") {
+        Write-Host "Pressione qualquer tecla para fechar..." -ForegroundColor DarkGray
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    }
+}
 
 # --- Auto-elevacao para Admin -----------------------------------------------
 $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -34,11 +48,20 @@ $isAdmin     = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Admi
 
 if (-not $isAdmin) {
     Write-Host "Precisa de Administrador. Re-executando via UAC..." -ForegroundColor Yellow
-    $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"")
+    # Captura o usuario interativo ATUAL e repassa pro processo elevado, para
+    # nao depender do $env:USERNAME de dentro da elevacao (que pode diferir).
+    $origUser = "$env:USERDOMAIN\$env:USERNAME"
+    $argList = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"",
+        "-TaskUser", "`"$origUser`""
+    )
     if ($Remove) { $argList += "-Remove" }
     try {
-        Start-Process -FilePath "powershell.exe" -ArgumentList $argList -Verb RunAs -Wait
-        exit 0
+        # -PassThru + exit code do filho: sem isto o pai sempre sai 0 e mascara
+        # falhas do setup elevado.
+        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $argList `
+            -Verb RunAs -PassThru -Wait
+        exit $proc.ExitCode
     } catch {
         Write-Host "ERRO: elevacao UAC negada." -ForegroundColor Red
         exit 1
@@ -49,7 +72,11 @@ if (-not $isAdmin) {
 $BaseDir = Split-Path -Parent $PSScriptRoot
 $CollectScript = Join-Path $BaseDir "scripts\collect_local_authenticated.bat"
 
-$TaskUser = "$env:USERDOMAIN\$env:USERNAME"
+# Usa o usuario interativo repassado na elevacao; se rodou ja como admin sem o
+# parametro, cai no usuario atual.
+if ([string]::IsNullOrWhiteSpace($TaskUser)) {
+    $TaskUser = "$env:USERDOMAIN\$env:USERNAME"
+}
 
 $Tasks       = @("RAC_Local_Manha", "RAC_Local_Noite")
 # Tarefas antigas (CDP / perfil copiado) substituidas por esta versao
@@ -66,7 +93,7 @@ if ($Remove) {
         }
     }
     Write-Host "Tarefas removidas." -ForegroundColor Green
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    Wait-Key
     exit 0
 }
 
@@ -122,4 +149,4 @@ Write-Host "  1. Faca login na Shopee 1x: python scripts\setup_local_profile.py"
 Write-Host "  2. O notebook precisa estar LIGADO e com voce logado no Windows" -ForegroundColor Yellow
 Write-Host "     nos horarios agendados (o Chrome abre na sua sessao de UI)." -ForegroundColor Yellow
 Write-Host ""
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Wait-Key

@@ -210,7 +210,11 @@ class ShopeeScraper(BaseScraper):
                 if response.status != 200:
                     return
                 data = json.loads(response.text())
-                if isinstance(data, dict) and data.get("items"):
+                # Captura qualquer resposta de search_items que tenha a CHAVE
+                # `items` — inclusive `items: []` (busca 0 resultados). Filtrar
+                # por items truthy classificaria uma busca vazia legítima como
+                # "sem resposta" (bloqueio) e incrementaria o circuit breaker.
+                if isinstance(data, dict) and "items" in data:
                     self._captured_search.append(data)
             except Exception:
                 pass

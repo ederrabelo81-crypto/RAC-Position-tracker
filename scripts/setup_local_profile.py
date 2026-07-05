@@ -120,9 +120,17 @@ def _open_profile(headless: bool):
             break
         except Exception as exc:
             msg = str(exc).lower()
-            if "singletonlock" in msg or "already in use" in msg:
+            # Mesma detecção do LocalBrowser.launch(): cobre o lock "stale" após
+            # um crash do Chrome ("profile ... is locked"), que não contém
+            # "singletonlock" — sem isto o setup exibiria a mensagem genérica.
+            if (
+                "singletonlock" in msg
+                or "already in use" in msg
+                or ("profile" in msg and "lock" in msg)
+            ):
                 print(
-                    "\nERRO: o perfil já está aberto por outro Chrome.\n"
+                    "\nERRO: o perfil já está aberto por outro Chrome (ou lock "
+                    "remanescente de um Chrome que travou).\n"
                     "Feche TODAS as janelas do Chrome de coleta/setup e tente de novo."
                 )
                 pw.stop()

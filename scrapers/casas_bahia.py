@@ -17,6 +17,7 @@ Paginação: parâmetro &page={n}.
 
 import json
 import os
+import random
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
