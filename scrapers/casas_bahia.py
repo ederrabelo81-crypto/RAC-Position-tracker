@@ -17,6 +17,7 @@ Paginação: parâmetro &page={n}.
 
 import json
 import os
+import random
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,6 +37,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import MAX_PAGES, LOGS_DIR, PAGE_TIMEOUT
 from scrapers.base import BaseScraper
+from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
 from utils.text import parse_price, parse_rating, parse_review_count
 
 _ITEMS_PER_PAGE = 24
@@ -157,6 +159,11 @@ class CasasBahiaScraper(BaseScraper):
 
         # Modo CDP (Chrome real do usuário) — setado em _launch()
         self._cdp_active: bool = False
+        # Modo browser local (Chrome real logado, RAC_LOCAL_CHROME) — usa o
+        # mesmo caminho do CDP (browser real primeiro), porém sem porta de
+        # debug: o próprio processo abre o Chrome persistente compartilhado.
+        self._local_active: bool = False
+        self._local_browser: Optional[Any] = None
         # Página com handler de XHR já registrado (evita handlers duplicados
         # acumulando entre keywords — cada search() chamava page.on de novo)
         self._xhr_page: Optional[Any] = None
@@ -178,6 +185,15 @@ class CasasBahiaScraper(BaseScraper):
         headers["User-Agent"] = self._user_agent
         return headers
 
+    @property
+    def _real_browser_active(self) -> bool:
+        """True quando há um Chrome REAL (CDP externo ou local logado) em uso.
+
+        Ambos os modos seguem o mesmo caminho rico: browser real primeiro
+        (fingerprint aceito pelo Akamai), APIs VTEX como fallback.
+        """
+        return self._cdp_active or self._local_active
+
     # ------------------------------------------------------------------
     # Browser: modo CDP (Chrome real) ou launch próprio (fallback)
     # ------------------------------------------------------------------
@@ -192,6 +208,30 @@ class CasasBahiaScraper(BaseScraper):
 
         Sem CDP, cai no launch padrão do BaseScraper.
         """
+        # Preferência no notebook: Chrome real logado compartilhado
+        # (RAC_LOCAL_CHROME). Mesmo fingerprint aceito pelo Akamai, sem depender
+        # de porta de debug (que o Chrome 136+ ignora no perfil padrão).
+        if is_local_chrome_enabled():
+            lb = get_local_browser()
+            if lb is not None:
+                page = lb.new_page()
+                if page is not None:
+                    self._local_browser = lb
+                    self._context = lb.context
+                    self._page = page
+                    self._page.set_default_timeout(PAGE_TIMEOUT)
+                    self._local_active = True
+                    self._setup_xhr_intercept()
+                    logger.info(
+                        f"[{self.platform_name}] Chrome real local (perfil "
+                        "compartilhado) — fingerprint nativo contra o Akamai"
+                    )
+                    return
+            logger.warning(
+                f"[{self.platform_name}] RAC_LOCAL_CHROME ligado mas o Chrome local "
+                "não abriu — tentando CDP/curl_cffi"
+            )
+
         cdp_url = (
             os.getenv("RAC_CDP_URL", "").strip()
             or os.getenv("MAGALU_CDP_URL", "").strip()
@@ -242,6 +282,20 @@ class CasasBahiaScraper(BaseScraper):
             super()._launch()
 
     def _close(self) -> None:
+        # Modo browser local: fecha SÓ a aba — a janela é compartilhada e
+        # fechada no fim da coleta (close_local_browser).
+        if self._local_active:
+            try:
+                if self._page and not self._page.is_closed():
+                    self._page.close()
+            except Exception:
+                pass
+            self._page = None
+            self._context = None
+            self._xhr_page = None
+            self._local_active = False
+            return
+
         if not self._cdp_active:
             super()._close()
             return
@@ -901,7 +955,7 @@ class CasasBahiaScraper(BaseScraper):
 
         Idempotente: roda só na 1ª keyword (cacheia em self._cdp_warmed).
         """
-        if self._cdp_warmed or not self._cdp_active or self._page is None:
+        if self._cdp_warmed or not self._real_browser_active or self._page is None:
             return self._cdp_warmed
 
         try:
@@ -1018,9 +1072,9 @@ class CasasBahiaScraper(BaseScraper):
         """
         url = self._build_url(keyword, page)
 
-        # Sessão manual: só no browser PRÓPRIO. No modo CDP o Chrome real já
-        # tem cookies vivos — injetar os salvos (mais antigos) degrada a sessão.
-        if page == 1 and not self._cdp_active:
+        # Sessão manual: só no browser PRÓPRIO. Num Chrome real (CDP ou local)
+        # os cookies já estão vivos — injetar os salvos (mais antigos) degrada.
+        if page == 1 and not self._real_browser_active:
             try:
                 from utils.session_grabber import apply_session_to_context
                 if apply_session_to_context("casasbahia", self._context):
@@ -1137,8 +1191,8 @@ class CasasBahiaScraper(BaseScraper):
             records: List[Dict[str, Any]] = []
             browser_records: Optional[List[Dict[str, Any]]] = None
 
-            if self._cdp_active:
-                # --- CDP: Chrome real primeiro (Akamai aceita o fingerprint) ---
+            if self._real_browser_active:
+                # --- Chrome real (CDP ou local): fingerprint aceito ---
                 # 1) Warm-up 1x: home + sensor.js valida o _abck (mesma lição
                 #    do Magalu — sem isso o /busca chega ao Akamai sem o cookie
                 #    validado e é bloqueado, como nos logs de 12/Jun).
@@ -1216,9 +1270,9 @@ class CasasBahiaScraper(BaseScraper):
                     f"[{self.platform_name}] Circuit breaker: "
                     f"{self._blocked_keyword_streak} keywords seguidas bloqueadas "
                     "pelo Akamai — abortando a coleta Casas Bahia (keywords "
-                    "restantes serão puladas). Caminhos: coleta via Chrome CDP "
-                    "(scripts/start_chrome_cdp.bat + RAC_CDP_URL) ou proxy "
-                    "residencial BR."
+                    "restantes serão puladas). Caminhos: no notebook use "
+                    "RAC_LOCAL_CHROME=1 (Chrome real residencial) ou proxy "
+                    "residencial BR na VM."
                 )
 
         logger.success(

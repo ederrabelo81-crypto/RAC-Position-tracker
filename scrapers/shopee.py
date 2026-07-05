@@ -26,6 +26,7 @@ o browser por keyword.
     - A sessão expira em horas → re-capturar periodicamente.
 """
 
+import json
 import random
 import time
 from typing import Any, Dict, List, Optional
@@ -44,6 +45,7 @@ import requests as _std_requests
 
 from config import MAX_PAGES
 from scrapers.base import BaseScraper
+from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
 
 _SHOPEE_BASE = "https://shopee.com.br"
 _SHOPEE_API = f"{_SHOPEE_BASE}/api/v4/search/search_items"
@@ -52,6 +54,8 @@ _API_TIMEOUT = 12
 _RETRY_ATTEMPTS = 3
 # Throttle agressivo: Shopee rate-limita rápido por IP.
 _INTER_PAGE_DELAY = (3.0, 7.0)
+# Padrão de URL da API de busca interceptada no modo browser.
+_SEARCH_API_PATTERN = "/api/v4/search/search_items"
 
 _BASE_HEADERS = {
     "User-Agent": (
@@ -101,11 +105,43 @@ class ShopeeScraper(BaseScraper):
         self._blocked_keyword_streak: int = 0
         self._collection_aborted: bool = False
 
+        # ── Modo browser local (Chrome real logado) ──────────────────────
+        # Quando RAC_LOCAL_CHROME=1: coletamos DENTRO do Chrome logado do
+        # usuário e interceptamos a chamada NATIVA da API v4 (que carrega o
+        # header anti-fraude `af-ac-enc-dat`, gerado pela JS da Shopee — o que
+        # o replay via curl_cffi não tinha). É o caminho que realmente destrava
+        # a Shopee no notebook do usuário. curl_cffi vira fallback.
+        self._local_browser: Optional[Any] = None
+        self._page: Optional[Any] = None
+        self._local_active: bool = False
+        self._captured_search: List[dict] = []
+        self._xhr_page: Optional[Any] = None
+
     # ------------------------------------------------------------------
-    # Context manager — sem browser; só prepara a sessão HTTP
+    # Context manager — modo browser local (preferido) ou sessão HTTP
     # ------------------------------------------------------------------
 
     def _launch(self) -> None:
+        # Preferência: Chrome real logado (destrava a Shopee de fato).
+        if is_local_chrome_enabled():
+            lb = get_local_browser()
+            if lb is not None:
+                page = lb.new_page()
+                if page is not None:
+                    self._local_browser = lb
+                    self._page = page
+                    self._local_active = True
+                    self._setup_xhr_intercept()
+                    logger.info(
+                        f"[{self.platform_name}] Modo browser local (Chrome logado) "
+                        "— intercepta a API v4 nativa com o header anti-fraude"
+                    )
+                    return
+            logger.warning(
+                f"[{self.platform_name}] RAC_LOCAL_CHROME ligado mas o Chrome local "
+                "não abriu — caindo para curl_cffi (provável 403 sem login/proxy)"
+            )
+
         if _HAS_CURL_CFFI:
             self._session = _cffi_requests.Session()
             flavor = "curl_cffi (chrome124)"
@@ -132,17 +168,148 @@ class ShopeeScraper(BaseScraper):
             logger.warning(
                 f"[{self.platform_name}] Sessão ANÔNIMA — nenhum cookie de login "
                 f"({'/'.join(_LOGIN_COOKIE_NAMES)}). A API de busca retorna 403 "
-                "sem login. Abra o Chrome CDP, faça login na Shopee (1x) e rode: "
-                "python scripts/refresh_sessions_cdp.py --sites shopee"
+                "sem login. No notebook, rode: RAC_LOCAL_CHROME=1 e faça login 1x "
+                "com python scripts/setup_local_profile.py"
             )
 
     def _close(self) -> None:
+        # Modo browser local: fecha SÓ a aba dedicada — a janela do Chrome é
+        # compartilhada e fechada no fim da coleta (close_local_browser).
+        if self._local_active:
+            try:
+                if self._page is not None and not self._page.is_closed():
+                    self._page.close()
+            except Exception:
+                pass
+            self._page = None
+            self._xhr_page = None
+            self._local_active = False
+            return
         try:
             if self._session is not None:
                 self._session.close()
         except Exception:
             pass
         self._session = None
+
+    # ------------------------------------------------------------------
+    # Modo browser local — navega a busca e intercepta a API v4 nativa
+    # ------------------------------------------------------------------
+
+    def _setup_xhr_intercept(self) -> None:
+        """Registra 1 handler que captura as respostas de ``search_items``."""
+        self._captured_search = []
+        if self._xhr_page is self._page and self._page is not None:
+            return
+        self._xhr_page = self._page
+
+        def handle_response(response):
+            try:
+                if _SEARCH_API_PATTERN not in response.url:
+                    return
+                if response.status != 200:
+                    return
+                data = json.loads(response.text())
+                # Captura qualquer resposta de search_items que tenha a CHAVE
+                # `items` — inclusive `items: []` (busca 0 resultados). Filtrar
+                # por items truthy classificaria uma busca vazia legítima como
+                # "sem resposta" (bloqueio) e incrementaria o circuit breaker.
+                if isinstance(data, dict) and "items" in data:
+                    self._captured_search.append(data)
+            except Exception:
+                pass
+
+        try:
+            self._page.on("response", handle_response)
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] Falha ao registrar handler XHR: {exc}")
+
+    def _search_via_browser(
+        self,
+        keyword: str,
+        keyword_category_map: dict,
+        page_limit: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Coleta a busca DENTRO do Chrome logado, interceptando a API v4 nativa.
+
+        A própria página da Shopee dispara ``search_items`` com o header
+        anti-fraude ``af-ac-enc-dat`` (gerado pela JS dela). Ao interceptar a
+        RESPOSTA, obtemos o mesmo JSON da API — sem precisar forjar o header,
+        que era o que bloqueava o replay via curl_cffi.
+        """
+        lb = self._local_browser
+        # Warm-up da home 1x (seta SPC_SI/cookies de sessão frescos).
+        if lb is not None and self._page is not None:
+            lb.warmup(self._page, f"{_SHOPEE_BASE}/", host_key="shopee")
+
+        all_records: List[Dict[str, Any]] = []
+        for page in range(page_limit):
+            # A URL web usa `page` 0-indexado; a API responde `newest=page*60`.
+            url = f"{_SHOPEE_BASE}/search?keyword={quote_plus(keyword)}&page={page}"
+            self._captured_search = []
+            try:
+                self._page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+            except Exception as exc:
+                logger.warning(
+                    f"[{self.platform_name}] goto busca '{keyword}' p{page+1} falhou: {exc}"
+                )
+                break
+
+            # A SERP dispara search_items no load; scroll ajuda a garantir.
+            captured = self._await_captured(timeout_s=12.0)
+            if not captured:
+                try:
+                    for _ in range(4):
+                        self._page.mouse.wheel(0, 700)
+                        time.sleep(random.uniform(0.4, 0.9))
+                except Exception:
+                    pass
+                captured = self._await_captured(timeout_s=8.0)
+
+            if not captured:
+                logger.warning(
+                    f"[{self.platform_name}] '{keyword}' p{page+1}: nenhuma resposta "
+                    "de search_items capturada (página pode exigir login/CAPTCHA)."
+                )
+                self._hard_blocked = True
+                break
+
+            # Usa a 1ª resposta de search_items da página (a SERP pode re-disparar
+            # a chamada ou pré-buscar; concatenar duplicaria itens/posições).
+            items: List[dict] = captured[0].get("items") or []
+            if not items:
+                logger.info(
+                    f"[{self.platform_name}] Sem mais resultados (pág {page+1})."
+                )
+                break
+
+            records = self._parse_items(items, keyword, keyword_category_map, page)
+            all_records.extend(records)
+            logger.info(
+                f"[{self.platform_name}] Pág {page+1}/{page_limit}: "
+                f"{len(records)} produtos (browser local)"
+            )
+
+            if len(items) < _ITEMS_PER_PAGE:
+                break
+            time.sleep(random.uniform(*_INTER_PAGE_DELAY))
+
+        return all_records
+
+    def _await_captured(self, timeout_s: float) -> List[dict]:
+        """Espera (até timeout) a interceptação de ao menos 1 search_items."""
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if self._captured_search:
+                # Pequena folga para respostas paralelas chegarem ao buffer.
+                time.sleep(0.6)
+                return list(self._captured_search)
+            try:
+                self._page.wait_for_timeout(300)
+            except Exception:
+                time.sleep(0.3)
+        return list(self._captured_search)
 
     # ------------------------------------------------------------------
     # Sessão / warm-up
@@ -365,11 +532,18 @@ class ShopeeScraper(BaseScraper):
         keyword_category_map: dict,
         page_limit: int = MAX_PAGES,
     ) -> List[Dict[str, Any]]:
-        """Busca um termo na Shopee via API v4 (search_items) + sessão capturada.
+        """Busca um termo na Shopee via API v4 (search_items).
 
-        Best-effort: depende de cookies SPC_* válidos (expiram em horas) e é
-        instável sem proxy residencial BR. Extrai ``shop_name``, o tipo (Shopee
-        Mall / Preferred+) e a reputação da loja quando presentes.
+        Caminho preferido (``RAC_LOCAL_CHROME=1``): coleta DENTRO do Chrome real
+        logado e intercepta a chamada NATIVA de ``search_items`` — que já carrega
+        o header anti-fraude ``af-ac-enc-dat``. É o que destrava a Shopee no
+        notebook do usuário.
+
+        Fallback (sem browser local): replay via curl_cffi + sessão capturada —
+        best-effort, depende de cookies SPC_* válidos e instável sem proxy BR.
+
+        Em ambos, extrai ``shop_name``, o tipo (Shopee Mall / Preferred+) e a
+        reputação da loja quando presentes.
 
         Args:
             keyword: termo de busca.
@@ -379,12 +553,6 @@ class ShopeeScraper(BaseScraper):
         Returns:
             Lista de registros normalizados (um por anúncio).
         """
-        if not _HAS_CURL_CFFI:
-            logger.warning(
-                f"[{self.platform_name}] curl_cffi não instalado — coleta provavelmente "
-                "será bloqueada. Instale: pip install curl_cffi"
-            )
-
         # Circuit breaker — coleta já abortada por bloqueios consecutivos:
         # pula a keyword sem gastar requests (todas retornariam 403).
         if self._collection_aborted:
@@ -395,7 +563,22 @@ class ShopeeScraper(BaseScraper):
             return []
 
         self._hard_blocked = False
-        all_records: List[Dict[str, Any]] = []
+
+        # ── Caminho preferido: Chrome real logado (intercepta a API nativa) ──
+        if self._local_active and self._page is not None:
+            all_records = self._search_via_browser(
+                keyword, keyword_category_map, page_limit
+            )
+            self._update_circuit_breaker(all_records)
+            return all_records
+
+        if not _HAS_CURL_CFFI:
+            logger.warning(
+                f"[{self.platform_name}] curl_cffi não instalado — coleta provavelmente "
+                "será bloqueada. Instale: pip install curl_cffi"
+            )
+
+        all_records = []
         for page in range(page_limit):
             data = self._fetch_page(keyword, page)
             if data is None:
@@ -417,24 +600,40 @@ class ShopeeScraper(BaseScraper):
                 break
             time.sleep(random.uniform(*_INTER_PAGE_DELAY))
 
-        # Circuit breaker — N keywords seguidas 100% bloqueadas = sessão/IP
-        # rejeitados de forma persistente; aborta o restante da coleta.
+        self._update_circuit_breaker(all_records)
+        return all_records
+
+    def _update_circuit_breaker(self, all_records: List[Dict[str, Any]]) -> None:
+        """Conta keywords seguidas bloqueadas; aborta a coleta após N.
+
+        N keywords 100% bloqueadas = sessão/IP rejeitados de forma persistente
+        (ou, no modo browser, página sem login / com CAPTCHA). Abortar evita
+        gastar as keywords restantes.
+        """
         if all_records:
             self._blocked_keyword_streak = 0
-        elif self._hard_blocked:
-            self._blocked_keyword_streak += 1
-            if (
-                self._blocked_keyword_streak >= _ABORT_AFTER_BLOCKED_KEYWORDS
-                and not self._collection_aborted
-            ):
-                self._collection_aborted = True
-                logger.error(
-                    f"[{self.platform_name}] Circuit breaker: "
-                    f"{self._blocked_keyword_streak} keywords seguidas com 403 — "
-                    "abortando a coleta Shopee (keywords restantes serão puladas). "
-                    "Causas prováveis: (1) sessão sem login — logue na Shopee no "
-                    "Chrome CDP e rode scripts/refresh_sessions_cdp.py --sites "
-                    "shopee; (2) IP marcado — proxy residencial BR."
+            return
+        if not self._hard_blocked:
+            return
+        self._blocked_keyword_streak += 1
+        if (
+            self._blocked_keyword_streak >= _ABORT_AFTER_BLOCKED_KEYWORDS
+            and not self._collection_aborted
+        ):
+            self._collection_aborted = True
+            if self._local_active:
+                hint = (
+                    "no Chrome local a busca não retornou resultados — faça login "
+                    "1x com python scripts/setup_local_profile.py e confira se a "
+                    "Shopee abre normalmente (sem CAPTCHA)."
                 )
-
-        return all_records
+            else:
+                hint = (
+                    "sessão sem login/expirada. No notebook use RAC_LOCAL_CHROME=1 "
+                    "+ python scripts/setup_local_profile.py; na VM, proxy residencial BR."
+                )
+            logger.error(
+                f"[{self.platform_name}] Circuit breaker: "
+                f"{self._blocked_keyword_streak} keywords seguidas sem dados — "
+                f"abortando a coleta Shopee (restantes serão puladas). {hint}"
+            )

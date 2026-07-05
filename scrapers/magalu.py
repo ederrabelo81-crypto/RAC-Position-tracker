@@ -69,6 +69,7 @@ except ImportError:
 
 from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
+from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
 from utils.text import parse_price
 
 
@@ -209,6 +210,8 @@ class MagaluScraper(BaseScraper):
         self._pw_page = None           # Page (reusada entre keywords)
         self._browser_mode: bool = True  # True = usa Playwright pra cada busca
         self._is_cdp: bool = False     # True = conectado a Chrome externo via CDP (não fechar)
+        self._is_local: bool = False   # True = usa o Chrome local compartilhado (não fechar)
+        self._local_browser = None     # handle do LocalBrowser compartilhado (modo local)
 
         # Contador de bloqueios consecutivos pra disparar revalidação de sessão
         # (visita home + interação humana pra sensor.js promover _abck).
@@ -319,19 +322,48 @@ class MagaluScraper(BaseScraper):
             self._impersonate, _DESKTOP_UA_BY_CHROME["chrome124"]
         )
 
-        try:
-            self._pw_handle = sync_playwright().start()
-        except Exception as exc:
-            logger.error(f"[Magalu] Falha ao iniciar Playwright: {exc}")
-            return False
+        cdp_url = os.getenv("MAGALU_CDP_URL", "").strip()
+
+        # ── Modo local compartilhado (RAC_LOCAL_CHROME, sem CDP) ──────────
+        # No notebook do usuário, reusa o MESMO Chrome persistente logado que
+        # Shopee/Casas Bahia usam (perfil dedicado, IP residencial). Sem porta
+        # de debug (o Chrome 136+ ignora --remote-debugging-port no perfil
+        # padrão) e sem abrir um segundo browser. O contexto é compartilhado e
+        # fechado no fim da coleta — aqui só abrimos uma aba dedicada.
+        channel_used = None
+        profile_is_fresh = False
+        if not cdp_url and is_local_chrome_enabled():
+            lb = get_local_browser()
+            if lb is not None and lb.context is not None:
+                self._pw_context = lb.context
+                self._local_browser = lb
+                self._is_local = True
+                channel_used = "local-shared"
+                logger.info(
+                    "[Magalu] Chrome local compartilhado (perfil logado) — "
+                    "sem CDP/porta de debug"
+                )
+            else:
+                logger.warning(
+                    "[Magalu] RAC_LOCAL_CHROME ligado mas o Chrome local não "
+                    "abriu — caindo para launch próprio"
+                )
+
+        if not self._is_local:
+            try:
+                self._pw_handle = sync_playwright().start()
+            except Exception as exc:
+                logger.error(f"[Magalu] Falha ao iniciar Playwright: {exc}")
+                return False
 
         # ── Modo CDP: conecta ao Chrome real do usuário via DevTools Protocol ──
         # Quando MAGALU_CDP_URL está setado (ex: http://localhost:9222), conecta
         # a um Chrome já aberto pelo usuário com --remote-debugging-port. Usa o
         # Chrome real + IP residencial + cookies/histórico acumulados de meses
         # de navegação — combinação que Akamai aceita como "usuário humano".
-        cdp_url = os.getenv("MAGALU_CDP_URL", "").strip()
-        if cdp_url:
+        if self._is_local:
+            pass  # contexto já resolvido acima
+        elif cdp_url:
             logger.info(f"[Magalu] Conectando via CDP a {cdp_url} ...")
             try:
                 self._pw_browser = self._pw_handle.chromium.connect_over_cdp(cdp_url)
@@ -402,12 +434,12 @@ class MagaluScraper(BaseScraper):
                 return False
 
         # Stealth JS — esconde marcadores de automação do sensor.js.
-        # SÓ no modo launch (Chromium efêmero do Playwright). No modo CDP é
-        # contraproducente: o Chrome real já tem navigator.webdriver,
+        # SÓ no modo launch (Chromium efêmero do Playwright). Em Chrome real
+        # (CDP ou local) é contraproducente: o browser já tem navigator.webdriver,
         # window.chrome (com .app + funções nativas) e navigator.plugins
         # legítimos — sobrescrevê-los por stubs JS deixa o fingerprint MAIS
         # sintético (descritores não-nativos detectáveis), não menos.
-        if not self._is_cdp:
+        if not self._is_cdp and not self._is_local:
             self._pw_context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => false});
                 try { delete navigator.__proto__.webdriver; } catch(_) {}
@@ -424,15 +456,14 @@ class MagaluScraper(BaseScraper):
                 Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
             """)
 
-        # Modo CDP: NUNCA sequestra uma aba existente — o Chrome é do usuário,
-        # que pode fechar/navegar as abas dele a qualquer momento (foi o que
-        # derrubou a coleta no meio: 'Target page ... has been closed'). Uma
-        # aba dedicada isola a coleta do uso normal do browser.
-        if self._is_cdp:
+        # Chrome real (CDP ou local): NUNCA sequestra uma aba existente — o
+        # Chrome é do usuário/compartilhado. Uma aba dedicada isola a coleta do
+        # uso normal do browser e das outras plataformas (Shopee/CB).
+        if self._is_cdp or self._is_local:
             try:
                 self._pw_page = self._pw_context.new_page()
             except Exception as exc:
-                logger.error(f"[Magalu] Falha ao abrir aba dedicada no Chrome CDP: {exc}")
+                logger.error(f"[Magalu] Falha ao abrir aba dedicada no Chrome real: {exc}")
                 self._close_persistent_browser()
                 return False
         # Persistent context já vem com 1 página aberta (about:blank) —
@@ -540,6 +571,20 @@ class MagaluScraper(BaseScraper):
         No modo CDP (conectado a Chrome externo), NÃO fecha contexto/browser —
         é o Chrome do usuário, deixa aberto pra próximo run.
         """
+        # Modo local compartilhado: fecha SÓ a aba dedicada. O contexto (janela)
+        # é compartilhado com Shopee/CB e fechado no fim da coleta.
+        if self._is_local:
+            try:
+                if self._pw_page and not self._pw_page.is_closed():
+                    self._pw_page.close()
+            except Exception:
+                pass
+            self._pw_page = None
+            self._pw_context = None
+            self._local_browser = None
+            self._is_local = False
+            return
+
         if self._is_cdp:
             # CDP: fecha SÓ a aba dedicada da coleta e desconecta — nunca o
             # Chrome do usuário (contexto/browser ficam abertos pro próximo run)

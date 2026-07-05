@@ -514,6 +514,15 @@ def main() -> None:
             "Verifique os logs para erros ou bloqueios anti-bot."
         )
 
+    # --- Fecha o Chrome local compartilhado (modo RAC_LOCAL_CHROME) ---
+    # Shopee/Magalu/Casas Bahia compartilham 1 browser persistente logado; cada
+    # scraper fecha só a sua aba. Aqui liberamos a janela e o lock do perfil.
+    try:
+        from scrapers.local_browser import close_local_browser
+        close_local_browser()
+    except Exception as exc:
+        logger.debug(f"Falha ao fechar o Chrome local compartilhado: {exc}")
+
 
 # ---------------------------------------------------------------------------
 # Demo: executa Mercado Livre com 1 keyword, 1 página (teste rápido)
