@@ -101,6 +101,15 @@ scripts\collect_local_authenticated.bat 2 alta media
 env, o comportamento é o antigo (curl_cffi/CDP externo) — nada muda na
 VM/GitHub.
 
+> 🔇 **"cannot get world … session closed" inundando o console?** É ruído do
+> driver do `rebrowser-playwright` ([issue #57](https://github.com/rebrowser/rebrowser-patches/issues/57))
+> tentando instrumentar os iframes de anúncio da página — **inofensivo**, a
+> coleta funciona (repare que cada keyword retorna N produtos logo depois). Os
+> logs úteis saem em **stdout** e o ruído em **stderr**, então dá pra silenciar:
+> - **PowerShell:** `python main.py --platforms casasbahia --pages 1 2>$null`
+> - **cmd.exe:** `python main.py --platforms casasbahia --pages 1 2>nul`
+> - O `.bat` já joga esse ruído em `logs\driver_stderr.log` (console limpo).
+
 ### Automatizar (Task Scheduler)
 
 ```powershell

@@ -128,8 +128,14 @@ def _setup_logging(log_dir: str) -> None:
     log_file = Path(log_dir) / f"bot_{_now_brt().strftime('%Y%m%d_%H%M%S')}.log"
 
     logger.remove()  # remove handler padrão do stderr
+    # Console em STDOUT (não stderr). No modo Chrome local, o driver Node do
+    # rebrowser-playwright cospe MUITO ruído em stderr ("[rebrowser-patches]
+    # cannot get world ... session closed" — issue conhecido #57, inofensivo:
+    # os iframes de anúncio da página são destruídos antes de o rebrowser os
+    # instrumentar). Com os logs úteis em stdout, dá pra descartar só o ruído
+    # com `2>$null` (PowerShell) / `2>nul` (cmd) sem perder os logs da coleta.
     logger.add(
-        sys.stderr,
+        sys.stdout,
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
         level="INFO",
         colorize=True,
