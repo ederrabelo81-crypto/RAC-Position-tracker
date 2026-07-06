@@ -200,9 +200,13 @@ def main() -> int:
     logged = _report_shopee_login(port)
     print(
         "\n  Pronto. O login fica salvo no perfil dedicado. Rode a coleta com:\n"
-        "    RAC_LOCAL_CHROME=1 python main.py "
+        "\n    scripts\\collect_local_authenticated.bat 1     (jeito recomendado)\n"
+        "\n  Ou manualmente. ATENÇÃO à sua shell:\n"
+        "    PowerShell:  $env:RAC_LOCAL_CHROME=\"1\"; python main.py "
         "--platforms magalu shopee casasbahia --pages 1\n"
-        "    (Windows: scripts\\collect_local_authenticated.bat)\n"
+        "    cmd.exe   :  set RAC_LOCAL_CHROME=1 && python main.py "
+        "--platforms magalu shopee casasbahia --pages 1\n"
+        "  (No PowerShell, `set VAR=1` NÃO exporta env — tem que ser `$env:`.)\n"
         "\n  Dica: deixe este Chrome ABERTO — a coleta reaproveita ele "
         "(perfil quente)."
     )

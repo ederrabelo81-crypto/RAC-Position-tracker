@@ -405,6 +405,26 @@ def main() -> None:
         f"Headless: {args.headless}"
     )
 
+    # Visibilidade do modo Chrome local (Shopee/Magalu/Casas Bahia). Sem essa
+    # confirmação, um RAC_LOCAL_CHROME não-setado (ex.: `set` no PowerShell, que
+    # NÃO exporta env — use `$env:RAC_LOCAL_CHROME="1"`) passava despercebido e a
+    # coleta caía no caminho antigo bloqueado pelo Akamai.
+    from scrapers.local_browser import is_local_chrome_enabled
+    _antibot = [p for p in ("shopee", "magalu", "casasbahia") if p in platform_names]
+    if is_local_chrome_enabled():
+        logger.info(
+            "[Chrome local] RAC_LOCAL_CHROME=ON — Shopee/Magalu/Casas Bahia "
+            "usarão o Chrome real via CDP (perfil dedicado)."
+        )
+    elif _antibot:
+        logger.warning(
+            f"[Chrome local] RAC_LOCAL_CHROME=OFF, mas você pediu {_antibot} — "
+            "essas plataformas vão cair no caminho antigo (Akamai/curl_cffi) e "
+            "provavelmente serão bloqueadas. No PowerShell ligue com "
+            '`$env:RAC_LOCAL_CHROME="1"` (NÃO `set`), ou use '
+            "scripts\\collect_local_authenticated.bat."
+        )
+
     # --- N8N: dados de contexto para notificações ---
     from utils.text import get_turno, now_brt
     _turno    = get_turno()

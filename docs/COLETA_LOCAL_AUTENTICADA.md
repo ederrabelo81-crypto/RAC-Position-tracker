@@ -83,10 +83,16 @@ scripts\collect_local_authenticated.bat
 scripts\collect_local_authenticated.bat 1
 scripts\collect_local_authenticated.bat 2 alta media
 
-# Equivalente cru:
-set RAC_LOCAL_CHROME=1
-python main.py --platforms magalu shopee casasbahia --pages 1
+# Equivalente cru — ATENÇÃO à shell:
+#   PowerShell:  $env:RAC_LOCAL_CHROME="1"; python main.py --platforms casasbahia --pages 1
+#   cmd.exe   :  set RAC_LOCAL_CHROME=1 && python main.py --platforms casasbahia --pages 1
 ```
+
+> ⚠️ **PowerShell não usa `set`.** No PowerShell, `set RAC_LOCAL_CHROME=1` **não**
+> exporta a variável de ambiente (é sintaxe do `cmd`) — a coleta cai no caminho
+> antigo e o Akamai bloqueia. Use **`$env:RAC_LOCAL_CHROME="1"`** ou, mais
+> simples, o `.bat` (que já seta certo). No começo do log a coleta imprime
+> `[Chrome local] RAC_LOCAL_CHROME=ON/OFF` — confira que está **ON**.
 
 `RAC_LOCAL_CHROME=1` liga o modo Chrome comum + CDP para os 3 scrapers. Sem essa
 env, o comportamento é o antigo (curl_cffi/CDP externo) — nada muda na
