@@ -58,6 +58,9 @@ echo.
 
 :: Ruido do driver Node do rebrowser (stderr) vai pra um arquivo, deixando o
 :: console limpo com os logs da coleta (stdout). O arquivo fica pra debug.
+:: Cria a pasta ANTES: o cmd resolve o redirect 2>> antes de rodar o python,
+:: entao sem a pasta o comando falha com "path specified".
+if not exist "logs" mkdir "logs"
 set "DRIVER_LOG=logs\driver_stderr.log"
 
 if "%PRIORITY%"=="" (
