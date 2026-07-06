@@ -44,15 +44,49 @@ class TestResolveProfileDir:
         assert lb._resolve_profile_dir() == Path(str(custom))
 
 
-class TestResolveHeadless:
-    def test_default_is_headed(self, monkeypatch):
-        monkeypatch.delenv("RAC_LOCAL_HEADLESS", raising=False)
-        assert lb._resolve_headless() is False
+class TestResolvePort:
+    def test_default_port(self, monkeypatch):
+        monkeypatch.delenv("RAC_CDP_PORT", raising=False)
+        assert lb._resolve_port() == 9222
 
-    @pytest.mark.parametrize("val", ["1", "true", "sim", "on"])
-    def test_opt_in_headless(self, monkeypatch, val):
-        monkeypatch.setenv("RAC_LOCAL_HEADLESS", val)
-        assert lb._resolve_headless() is True
+    def test_override_via_env(self, monkeypatch):
+        monkeypatch.setenv("RAC_CDP_PORT", "9333")
+        assert lb._resolve_port() == 9333
+
+    def test_non_numeric_falls_back(self, monkeypatch):
+        monkeypatch.setenv("RAC_CDP_PORT", "abc")
+        assert lb._resolve_port() == 9222
+
+
+class TestKeepChromeOpen:
+    def test_default_keeps_open(self, monkeypatch):
+        monkeypatch.delenv("RAC_LOCAL_CHROME_KEEP", raising=False)
+        assert lb._keep_chrome_open() is True
+
+    @pytest.mark.parametrize("val", ["0", "false", "no", "off"])
+    def test_opt_out_closes(self, monkeypatch, val):
+        monkeypatch.setenv("RAC_LOCAL_CHROME_KEEP", val)
+        assert lb._keep_chrome_open() is False
+
+
+class TestChromeExeOverride:
+    def test_env_override_when_exists(self, monkeypatch, tmp_path):
+        fake = tmp_path / "chrome.exe"
+        fake.write_text("x")
+        monkeypatch.setenv("RAC_CHROME_EXE", str(fake))
+        assert lb.find_chrome_exe() == str(fake)
+
+    def test_env_override_ignored_when_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("RAC_CHROME_EXE", str(tmp_path / "nope.exe"))
+        # Não deve retornar o caminho inexistente; cai na busca padrão (pode
+        # ser None neste ambiente sem Chrome).
+        assert lb.find_chrome_exe() != str(tmp_path / "nope.exe")
+
+
+class TestCdpEndpointProbe:
+    def test_returns_none_when_nothing_listening(self):
+        # Porta improvável de estar ocupada no sandbox.
+        assert lb.cdp_endpoint_if_up(59999) is None
 
 
 class TestGetLocalBrowserGuard:

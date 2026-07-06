@@ -82,17 +82,20 @@ periodicamente. `captcha_hit=True` aborta keywords restantes.
 `sellers[]`, official_store_id do ML, is_official_shop da Shopee, etc.).
 **Files:** `scrapers/base.py` `_build_record()`, `utils/supabase_client.py` `_COLUMN_MAP`
 
-## 10. CDP no perfil padrão do Chrome (Chrome 136+) / cópia de perfil desloga
+## 10. Coleta local: Chrome COMUM + CDP (não perfil copiado, não Playwright launch)
 
-**Wrong:** Ligar `--remote-debugging-port` apontando pro perfil padrão do
-usuário, OU copiar o perfil pra outra pasta pra contornar isso.
-**Why:** O Chrome 136+ IGNORA `--remote-debugging-port` quando o
-`--user-data-dir` é o perfil padrão (correção de segurança). E copiar o perfil
-dispara a proteção "perfil realocado" que INVALIDA os logins → Shopee 403.
-**Right:** No notebook, use um perfil DEDICADO e estável aberto pelo próprio
-Python via `launch_persistent_context` (Chrome real, sem porta de debug). Login
-1x persiste. Ligue com `RAC_LOCAL_CHROME=1`. Shopee coleta DENTRO do browser
-logado (intercepta a API v4 nativa, que tem o `af-ac-enc-dat`).
+**Wrong:** (a) `--remote-debugging-port` no perfil PADRÃO (Chrome 136+ ignora);
+(b) COPIAR o perfil pra outra pasta (proteção "perfil realocado" DESLOGA →
+Shopee 403); (c) abrir o Chrome via `launch_persistent_context` do Playwright
+(sobe com flags de automação/`navigator.webdriver` → Akamai 403 e Google recusa
+o login).
+**Why:** Google só bloqueia login em browser AUTOMATIZADO; Akamai detecta o CDP
+`Runtime.enable` do Playwright stock.
+**Right:** Abrir um Chrome COMUM (sem flags de automação) num perfil DEDICADO e
+estável (`data/chrome_profile`, não é cópia) com a porta de debug, e ATACAR via
+`connect_over_cdp` com **rebrowser-playwright** (oculta o `Runtime.enable`). No
+login, nenhum cliente CDP está conectado → Google passa. Ligue com
+`RAC_LOCAL_CHROME=1`. Só a Shopee precisa de login; CB/Magalu não.
 **Files:** `scrapers/local_browser.py`, `scripts/setup_local_profile.py`,
 `docs/COLETA_LOCAL_AUTENTICADA.md`
 

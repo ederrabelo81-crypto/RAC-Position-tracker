@@ -1,28 +1,29 @@
 """
 scripts/setup_local_profile.py — Setup ÚNICO do perfil Chrome dedicado e logado.
 
-Abre o Chrome real sobre o perfil dedicado do projeto (``data/chrome_profile/``,
-o MESMO usado pela coleta) de forma VISÍVEL, para você:
+Abre um Chrome COMUM (não controlado por automação) sobre o perfil dedicado do
+projeto (``data/chrome_profile/`` — o MESMO usado pela coleta), já na Shopee,
+para você fazer login UMA vez.
 
-  1. Fazer login na Shopee (obrigatório — sem login a API v4 responde 403).
-  2. (Opcional) Navegar 1-2 min no Magalu e na Casas Bahia pra "aquecer" o
-     perfil (o Akamai trata perfis com histórico como mais legítimos).
+Por que um Chrome comum (e não Playwright)
+------------------------------------------
+No login, NENHUM cliente de automação está conectado — a página vê um browser
+100% humano (sem ``navigator.webdriver``, sem flags de automação). Por isso o
+login pelo **Google** funciona aqui (num browser automatizado o Google recusa
+com "este navegador pode não ser seguro"). O login fica salvo no perfil
+dedicado e a coleta ataca esse mesmo Chrome via CDP.
 
-O login fica salvo NESTE diretório e PERSISTE entre execuções — diferente da
-abordagem antiga (perfil copiado), aqui o Chrome não invalida a sessão porque
-o diretório é estável e nunca é movido/copiado.
-
-Por que isto substitui o setup_cdp_profile + start_chrome_cdp
--------------------------------------------------------------
-  * Não copia o perfil (a cópia deslogava as contas).
-  * Não usa ``--remote-debugging-port`` (o Chrome 136+ ignora essa flag no
-    perfil padrão — era a causa de "liguei o CDP e não conectou").
-  * A coleta abre ESTE mesmo diretório via launch_persistent_context.
+O que precisa (e o que NÃO precisa) de login
+--------------------------------------------
+  * **Shopee** — PRECISA de login (a API v4 responde 403 sem conta). Pode ser
+    via Google (funciona neste Chrome comum) ou e-mail/telefone.
+  * **Casas Bahia** e **Magalu** — NÃO precisam de conta nenhuma. Só dependem
+    de IP residencial + Chrome real, que este modo já entrega.
 
 USO:
-    python scripts/setup_local_profile.py               # abre p/ login (Shopee)
-    python scripts/setup_local_profile.py --check        # só relata status/cookies
-    python scripts/setup_local_profile.py --headless-check
+    python scripts/setup_local_profile.py            # abre a Shopee p/ login
+    python scripts/setup_local_profile.py --check     # só relata status do login
+    python scripts/setup_local_profile.py --no-login  # só abre o Chrome (aquecer)
 
 Depois de logar, rode a coleta:
     RAC_LOCAL_CHROME=1 python main.py --platforms magalu shopee casasbahia --pages 1
@@ -42,106 +43,77 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
 from scrapers.local_browser import (  # noqa: E402
-    _LAUNCH_ARGS,
-    _IGNORE_DEFAULT_ARGS,
-    _DEFAULT_UA,
+    cdp_endpoint_if_up,
+    find_chrome_exe,
+    spawn_chrome,
     _import_sync_playwright,
+    _resolve_port,
     _resolve_profile_dir,
 )
+
+_SHOPEE_HOME = "https://shopee.com.br/"
 
 # Cookies que indicam sessão LOGADA na Shopee (any-of). csrftoken/SPC_SI saem
 # até para visitante anônimo — sem estes a API de busca retorna 403.
 _SHOPEE_LOGIN_COOKIES = ("SPC_EC", "SPC_ST", "SPC_U")
 
-_SITES = [
-    ("Shopee",      "https://shopee.com.br/",           True),
-    ("Magalu",      "https://www.magazineluiza.com.br/", False),
-    ("Casas Bahia", "https://www.casasbahia.com.br/",   False),
-]
+
+def _wait_cdp(port: int, seconds: int = 15) -> bool:
+    """Espera (até `seconds`) o Chrome expor a porta de debug. True se subiu."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if cdp_endpoint_if_up(port) is not None:
+            return True
+        time.sleep(0.5)
+    return cdp_endpoint_if_up(port) is not None
 
 
-def _report_cookies(context) -> None:
-    """Relata se a sessão da Shopee está logada, lendo os cookies do perfil."""
-    try:
-        cookies = context.cookies("https://shopee.com.br")
-    except Exception as exc:
-        print(f"  [aviso] não consegui ler cookies da Shopee: {exc}")
-        return
-    names = {c.get("name") for c in cookies}
-    logged = any(n in names for n in _SHOPEE_LOGIN_COOKIES)
-    print(f"\n  Cookies Shopee no perfil: {len(cookies)}")
-    if logged:
-        present = [n for n in _SHOPEE_LOGIN_COOKIES if n in names]
-        print(f"  ✅ Shopee LOGADA (cookies de login: {present})")
-    else:
-        print(
-            "  ❌ Shopee ANÔNIMA — nenhum cookie de login "
-            f"({'/'.join(_SHOPEE_LOGIN_COOKIES)}). Faça login na aba da Shopee "
-            "e rode este script de novo (ou use --check para reconferir)."
-        )
+def _report_shopee_login(port: int) -> bool:
+    """Conecta via CDP (breve) e relata se a Shopee está logada. True se logada."""
+    endpoint = cdp_endpoint_if_up(port)
+    if endpoint is None:
+        print("  [aviso] Chrome não está aberto na porta — não dá pra checar.")
+        return False
 
-
-def _open_profile(headless: bool):
-    """Abre o Chrome persistente sobre o perfil dedicado. Retorna (pw, context)."""
     sync_playwright, flavor = _import_sync_playwright()
     if sync_playwright is None:
-        print(
-            "ERRO: Playwright não instalado. Execute:\n"
-            "  pip install rebrowser-playwright\n"
-            "  python -m rebrowser_playwright install chromium"
-        )
-        sys.exit(2)
-    if flavor != "rebrowser-playwright":
-        print(
-            "AVISO: usando Playwright STOCK. Para a coleta passar melhor pelo "
-            "Akamai, instale o fork: pip install rebrowser-playwright"
-        )
+        print("  [aviso] Playwright indisponível — pulei a checagem de cookies.")
+        return False
 
-    profile_dir = _resolve_profile_dir()
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    print(f"  Perfil: {profile_dir} ({flavor})")
-
-    pw = sync_playwright().start()
-    context = None
-    for channel in ("chrome", "msedge", None):
-        try:
-            context = pw.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=headless,
-                channel=channel,
-                user_agent=_DEFAULT_UA,
-                viewport={"width": 1366, "height": 768},
-                locale="pt-BR",
-                timezone_id="America/Sao_Paulo",
-                args=_LAUNCH_ARGS,
-                ignore_default_args=_IGNORE_DEFAULT_ARGS,
+    pw = None
+    browser = None
+    try:
+        pw = sync_playwright().start()
+        browser = pw.chromium.connect_over_cdp(endpoint, timeout=15_000)
+        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        cookies = ctx.cookies("https://shopee.com.br")
+        names = {c.get("name") for c in cookies}
+        logged = any(n in names for n in _SHOPEE_LOGIN_COOKIES)
+        print(f"\n  Cookies Shopee no perfil: {len(cookies)}")
+        if logged:
+            present = [n for n in _SHOPEE_LOGIN_COOKIES if n in names]
+            print(f"  ✅ Shopee LOGADA (cookies de login: {present})")
+        else:
+            print(
+                "  ❌ Shopee ANÔNIMA — nenhum cookie de login "
+                f"({'/'.join(_SHOPEE_LOGIN_COOKIES)}). Faça login na aba da Shopee "
+                "e rode de novo (ou use --check)."
             )
-            print(f"  Browser: {channel or 'chromium'}")
-            break
-        except Exception as exc:
-            msg = str(exc).lower()
-            # Mesma detecção do LocalBrowser.launch(): cobre o lock "stale" após
-            # um crash do Chrome ("profile ... is locked"), que não contém
-            # "singletonlock" — sem isto o setup exibiria a mensagem genérica.
-            if (
-                "singletonlock" in msg
-                or "already in use" in msg
-                or ("profile" in msg and "lock" in msg)
-            ):
-                print(
-                    "\nERRO: o perfil já está aberto por outro Chrome (ou lock "
-                    "remanescente de um Chrome que travou).\n"
-                    "Feche TODAS as janelas do Chrome de coleta/setup e tente de novo."
-                )
+        return logged
+    except Exception as exc:
+        print(f"  [aviso] não consegui checar o login via CDP: {exc}")
+        return False
+    finally:
+        try:
+            if browser is not None:
+                browser.close()
+        except Exception:
+            pass
+        try:
+            if pw is not None:
                 pw.stop()
-                sys.exit(3)
-            continue
-
-    if context is None:
-        print("ERRO: não foi possível abrir nenhum Chrome (chrome/msedge/chromium).")
-        pw.stop()
-        sys.exit(2)
-    return pw, context
+        except Exception:
+            pass
 
 
 def main() -> int:
@@ -151,64 +123,90 @@ def main() -> int:
     )
     parser.add_argument(
         "--check", action="store_true",
-        help="Só abre, relata o status de login da Shopee e fecha (visível).",
+        help="Só relata o status de login da Shopee (abre o Chrome se preciso).",
     )
     parser.add_argument(
-        "--headless-check", action="store_true",
-        help="Como --check, porém sem abrir janela (só lê os cookies do perfil).",
+        "--no-login", action="store_true",
+        help="Só abre o Chrome comum no perfil (aquecer), sem esperar login.",
     )
     args = parser.parse_args()
 
-    headless = args.headless_check
-    print("=" * 64)
+    port = _resolve_port()
+    profile_dir = _resolve_profile_dir()
+
+    print("=" * 66)
     print("  Setup do perfil Chrome dedicado — RAC Position Tracker")
-    print("=" * 64)
+    print("=" * 66)
 
-    pw, context = _open_profile(headless=headless)
-
-    try:
-        if args.check or args.headless_check:
-            _report_cookies(context)
-            return 0
-
-        # Modo interativo: abre uma aba por site e espera o ENTER do usuário.
-        for name, url, needs_login in _SITES:
-            page = context.new_page()
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-            except Exception:
-                pass
-            flag = " (LOGIN OBRIGATÓRIO)" if needs_login else " (opcional: navegue p/ aquecer)"
-            print(f"  → Aba aberta: {name}{flag}")
-            time.sleep(1.0)
-
-        print("\n" + "─" * 64)
-        print("  INSTRUÇÕES:")
-        print("   1. Na aba da SHOPEE, faça LOGIN com a sua conta (obrigatório).")
-        print("   2. (Opcional) Navegue 1-2 min no Magalu e na Casas Bahia.")
-        print("   3. Volte aqui e pressione ENTER para salvar e fechar.")
-        print("─" * 64)
-        try:
-            input("\n  → Pressione ENTER quando terminar o login: ")
-        except KeyboardInterrupt:
-            print("\n  Cancelado (sem confirmar). O que você já logou fica salvo.")
-
-        _report_cookies(context)
+    _, flavor = _import_sync_playwright()
+    if flavor != "rebrowser-playwright":
         print(
-            "\n  Pronto. O login fica salvo no perfil. Rode a coleta com:\n"
-            "    RAC_LOCAL_CHROME=1 python main.py --platforms magalu shopee casasbahia --pages 1\n"
-            "    (Windows: scripts\\collect_local_authenticated.bat)"
+            "\n  ⚠️  AVISO: rebrowser-playwright NÃO está instalado. A COLETA vai\n"
+            "     ser detectada pelo Akamai (Magalu/Casas Bahia → 403). Instale:\n"
+            "        pip install rebrowser-playwright\n"
+            "        python -m rebrowser_playwright install chromium\n"
+            "     (O login em si funciona mesmo sem o fork — ele importa na coleta.)\n"
         )
-        return 0
-    finally:
-        try:
-            context.close()
-        except Exception:
-            pass
-        try:
-            pw.stop()
-        except Exception:
-            pass
+
+    if find_chrome_exe() is None:
+        print(
+            "\n  ERRO: Chrome não encontrado. Instale o Google Chrome ou defina a\n"
+            "  variável RAC_CHROME_EXE com o caminho do chrome.exe."
+        )
+        return 2
+
+    print(f"  Perfil : {profile_dir}")
+    print(f"  Porta  : {port}")
+
+    # --check: só relata (abre o Chrome se ainda não estiver aberto).
+    if args.check:
+        if cdp_endpoint_if_up(port) is None:
+            spawn_chrome(port, profile_dir, start_url=_SHOPEE_HOME)
+            _wait_cdp(port, seconds=15)
+        # Exit code reflete o login — automação pode confiar no status.
+        return 0 if _report_shopee_login(port) else 1
+
+    # Abre o Chrome comum já na Shopee (se já houver um aberto no perfil, a URL
+    # abre nele). NENHUM cliente CDP conectado agora → login humano/Google passa.
+    if cdp_endpoint_if_up(port) is not None:
+        print("\n  Chrome já está aberto neste perfil — abrindo a Shopee nele.")
+    spawn_chrome(port, profile_dir, start_url=_SHOPEE_HOME)
+
+    if args.no_login:
+        # Confirma que o Chrome subiu de fato (porta de debug acessível) antes
+        # de reportar sucesso — evita falso "Chrome aberto".
+        if _wait_cdp(port, seconds=15):
+            print("\n  ✅ Chrome aberto (modo --no-login). Feche quando quiser.")
+            return 0
+        print(
+            "\n  ❌ O Chrome não expôs a porta de debug. Feche Chromes abertos "
+            "nesse perfil (ou ajuste RAC_CDP_PORT) e tente de novo."
+        )
+        return 1
+
+    print("\n" + "─" * 66)
+    print("  INSTRUÇÕES (só a Shopee precisa de login):")
+    print("   1. Na janela do Chrome que abriu, faça LOGIN na Shopee.")
+    print("      • Pode ser 'Continuar com o Google' (funciona neste Chrome comum)")
+    print("        ou e-mail/telefone + senha.")
+    print("   2. Casas Bahia e Magalu NÃO precisam de login — pode ignorar.")
+    print("   3. Deixe o Chrome ABERTO e volte aqui.")
+    print("─" * 66)
+    try:
+        input("\n  → Pressione ENTER depois de logar na Shopee: ")
+    except KeyboardInterrupt:
+        print("\n  Cancelado (o que você já logou fica salvo no perfil).")
+
+    logged = _report_shopee_login(port)
+    print(
+        "\n  Pronto. O login fica salvo no perfil dedicado. Rode a coleta com:\n"
+        "    RAC_LOCAL_CHROME=1 python main.py "
+        "--platforms magalu shopee casasbahia --pages 1\n"
+        "    (Windows: scripts\\collect_local_authenticated.bat)\n"
+        "\n  Dica: deixe este Chrome ABERTO — a coleta reaproveita ele "
+        "(perfil quente)."
+    )
+    return 0 if logged else 1
 
 
 if __name__ == "__main__":
