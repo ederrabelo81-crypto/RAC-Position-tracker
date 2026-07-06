@@ -83,14 +83,32 @@ scripts\collect_local_authenticated.bat
 scripts\collect_local_authenticated.bat 1
 scripts\collect_local_authenticated.bat 2 alta media
 
-# Equivalente cru:
-set RAC_LOCAL_CHROME=1
-python main.py --platforms magalu shopee casasbahia --pages 1
+# Equivalente cru ao .bat (os 3 marketplaces) — ATENÇÃO à shell:
+#   PowerShell:  $env:RAC_LOCAL_CHROME="1"; python main.py --platforms magalu shopee casasbahia --pages 1
+#   cmd.exe   :  set RAC_LOCAL_CHROME=1 && python main.py --platforms magalu shopee casasbahia --pages 1
+
+# Teste isolado de UMA plataforma (ex.: Casas Bahia, que não precisa de login):
+#   PowerShell:  $env:RAC_LOCAL_CHROME="1"; python main.py --platforms casasbahia --pages 1
 ```
+
+> ⚠️ **PowerShell não usa `set`.** No PowerShell, `set RAC_LOCAL_CHROME=1` **não**
+> exporta a variável de ambiente (é sintaxe do `cmd`) — a coleta cai no caminho
+> antigo e o Akamai bloqueia. Use **`$env:RAC_LOCAL_CHROME="1"`** ou, mais
+> simples, o `.bat` (que já seta certo). No começo do log a coleta imprime
+> `[Chrome local] RAC_LOCAL_CHROME=ON/OFF` — confira que está **ON**.
 
 `RAC_LOCAL_CHROME=1` liga o modo Chrome comum + CDP para os 3 scrapers. Sem essa
 env, o comportamento é o antigo (curl_cffi/CDP externo) — nada muda na
 VM/GitHub.
+
+> 🔇 **"cannot get world … session closed" inundando o console?** É ruído do
+> driver do `rebrowser-playwright` ([issue #57](https://github.com/rebrowser/rebrowser-patches/issues/57))
+> tentando instrumentar os iframes de anúncio da página — **inofensivo**, a
+> coleta funciona (repare que cada keyword retorna N produtos logo depois). Os
+> logs úteis saem em **stdout** e o ruído em **stderr**, então dá pra silenciar:
+> - **PowerShell:** `python main.py --platforms casasbahia --pages 1 2>$null`
+> - **cmd.exe:** `python main.py --platforms casasbahia --pages 1 2>nul`
+> - O `.bat` já joga esse ruído em `logs\driver_stderr.log` (console limpo).
 
 ### Automatizar (Task Scheduler)
 

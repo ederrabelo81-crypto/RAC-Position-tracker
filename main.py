@@ -128,8 +128,14 @@ def _setup_logging(log_dir: str) -> None:
     log_file = Path(log_dir) / f"bot_{_now_brt().strftime('%Y%m%d_%H%M%S')}.log"
 
     logger.remove()  # remove handler padrão do stderr
+    # Console em STDOUT (não stderr). No modo Chrome local, o driver Node do
+    # rebrowser-playwright cospe MUITO ruído em stderr ("[rebrowser-patches]
+    # cannot get world ... session closed" — issue conhecido #57, inofensivo:
+    # os iframes de anúncio da página são destruídos antes de o rebrowser os
+    # instrumentar). Com os logs úteis em stdout, dá pra descartar só o ruído
+    # com `2>$null` (PowerShell) / `2>nul` (cmd) sem perder os logs da coleta.
     logger.add(
-        sys.stderr,
+        sys.stdout,
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
         level="INFO",
         colorize=True,
@@ -404,6 +410,26 @@ def main() -> None:
         f"Páginas/keyword: {args.pages} | "
         f"Headless: {args.headless}"
     )
+
+    # Visibilidade do modo Chrome local (Shopee/Magalu/Casas Bahia). Sem essa
+    # confirmação, um RAC_LOCAL_CHROME não-setado (ex.: `set` no PowerShell, que
+    # NÃO exporta env — use `$env:RAC_LOCAL_CHROME="1"`) passava despercebido e a
+    # coleta caía no caminho antigo bloqueado pelo Akamai.
+    from scrapers.local_browser import is_local_chrome_enabled
+    _antibot = [p for p in ("shopee", "magalu", "casasbahia") if p in platform_names]
+    if is_local_chrome_enabled():
+        logger.info(
+            "[Chrome local] RAC_LOCAL_CHROME=ON — Shopee/Magalu/Casas Bahia "
+            "usarão o Chrome real via CDP (perfil dedicado)."
+        )
+    elif _antibot:
+        logger.warning(
+            f"[Chrome local] RAC_LOCAL_CHROME=OFF, mas você pediu {_antibot} — "
+            "essas plataformas vão cair no caminho antigo (Akamai/curl_cffi) e "
+            "provavelmente serão bloqueadas. No PowerShell ligue com "
+            '`$env:RAC_LOCAL_CHROME="1"` (NÃO `set`), ou use '
+            "scripts\\collect_local_authenticated.bat."
+        )
 
     # --- N8N: dados de contexto para notificações ---
     from utils.text import get_turno, now_brt

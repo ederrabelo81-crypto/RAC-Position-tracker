@@ -56,10 +56,17 @@ echo.
 echo === Coleta local autenticada: magalu shopee casasbahia - %PAGES% pagina(s) ===
 echo.
 
+:: Ruido do driver Node do rebrowser (stderr) vai pra um arquivo, deixando o
+:: console limpo com os logs da coleta (stdout). O arquivo fica pra debug.
+:: Cria a pasta ANTES: o cmd resolve o redirect 2>> antes de rodar o python,
+:: entao sem a pasta o comando falha com "path specified".
+if not exist "logs" mkdir "logs"
+set "DRIVER_LOG=logs\driver_stderr.log"
+
 if "%PRIORITY%"=="" (
-    python main.py --platforms magalu shopee casasbahia --pages %PAGES%
+    python main.py --platforms magalu shopee casasbahia --pages %PAGES% 2>>"%DRIVER_LOG%"
 ) else (
-    python main.py --platforms magalu shopee casasbahia --pages %PAGES% --priority %PRIORITY%
+    python main.py --platforms magalu shopee casasbahia --pages %PAGES% --priority %PRIORITY% 2>>"%DRIVER_LOG%"
 )
 set "COLLECT_EXIT=%ERRORLEVEL%"
 
