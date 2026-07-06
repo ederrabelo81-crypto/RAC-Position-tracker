@@ -83,9 +83,12 @@ scripts\collect_local_authenticated.bat
 scripts\collect_local_authenticated.bat 1
 scripts\collect_local_authenticated.bat 2 alta media
 
-# Equivalente cru — ATENÇÃO à shell:
+# Equivalente cru ao .bat (os 3 marketplaces) — ATENÇÃO à shell:
+#   PowerShell:  $env:RAC_LOCAL_CHROME="1"; python main.py --platforms magalu shopee casasbahia --pages 1
+#   cmd.exe   :  set RAC_LOCAL_CHROME=1 && python main.py --platforms magalu shopee casasbahia --pages 1
+
+# Teste isolado de UMA plataforma (ex.: Casas Bahia, que não precisa de login):
 #   PowerShell:  $env:RAC_LOCAL_CHROME="1"; python main.py --platforms casasbahia --pages 1
-#   cmd.exe   :  set RAC_LOCAL_CHROME=1 && python main.py --platforms casasbahia --pages 1
 ```
 
 > ⚠️ **PowerShell não usa `set`.** No PowerShell, `set RAC_LOCAL_CHROME=1` **não**
