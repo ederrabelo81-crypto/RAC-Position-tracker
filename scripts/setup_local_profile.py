@@ -58,6 +58,16 @@ _SHOPEE_HOME = "https://shopee.com.br/"
 _SHOPEE_LOGIN_COOKIES = ("SPC_EC", "SPC_ST", "SPC_U")
 
 
+def _wait_cdp(port: int, seconds: int = 15) -> bool:
+    """Espera (até `seconds`) o Chrome expor a porta de debug. True se subiu."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if cdp_endpoint_if_up(port) is not None:
+            return True
+        time.sleep(0.5)
+    return cdp_endpoint_if_up(port) is not None
+
+
 def _report_shopee_login(port: int) -> bool:
     """Conecta via CDP (breve) e relata se a Shopee está logada. True se logada."""
     endpoint = cdp_endpoint_if_up(port)
@@ -152,12 +162,9 @@ def main() -> int:
     if args.check:
         if cdp_endpoint_if_up(port) is None:
             spawn_chrome(port, profile_dir, start_url=_SHOPEE_HOME)
-            for _ in range(30):
-                time.sleep(0.5)
-                if cdp_endpoint_if_up(port):
-                    break
-        _report_shopee_login(port)
-        return 0
+            _wait_cdp(port, seconds=15)
+        # Exit code reflete o login — automação pode confiar no status.
+        return 0 if _report_shopee_login(port) else 1
 
     # Abre o Chrome comum já na Shopee (se já houver um aberto no perfil, a URL
     # abre nele). NENHUM cliente CDP conectado agora → login humano/Google passa.
@@ -166,8 +173,16 @@ def main() -> int:
     spawn_chrome(port, profile_dir, start_url=_SHOPEE_HOME)
 
     if args.no_login:
-        print("\n  Chrome aberto (modo --no-login). Feche quando quiser.")
-        return 0
+        # Confirma que o Chrome subiu de fato (porta de debug acessível) antes
+        # de reportar sucesso — evita falso "Chrome aberto".
+        if _wait_cdp(port, seconds=15):
+            print("\n  ✅ Chrome aberto (modo --no-login). Feche quando quiser.")
+            return 0
+        print(
+            "\n  ❌ O Chrome não expôs a porta de debug. Feche Chromes abertos "
+            "nesse perfil (ou ajuste RAC_CDP_PORT) e tente de novo."
+        )
+        return 1
 
     print("\n" + "─" * 66)
     print("  INSTRUÇÕES (só a Shopee precisa de login):")

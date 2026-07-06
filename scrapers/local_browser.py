@@ -70,13 +70,15 @@ _DEFAULT_CDP_PORT = 9222
 # Args do Chrome COMUM (sem NADA de automação). --remote-allow-origins=* é
 # obrigatório para o connect_over_cdp funcionar no Chrome 111+.
 def _chrome_args(port: int, profile_dir: Path, start_url: Optional[str] = None) -> list:
+    # Obs: NÃO passar --restore-last-session — é um switch por PRESENÇA (o Chrome
+    # o lê via HasSwitch, ignorando "=false"), então incluí-lo ATIVA a
+    # restauração. O padrão (sem a flag) já não restaura as abas anteriores.
     args = [
         f"--remote-debugging-port={port}",
         f"--user-data-dir={profile_dir}",
         "--remote-allow-origins=*",
         "--no-first-run",
         "--no-default-browser-check",
-        "--restore-last-session=false",
         "--disable-session-crashed-bubble",
         "--homepage=about:blank",
     ]

@@ -47,7 +47,7 @@ if exist ".venv\Scripts\activate.bat" (
     echo [AVISO] Nenhuma venv encontrada (.venv/venv) - usando Python do sistema.
 )
 
-:: A coleta abre/ataca o Chrome comum sozinha (RAC_LOCAL_CHROME). Se a Shopee
+:: A coleta abre o Chrome comum e conecta via CDP sozinha (RAC_LOCAL_CHROME). Se a Shopee
 :: nao estiver logada, o scraper avisa nos logs. Para logar/checar:
 ::   python scripts\setup_local_profile.py           (login na Shopee)
 ::   python scripts\setup_local_profile.py --check    (status do login)
