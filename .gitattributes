@@ -1,6 +1,12 @@
 # Force LF line endings for shell scripts on all platforms
 *.sh text eol=lf
 
+# Windows scripts precisam de CRLF. O cmd.exe erra o parse de blocos
+# if(...)else(...) em arquivos so-LF ("- foi inesperado neste momento").
+# -text = git guarda os bytes como estao (CRLF), sem normalizar pra LF.
+*.bat -text
+*.cmd -text
+
 # Python and text files: normalize on commit, checkout as-is
 *.py text
 *.ts text
