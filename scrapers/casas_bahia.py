@@ -663,35 +663,51 @@ class CasasBahiaScraper(BaseScraper):
         Extrai buy box e competição de sellers do produto VTEX.
 
         Estrutura VTEX: prod["items"][i]["sellers"][j] tem sellerName, sellerId,
-        sellerDefault (bool) e commertialOffer.Price/IsAvailable. O seller com
-        sellerDefault=True é o vencedor da buy box; o total de sellers distintos
-        com oferta disponível é a competição na listagem.
+        sellerDefault (bool) e commertialOffer.Price/IsAvailable. Prioridade do
+        vencedor da buy box (independente da ORDEM em que os sellers aparecem
+        no array — ver nota abaixo): sellerDefault DISPONÍVEL > qualquer
+        DISPONÍVEL > sellerDefault indisponível (best-effort) > primeiro do
+        array. O total de sellers distintos com oferta disponível é a
+        competição na listagem.
 
         Returns dict: buy_box_seller, qtd_sellers, tipo_seller, price_float.
         """
-        buy_box_name: Optional[str] = None
-        buy_box_id: Optional[str] = None
-        buy_box_price: Optional[float] = None
+        all_sellers: List[Dict[str, Any]] = []
         distinct_sellers: set = set()
 
         for item in (prod.get("items") or []):
             for seller in (item.get("sellers") or []):
                 offer = seller.get("commertialOffer") or {}
-                available = offer.get("IsAvailable", True)
+                available = bool(offer.get("IsAvailable", True))
                 sid = seller.get("sellerId")
                 sname = seller.get("sellerName")
                 if available and (sid or sname):
                     distinct_sellers.add(str(sid or sname))
-                # Buy box = sellerDefault; fallback para o primeiro disponível
-                if seller.get("sellerDefault") or buy_box_name is None:
-                    if available or buy_box_name is None:
-                        buy_box_name = sname or buy_box_name
-                        buy_box_id = sid or buy_box_id
-                        price = offer.get("Price") or offer.get("ListPrice")
-                        try:
-                            buy_box_price = float(str(price)) if price else buy_box_price
-                        except (ValueError, TypeError):
-                            pass
+                price = offer.get("Price") or offer.get("ListPrice")
+                try:
+                    price_f = float(str(price)) if price else None
+                except (ValueError, TypeError):
+                    price_f = None
+                all_sellers.append({
+                    "sid": sid, "sname": sname, "available": available,
+                    "is_default": bool(seller.get("sellerDefault")),
+                    "price": price_f,
+                })
+
+        # Passe por prioridade explícita (NÃO single-pass): um sellerDefault
+        # indisponível que apareça ANTES de um seller disponível no array não
+        # pode "travar" o vencedor — precisa ceder pro disponível. Um loop de
+        # estado único (visto num bug anterior) é sensível à ordem do array;
+        # esta busca em camadas é determinística independente da ordem.
+        buy_box = next(
+            (s for s in all_sellers if s["available"] and s["is_default"]), None
+        ) or next((s for s in all_sellers if s["available"]), None) \
+          or next((s for s in all_sellers if s["is_default"]), None) \
+          or (all_sellers[0] if all_sellers else None)
+
+        buy_box_name = buy_box["sname"] if buy_box else None
+        buy_box_id = buy_box["sid"] if buy_box else None
+        buy_box_price = buy_box["price"] if buy_box else None
 
         # Payload sem sellers[] → buy box desconhecida (None), NÃO vitória 1P
         # da casa. O caller decide o que mostrar no campo display `seller`.
@@ -893,7 +909,7 @@ class CasasBahiaScraper(BaseScraper):
             reviews_el   = item.select_one(_SELECTORS["review_count"])
             tag_el       = item.select_one(_SELECTORS["tag_destaque"])
 
-            records.append(self._build_record(
+            record = self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
                 title=title,
@@ -906,7 +922,13 @@ class CasasBahiaScraper(BaseScraper):
                 rating=parse_rating(rating_el.get_text() if rating_el else None),
                 review_count=parse_review_count(reviews_el.get_text() if reviews_el else None),
                 tag_destaque=tag_el.get_text(strip=True) if tag_el else None,
-            ))
+            )
+            # DOM não expõe o array sellers[]: não sabemos quem vence a buy box
+            # nem 1P/3P. Não marcar "Casas Bahia" como vencedor (vitória fantasma
+            # da casa no share of buy box) — deixa o campo honestamente vazio,
+            # igual ao _parse_api_products quando falta sellers[].
+            record["Buy Box Seller"] = None
+            records.append(record)
 
         return records
 
@@ -998,61 +1020,93 @@ class CasasBahiaScraper(BaseScraper):
 
     def _vtex_fetch_in_page(self, keyword: str, page: int) -> Optional[List[Dict]]:
         """
-        Chama a API VTEX intelligent-search DE DENTRO da página (same-origin).
+        Chama as APIs VTEX DE DENTRO da página (same-origin) e devolve o array
+        de produtos COM ``items[].sellers[]`` — a fonte do vencedor da buy box
+        e do split 1P/3P.
 
         Depois do warm-up, o fetch carrega o _abck validado + o fingerprint do
-        Chrome real, então o Akamai libera o JSON com o array ``sellers[]`` — o
-        que o curl_cffi (TLS ok, mas cookie não validado pelo sensor.js) não
-        conseguia. É o caminho mais rico: expõe o vencedor da buy box.
+        Chrome real, então o Akamai libera o JSON (o que o curl_cffi de IP
+        datacenter não conseguia). Tenta, em ordem:
+          1. catalog_system (``/api/catalog_system/pub/products/search``) —
+             a fonte CANÔNICA de ``sellers[]`` na VTEX; retorna um array direto.
+          2. intelligent-search — fallback (algumas contas não expõem o catalog).
+
+        Loga um diagnóstico por endpoint (status→nº de produtos) quando nenhum
+        retorna, para revelar exatamente o que a Casas Bahia responde.
 
         Returns:
-            Lista de produtos VTEX (mesma estrutura do endpoint IS), ou None.
+            Lista de produtos VTEX (com ``items[].sellers[]``), ou None.
         """
         if self._page is None:
             return None
         count = _ITEMS_PER_PAGE
-        api_url = (
+        frm = (page - 1) * count
+        to = frm + count - 1
+        kw = quote_plus(keyword)
+        # Do mais rico (sellers[] completo) ao menos rico.
+        candidates = [
+            f"/api/catalog_system/pub/products/search?ft={kw}&_from={frm}&_to={to}",
+            f"/api/catalog_system/pub/products/search/{kw}?_from={frm}&_to={to}",
             f"/_v/api/intelligent-search/product_search/pt/pt-BR/search"
-            f"?query={quote_plus(keyword)}&page={page}&count={count}"
-            f"&sort=score_desc&hideUnavailableItems=false"
-        )
+            f"?query={kw}&page={page}&count={count}&sort=score_desc"
+            f"&hideUnavailableItems=false",
+        ]
         try:
             result = self._page.evaluate(
-                """async (u) => {
-                    try {
-                        const r = await fetch(u, {
-                            headers: {'accept': 'application/json'},
-                            credentials: 'include',
-                        });
-                        if (!r.ok) return {status: r.status, products: null};
-                        const j = await r.json();
-                        const prods = j.products
-                            || (j.productSearch && j.productSearch.products)
-                            || [];
-                        return {status: 200, products: prods};
-                    } catch (e) {
-                        return {status: -1, products: null, error: String(e)};
+                """async (urls) => {
+                    async function one(u) {
+                        try {
+                            const r = await fetch(u, {
+                                headers: {'accept': 'application/json'},
+                                credentials: 'include',
+                            });
+                            const status = r.status;
+                            const ct = r.headers.get('content-type') || '';
+                            if (!r.ok || ct.indexOf('json') === -1)
+                                return {u, status, n: 0, products: null};
+                            const j = await r.json();
+                            const prods = Array.isArray(j) ? j
+                                : (j.products
+                                   || (j.productSearch && j.productSearch.products)
+                                   || []);
+                            return {u, status, n: prods.length, products: prods};
+                        } catch (e) {
+                            return {u, status: -1, n: 0, products: null, error: String(e)};
+                        }
                     }
+                    const tried = [];
+                    for (const u of urls) {
+                        const res = await one(u);
+                        tried.push({u: res.u, status: res.status, n: res.n});
+                        if (res.products && res.products.length)
+                            return {ok: true, endpoint: res.u, products: res.products, tried};
+                    }
+                    return {ok: false, products: null, tried};
                 }""",
-                api_url,
+                candidates,
             )
         except Exception as exc:
-            logger.debug(f"[{self.platform_name}] in-page VTEX fetch erro: {exc}")
+            logger.warning(f"[{self.platform_name}] in-page VTEX fetch erro: {exc}")
             return None
 
         if not result:
             return None
-        status = result.get("status")
-        products = result.get("products")
-        if status == 200 and products:
+        if result.get("ok") and result.get("products"):
+            ep = (result.get("endpoint") or "?").split("?")[0].split("/api/")[-1]
             logger.info(
-                f"[{self.platform_name}] VTEX in-page (CDP): {len(products)} "
-                f"produtos (pág {page})"
+                f"[{self.platform_name}] VTEX in-page OK via …/{ep[:40]} — "
+                f"{len(result['products'])} produtos c/ sellers[] (pág {page})"
             )
-            return products
-        logger.debug(
-            f"[{self.platform_name}] in-page VTEX fetch sem produtos "
-            f"(status={status})"
+            return result["products"]
+        tried = result.get("tried") or []
+        diag = " | ".join(
+            f"{(t.get('u') or '').split('?')[0].split('/api/')[-1][:28]}:"
+            f"{t.get('status')}→{t.get('n')}"
+            for t in tried
+        )
+        logger.warning(
+            f"[{self.platform_name}] in-page VTEX sem produtos (pág {page}) — "
+            f"[endpoint:status→n] {diag}"
         )
         return None
 
