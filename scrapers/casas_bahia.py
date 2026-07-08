@@ -663,35 +663,51 @@ class CasasBahiaScraper(BaseScraper):
         Extrai buy box e competição de sellers do produto VTEX.
 
         Estrutura VTEX: prod["items"][i]["sellers"][j] tem sellerName, sellerId,
-        sellerDefault (bool) e commertialOffer.Price/IsAvailable. O seller com
-        sellerDefault=True é o vencedor da buy box; o total de sellers distintos
-        com oferta disponível é a competição na listagem.
+        sellerDefault (bool) e commertialOffer.Price/IsAvailable. Prioridade do
+        vencedor da buy box (independente da ORDEM em que os sellers aparecem
+        no array — ver nota abaixo): sellerDefault DISPONÍVEL > qualquer
+        DISPONÍVEL > sellerDefault indisponível (best-effort) > primeiro do
+        array. O total de sellers distintos com oferta disponível é a
+        competição na listagem.
 
         Returns dict: buy_box_seller, qtd_sellers, tipo_seller, price_float.
         """
-        buy_box_name: Optional[str] = None
-        buy_box_id: Optional[str] = None
-        buy_box_price: Optional[float] = None
+        all_sellers: List[Dict[str, Any]] = []
         distinct_sellers: set = set()
 
         for item in (prod.get("items") or []):
             for seller in (item.get("sellers") or []):
                 offer = seller.get("commertialOffer") or {}
-                available = offer.get("IsAvailable", True)
+                available = bool(offer.get("IsAvailable", True))
                 sid = seller.get("sellerId")
                 sname = seller.get("sellerName")
                 if available and (sid or sname):
                     distinct_sellers.add(str(sid or sname))
-                # Buy box = sellerDefault; fallback para o primeiro disponível
-                if seller.get("sellerDefault") or buy_box_name is None:
-                    if available or buy_box_name is None:
-                        buy_box_name = sname or buy_box_name
-                        buy_box_id = sid or buy_box_id
-                        price = offer.get("Price") or offer.get("ListPrice")
-                        try:
-                            buy_box_price = float(str(price)) if price else buy_box_price
-                        except (ValueError, TypeError):
-                            pass
+                price = offer.get("Price") or offer.get("ListPrice")
+                try:
+                    price_f = float(str(price)) if price else None
+                except (ValueError, TypeError):
+                    price_f = None
+                all_sellers.append({
+                    "sid": sid, "sname": sname, "available": available,
+                    "is_default": bool(seller.get("sellerDefault")),
+                    "price": price_f,
+                })
+
+        # Passe por prioridade explícita (NÃO single-pass): um sellerDefault
+        # indisponível que apareça ANTES de um seller disponível no array não
+        # pode "travar" o vencedor — precisa ceder pro disponível. Um loop de
+        # estado único (visto num bug anterior) é sensível à ordem do array;
+        # esta busca em camadas é determinística independente da ordem.
+        buy_box = next(
+            (s for s in all_sellers if s["available"] and s["is_default"]), None
+        ) or next((s for s in all_sellers if s["available"]), None) \
+          or next((s for s in all_sellers if s["is_default"]), None) \
+          or (all_sellers[0] if all_sellers else None)
+
+        buy_box_name = buy_box["sname"] if buy_box else None
+        buy_box_id = buy_box["sid"] if buy_box else None
+        buy_box_price = buy_box["price"] if buy_box else None
 
         # Payload sem sellers[] → buy box desconhecida (None), NÃO vitória 1P
         # da casa. O caller decide o que mostrar no campo display `seller`.
