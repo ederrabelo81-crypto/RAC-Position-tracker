@@ -130,6 +130,23 @@ _BLOCKED_URL_PATTERNS = [
 # garantidamente inútil (31 keywords ≈ 20min por execução).
 _ABORT_AFTER_BLOCKED_KEYWORDS = 3
 
+# Campo de busca — usado pra busca ORGÂNICA (digitar + Enter) em vez de
+# `goto('/busca?q=...')`. Um goto direto pra uma URL de resultado chega ao
+# Akamai com assinatura de bot (usuário real só chega em /busca digitando no
+# campo → navegação same-origin com Referer). Foi a lição que destravou o
+# Magalu contra o MESMO customdeny do Akamai (novavp-a.akamaihd.net).
+_SEARCH_INPUT_SELECTORS = (
+    'input[data-testid="store-input"]',
+    'input[data-testid="search-input"]',
+    'input[placeholder*="Busca" i]',
+    'input[placeholder*="busca" i]',
+    'input[placeholder*="O que você procura" i]',
+    'input[type="search"]',
+    'input[name="q"]',
+    'form[role="search"] input',
+    'header input[type="text"]',
+)
+
 
 class CasasBahiaScraper(BaseScraper):
     """Scraper modular para Casas Bahia."""
@@ -1300,6 +1317,64 @@ class CasasBahiaScraper(BaseScraper):
         )
         return None
 
+    def _find_search_input(self) -> Optional[Any]:
+        """Retorna o ElementHandle do campo de busca visível, ou None."""
+        if not self._page:
+            return None
+        for sel in _SEARCH_INPUT_SELECTORS:
+            try:
+                el = self._page.query_selector(sel)
+                if el and el.is_visible():
+                    return el
+            except Exception:
+                continue
+        return None
+
+    def _organic_search(self, keyword: str) -> bool:
+        """
+        Busca como humano: localiza o campo de busca, digita a keyword com
+        cadência realista e tecla Enter — gerando uma navegação same-origin
+        (com Referer) para ``/busca``, bem menos suspeita que o goto cru.
+
+        Se a página atual não tiver campo de busca (ex: veio de um /busca
+        anterior), volta pra home primeiro. Retorna True se caiu numa SERP
+        ``/busca``; False (o caller cai no goto) se não achou o campo/falhou.
+        """
+        page = self._page
+        if page is None:
+            return False
+
+        inp = self._find_search_input()
+        if inp is None:
+            try:
+                page.goto(_VTEX_BASE, wait_until="domcontentloaded", timeout=30_000)
+                time.sleep(random.uniform(1.0, 2.0))
+            except Exception as exc:
+                logger.debug(f"[{self.platform_name}] Organic: home goto falhou: {exc}")
+                return False
+            inp = self._find_search_input()
+        if inp is None:
+            return False
+
+        try:
+            inp.click()
+            time.sleep(random.uniform(0.3, 0.7))
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Delete")
+            page.keyboard.type(keyword, delay=random.randint(60, 140))
+            time.sleep(random.uniform(0.4, 0.9))
+            page.keyboard.press("Enter")
+            page.wait_for_url("**/busca**", timeout=20_000)
+            logger.info(
+                f"[{self.platform_name}] '{keyword}' carregada via busca orgânica ✓"
+            )
+            return True
+        except Exception as exc:
+            logger.debug(
+                f"[{self.platform_name}] Busca orgânica de '{keyword}' falhou: {exc}"
+            )
+            return False
+
     def _browser_search_page(
         self,
         keyword: str,
@@ -1308,7 +1383,8 @@ class CasasBahiaScraper(BaseScraper):
         offset: int,
     ) -> Optional[List[Dict[str, Any]]]:
         """
-        Estratégia browser pra UMA página: goto + XHR interception + DOM parse.
+        Estratégia browser pra UMA página: busca orgânica (ou goto) + XHR
+        interception + JSON embutido (SSR) + DOM parse.
 
         Returns:
             Lista de registros (pode ser vazia), ou None quando o Akamai
@@ -1350,11 +1426,21 @@ class CasasBahiaScraper(BaseScraper):
                 )
                 return None
 
-        try:
-            self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
-        except Exception as exc:
-            logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
-            return None
+        # Navegação: na 1ª página, tenta busca ORGÂNICA (digitar no campo +
+        # Enter) — reduz o sinal de bot do goto direto a /busca, que é o que
+        # dispara o customdeny do Akamai (confirmado no dump: página
+        # novavp-a.akamaihd.net "Ops! Algo deu errado"). Se o campo não for
+        # achado, cai no goto normal (que ainda funciona quando o perfil não
+        # está flagado). Páginas > 1 usam goto same-origin (já tem Referer).
+        navigated = False
+        if page == 1:
+            navigated = self._organic_search(keyword)
+        if not navigated:
+            try:
+                self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+            except Exception as exc:
+                logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
+                return None
 
         self._wait_for_products(timeout_ms=4_000)
 
@@ -1455,22 +1541,26 @@ class CasasBahiaScraper(BaseScraper):
                 if page == 1:
                     self._warmup_cdp_session()
 
-                # 2) Caminho mais rico: API VTEX via fetch same-origin na página
-                #    aquecida — carrega o _abck validado e devolve sellers[].
-                products = self._vtex_fetch_in_page(keyword, page)
-                if products:
-                    records = self._parse_api_products(
-                        keyword, keyword_category_map, offset, products=products
-                    )
+                # 2) Navega a busca DENTRO do browser (organicamente: digita no
+                #    campo) e extrai via XHR → JSON embutido no HTML (SSR,
+                #    c/ sellers[]) → DOM. Vem PRIMEIRO: disparar as APIs VTEX do
+                #    catalog a partir da home ANTES de ver resultados é sinal de
+                #    bot (e, na CB, elas voltam 403/vazio de qualquer jeito).
+                browser_records = self._browser_search_page(
+                    keyword, keyword_category_map, page, offset
+                )
+                if browser_records is None:
+                    break
+                records = browser_records
 
-                # 3) Fallback: navega /busca no browser + XHR/DOM
+                # 3) Fallback rico: API VTEX via fetch same-origin (raramente
+                #    responde na CB, mas mantém a chance quando o catalog libera).
                 if not records:
-                    browser_records = self._browser_search_page(
-                        keyword, keyword_category_map, page, offset
-                    )
-                    if browser_records is None:
-                        break
-                    records = browser_records
+                    products = self._vtex_fetch_in_page(keyword, page)
+                    if products:
+                        records = self._parse_api_products(
+                            keyword, keyword_category_map, offset, products=products
+                        )
 
                 # 4) Último recurso: curl_cffi (provável bloqueio, mas tenta)
                 if not records:
