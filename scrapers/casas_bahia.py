@@ -1363,8 +1363,18 @@ class CasasBahiaScraper(BaseScraper):
             page.keyboard.press("Delete")
             page.keyboard.type(keyword, delay=random.randint(60, 140))
             time.sleep(random.uniform(0.4, 0.9))
+            prev_url = page.url
             page.keyboard.press("Enter")
-            page.wait_for_url("**/busca**", timeout=20_000)
+            # Espera a URL MUDAR para uma /busca — não basta "estar em /busca".
+            # Nas keywords 2+ o browser JÁ parte da SERP anterior, então um
+            # wait_for_url("**/busca**") casaria de imediato e a gente leria os
+            # resultados da keyword ANTERIOR (contaminação cross-keyword). Exigir
+            # que o href mude garante que a navegação da busca nova completou.
+            page.wait_for_function(
+                "prev => location.href !== prev && location.href.includes('/busca')",
+                arg=prev_url,
+                timeout=20_000,
+            )
             logger.info(
                 f"[{self.platform_name}] '{keyword}' carregada via busca orgânica ✓"
             )
