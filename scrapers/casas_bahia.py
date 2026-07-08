@@ -838,6 +838,85 @@ class CasasBahiaScraper(BaseScraper):
         return records
 
     # ------------------------------------------------------------------
+    # JSON embutido no HTML (SSR) — a página renderiza os cards do lado do
+    # servidor; o dado completo (incl. sellers[]) pode estar num <script>
+    # em vez de vir por uma chamada de API separada que o browser dispare.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _find_vtex_product_list(data: Any, _depth: int = 0) -> Optional[List[Dict]]:
+        """
+        Busca recursiva por um array de produtos VTEX em qualquer árvore JSON.
+
+        Heurística de reconhecimento (independe do path/shape exato — cobre
+        tanto REST puro quanto payloads aninhados de SSR/GraphQL): um item é
+        "produto VTEX" se for um dict com a chave ``sellers`` (nível raiz ou
+        dentro de ``items[]``) ou com ``productName``+``items``. Retorna a
+        PRIMEIRA lista encontrada com pelo menos 1 item reconhecido.
+
+        Args:
+            data: árvore JSON (dict/list/escalar) já parseada.
+            _depth: profundidade atual — corta recursão em payloads gigantes.
+
+        Returns:
+            Lista de produtos, ou None se nada reconhecível foi encontrado.
+        """
+        if _depth > 8:
+            return None
+        if isinstance(data, list):
+            if data and isinstance(data[0], dict) and any(
+                "sellers" in p
+                or (p.get("items") and isinstance(p["items"], list) and p["items"]
+                    and isinstance(p["items"][0], dict) and "sellers" in p["items"][0])
+                for p in data[:3] if isinstance(p, dict)
+            ):
+                return data
+            for item in data:
+                found = CasasBahiaScraper._find_vtex_product_list(item, _depth + 1)
+                if found:
+                    return found
+            return None
+        if isinstance(data, dict):
+            for v in data.values():
+                found = CasasBahiaScraper._find_vtex_product_list(v, _depth + 1)
+                if found:
+                    return found
+        return None
+
+    def _extract_embedded_products(self, html: str) -> Optional[List[Dict]]:
+        """
+        Varre os ``<script>`` da página por um blob JSON com produtos VTEX
+        (``__NEXT_DATA__``, estado do Nuxt/Redux, ou qualquer outro nome —
+        não fixamos o id do script, só reconhecemos o SHAPE do produto).
+
+        Zero requisições extras: opera sobre o HTML que o caller já baixou
+        (o mesmo usado no fallback de DOM), então não arrisca bloqueio novo.
+
+        Returns:
+            Lista de produtos VTEX (com ``sellers[]`` quando presente), ou
+            None se nenhum script continha um payload reconhecível.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        for script in soup.find_all("script"):
+            text = script.string or script.get_text() or ""
+            text = text.strip()
+            if len(text) < 200:
+                continue
+            # Aceita tanto <script type="application/json">{...}</script>
+            # quanto atribuição JS: `window.__X__ = {...};` — extrai só o {…}.
+            brace = text.find("{")
+            if brace == -1:
+                continue
+            try:
+                payload = json.loads(text[brace:].rstrip(";"))
+            except json.JSONDecodeError:
+                continue
+            products = self._find_vtex_product_list(payload)
+            if products:
+                return products
+        return None
+
+    # ------------------------------------------------------------------
     # DOM parse
     # ------------------------------------------------------------------
 
@@ -1193,6 +1272,18 @@ class CasasBahiaScraper(BaseScraper):
                 f"[{self.platform_name}] {len(self._captured_products)} produtos via XHR"
             )
             return self._parse_api_products(keyword, keyword_category_map, offset)
+
+        # JSON embutido no HTML (SSR) — mesmo custo de rede do fallback DOM
+        # (já baixamos esse HTML), mas com sellers[] completo quando presente.
+        embedded = self._extract_embedded_products(html)
+        if embedded:
+            logger.info(
+                f"[{self.platform_name}] {len(embedded)} produtos via JSON "
+                "embutido no HTML (SSR)"
+            )
+            return self._parse_api_products(
+                keyword, keyword_category_map, offset, products=embedded
+            )
 
         return self._parse_dom(html, keyword, keyword_category_map, page, offset)
 
