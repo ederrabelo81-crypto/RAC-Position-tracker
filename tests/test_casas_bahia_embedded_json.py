@@ -87,6 +87,26 @@ class TestFindVtexProductList:
             node = node["next"]
         assert scraper._find_vtex_product_list(deep) is None
 
+    def test_prefere_maior_lista_entre_multiplos_candidatos(self, scraper):
+        """Uma página SSR real pode ter VÁRIOS arrays no shape VTEX: a grade
+        de busca (muitos itens) e widgets tipo "recomendados"/"vistos
+        recentemente" (poucos itens). Parar no PRIMEIRO achado arriscaria
+        devolver o widget errado pra keyword atual — o carrossel pequeno vem
+        ANTES da grade real na árvore, de propósito, pra provar que não é só
+        "o que aparece primeiro" que ganha."""
+        data = {
+            "widgets": {
+                "recomendados": [_vtex_product("Recomendado A"), _vtex_product("Recomendado B")],
+            },
+            "search": {
+                "results": [_vtex_product(f"Resultado {i}") for i in range(10)],
+            },
+        }
+        found = scraper._find_vtex_product_list(data)
+        assert found is not None
+        assert len(found) == 10
+        assert found[0]["productName"] == "Resultado 0"
+
 
 class TestExtractEmbeddedProducts:
     def test_script_next_data_style(self, scraper):
@@ -112,6 +132,40 @@ class TestExtractEmbeddedProducts:
         products = scraper._extract_embedded_products(html)
         assert products is not None
         assert len(products) == 2
+
+    def test_script_com_raiz_em_array(self, scraper):
+        """`<script type="application/json">[{...}, {...}]</script>` — a
+        RAIZ do JSON é um array, não um objeto. Pegar do primeiro `{` (que
+        cai DENTRO do array) quebraria o parse; o extrator precisa reconhecer
+        `[` como possível início também."""
+        payload = [_vtex_product("Item 1"), _vtex_product("Item 2")]
+        html = (
+            "<html><body>"
+            f'<script type="application/json">{json.dumps(payload)}</script>'
+            "</body></html>"
+        )
+        products = scraper._extract_embedded_products(html)
+        assert products is not None
+        assert len(products) == 2
+
+    def test_script_com_multiplas_atribuicoes_js(self, scraper):
+        """`window.__A__ = {...}; window.__B__ = {...};` — DUAS declarações
+        JSON no mesmo <script>. Pegar do primeiro `{` até o fim do texto (só
+        com rstrip(";")) deixaria o statement do meio no meio do JSON e
+        quebraria o parse. O extrator precisa achar os DOIS blobs balanceados
+        separadamente — e encontrar os produtos mesmo estando no SEGUNDO."""
+        payload_a = {"irrelevante": True}
+        payload_b = {"products": [_vtex_product("Do Segundo Statement")]}
+        html = (
+            "<html><body><script>"
+            f"window.__A__ = {json.dumps(payload_a)}; "
+            f"window.__B__ = {json.dumps(payload_b)};"
+            "</script></body></html>"
+        )
+        products = scraper._extract_embedded_products(html)
+        assert products is not None
+        assert len(products) == 1
+        assert products[0]["productName"] == "Do Segundo Statement"
 
     def test_sem_script_relevante_retorna_none(self, scraper):
         html = (

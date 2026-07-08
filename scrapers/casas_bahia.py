@@ -844,44 +844,127 @@ class CasasBahiaScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _find_vtex_product_list(data: Any, _depth: int = 0) -> Optional[List[Dict]]:
-        """
-        Busca recursiva por um array de produtos VTEX em qualquer árvore JSON.
-
-        Heurística de reconhecimento (independe do path/shape exato — cobre
-        tanto REST puro quanto payloads aninhados de SSR/GraphQL): um item é
-        "produto VTEX" se for um dict com a chave ``sellers`` (nível raiz ou
-        dentro de ``items[]``) ou com ``productName``+``items``. Retorna a
-        PRIMEIRA lista encontrada com pelo menos 1 item reconhecido.
-
-        Args:
-            data: árvore JSON (dict/list/escalar) já parseada.
-            _depth: profundidade atual — corta recursão em payloads gigantes.
-
-        Returns:
-            Lista de produtos, ou None se nada reconhecível foi encontrado.
-        """
-        if _depth > 8:
-            return None
-        if isinstance(data, list):
-            if data and isinstance(data[0], dict) and any(
+    def _is_vtex_product_list(data: Any) -> bool:
+        """True se ``data`` é uma lista não-vazia de dicts no shape VTEX
+        (``sellers`` no item, ou dentro de ``items[]``)."""
+        return bool(
+            isinstance(data, list) and data and isinstance(data[0], dict)
+            and any(
                 "sellers" in p
                 or (p.get("items") and isinstance(p["items"], list) and p["items"]
                     and isinstance(p["items"][0], dict) and "sellers" in p["items"][0])
                 for p in data[:3] if isinstance(p, dict)
-            ):
-                return data
+            )
+        )
+
+    @classmethod
+    def _collect_vtex_product_lists(
+        cls, data: Any, out: List[List[Dict]], _depth: int = 0
+    ) -> None:
+        """
+        Varredura recursiva que ACUMULA (não para no primeiro achado) todo
+        array no shape VTEX encontrado na árvore JSON — cobre tanto REST puro
+        quanto payloads aninhados de SSR/GraphQL. Uma página SSR real costuma
+        ter VÁRIOS arrays desse shape (grade de busca, carrossel de
+        recomendados, "vistos recentemente"…): parar no primeiro devolveria
+        produtos ERRADOS pra keyword atual se um widget menor aparecesse antes
+        na árvore. `_find_vtex_product_list` decide depois qual usar.
+        """
+        if _depth > 8:
+            return
+        if isinstance(data, list):
+            if cls._is_vtex_product_list(data):
+                out.append(data)
+                return  # não desce dentro de uma lista já reconhecida
             for item in data:
-                found = CasasBahiaScraper._find_vtex_product_list(item, _depth + 1)
-                if found:
-                    return found
-            return None
+                cls._collect_vtex_product_lists(item, out, _depth + 1)
+            return
         if isinstance(data, dict):
             for v in data.values():
-                found = CasasBahiaScraper._find_vtex_product_list(v, _depth + 1)
-                if found:
-                    return found
-        return None
+                cls._collect_vtex_product_lists(v, out, _depth + 1)
+
+    @classmethod
+    def _find_vtex_product_list(cls, data: Any) -> Optional[List[Dict]]:
+        """
+        Encontra o array de produtos VTEX mais provável de ser a grade de
+        busca (não um widget de recomendação) em qualquer árvore JSON.
+
+        Entre todos os arrays no shape VTEX encontrados, prefere o MAIOR —
+        a grade de busca tem tipicamente muito mais itens (até
+        ``_ITEMS_PER_PAGE``) que carrosséis de recomendação/cross-sell
+        (tipicamente poucos itens), então o tamanho é um proxy razoável sem
+        precisar decodificar a estrutura exata do payload de cada site.
+
+        Args:
+            data: árvore JSON (dict/list/escalar) já parseada.
+
+        Returns:
+            A maior lista de produtos reconhecida, ou None se nenhuma.
+        """
+        candidates: List[List[Dict]] = []
+        cls._collect_vtex_product_lists(data, candidates)
+        return max(candidates, key=len) if candidates else None
+
+    @staticmethod
+    def _extract_json_blobs(text: str) -> List[str]:
+        """
+        Extrai TODOS os blobs JSON balanceados (objetos ``{...}`` ou arrays
+        ``[...]``) de um texto de ``<script>``.
+
+        Necessário porque um script SSR real não é sempre "um {…} até o fim":
+          - Pode ter RAIZ em array: ``[{...}, {...}]`` — pegar do primeiro
+            ``{`` (que cai DENTRO do array) quebraria o parse.
+          - Pode ter VÁRIAS atribuições JS: ``window.__A__={...};
+            window.__B__={...};`` — pegar do primeiro ``{`` até o fim do texto
+            (com só um ``rstrip(";")``) deixa o statement do meio no meio do
+            JSON e quebra o parse.
+        Em vez disso, faz um scan de parênteses/colchetes balanceados
+        (ciente de strings, pra não contar ``{``/``}`` dentro de literais) e
+        devolve cada blob balanceado como candidato independente.
+        """
+        blobs: List[str] = []
+        n = len(text)
+        i = 0
+        while i < n:
+            ch = text[i]
+            if ch not in "{[":
+                i += 1
+                continue
+            close_ch = "}" if ch == "{" else "]"
+            depth = 0
+            in_str = False
+            str_quote = ""
+            escape = False
+            j = i
+            end = None
+            while j < n:
+                c = text[j]
+                if in_str:
+                    if escape:
+                        escape = False
+                    elif c == "\\":
+                        escape = True
+                    elif c == str_quote:
+                        in_str = False
+                elif c in ('"', "'"):
+                    in_str = True
+                    str_quote = c
+                elif c == ch:
+                    depth += 1
+                elif c == close_ch:
+                    depth -= 1
+                    if depth == 0:
+                        end = j
+                        break
+                j += 1
+            if end is not None:
+                blobs.append(text[i:end + 1])
+                i = end + 1
+            else:
+                # Sem fechamento balanceado (JS não-JSON) — pula pro próximo
+                # candidato depois deste ponto, sem re-varrer o que já viu.
+                i = j + 1
+        return blobs
 
     def _extract_embedded_products(self, html: str) -> Optional[List[Dict]]:
         """
@@ -891,30 +974,29 @@ class CasasBahiaScraper(BaseScraper):
 
         Zero requisições extras: opera sobre o HTML que o caller já baixou
         (o mesmo usado no fallback de DOM), então não arrisca bloqueio novo.
+        Acumula candidatos de TODOS os scripts (não para no primeiro achado)
+        e escolhe o maior no fim — mesma lógica anti-carrossel-errado do
+        ``_find_vtex_product_list``, agora entre scripts também.
 
         Returns:
-            Lista de produtos VTEX (com ``sellers[]`` quando presente), ou
-            None se nenhum script continha um payload reconhecível.
+            A maior lista de produtos VTEX reconhecida na página, ou None.
         """
         soup = BeautifulSoup(html, "html.parser")
+        all_candidates: List[List[Dict]] = []
         for script in soup.find_all("script"):
             text = script.string or script.get_text() or ""
             text = text.strip()
-            if len(text) < 200:
+            # < 200: script trivial, não vale a pena tentar. > 3MB: bundle JS
+            # minificado, não payload de dados — pular evita scan caro à toa.
+            if len(text) < 200 or len(text) > 3_000_000:
                 continue
-            # Aceita tanto <script type="application/json">{...}</script>
-            # quanto atribuição JS: `window.__X__ = {...};` — extrai só o {…}.
-            brace = text.find("{")
-            if brace == -1:
-                continue
-            try:
-                payload = json.loads(text[brace:].rstrip(";"))
-            except json.JSONDecodeError:
-                continue
-            products = self._find_vtex_product_list(payload)
-            if products:
-                return products
-        return None
+            for blob in self._extract_json_blobs(text):
+                try:
+                    payload = json.loads(blob)
+                except json.JSONDecodeError:
+                    continue
+                self._collect_vtex_product_lists(payload, all_candidates)
+        return max(all_candidates, key=len) if all_candidates else None
 
     # ------------------------------------------------------------------
     # DOM parse
