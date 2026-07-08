@@ -906,23 +906,12 @@ class CasasBahiaScraper(BaseScraper):
         return max(candidates, key=len) if candidates else None
 
     @staticmethod
-    def _extract_json_blobs(text: str) -> List[str]:
-        """
-        Extrai TODOS os blobs JSON balanceados (objetos ``{...}`` ou arrays
-        ``[...]``) de um texto de ``<script>``.
-
-        Necessário porque um script SSR real não é sempre "um {…} até o fim":
-          - Pode ter RAIZ em array: ``[{...}, {...}]`` — pegar do primeiro
-            ``{`` (que cai DENTRO do array) quebraria o parse.
-          - Pode ter VÁRIAS atribuições JS: ``window.__A__={...};
-            window.__B__={...};`` — pegar do primeiro ``{`` até o fim do texto
-            (com só um ``rstrip(";")``) deixa o statement do meio no meio do
-            JSON e quebra o parse.
-        Em vez disso, faz um scan de parênteses/colchetes balanceados
-        (ciente de strings, pra não contar ``{``/``}`` dentro de literais) e
-        devolve cada blob balanceado como candidato independente.
-        """
-        blobs: List[str] = []
+    def _iter_balanced_spans(text: str):
+        """Gera os spans (start, end) de cada bloco ``{...}``/``[...]``
+        BALANCEADO de nível superior em ``text`` (ciente de strings, pra não
+        contar chave/colchete dentro de literais). Não desce em blocos
+        aninhados — cada span devolvido é o maior bloco a partir daquele
+        ponto; quem quiser os aninhados chama de novo sobre o interior."""
         n = len(text)
         i = 0
         while i < n:
@@ -958,12 +947,56 @@ class CasasBahiaScraper(BaseScraper):
                         break
                 j += 1
             if end is not None:
-                blobs.append(text[i:end + 1])
+                yield i, end
                 i = end + 1
             else:
                 # Sem fechamento balanceado (JS não-JSON) — pula pro próximo
                 # candidato depois deste ponto, sem re-varrer o que já viu.
                 i = j + 1
+
+    @classmethod
+    def _extract_json_blobs(cls, text: str, _depth: int = 0) -> List[Any]:
+        """
+        Extrai e faz parse de TODOS os blobs JSON válidos de um texto de
+        ``<script>`` — incluindo os que estão ANINHADOS dentro de um wrapper
+        JS que não é JSON válido por si só (IIFE, try/catch, atribuição
+        condicional: ``(function(){ var d = {...}; window.X = d; })();``).
+
+        Para cada bloco ``{...}``/``[...]`` balanceado de nível superior:
+        tenta o bloco INTEIRO como JSON primeiro. Se parsear, usa — e NÃO
+        desce nele (o payload já é autocontido, descer só re-processaria à
+        toa). Se falhar (é JS de verdade, não JSON puro), recursa no
+        INTERIOR do bloco atrás de blobs JSON menores lá dentro — sem isso,
+        um JSON válido só existente DENTRO de um wrapper JS nunca seria
+        encontrado (o bloco externo falha o parse e era descartado por
+        inteiro, junto com o que houvesse dentro dele).
+
+        Também cobre, por conta do scan de blocos balanceados em vez de
+        "primeiro { até o fim do texto": JSON com raiz em array
+        (``[{...}, {...}]``) e múltiplas atribuições no mesmo script
+        (``window.__A__={...}; window.__B__={...};``).
+
+        Args:
+            text: conteúdo do ``<script>``.
+            _depth: profundidade de recursão atual — corta em wrappers
+                aninhados demais (scripts hostis/minificados).
+
+        Returns:
+            Lista de payloads JSON já parseados (dict/list), na ordem em que
+            foram encontrados.
+        """
+        if _depth > 4:
+            return []
+        blobs: List[Any] = []
+        for start, end in cls._iter_balanced_spans(text):
+            span = text[start:end + 1]
+            try:
+                blobs.append(json.loads(span))
+            except json.JSONDecodeError:
+                # Bloco não é JSON puro (provável JS) — o payload real pode
+                # estar aninhado mais fundo dentro dele; sem os delimitadores
+                # externos pra não re-encontrar o mesmo span de novo.
+                blobs.extend(cls._extract_json_blobs(span[1:-1], _depth + 1))
         return blobs
 
     def _extract_embedded_products(self, html: str) -> Optional[List[Dict]]:
@@ -990,11 +1023,7 @@ class CasasBahiaScraper(BaseScraper):
             # minificado, não payload de dados — pular evita scan caro à toa.
             if len(text) < 200 or len(text) > 3_000_000:
                 continue
-            for blob in self._extract_json_blobs(text):
-                try:
-                    payload = json.loads(blob)
-                except json.JSONDecodeError:
-                    continue
+            for payload in self._extract_json_blobs(text):
                 self._collect_vtex_product_lists(payload, all_candidates)
         return max(all_candidates, key=len) if all_candidates else None
 

@@ -167,6 +167,43 @@ class TestExtractEmbeddedProducts:
         assert len(products) == 1
         assert products[0]["productName"] == "Do Segundo Statement"
 
+    def test_script_com_wrapper_iife_nao_json(self, scraper):
+        """`(function(){ var d = {...}; window.__STATE__ = d; })();` — o
+        bloco EXTERNO (corpo da function) NÃO é JSON válido (tem `var`, `;`,
+        atribuição) — só o objeto `d` interno é. Um extrator que desiste no
+        primeiro bloco balanceado que falha o parse NUNCA acharia o payload,
+        porque ele está aninhado dentro do bloco que falhou."""
+        payload = {"products": [_vtex_product("Dentro da IIFE")]}
+        html = (
+            "<html><body><script>"
+            "(function(){"
+            f"var __data__ = {json.dumps(payload)};"
+            "window.__STATE__ = __data__;"
+            "})();"
+            "</script></body></html>"
+        )
+        products = scraper._extract_embedded_products(html)
+        assert products is not None
+        assert len(products) == 1
+        assert products[0]["productName"] == "Dentro da IIFE"
+
+    def test_script_com_try_catch_wrapper(self, scraper):
+        """Variante com try/catch — outro wrapper JS comum que embrulha um
+        payload JSON válido dentro de um bloco que, por conta do `try`, não
+        é JSON puro."""
+        payload = {"products": [_vtex_product("Dentro do try")]}
+        html = (
+            "<html><body><script>"
+            "try {"
+            f"window.__NEXT_DATA__ = {json.dumps(payload)};"
+            "} catch (e) { console.error(e); }"
+            "</script></body></html>"
+        )
+        products = scraper._extract_embedded_products(html)
+        assert products is not None
+        assert len(products) == 1
+        assert products[0]["productName"] == "Dentro do try"
+
     def test_sem_script_relevante_retorna_none(self, scraper):
         html = (
             "<html><body>"
