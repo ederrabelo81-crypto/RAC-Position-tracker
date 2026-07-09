@@ -6,8 +6,8 @@
 #
 # Cria 2 tarefas (nao precisa mais da tarefa de "abrir Chrome CDP no logon" —
 # o proprio Python abre o Chrome quando a coleta roda):
-#   1. RAC_Local_Manha  - 10:05 (Abertura, 2 pgs, alta+media)
-#   2. RAC_Local_Noite  - 21:05 (Fechamento, 1 pg, alta)
+#   1. RAC_Local_Manha  - 09:00 (Abertura, 2 pgs, alta+media)
+#   2. RAC_Local_Noite  - 20:00 (Fechamento, 1 pg, alta)
 #
 # Remove as tarefas antigas que dependiam do Chrome CDP / perfil copiado
 # (RAC_Autenticada_*, RAC_Chrome_CDP_Startup, RAC_Magalu_*) para nao duplicar.
@@ -115,10 +115,10 @@ foreach ($t in $LegacyTasks) {
 # Roda como o usuario logado, sem elevacao (Chrome precisa da sessao de UI).
 $taskPrincipal = New-ScheduledTaskPrincipal -UserId $TaskUser -LogonType Interactive -RunLevel Limited
 
-Write-Host "Registrando: RAC_Local_Manha (10:05 diario)" -ForegroundColor Cyan
+Write-Host "Registrando: RAC_Local_Manha (09:00 diario)" -ForegroundColor Cyan
 $action  = New-ScheduledTaskAction -Execute "cmd.exe" `
     -Argument "/c `"$CollectScript`" 2 alta media >> `"$BaseDir\logs\scheduler.log`" 2>&1"
-$trigger = New-ScheduledTaskTrigger -Daily -At "10:05AM"
+$trigger = New-ScheduledTaskTrigger -Daily -At "9:00AM"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 3)
 Register-ScheduledTask -TaskName "RAC_Local_Manha" `
@@ -126,10 +126,10 @@ Register-ScheduledTask -TaskName "RAC_Local_Manha" `
     -Description "Coleta local autenticada (Magalu+Shopee+CB) - Abertura, 2 pgs, alta+media" `
     -Force | Out-Null
 
-Write-Host "Registrando: RAC_Local_Noite (21:05 diario)" -ForegroundColor Cyan
+Write-Host "Registrando: RAC_Local_Noite (20:00 diario)" -ForegroundColor Cyan
 $action  = New-ScheduledTaskAction -Execute "cmd.exe" `
     -Argument "/c `"$CollectScript`" 1 alta >> `"$BaseDir\logs\scheduler.log`" 2>&1"
-$trigger = New-ScheduledTaskTrigger -Daily -At "9:05PM"
+$trigger = New-ScheduledTaskTrigger -Daily -At "8:00PM"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 Register-ScheduledTask -TaskName "RAC_Local_Noite" `
