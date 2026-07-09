@@ -716,6 +716,58 @@ def get_cobertura_resolucao() -> dict:
     return {}
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_mapeado_sem_sku() -> int:
+    """Linhas de coletas MAPEADO sem sku_resolvido — gap de reconciliação.
+
+    Essas linhas têm família resolvida mas não participam do cruzamento
+    PT × Coletas, do filtro de produto nem da precedência de preço
+    (achado da validação de 09/07/2026: 70.441 linhas na janela 01/06–09/07).
+    A etapa 🔢 Backfill de SKU da automação trabalha para zerá-las.
+    """
+    client = _get_supabase()
+    if client is None:
+        return 0
+    try:
+        return (client.table("coletas")
+                .select("id", count="exact", head=True)
+                .eq("estado_match", "MAPEADO")
+                .is_("sku_resolvido", "null")
+                .execute().count or 0)
+    except Exception:
+        return 0
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_sku_proposals() -> pd.DataFrame:
+    """Propostas de SKU (confiança alta) p/ nomes MAPEADO sem SKU no de-para."""
+    client = _get_supabase()
+    if client is None:
+        return pd.DataFrame()
+    try:
+        from utils.admin_automation import get_sku_backfill_proposals
+        return pd.DataFrame(get_sku_backfill_proposals(client))
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_variant_suspects(days: int = 30, delta_pct: float = 25.0,
+                         min_dias: int = 5) -> pd.DataFrame | None:
+    """SKUs com |Δ piso| Coletas vs PriceTrack persistente — suspeitos de
+    de-para de variante errada. None = RPC ausente (migration 010 não aplicada)."""
+    client = _get_supabase()
+    if client is None:
+        return pd.DataFrame()
+    try:
+        resp = client.rpc("depara_suspeitos_variante", {
+            "p_days": days, "p_delta_pct": delta_pct, "p_min_dias": min_dias,
+        }).execute()
+        return pd.DataFrame(resp.data or [])
+    except Exception:
+        return None
+
+
 def _render_cobertura_banner() -> None:
     """Banner do topo: % mapeado + alerta se há REVISAR/NULL pendentes."""
     c = get_cobertura_resolucao()
@@ -3548,7 +3600,7 @@ def page_data_health() -> None:
 def _admin_auto_clear_caches() -> None:
     """Invalida caches do dashboard após um run da automação."""
     for fn in (get_depara, get_cobertura_resolucao, get_familia_options,
-               get_filter_options):
+               get_filter_options, get_mapeado_sem_sku, get_sku_proposals):
         try:
             fn.clear()
         except Exception:
@@ -3598,7 +3650,8 @@ def page_admin_automation() -> None:
         "Manutenção do banco **100% automática** — sem cliques: limpeza de "
         "registros não-AC, preços suspeitos (bug ×10), normalização de "
         "nomes/marcas/plataformas/sellers, seed + resolução da fila REVISAR "
-        "(Família & SKU) e refresh do cache de filtros. "
+        "(Família & SKU), backfill de SKU (sync + propostas) e refresh do "
+        "cache de filtros. "
         "Roda após **cada coleta** (`main.py`), via **cron** "
         "(`scripts/admin_auto.py`) e em **auto-run** ao abrir esta página "
         "quando a última execução tem mais de 24h."
@@ -3687,7 +3740,7 @@ def page_admin_automation() -> None:
     cob = get_cobertura_resolucao()
     pendentes = cob.get("REVISAR", 0) + cob.get("NULL", 0)
 
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Último run", _admin_auto_rel_time(last.get("started_at")),
               help=str(last.get("started_at", "")))
     m2.metric("Status", f"{status_icon} {str(last.get('status', '?')).upper()}"
@@ -3697,6 +3750,11 @@ def page_admin_automation() -> None:
     m5.metric("REVISAR pendentes", f"{pendentes:,}".replace(",", "."),
               help="Linhas de coletas com estado REVISAR ou sem estado — "
                    "a automação as resolve a cada ciclo.")
+    m6.metric("MAPEADO s/ SKU", f"{get_mapeado_sem_sku():,}".replace(",", "."),
+              help="Linhas com família resolvida mas sem sku_resolvido — fora "
+                   "do cruzamento PT × Coletas e do filtro de produto. A etapa "
+                   "🔢 Backfill de SKU sincroniza e propõe; aprovação das "
+                   "propostas na página 🧬 Família & SKU.")
 
     st.caption(
         f"Trigger: `{last.get('trigger', '?')}` · "
@@ -3748,7 +3806,10 @@ def page_admin_automation() -> None:
             "| `ADMIN_AUTO_LLM_MODEL` | Modelo Anthropic | `claude-opus-4-8` |\n"
             "| `ADMIN_AUTO_LLM_MAX_NAMES` | Máx. nomes/run na camada LLM | `400` |\n"
             "| `ADMIN_AUTO_RESIDUAL_POLICY` | `terminal` zera a fila sem LLM; `keep` mantém REVISAR | `terminal` |\n"
-            "| `ADMIN_AUTO_RESOLVE_MAX` | Máx. resoluções aplicadas/run | `1000` |\n\n"
+            "| `ADMIN_AUTO_RESOLVE_MAX` | Máx. resoluções aplicadas/run | `1000` |\n"
+            "| `ADMIN_SKU_BACKFILL` | `off` pula a etapa 🔢 Backfill de SKU | `on` |\n"
+            "| `ADMIN_SKU_BACKFILL_APPLY` | `on` aplica propostas de SKU automaticamente (senão: aprovação na página 🧬) | `off` |\n"
+            "| `ADMIN_SKU_BACKFILL_MAX` | Máx. sync/aplicações por run | `500` |\n\n"
             "Auditoria: tabela `admin_automation_runs` (migration 006) + "
             "`logs/admin_automation.jsonl`. Resumo no Telegram quando há "
             "mudanças ou erros."
@@ -3758,6 +3819,107 @@ def page_admin_automation() -> None:
 # ---------------------------------------------------------------------------
 # Admin: Normalização de Família e SKU (fila REVISAR + edição manual)
 # ---------------------------------------------------------------------------
+
+def _render_sku_proposals_panel(client) -> None:
+    """💡 Fila de aprovação de SKU — nomes MAPEADO sem SKU com resolução unívoca.
+
+    Origem: validação de 09/07/2026 — 70k linhas MAPEADO sem sku_resolvido
+    ficavam fora do cruzamento PT × Coletas, do filtro de produto e da
+    precedência de preço. A derivação usa utils/sku_matcher (confiança alta);
+    a aplicação é humana (1 clique) — cravação automática segue gated.
+    """
+    props = get_sku_proposals()
+    total_gap = get_mapeado_sem_sku()
+    header = (f"💡 Propostas de SKU por atributos — {len(props)} nome(s) com "
+              f"resolução unívoca · {total_gap:,} linha(s) MAPEADO sem SKU"
+              ).replace(",", ".")
+    with st.expander(header, expanded=False):
+        st.caption(
+            "Derivadas por `utils/sku_matcher` (marca + BTU + ciclo + "
+            "família-linha, desempate por voltagem) — só entra aqui o que fixa "
+            "**1 SKU** do catálogo; ambíguos ficam de fora. Aplicar grava o SKU "
+            "no de-para e re-propaga para `coletas`/`rac_monitoramento` (mesma "
+            "RPC do editor abaixo). Aplicação automática pós-coleta: "
+            "`ADMIN_SKU_BACKFILL_APPLY=on` (default off)."
+        )
+        if props.empty:
+            st.success(
+                "Nenhuma proposta pendente — todo nome derivável já tem SKU. "
+                "O que restar sem SKU é ambíguo e precisa do editor abaixo."
+            )
+            return
+        st.dataframe(
+            props.rename(columns={
+                "nome": "Nome coletado", "familia": "Família (mantida)",
+                "sku_proposto": "SKU proposto", "motivo": "Motivo",
+            })[["Nome coletado", "Família (mantida)", "SKU proposto", "Motivo"]],
+            use_container_width=True, hide_index=True,
+        )
+        if st.button(f"✅ Aplicar todas ({len(props)})", type="primary",
+                     key="apply_sku_props"):
+            from utils.admin_automation import apply_sku_resolution
+            prog = st.progress(0.0, text="Aplicando propostas…")
+            ok = err = linhas = 0
+            for i, p in enumerate(props.to_dict("records")):
+                try:
+                    payload = apply_sku_resolution(
+                        client, p["nome"], p.get("familia"), p["sku_proposto"], None)
+                    linhas += int(payload.get("coletas_atualizadas", 0) or 0)
+                    ok += 1
+                except Exception as exc:
+                    err += 1
+                    st.warning(f"Falhou '{p['nome'][:60]}': {exc}")
+                prog.progress((i + 1) / len(props))
+            _admin_auto_clear_caches()
+            st.success(
+                (f"{ok} SKU(s) aplicados · {linhas:,} linha(s) de coletas "
+                 f"atualizadas" + (f" · {err} erro(s)" if err else "")
+                 ).replace(",", ".")
+            )
+            st.caption("Recarregue a página para atualizar as contagens.")
+
+
+def _render_variant_suspects_panel() -> None:
+    """⚠️ SKUs com Δ de piso persistente vs PriceTrack — de-para suspeito.
+
+    Validação de 09/07/2026: a cauda |Δ|>25% do pareamento PT × Coletas
+    concentra-se em SKUs específicos com desvio de sinal constante — anúncio
+    de outra variante (capacidade/voltagem/kit) resolvendo para o código errado.
+    """
+    sus = get_variant_suspects()
+    n = "—" if sus is None else len(sus)
+    with st.expander(
+        f"⚠️ Suspeitos de variante errada (Δ piso vs PriceTrack, 30d) — {n}",
+        expanded=False,
+    ):
+        st.caption(
+            "Compara o **piso diário** por SKU entre Coletas e "
+            "`pricetrack_daily` (turno Diário) nos últimos 30 dias. Δ "
+            "persistente de ±25%+ no mesmo sentido não é reprecificação — é "
+            "anúncio de outra variante resolvendo para o código errado em uma "
+            "das fontes. Use *Buscar no nome* abaixo com termos do produto "
+            "para achar os títulos e corrigir o de-para."
+        )
+        if sus is None:
+            st.info(
+                "RPC `depara_suspeitos_variante` não encontrada — aplique "
+                "`docs/migrations/010_depara_suspeitos_variante.sql` no Supabase."
+            )
+            return
+        if sus.empty:
+            st.success("Nenhum SKU com divergência persistente nos últimos 30 dias.")
+            return
+        st.dataframe(
+            sus.rename(columns={
+                "sku": "SKU", "produto_catalogo": "Produto (catálogo)",
+                "dias_pareados": "Dias pareados", "dias_extremos": "Dias |Δ|>25%",
+                "delta_mediano_pct": "Δ mediano (%)",
+                "piso_pt_mediano": "Piso PT (R$)",
+                "piso_coletas_mediano": "Piso Coletas (R$)",
+            }),
+            use_container_width=True, hide_index=True,
+        )
+
 
 def page_familia_sku_admin() -> None:
     st.title("🧬 Normalização de Família & SKU")
@@ -3799,6 +3961,10 @@ def page_familia_sku_admin() -> None:
                     st.success("Cache atualizado.")
                 except Exception as exc:
                     st.error(f"Falhou: {exc}")
+
+    # ── Reconciliação de SKU (achados da validação 09/07/2026) ─────────────
+    _render_sku_proposals_panel(client)
+    _render_variant_suspects_panel()
 
     # ── Filtros para listar nomes ───────────────────────────────────────────
     with st.expander("🔎 Filtros", expanded=True):

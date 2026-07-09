@@ -75,6 +75,7 @@ STEP_LABELS: Dict[str, str] = {
     "normalize_platforms":   "🏪 Normalização de plataformas/sellers",
     "seed_depara":           "🌱 Seed de nomes novos no de-para",
     "auto_resolve_depara":   "🧬 Auto-resolução da fila REVISAR",
+    "sku_backfill":          "🔢 Backfill de SKU (sync + propostas)",
     "resolver_pendentes":    "🔗 Propagação de-para → coletas (RPC)",
     "refresh_cache":         "♻️ Refresh do cache de filtros",
 }
@@ -528,7 +529,200 @@ def _step_auto_resolve_depara(client, ctx: Dict[str, Any]) -> StepResult:
 
 
 # ---------------------------------------------------------------------------
-# Etapas 9-10 — RPCs de propagação e cache
+# Etapa 9 — backfill de SKU (sync de-para → coletas + propostas por atributos)
+#
+# Fecha o gap "MAPEADO sem sku_resolvido" medido na validação de 09/07/2026
+# (70.441 linhas / 195 títulos na janela 01/06–09/07):
+#   • resolver_coletas_pendentes só propaga o de-para para linhas com
+#     estado_match IS NULL — linhas resolvidas ANTES de o SKU ser cravado no
+#     de-para ficavam órfãs para sempre (frente SYNC);
+#   • a auto-resolução (etapa 8) nunca crava SKU (p_sku=None, política
+#     conservadora) e o `familia` do de-para usa outro namespace que o do
+#     catálogo, então o SKU nunca era derivado (frente PROPOSTAS).
+# ---------------------------------------------------------------------------
+
+def _fetch_depara_mapeado(client) -> List[Dict[str, Any]]:
+    """Carrega o de-para MAPEADO (paginado) com os campos do backfill."""
+    rows: List[Dict[str, Any]] = []
+    offset = 0
+    while True:
+        resp = (client.table("produtos_depara_nome")
+                .select("nome_coletado,familia,sku,marca_norm")
+                .eq("estado", "MAPEADO")
+                .order("nome_coletado")
+                .range(offset, offset + _PAGE - 1)
+                .execute())
+        batch = resp.data or []
+        rows.extend(batch)
+        if len(batch) < _PAGE:
+            break
+        offset += _PAGE
+    return rows
+
+
+def _fetch_catalog_rows(client) -> List[Dict[str, Any]]:
+    """produtos_catalogo com as colunas que o sku_matcher precisa (241 linhas)."""
+    resp = (client.table("produtos_catalogo")
+            .select("sku,marca,capacidade_btu,ciclo,familia_linha,voltagem,ativo")
+            .execute())
+    return resp.data or []
+
+
+def compute_sku_proposals(
+    depara_rows: List[Dict[str, Any]],
+    catalog_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Propostas de SKU para nomes MAPEADO sem SKU no de-para.
+
+    Reusa `utils.sku_matcher` (de-para v2, funções puras): entra na lista
+    apenas o que resolve com confiança ALTA — 1 SKU unívoco na família-linha,
+    com desempate por voltagem. Regra de ouro preservada: nada de chute;
+    ambíguos ficam fora (e continuam visíveis como pendência no de-para).
+
+    Args:
+        depara_rows: dicts com nome_coletado, familia, sku, marca_norm
+        catalog_rows: dicts de produtos_catalogo (ver _fetch_catalog_rows)
+
+    Returns:
+        Lista de propostas: nome, familia (atual, preservada), sku_proposto,
+        metodo e motivo (auditoria).
+    """
+    from utils.sku_matcher import build_catalog, resolve_sku
+
+    catalog = build_catalog(catalog_rows)
+    out: List[Dict[str, Any]] = []
+    for row in depara_rows:
+        if (row.get("sku") or "").strip():
+            continue
+        nome = row["nome_coletado"]
+        res = resolve_sku(nome, row.get("marca_norm"), catalog)
+        if res.estado == "MAPEADO" and res.sku_v2 and res.confianca == "alta":
+            out.append({
+                "nome": nome,
+                "familia": row.get("familia"),
+                "sku_proposto": res.sku_v2,
+                "metodo": res.metodo,
+                "motivo": res.motivo,
+            })
+    return out
+
+
+def get_sku_backfill_proposals(client) -> List[Dict[str, Any]]:
+    """Fila de propostas de SKU para a página 🧬 (mesma lógica da etapa)."""
+    pendentes = [r for r in _fetch_depara_mapeado(client)
+                 if not (r.get("sku") or "").strip()]
+    if not pendentes:
+        return []
+    return compute_sku_proposals(pendentes, _fetch_catalog_rows(client))
+
+
+def apply_sku_resolution(client, nome: str, familia: Optional[str],
+                         sku: str, marca: Optional[str]) -> Dict[str, Any]:
+    """Grava o SKU no de-para e re-propaga (mesma RPC do editor da página 🧬).
+
+    A RPC valida o SKU contra produtos_catalogo e atualiza TODAS as linhas de
+    coletas/rac_monitoramento do título (sem o guard de estado_match IS NULL
+    do resolver — é isso que fecha as linhas órfãs).
+    """
+    resp = client.rpc("admin_normalizar_nome", {
+        "p_nome":    nome,
+        "p_estado":  "MAPEADO",
+        "p_familia": familia,
+        "p_sku":     sku,
+        "p_marca":   marca,
+    }).execute()
+    return resp.data if isinstance(resp.data, dict) else {}
+
+
+def _step_sku_backfill(client, ctx: Dict[str, Any]) -> StepResult:
+    if not _env_flag("ADMIN_SKU_BACKFILL", True):
+        return StepResult("sku_backfill",
+                          summary="desligado (ADMIN_SKU_BACKFILL=off)", details={})
+
+    depara = _fetch_depara_mapeado(client)
+    com_sku = [r for r in depara if (r.get("sku") or "").strip()]
+    sem_sku = [r for r in depara if not (r.get("sku") or "").strip()]
+    max_apply = _env_int("ADMIN_SKU_BACKFILL_MAX", 500)
+
+    # ── 1. SYNC: de-para já tem SKU, coletas ainda tem linhas órfãs ──────
+    sync_nomes = sync_linhas = erros = 0
+    for row in com_sku:
+        if sync_nomes >= max_apply:
+            break
+        nome = row["nome_coletado"]
+        try:
+            pend = (client.table("coletas")
+                    .select("id", count="exact", head=True)
+                    .eq("produto", nome)
+                    .is_("sku_resolvido", "null")
+                    .execute().count or 0)
+            if pend == 0:
+                continue
+            if ctx["dry_run"]:
+                sync_nomes += 1
+                sync_linhas += pend
+                continue
+            payload = apply_sku_resolution(
+                client, nome, row.get("familia"), row["sku"], row.get("marca_norm"))
+            sync_nomes += 1
+            sync_linhas += int(payload.get("coletas_atualizadas", 0) or 0)
+        except Exception as exc:
+            erros += 1
+            logger.warning(f"[AdminAuto] sku_backfill sync falhou p/ '{nome[:60]}': {exc}")
+
+    # ── 2. PROPOSTAS: derivação por atributos (confiança alta) ───────────
+    # Aplicação automática é GATED (default: report-only) — respeita a decisão
+    # de não cravar SKU em massa antes do dedup do catálogo (migration 009,
+    # FASE 1.b). Aprovação humana 1-clique fica na página 🧬 Família & SKU.
+    propostas: List[Dict[str, Any]] = []
+    try:
+        propostas = compute_sku_proposals(sem_sku, _fetch_catalog_rows(client))
+    except Exception as exc:
+        erros += 1
+        logger.warning(f"[AdminAuto] sku_backfill propostas falharam: {exc}")
+
+    auto_apply = _env_flag("ADMIN_SKU_BACKFILL_APPLY", False)
+    aplicadas = 0
+    if auto_apply and not ctx["dry_run"]:
+        for p in propostas:
+            if aplicadas >= max_apply:
+                break
+            try:
+                apply_sku_resolution(client, p["nome"], p["familia"],
+                                     p["sku_proposto"], None)
+                aplicadas += 1
+            except Exception as exc:
+                erros += 1
+                logger.warning(
+                    f"[AdminAuto] sku_backfill apply falhou p/ '{p['nome'][:60]}': {exc}")
+
+    details = {
+        "depara_mapeado": len(depara),
+        "com_sku": len(com_sku),
+        "sem_sku": len(sem_sku),
+        "sync_nomes": sync_nomes,
+        "sync_linhas_coletas": sync_linhas,
+        "propostas": len(propostas),
+        "propostas_aplicadas": aplicadas,
+        "auto_apply": auto_apply,
+        "amostra_propostas": propostas[:10],
+        "erros": erros,
+        "dry_run": ctx["dry_run"],
+    }
+    return StepResult(
+        "sku_backfill",
+        ok=erros == 0,
+        summary=(f"sync {sync_nomes} nome(s) → {sync_linhas:,} linha(s) · "
+                 f"{len(propostas)} proposta(s) de SKU"
+                 + (f" · {aplicadas} aplicadas" if auto_apply
+                    else " (aprovação na página 🧬)")),
+        details=details,
+        error=None if erros == 0 else f"{erros} erro(s) no backfill",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Etapas 10-11 — RPCs de propagação e cache
 # ---------------------------------------------------------------------------
 
 def _step_resolver_pendentes(client, ctx: Dict[str, Any]) -> StepResult:
@@ -561,6 +755,7 @@ _STEP_FUNCS: Dict[str, Callable] = {
     "normalize_platforms":   _step_normalize_platforms,
     "seed_depara":           _step_seed_depara,
     "auto_resolve_depara":   _step_auto_resolve_depara,
+    "sku_backfill":          _step_sku_backfill,
     "resolver_pendentes":    _step_resolver_pendentes,
     "refresh_cache":         _step_refresh_cache,
 }
