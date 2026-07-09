@@ -285,6 +285,12 @@ def _run_scraper(
                         f"[{scraper.platform_name}] Falha em '{keyword}': {exc}. "
                         "Continuando para a próxima keyword."
                     )
+            else:
+                continue
+            # O for/else só chega aqui via break (captcha/circuit breaker):
+            # aborta as categorias restantes também — sem isso o warning
+            # repetia uma vez por categoria até esgotar o keywords_map.
+            break
 
     return records
 
