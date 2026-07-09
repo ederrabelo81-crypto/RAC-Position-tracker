@@ -306,7 +306,5 @@ class MLAPIScraper(BaseScraper):
             if page < page_limit - 1:
                 time.sleep(_DELAY_SECS)
 
-        logger.success(
-            f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
-        )
+        self._log_search_result(keyword, len(all_records))
         return all_records

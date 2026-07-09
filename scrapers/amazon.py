@@ -459,7 +459,5 @@ class AmazonScraper(BaseScraper):
                 logger.error(f"[{self.platform_name}] Erro na página {page}: {exc}")
                 raise
 
-        logger.success(
-            f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
-        )
+        self._log_search_result(keyword, len(all_records))
         return all_records

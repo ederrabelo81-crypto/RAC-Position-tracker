@@ -188,7 +188,7 @@ class CasasBahiaScraper(BaseScraper):
         # Circuit breaker (ver _ABORT_AFTER_BLOCKED_KEYWORDS)
         self._akamai_blocked: bool = False       # bloqueio na keyword atual
         self._blocked_keyword_streak: int = 0
-        self._collection_aborted: bool = False
+        self.collection_aborted: bool = False
 
         # Warm-up CDP feito 1x por execução: visita a home e espera o sensor.js
         # do Akamai validar o _abck (vira "~0~"). Sem isso, um goto direto pra
@@ -1182,7 +1182,9 @@ class CasasBahiaScraper(BaseScraper):
         Chrome real). Visitar a home, emular interação humana e esperar o
         _abck virar "~0~" promove o cookie pras rotas de busca/API.
 
-        Idempotente: roda só na 1ª keyword (cacheia em self._cdp_warmed).
+        Idempotente: roda na 1ª keyword (cacheia em self._cdp_warmed) e de
+        novo após um bloqueio Akamai — search() zera o cache pra dar à sessão
+        flagada a chance de revalidar o _abck antes da próxima keyword.
         """
         if self._cdp_warmed or not self._real_browser_active or self._page is None:
             return self._cdp_warmed
@@ -1524,7 +1526,7 @@ class CasasBahiaScraper(BaseScraper):
         """
         # Circuit breaker — coleta já abortada por bloqueios consecutivos:
         # pula a keyword sem gastar ~40s de navegação garantidamente bloqueada.
-        if self._collection_aborted:
+        if self.collection_aborted:
             logger.debug(
                 f"[{self.platform_name}] Coleta abortada (circuit breaker) — "
                 f"pulando '{keyword}'"
@@ -1617,11 +1619,19 @@ class CasasBahiaScraper(BaseScraper):
             self._blocked_keyword_streak = 0
         elif self._akamai_blocked:
             self._blocked_keyword_streak += 1
+            # Sessão flagada no meio da coleta (funcionava e passou a bloquear,
+            # como na coleta de 09/Jul): invalida os warm-ups pra próxima
+            # keyword recomeçar da home — o sensor.js revalida o _abck e a
+            # session curl_cffi ganha cookies frescos. Sem isso, _cdp_warmed
+            # ficava True e as keywords seguintes reusavam a sessão já
+            # rejeitada até estourar o circuit breaker.
+            self._cdp_warmed = False
+            self._cffi_session = None
             if (
                 self._blocked_keyword_streak >= _ABORT_AFTER_BLOCKED_KEYWORDS
-                and not self._collection_aborted
+                and not self.collection_aborted
             ):
-                self._collection_aborted = True
+                self.collection_aborted = True
                 logger.error(
                     f"[{self.platform_name}] Circuit breaker: "
                     f"{self._blocked_keyword_streak} keywords seguidas bloqueadas "
@@ -1631,7 +1641,5 @@ class CasasBahiaScraper(BaseScraper):
                     "residencial BR na VM."
                 )
 
-        logger.success(
-            f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
-        )
+        self._log_search_result(keyword, len(all_records))
         return all_records

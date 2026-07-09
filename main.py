@@ -259,6 +259,16 @@ def _run_scraper(
                     )
                     break
 
+                # Circuit breaker do scraper (bloqueios consecutivos): sem este
+                # break, o log imprimia "Iniciando keyword" para cada keyword
+                # que o scraper ia pular em silêncio — parecia coleta vazia.
+                if getattr(scraper, "collection_aborted", False):
+                    logger.warning(
+                        f"[{scraper.platform_name}] Circuit breaker ativo — "
+                        "keywords restantes puladas."
+                    )
+                    break
+
                 logger.info(
                     f"[{scraper.platform_name}] Iniciando keyword: '{keyword}' "
                     f"(categoria: {category})"

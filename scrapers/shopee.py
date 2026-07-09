@@ -103,7 +103,7 @@ class ShopeeScraper(BaseScraper):
         # Estado do circuit breaker (ver _ABORT_AFTER_BLOCKED_KEYWORDS)
         self._hard_blocked: bool = False        # 403/anti-fraude na keyword atual
         self._blocked_keyword_streak: int = 0
-        self._collection_aborted: bool = False
+        self.collection_aborted: bool = False
 
         # ── Modo browser local (Chrome real logado) ──────────────────────
         # Quando RAC_LOCAL_CHROME=1: coletamos DENTRO do Chrome logado do
@@ -555,7 +555,7 @@ class ShopeeScraper(BaseScraper):
         """
         # Circuit breaker — coleta já abortada por bloqueios consecutivos:
         # pula a keyword sem gastar requests (todas retornariam 403).
-        if self._collection_aborted:
+        if self.collection_aborted:
             logger.debug(
                 f"[{self.platform_name}] Coleta abortada (circuit breaker) — "
                 f"pulando '{keyword}'"
@@ -618,9 +618,9 @@ class ShopeeScraper(BaseScraper):
         self._blocked_keyword_streak += 1
         if (
             self._blocked_keyword_streak >= _ABORT_AFTER_BLOCKED_KEYWORDS
-            and not self._collection_aborted
+            and not self.collection_aborted
         ):
-            self._collection_aborted = True
+            self.collection_aborted = True
             if self._local_active:
                 hint = (
                     "no Chrome local a busca não retornou resultados — faça login "

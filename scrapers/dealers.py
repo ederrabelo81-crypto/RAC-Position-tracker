@@ -2262,7 +2262,5 @@ class DealerScraper(BaseScraper):
         # Validação de qualidade — loga alertas antes de entregar ao CSV
         self._validate_results(dealer, all_records)
 
-        logger.success(
-            f"[{self.platform_name}] '{dealer}' → {len(all_records)} produtos coletados"
-        )
+        self._log_search_result(dealer, len(all_records))
         return all_records

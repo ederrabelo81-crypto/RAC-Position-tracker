@@ -907,9 +907,7 @@ class LeroyMerlinScraper(BaseScraper):
             if page < page_limit:
                 self._random_delay()
 
-        logger.success(
-            f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
-        )
+        self._log_search_result(keyword, len(all_records))
         logger.info(json.dumps({
             "plataforma": "Leroy Merlin",
             "keyword": keyword,
