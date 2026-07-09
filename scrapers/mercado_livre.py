@@ -639,7 +639,5 @@ class MLScraper(BaseScraper):
                 )
                 raise  # propaga para o @retry
 
-        logger.success(
-            f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
-        )
+        self._log_search_result(keyword, len(all_records))
         return all_records

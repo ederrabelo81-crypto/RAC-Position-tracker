@@ -38,10 +38,10 @@ GitHub Actions                                          [backup agendado]
   └─ pricetrack_daily.yml → cron 09:00 UTC (06:00 BRT) + auto-heal de gaps (14d)
 
 PC pessoal Windows (IP residencial)                     [coleta autenticada]
-  └─ Task Scheduler 10:05/21:05 → collect_authenticated_cdp.bat
-       Chrome real (CDP :9222) → renova sessões Shopee/Casas Bahia
+  └─ Task Scheduler 09:00/20:00 → collect_local_authenticated.bat
+       Chrome real logado (perfil dedicado, RAC_LOCAL_CHROME=1)
        → coleta Magalu + Shopee + Casas Bahia → upload
-       Ver docs/AUTOMACAO_COLETAS_AUTENTICADAS.md
+       Ver docs/COLETA_LOCAL_AUTENTICADA.md
 ```
 
 Após cada coleta: upload automático ao Supabase + notificação Telegram.
@@ -179,14 +179,12 @@ python main.py --platforms ml --pages 1 --no-headless
 ### Coleta autenticada (Magalu + Shopee + Casas Bahia) — PC Windows
 
 ```powershell
-# Setup (1x): perfil CDP + login Shopee + agendamento 10:05/21:05
-scripts\setup_cdp_profile.bat
-scripts\start_chrome_cdp.bat        # logar 1x na Shopee neste Chrome
-PowerShell -ExecutionPolicy Bypass -File scripts\setup_authenticated_scheduler.ps1
+# Setup (1x): perfil dedicado + login Shopee + agendamento 09:00/20:00
+python scripts\setup_local_profile.py     # abre o Chrome do perfil: logar 1x na Shopee
+PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1
 
 # Manual
-python scripts\refresh_sessions_cdp.py --sites shopee casasbahia   # só sessões
-scripts\collect_authenticated_cdp.bat 1                            # ciclo completo
+scripts\collect_local_authenticated.bat 1                          # ciclo completo
 ```
 
 📄 Detalhes e alternativas (proxy residencial, Tailscale): `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md`

@@ -113,7 +113,7 @@ VM/GitHub.
 ### Automatizar (Task Scheduler)
 
 ```powershell
-# Agenda 10:05 (Abertura) e 21:05 (Fechamento). Remove as tarefas antigas de CDP.
+# Agenda 09:00 (Abertura) e 20:00 (Fechamento). Remove as tarefas antigas de CDP.
 PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1
 ```
 

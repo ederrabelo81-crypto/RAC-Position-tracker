@@ -259,6 +259,16 @@ def _run_scraper(
                     )
                     break
 
+                # Circuit breaker do scraper (bloqueios consecutivos): sem este
+                # break, o log imprimia "Iniciando keyword" para cada keyword
+                # que o scraper ia pular em silêncio — parecia coleta vazia.
+                if getattr(scraper, "collection_aborted", False):
+                    logger.warning(
+                        f"[{scraper.platform_name}] Circuit breaker ativo — "
+                        "keywords restantes puladas."
+                    )
+                    break
+
                 logger.info(
                     f"[{scraper.platform_name}] Iniciando keyword: '{keyword}' "
                     f"(categoria: {category})"
@@ -275,6 +285,12 @@ def _run_scraper(
                         f"[{scraper.platform_name}] Falha em '{keyword}': {exc}. "
                         "Continuando para a próxima keyword."
                     )
+            else:
+                continue
+            # O for/else só chega aqui via break (captcha/circuit breaker):
+            # aborta as categorias restantes também — sem isso o warning
+            # repetia uma vez por categoria até esgotar o keywords_map.
+            break
 
     return records
 

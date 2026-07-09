@@ -222,7 +222,7 @@ class MagaluScraper(BaseScraper):
         # bloqueadas, evitando ~9min de navegação inútil por execução quando
         # o Akamai está negando a rota /busca/ de forma persistente.
         self._blocked_keyword_streak: int = 0
-        self._collection_aborted: bool = False
+        self.collection_aborted: bool = False
 
         # Resolução de headless (prioridade: env var > CLI --no-headless > True)
         env_headless = os.getenv("MAGALU_HEADLESS")
@@ -1689,7 +1689,7 @@ class MagaluScraper(BaseScraper):
 
         # Circuit breaker — se a coleta já foi abortada por bloqueios
         # consecutivos, pula a keyword instantaneamente (sem abrir navegação).
-        if self._collection_aborted:
+        if self.collection_aborted:
             logger.debug(
                 f"[{self.platform_name}] Coleta abortada (circuit breaker) — "
                 f"pulando '{keyword}'"
@@ -1727,9 +1727,9 @@ class MagaluScraper(BaseScraper):
             self._blocked_keyword_streak += 1
             if (
                 self._blocked_keyword_streak >= _ABORT_AFTER_BLOCKED_KEYWORDS
-                and not self._collection_aborted
+                and not self.collection_aborted
             ):
-                self._collection_aborted = True
+                self.collection_aborted = True
                 logger.error(
                     f"[{self.platform_name}] Circuit breaker disparado: "
                     f"{self._blocked_keyword_streak} keywords seguidas 100% "
@@ -1739,7 +1739,5 @@ class MagaluScraper(BaseScraper):
                     "Ver docs/cdp_magalu_collection.md (seção Troubleshooting)."
                 )
 
-        logger.success(
-            f"[{self.platform_name}] '{keyword}' → {len(all_records)} produtos coletados"
-        )
+        self._log_search_result(keyword, len(all_records))
         return all_records

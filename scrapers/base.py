@@ -284,6 +284,31 @@ class BaseScraper(ABC):
         self._close()
 
     # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+
+    def _log_search_result(self, keyword: str, count: int) -> None:
+        """
+        Loga o resultado final de uma keyword no nível correto.
+
+        SUCCESS com 0 produtos mascarava bloqueios (Akamai/CAPTCHA) na leitura
+        do log — keyword sem dados sai como WARNING para o grep de
+        `(ERROR|WARNING)` do monitoramento capturá-la.
+
+        Args:
+            keyword: termo buscado (ou nome do dealer).
+            count:   nº de registros coletados para a keyword.
+        """
+        if count:
+            logger.success(
+                f"[{self.platform_name}] '{keyword}' → {count} produtos coletados"
+            )
+        else:
+            logger.warning(
+                f"[{self.platform_name}] '{keyword}' → 0 produtos coletados"
+            )
+
+    # ------------------------------------------------------------------
     # Helpers de interação humana com a página
     # ------------------------------------------------------------------
 
