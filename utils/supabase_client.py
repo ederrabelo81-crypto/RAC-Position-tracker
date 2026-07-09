@@ -345,7 +345,13 @@ def upload_to_supabase(
         batch = rows[i * _BATCH_SIZE : (i + 1) * _BATCH_SIZE]
         if drop_optional:
             batch = _strip_optional(batch)
-        plataforma = batch[0].get("plataforma", "?") if batch else "?"
+        # Lote na fronteira entre plataformas contém mais de uma — rotular só
+        # pela 1ª linha escondia registros (ex.: Casas Bahia dentro de um lote
+        # "Shopee", que na validação do log parecia nunca ter subido).
+        plataforma = (
+            "+".join(sorted({r.get("plataforma") or "?" for r in batch}))
+            if batch else "?"
+        )
         try:
             result = client.table("coletas").upsert(
                 batch,
