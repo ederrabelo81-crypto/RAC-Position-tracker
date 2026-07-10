@@ -48,7 +48,7 @@ if exist ".venv\Scripts\activate.bat" (
 ) else if exist "venv\Scripts\activate.bat" (
     call venv\Scripts\activate.bat
 ) else (
-    echo [AVISO] Nenhuma venv encontrada (.venv/venv) - usando Python do sistema.
+    echo [AVISO] Nenhuma venv encontrada [.venv/venv] - usando Python do sistema.
 )
 
 :: A coleta abre o Chrome comum e conecta via CDP sozinha (RAC_LOCAL_CHROME). Se a Shopee
