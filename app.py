@@ -225,6 +225,32 @@ def _is_placeholder_price(p) -> bool:
     return False
 
 
+# Piso de plausibilidade do mercado RAC brasileiro. Não existe ar-condicionado
+# novo (inverter, split ou janela) por menos de ~R$1.000 — a menor janela 7.500
+# BTU fica na casa de R$1.100+. Preços abaixo disso são invariavelmente erro de
+# coleta: acessório, suporte, controle remoto ou kit de instalação capturado no
+# lugar do aparelho, ou placeholder de indisponível. Tratamos como inválidos
+# para não corromperem o piso/buy-box, o campeão e o gap 1º→2º nas visões.
+MIN_PLAUSIBLE_PRICE_BRL = 1000.0
+
+
+def _is_implausible_price(p) -> bool:
+    """True se `p` é baixo demais para ser um ar-condicionado real.
+
+    Complementa `_is_placeholder_price`: aquela pega o "preço de gaveta" alto
+    (…999,00 / …9999); esta pega o erro oposto — o valor baixo demais (ex.:
+    R$339 de um suporte que virou o "vencedor" de uma linha). Ambos distorcem
+    o menor preço exibido e devem ser filtrados antes de qualquer `min()`.
+    """
+    try:
+        v = float(p)
+    except (TypeError, ValueError):
+        return False
+    if v != v:  # NaN
+        return False
+    return v < MIN_PLAUSIBLE_PRICE_BRL
+
+
 def _norm_platform_key(name) -> str:
     """Chave canônica de plataforma p/ casar fontes (Apêndice A do relatório).
 
@@ -2483,8 +2509,9 @@ def _evo_daily_floor(d: pd.DataFrame, src: str, skus: list[str],
         # mediana do próprio SKU (mantém o "Dados limpos" coerente entre modos).
         med = d.groupby("sku")["_p"].transform("median")
         ph = d["_p"].map(_is_placeholder_price)
+        implausible = d["_p"].map(_is_implausible_price)
         outlier = (d["_p"] > 1.5 * med) & med.notna()
-        d = d[~(ph | outlier)]
+        d = d[~(ph | implausible | outlier)]
     if d.empty:
         return pd.DataFrame(columns=cols)
     g = (d.groupby(["data", "sku"])
@@ -2877,7 +2904,8 @@ def page_price_evolution():
                 med_key = work[series_col].astype("string")
             med = work.groupby(med_key)["_basis"].transform("median")
             outlier = (work["_basis"] > 1.5 * med) & med.notna()
-            drop_mask = ph | outlier
+            implausible = work["_basis"].map(_is_implausible_price)
+            drop_mask = ph | implausible | outlier
             removed_clean = int(drop_mask.sum())
             work = work[~drop_mask]
     removed_total = removed_google + removed_clean
@@ -8568,6 +8596,23 @@ def page_daily_vision() -> None:
         st.warning("Sem preços válidos nas plataformas monitoradas.")
         return
 
+    # Guarda de plausibilidade de preço. Sem ela, um único valor errôneo (ex.:
+    # R$339 de um suporte capturado no lugar do aparelho) vira o "vencedor" da
+    # linha, some com o campeão do recorte e distorce o Piso geral e o gap
+    # 1º→2º. Removemos dois tipos de lixo antes de qualquer `min()`:
+    #   • placeholder de indisponível (…999,00 / …9999);
+    #   • preço abaixo do piso real do mercado (< R$1.000 — não existe AC novo
+    #     tão barato, então é erro de coleta).
+    preco_num = pd.to_numeric(df["preco"], errors="coerce")
+    price_guard = preco_num.map(_is_placeholder_price) \
+        | preco_num.map(_is_implausible_price)
+    n_guarded = int(price_guard.sum())
+    if n_guarded:
+        df = df[~price_guard]
+    if df.empty:
+        st.warning("Sem preços plausíveis nas plataformas monitoradas.")
+        return
+
     # Mapeia turno → período amigável. Turnos desconhecidos viram "Outro".
     df["periodo"] = df["turno"].map(_TURNO_TO_PERIODO).fillna("Outro")
     if sel_periodos:
@@ -8900,6 +8945,16 @@ def page_daily_vision() -> None:
         pct_str=pct_str,
         sel_grupo=sel_grupo,
     )))
+
+    if n_guarded:
+        n_txt = f"{n_guarded:,}".replace(",", ".")
+        st.caption(
+            f"🛡️ Guarda de plausibilidade removeu **{n_txt}** "
+            "preço(s) inválido(s) deste recorte — placeholders de indisponível "
+            "(…999,00 / …9999) e valores abaixo de "
+            f"{_fmt_brl(MIN_PLAUSIBLE_PRICE_BRL)} (não existe ar-condicionado "
+            "novo tão barato: é erro de coleta, não buy-box)."
+        )
 
     # ── Drill-down — quem (SKU/seller) ofertou cada preço da linha ───────
     # A tabela agora é HTML (sem seleção nativa de linha), então o
