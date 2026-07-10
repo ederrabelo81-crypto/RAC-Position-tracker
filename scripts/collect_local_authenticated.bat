@@ -23,6 +23,10 @@
 
 setlocal enabledelayedexpansion
 
+:: Força UTF-8 no Python (evita UnicodeEncodeError do log em cp1252 ao
+:: redirecionar stdout — caracteres "→", acentos etc.)
+set "PYTHONUTF8=1"
+
 :: Raiz do projeto = pasta pai deste script
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..") do set "BASE_DIR=%%~fI"
