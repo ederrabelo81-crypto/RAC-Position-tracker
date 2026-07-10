@@ -6,8 +6,8 @@
 :: Shopee roda aqui (IP residencial BR + sessao capturada localmente)
 
 setlocal
-:: Força UTF-8 no Python (evita UnicodeEncodeError do log em cp1252 ao
-:: redirecionar stdout para o scheduler.log — caracteres "→", acentos etc.)
+:: Forca UTF-8 no Python: evita UnicodeEncodeError do log em cp1252 quando o
+:: stdout e redirecionado para o scheduler.log (setas/acentos nos logs).
 set "PYTHONUTF8=1"
 set "BASE_DIR=C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
 set "LOG=%BASE_DIR%\logs\scheduler.log"
