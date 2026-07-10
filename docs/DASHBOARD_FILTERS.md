@@ -357,7 +357,7 @@ Filtros não selecionados são simplesmente omitidos da consulta — sem efeito.
 | **Filtro exclusivo** | **Métrica de preço** (Buy Box [default] / Moda / Mediana / Médio); toggles **Dados limpos** e **Comparar fontes** |
 | **Group by** | Radio: `Product` (= **SKU**, não nome), `Brand`, `Platform` |
 | **Agregação** | Por (SKU, dia): Buy Box = `min(min_price)` no pricetrack / `min(preco)` nas coletas; Moda/Mediana sobre `min_price`/`preco`; Médio sobre `avg_price`/`preco` |
-| **Guarda de qualidade** | "Dados limpos" (default ON): remove placeholders (preço terminando em 999,00 / 9999) e outliers > 1,5× mediana do SKU; opção de excluir Google Shopping das coletas |
+| **Guarda de qualidade** | "Dados limpos" (default ON): remove placeholders (preço terminando em 999,00 / 9999), preços implausíveis (**< R$1.000** — não existe AC novo tão barato, é erro de coleta) e outliers > 1,5× mediana do SKU; opção de excluir Google Shopping das coletas |
 | **Série congelada** | 1 único valor diário em ≥10 dias → linha **tracejada** + ⚠️ na legenda (MAP real ou coleta travada) |
 | **Tab: Price Chart** | Linha por SKU/grupo; hover mostra `n` (ofertas no dia); banners de cobertura |
 | **Tab: Summary** | Tabela com Count/Min/Mode/Median/Max/Avg por grupo |
@@ -373,7 +373,7 @@ Filtros não selecionados são simplesmente omitidos da consulta — sem efeito.
 query_price_evolution_data → cache em session_state["evo_df"]
    → _metric_basis(df, métrica)            (min_price/avg_price no PT; preco nas coletas)
    → group_by Product ⇒ descarta sku nulo  (mata a linha-fantasma de nome)
-   → guarda "Dados limpos" (placeholder + outlier 1,5×)
+   → guarda "Dados limpos" (placeholder + implausível <R$1.000 + outlier 1,5×)
    → groupby(["data", série]).agg(value=métrica, n=size)
    → flag congelada (nunique==1 & dias≥10) ⇒ linha tracejada
    → Tab Chart: px.line  |  Tab Summary: stats por série  |  Tab Detail: df bruto
