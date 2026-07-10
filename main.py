@@ -128,6 +128,23 @@ def _setup_logging(log_dir: str) -> None:
     log_file = Path(log_dir) / f"bot_{_now_brt().strftime('%Y%m%d_%H%M%S')}.log"
 
     logger.remove()  # remove handler padrão do stderr
+
+    # Windows + Python 3.14: stdout/stderr assumem cp1252 por padrão. Quando o
+    # console é redirecionado para arquivo (Task Scheduler → scheduler.log), o
+    # sink de console do Loguru estoura UnicodeEncodeError em caracteres como
+    # "→"/"ℹ️" (o charmap cp1252 não os codifica). Força UTF-8 com fallback
+    # tolerante para nunca abortar uma linha de log — o bot_*.log já é UTF-8.
+    for _stream in (sys.stdout, sys.stderr):
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if _reconfigure is None:
+            continue
+        try:
+            _reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (ValueError, OSError):
+            # Stream sem suporte a reconfigure (já detach/redirecionado de forma
+            # incompatível) — segue com o encoding vigente.
+            pass
+
     # Console em STDOUT (não stderr). No modo Chrome local, o driver Node do
     # rebrowser-playwright cospe MUITO ruído em stderr ("[rebrowser-patches]
     # cannot get world ... session closed" — issue conhecido #57, inofensivo:
