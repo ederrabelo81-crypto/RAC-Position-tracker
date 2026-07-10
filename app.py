@@ -755,7 +755,13 @@ def get_sku_proposals() -> pd.DataFrame:
 def get_variant_suspects(days: int = 30, delta_pct: float = 25.0,
                          min_dias: int = 5) -> pd.DataFrame | None:
     """SKUs com |Δ piso| Coletas vs PriceTrack persistente — suspeitos de
-    de-para de variante errada. None = RPC ausente (migration 010 não aplicada)."""
+    de-para de variante errada.
+
+    None = RPC ausente (migration 010 não aplicada). Erros transitórios
+    (timeout, rede) PROPAGAM — st.cache_data não cacheia exceções, então a
+    próxima interação re-tenta; o painel os exibe como falha de consulta,
+    não como "migration faltando".
+    """
     client = _get_supabase()
     if client is None:
         return pd.DataFrame()
@@ -764,8 +770,13 @@ def get_variant_suspects(days: int = 30, delta_pct: float = 25.0,
             "p_days": days, "p_delta_pct": delta_pct, "p_min_dias": min_dias,
         }).execute()
         return pd.DataFrame(resp.data or [])
-    except Exception:
-        return None
+    except Exception as exc:
+        msg = str(exc)
+        # PostgREST: função inexistente → 404 PGRST202 / Postgres 42883
+        if ("PGRST202" in msg or "42883" in msg
+                or "Could not find the function" in msg):
+            return None
+        raise
 
 
 def _render_cobertura_banner() -> None:
@@ -3600,7 +3611,8 @@ def page_data_health() -> None:
 def _admin_auto_clear_caches() -> None:
     """Invalida caches do dashboard após um run da automação."""
     for fn in (get_depara, get_cobertura_resolucao, get_familia_options,
-               get_filter_options, get_mapeado_sem_sku, get_sku_proposals):
+               get_filter_options, get_mapeado_sem_sku, get_sku_proposals,
+               get_variant_suspects):
         try:
             fn.clear()
         except Exception:
@@ -3886,12 +3898,22 @@ def _render_variant_suspects_panel() -> None:
     concentra-se em SKUs específicos com desvio de sinal constante — anúncio
     de outra variante (capacidade/voltagem/kit) resolvendo para o código errado.
     """
-    sus = get_variant_suspects()
+    try:
+        sus = get_variant_suspects()
+        sus_err: str | None = None
+    except Exception as exc:
+        sus, sus_err = None, str(exc)
     n = "—" if sus is None else len(sus)
     with st.expander(
         f"⚠️ Suspeitos de variante errada (Δ piso vs PriceTrack, 30d) — {n}",
         expanded=False,
     ):
+        if sus_err:
+            st.warning(
+                "Consulta aos suspeitos falhou (erro transitório? recarregue "
+                f"a página para tentar de novo): {sus_err}"
+            )
+            return
         st.caption(
             "Compara o **piso diário** por SKU entre Coletas e "
             "`pricetrack_daily` (turno Diário) nos últimos 30 dias. Δ "

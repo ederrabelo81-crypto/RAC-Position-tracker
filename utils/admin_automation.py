@@ -683,10 +683,15 @@ def _step_sku_backfill(client, ctx: Dict[str, Any]) -> StepResult:
 
     auto_apply = _env_flag("ADMIN_SKU_BACKFILL_APPLY", False)
     aplicadas = 0
-    if auto_apply and not ctx["dry_run"]:
+    if auto_apply:
         for p in propostas:
             if aplicadas >= max_apply:
                 break
+            # Dry-run simula a aplicação (conta sem gravar), como nas demais
+            # etapas — senão o dry-run reportaria 0 com a flag ligada.
+            if ctx["dry_run"]:
+                aplicadas += 1
+                continue
             try:
                 apply_sku_resolution(client, p["nome"], p["familia"],
                                      p["sku_proposto"], None)
@@ -921,7 +926,8 @@ def should_run(client=None, min_hours: float = 24.0) -> bool:
 
 def _has_changes(report: Dict[str, Any]) -> bool:
     keys = ("deleted", "updated", "total_updated", "aplicadas", "deduped",
-            "novos_coletas", "novos_rac", "resolvidas")
+            "novos_coletas", "novos_rac", "resolvidas",
+            "sync_linhas_coletas", "propostas_aplicadas")
     for step in report.get("steps", []):
         d = step.get("details") or {}
         if any(int(d.get(k, 0) or 0) > 0 for k in keys):
