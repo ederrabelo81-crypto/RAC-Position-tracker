@@ -23,8 +23,8 @@
 
 setlocal enabledelayedexpansion
 
-:: Força UTF-8 no Python (evita UnicodeEncodeError do log em cp1252 ao
-:: redirecionar stdout — caracteres "→", acentos etc.)
+:: Forca UTF-8 no Python: evita UnicodeEncodeError do log em cp1252 quando o
+:: stdout e redirecionado para arquivo (setas/acentos nos logs do Loguru).
 set "PYTHONUTF8=1"
 
 :: Raiz do projeto = pasta pai deste script
