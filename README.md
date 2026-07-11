@@ -2,7 +2,7 @@
 
 Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ✅ Produção | **Última atualização:** 3 de Julho de 2026 (v4.3)
+**Status:** ✅ Produção | **Última atualização:** 11 de Julho de 2026 (v4.4)
 
 ---
 
@@ -20,7 +20,7 @@ O projeto monitora em 7 marketplaces:
 - **Preços** — coleta própria (secundário) + PriceTrack (fonte de verdade)
 - **Análise competitiva via IA** (Claude API) com relatório executivo
 
-Dados → CSV → Supabase (`coletas` + `pricetrack_daily`) → dashboard Streamlit (19 páginas) → notificações Telegram (N8N ou API direta).
+Dados → CSV → Supabase (`coletas` + `pricetrack_daily`) → dashboard Streamlit (19 páginas) → notificações Telegram (API direta).
 
 ---
 
@@ -28,8 +28,8 @@ Dados → CSV → Supabase (`coletas` + `pricetrack_daily`) → dashboard Stream
 
 ```
 Oracle Cloud VM (Brazil East — São Paulo)              [canal primário]
-  ├─ Cron 10:00 BRT → plataformas ativas, alta+media, 2 páginas
-  ├─ Cron 21:00 BRT → plataformas ativas, alta, 1 página
+  ├─ Cron 10:00 BRT → plataformas ativas (sem ML), alta+media, 2 páginas
+  ├─ Cron 21:00 BRT → plataformas ativas (sem ML), alta, 1 página
   └─ Cron 06:00 BRT → import PriceTrack (D-1) — espelho do GH Actions
 
 GitHub Actions                                          [backup agendado]
@@ -37,13 +37,22 @@ GitHub Actions                                          [backup agendado]
   │                         (sem ML — IPs do GitHub bloqueados; Magalu via xvfb)
   └─ pricetrack_daily.yml → cron 09:00 UTC (06:00 BRT) + auto-heal de gaps (14d)
 
-PC pessoal Windows (IP residencial)                     [coleta autenticada]
-  └─ Task Scheduler 09:00/20:00 → run_local_scheduled.bat
-       git pull (self-update) → collect_local_authenticated.bat
-       Chrome real logado (perfil dedicado, RAC_LOCAL_CHROME=1)
-       → coleta Magalu + Shopee + Casas Bahia → upload
-       Ver docs/COLETA_LOCAL_AUTENTICADA.md
+PC pessoal Windows (IP residencial)                     [ML + coleta autenticada]
+  ├─ Task Scheduler 09:00/20:00 (RAC_Local_Manha/Noite) → run_local_scheduled.bat
+  │    git pull (self-update) → collect_local_authenticated.bat
+  │    Chrome COMUM logado (perfil dedicado, RAC_LOCAL_CHROME=1) → ataque via CDP
+  │    → coleta Magalu + Shopee + Casas Bahia → upload
+  │    Setup: scripts\setup_local_scheduler.ps1 · docs/COLETA_LOCAL_AUTENTICADA.md
+  └─ Task Scheduler 10:00/21:00 (RAC_Coleta_Manha/Tarde) → collect_manha.bat / collect_tarde.bat
+       → coleta Mercado Livre (IP de datacenter da VM é bloqueado pelo ML)
+       + Shopee de reforço, se houver sessão capturada → upload
+       Setup: scripts\install_tasks.bat
 ```
+
+Mercado Livre roda **exclusivamente** no PC local (IP residencial) — foi
+removido da VM/GitHub Actions porque o IP de datacenter é bloqueado pelo ML.
+Magalu, Shopee e Casas Bahia rodam tanto na VM (best-effort/warm-up) quanto no
+PC (canal primário, mais estável).
 
 Após cada coleta: upload automático ao Supabase + notificação Telegram.
 Watchdog: `python scripts/daily_status_check.py` (PASS/FAIL por plataforma +
@@ -55,20 +64,21 @@ cobertura de campos de insight com alerta de regressão).
 
 | Plataforma | Status | Canal | Observações |
 |------------|--------|-------|-------------|
-| Mercado Livre | ✅ | VM (xvfb) / local | Buy box ✓; avaliação/patrocinado/Loja Oficial **corrigidos em Jun/2026** (estavam 0% — ver `docs/DIAGNOSTICO_COLETA_JUN2026.md`). Complemento opcional `--platforms ml_api` (API oficial OAuth) preenche `reputacao_seller` |
+| Mercado Livre | ✅ | **PC local** (Task Scheduler 10:00/21:00) | Buy box ✓; avaliação/patrocinado/Loja Oficial **corrigidos em Jun/2026** (estavam 0% — ver `docs/DIAGNOSTICO_COLETA_JUN2026.md`). Removido da VM (IP de datacenter bloqueado pelo ML). Complemento opcional `--platforms ml_api` (API oficial OAuth) preenche `reputacao_seller` |
 | Amazon | ✅ | VM / GH Actions | Buy box via "Vendido por"; `Qtd Sellers` de "X ofertas"; 1P vs 3P |
 | Leroy Merlin | ✅ | VM / GH Actions | Algolia API; 1P vs 3P marketplace |
-| Magalu | ✅ | **PC via CDP** (primário), VM best-effort | Akamai: Chrome real + `rebrowser-playwright` + busca orgânica + circuit breaker (aborta após 5 keywords 100% bloqueadas) |
-| Casas Bahia | ✅ via CDP/sessão | **PC via CDP** | VTEX Intelligent Search (`sellers[]` → buy box); IP datacenter bloqueado → sessão renovada automaticamente no PC |
-| Shopee | 🟡 via CDP/sessão | **PC via CDP** | API v4 + cookies de conta logada (`SPC_*` expiram em horas → `refresh_sessions_cdp.py` renova antes de cada coleta) |
+| Magalu | ✅ | **PC local** (primário, 09:00/20:00), VM best-effort | Akamai: Chrome comum + perfil dedicado, ataque via CDP (`rebrowser-playwright`) + busca orgânica + circuit breaker (aborta após 5 keywords 100% bloqueadas) |
+| Casas Bahia | ✅ | **PC local** (primário, 09:00/20:00), VM best-effort | VTEX Intelligent Search (`sellers[]` → buy box); IP datacenter também destrava via warm-up Akamai, mas o PC (IP residencial) é mais estável |
+| Shopee | 🟡 | **PC local** (primário, 09:00/20:00), VM se houver sessão | API v4 + cookies de conta logada (`SPC_*` expiram em horas); no PC a sessão fica persistida no Chrome comum logado (`setup_local_profile.py`) |
 | Google Shopping | ⚠️ | VM / GH Actions | reCAPTCHA em headless; `Qtd Sellers` = nº de lojas comparando |
 | Fast Shop | ⏸️ | — | Bloqueio total PerimeterX |
 | Dealers (13+) | ⏸️ | — | Fora do foco (`ACTIVE_PLATFORMS["dealers"]=False`); scraper mantido |
 
-> **Causa raiz dos bloqueios** (Shopee/CB/Magalu): IP de datacenter marcado
-> pelo antibot antes do fingerprint. Solução em produção: coleta autenticada
-> no PC com IP residencial (`docs/AUTOMACAO_COLETAS_AUTENTICADAS.md`).
-> Evolução planejada: proxy residencial BR na VM.
+> **Causa raiz dos bloqueios** (Shopee/CB/Magalu na VM): IP de datacenter
+> marcado pelo antibot antes do fingerprint. Solução em produção: coleta
+> autenticada no PC com IP residencial, Chrome comum + perfil dedicado
+> (`docs/COLETA_LOCAL_AUTENTICADA.md`). Evolução planejada: proxy residencial
+> BR na VM.
 
 ---
 
@@ -133,8 +143,7 @@ ML_APP_SECRET=...
 # Nome do analista nos relatórios
 ANALYST_NAME="Bot Automático Python"
 
-# Notificações Telegram — N8N (opcional) + fallback direto
-N8N_WEBHOOK_URL=http://localhost:5678/webhook/coleta
+# Notificações Telegram (API direta)
 N8N_TELEGRAM_CHAT_ID=123456789
 TELEGRAM_BOT_TOKEN=7730291785:AAF...
 ```
@@ -177,7 +186,14 @@ python main.py --platforms ml --pages 1 --no-headless
 > `ml_api` não entra no `all` (duplicaria os registros do ML) — é uma coleta
 > complementar para `reputacao_seller`. Setup único: `python scripts/ml_oauth_setup.py`.
 
-### Coleta autenticada (Magalu + Shopee + Casas Bahia) — PC Windows
+### Coleta local agendada (PC Windows, IP residencial)
+
+O notebook/PC do analista roda **dois agendamentos** no Task Scheduler,
+cobrindo as 4 plataformas que dependem de IP residencial (Mercado Livre) ou se
+beneficiam dele (Magalu, Shopee, Casas Bahia):
+
+**1. Magalu + Shopee + Casas Bahia — 09:00/20:00 (`RAC_Local_Manha/Noite`)**
+Chrome comum + perfil dedicado, atacado via CDP (`rebrowser-playwright`).
 
 ```powershell
 # Setup (1x): perfil dedicado + login Shopee + agendamento 09:00/20:00
@@ -188,7 +204,16 @@ PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1
 scripts\collect_local_authenticated.bat 1                          # ciclo completo
 ```
 
-📄 Detalhes e alternativas (proxy residencial, Tailscale): `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md`
+📄 Detalhes e troubleshooting: `docs/COLETA_LOCAL_AUTENTICADA.md`
+
+**2. Mercado Livre (+ Shopee de reforço) — 10:00/21:00 (`RAC_Coleta_Manha/Tarde`)**
+ML roda só aqui — foi removido da VM/GitHub Actions porque o IP de datacenter
+é bloqueado pelo Mercado Livre.
+
+```powershell
+# Setup (1x, como Administrador): agenda collect_manha.bat / collect_tarde.bat
+scripts\install_tasks.bat
+```
 
 ---
 
@@ -274,8 +299,9 @@ Resumo executivo automático após cada coleta: volume/duração/plataformas,
 matriz de preço Midea por linha × capacidade, ranking top 5 por keyword
 estratégica, maiores quedas/altas, ganhos/perdas de buy box Midea.
 
-Configuração no `.env` (N8N opcional; fallback direto via `TELEGRAM_BOT_TOKEN`).
-Workflow importável: `n8n/rac_coleta_monitor.json` · Guia: `docs/n8n_orchestration.md`
+Envio direto via API do Telegram (`TELEGRAM_BOT_TOKEN` + `N8N_TELEGRAM_CHAT_ID`
+no `.env`). A antiga orquestração via n8n foi descontinuada — sem uso desde
+meados de Jun/2026, o caminho direto é o único ativo em produção.
 
 ---
 
@@ -358,10 +384,12 @@ rac-position-tracker/
 ├── pricetrack_importer/          # Importador md/xlsx (parser/validator/seller_map)
 ├── scripts/
 │   ├── pricetrack_api_import.py  # Import diário via API PriceTrack
-│   ├── refresh_sessions_cdp.py   # Renova sessões Shopee/CB/ML via Chrome CDP 🆕
-│   ├── collect_authenticated_cdp.bat   # Magalu+Shopee+CB no PC (CDP) 🆕
-│   ├── setup_authenticated_scheduler.ps1  # Task Scheduler 10:05/21:05 🆕
-│   ├── start_chrome_cdp.bat / setup_cdp_profile.bat  # Chrome CDP (perfil real)
+│   ├── setup_local_profile.py    # Login 1x na Shopee (Chrome comum, perfil dedicado) 🆕
+│   ├── collect_local_authenticated.bat  # Magalu+Shopee+CB no PC (Chrome comum+CDP) 🆕
+│   ├── run_local_scheduled.bat   # Wrapper agendado: git pull + coleta local 🆕
+│   ├── setup_local_scheduler.ps1 # Task Scheduler 09:00/20:00 (Magalu+Shopee+CB) 🆕
+│   ├── collect_manha.bat / collect_tarde.bat  # Coleta ML (+Shopee) no PC, 10:00/21:00
+│   ├── install_tasks.bat         # Task Scheduler p/ collect_manha/tarde.bat (ML)
 │   ├── daily_status_check.py     # Watchdog PASS/FAIL + cobertura de campos
 │   ├── diagnose_ml.py            # Diagnóstico ML: taxa de acerto por campo/seletor
 │   ├── ml_oauth_setup.py         # Setup OAuth da API oficial do ML (1x)
@@ -374,12 +402,11 @@ rac-position-tracker/
 │   ├── normalize_product.py      # normalização v1 + v2 (SKU-anchored)
 │   ├── session_grabber.py        # Captura manual de sessões (fallback)
 │   ├── supabase_client.py        # Upload (manutenção em supabase_maintenance.py)
-│   └── n8n_notify.py             # Telegram (N8N + fallback direto)
+│   └── n8n_notify.py             # Telegram (API direta)
 │
 ├── tests/                        # pytest (parser ML, de-para, normalização v2)
 ├── migrations/ + docs/migrations/ # SQL: pricetrack, buy box, índices, depara
 ├── .github/workflows/            # collect.yml + pricetrack_daily.yml
-├── n8n/                          # Workflow Telegram importável
 ├── magalu_shopee/                # Sub-projeto Node/TS (fallback Shopee)
 ├── docs/                         # Documentação técnica (ver docs/INDEX.md)
 ├── output/                       # CSVs
@@ -446,11 +473,11 @@ Utilitários: `cleanup_supabase.py`, `normalize_supabase.py`,
 |-----------|------------|
 | `docs/INDEX.md` | Navegação por tarefa |
 | `pricetrack_api/README.md` | Cliente tipado da API PriceTrack — arquitetura, uso, config, robustez 🆕 |
-| `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md` | Automação Shopee/Magalu/CB (CDP + sessões) 🆕 |
+| `docs/COLETA_LOCAL_AUTENTICADA.md` | Coleta local Magalu+Shopee+CB — Chrome comum + perfil dedicado, agendamento 🆕 |
+| `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md` | ⚠️ Superado — caminho antigo via CDP + perfil copiado (referência histórica) |
 | `docs/PRICETRACK_INSIGHTS.md` | Pipeline PriceTrack + roadmap de insights 🆕 |
 | `docs/DIAGNOSTICO_COLETA_JUN2026.md` | Diagnóstico de cobertura por campo/plataforma |
 | `docs/cdp_magalu_collection.md` | Setup Chrome CDP (Windows + Task Scheduler) |
-| `docs/n8n_orchestration.md` | Orquestração n8n (validação CSV + Telegram) |
 | `.claude/` + `docs/learnings/` | Guias para sessões de IA (anti-patterns, padrões) |
 
 ---
@@ -466,8 +493,17 @@ Dashboard usa o subset `requirements_app.txt`.
 
 ---
 
-## ✅ Validação Operacional — 03/07/2026
+## ✅ Validação Operacional — 11/07/2026
 
+- ✅ **Coleta local no PC Windows com self-update** 🆕 — `run_local_scheduled.bat`
+  roda `git pull` antes de cada coleta agendada (09:00/20:00), eliminando a
+  defasagem entre o código do notebook e o do repositório
+- ✅ **Chrome comum + perfil dedicado** (Jul/2026) — substitui o antigo CDP com
+  perfil copiado (que deslogava as contas) para Magalu+Shopee+Casas Bahia;
+  login via Google na Shopee volta a funcionar (`docs/COLETA_LOCAL_AUTENTICADA.md`)
+- ✅ **Notificações Telegram simplificadas** — envio direto via API
+  (`TELEGRAM_BOT_TOKEN`); orquestração via n8n descontinuada por falta de uso
+  desde meados de Jun/2026
 - ✅ **Cliente `pricetrack_api/`** 🆕 — camada tipada da API Externa PriceTrack v1.2.0 (paginação/export/retry/métricas, 88 testes); `pricetrack_api_import.py` delega os exports do import diário a ela e `--concurrent` passa a valer de fato
 - ✅ **19 páginas** de dashboard (13 Insights + 4 Operações + 2 Admin) — removidas Run Collection e Competitive Intelligence
 - ✅ **Daily Price Vision** — vista de menor preço por marketplace com turnos Manhã/Tarde/Diário, visual fiel ao mockup (KPIs, chips, sparkline 7d embutido como `<img>` base64, drill-down); drill-down corrigido com fonte "Coletas" isolada (schema `produto`↔`title` normalizado)
@@ -475,7 +511,6 @@ Dashboard usa o subset `requirements_app.txt`.
 - ✅ **Filtros Globais enxutos** com seletor único de Fonte de Dados (Coletas / PriceTrack / Combinado); cache de preço/overview com TTL maior e chaves corrigidas para filtros globais de família/SKU (menor egress no Supabase)
 - ✅ **7 plataformas ativas** com buy box/seller (rollout fim de Mai/2026)
 - ✅ **PriceTrack diário** como fonte de verdade de preço (06:00 BRT + auto-heal)
-- ✅ **Coleta autenticada automatizada** Magalu+Shopee+CB via CDP (Jun/2026)
 - ✅ **Fix ML**: avaliação, reviews, patrocinado, Loja Oficial (Jun/2026)
 - ✅ **Price Evolution** com métrica Buy Box-first + agrupamento por SKU + guarda de outliers
 - ✅ **Catálogo SKU refinado** (dedup voltagem-tolerante): SKU-exato 88,3% → **90,3%**
@@ -488,4 +523,4 @@ Dashboard usa o subset `requirements_app.txt`.
 
 **Stack:** Python · Playwright/rebrowser · curl_cffi · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · GitHub Actions
 
-**Versão:** 4.3 | **Última atualização:** 3 de Julho de 2026 | @ederrabelo
+**Versão:** 4.4 | **Última atualização:** 11 de Julho de 2026 | @ederrabelo
