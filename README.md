@@ -38,7 +38,8 @@ GitHub Actions                                          [backup agendado]
   └─ pricetrack_daily.yml → cron 09:00 UTC (06:00 BRT) + auto-heal de gaps (14d)
 
 PC pessoal Windows (IP residencial)                     [coleta autenticada]
-  └─ Task Scheduler 09:00/20:00 → collect_local_authenticated.bat
+  └─ Task Scheduler 09:00/20:00 → run_local_scheduled.bat
+       git pull (self-update) → collect_local_authenticated.bat
        Chrome real logado (perfil dedicado, RAC_LOCAL_CHROME=1)
        → coleta Magalu + Shopee + Casas Bahia → upload
        Ver docs/COLETA_LOCAL_AUTENTICADA.md
