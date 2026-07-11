@@ -117,8 +117,17 @@ VM/GitHub.
 PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1
 ```
 
+As tarefas chamam `scripts\run_local_scheduled.bat`, que faz **`git pull`
+(self-update) antes de coletar** e só então invoca `collect_local_authenticated.bat`.
+Assim a coleta agendada sempre roda com o código mais novo — sem depender de rodar
+`sync_windows.bat` na mão. (Foi essa defasagem que, numa manhã, fez a tarefa rodar
+um `.bat` ainda quebrado e não coletar Magalu/Shopee/Casas Bahia enquanto o ML,
+por outro launcher, seguia normal.) Para pular o pull num teste manual, defina
+`RAC_NO_SELFUPDATE=1`.
+
 O notebook precisa estar **ligado e com você logado no Windows** nos horários (o
-Chrome abre na sua sessão de UI e usa o seu IP residencial).
+Chrome abre na sua sessão de UI e usa o seu IP residencial). As tarefas usam
+`-WakeToRun` (acorda o notebook em suspensão) e retentam em caso de falha.
 
 ---
 

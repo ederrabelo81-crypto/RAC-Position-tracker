@@ -9,6 +9,11 @@
 #   1. RAC_Local_Manha  - 09:00 (Abertura, 2 pgs, alta+media)
 #   2. RAC_Local_Noite  - 20:00 (Fechamento, 1 pg, alta)
 #
+# As tarefas chamam scripts\run_local_scheduled.bat, que faz `git pull` e SO
+# ENTAO roda a coleta — assim o notebook sempre coleta com o codigo mais novo,
+# sem depender de rodar sync_windows.bat na mao (foi essa defasagem que fez a
+# coleta agendada rodar um .bat quebrado e nao coletar Magalu/Shopee/CB).
+#
 # Remove as tarefas antigas que dependiam do Chrome CDP / perfil copiado
 # (RAC_Autenticada_*, RAC_Chrome_CDP_Startup, RAC_Magalu_*) para nao duplicar.
 #
@@ -70,7 +75,11 @@ if (-not $isAdmin) {
 
 # Raiz do projeto = pasta pai deste script
 $BaseDir = Split-Path -Parent $PSScriptRoot
-$CollectScript = Join-Path $BaseDir "scripts\collect_local_authenticated.bat"
+# Wrapper agendado: faz `git pull` e SO ENTAO chama collect_local_authenticated.bat.
+# As tarefas nao passam por sync_windows.bat, entao sem esse pull o .bat em disco
+# fica defasado (um fix mergeado na vespera so valeria apos sync manual — foi o que
+# fez Magalu/Shopee/Casas Bahia nao coletarem numa manha com o .bat ainda quebrado).
+$CollectScript = Join-Path $BaseDir "scripts\run_local_scheduled.bat"
 
 # Usa o usuario interativo repassado na elevacao; se rodou ja como admin sem o
 # parametro, cai no usuario atual.
@@ -119,8 +128,13 @@ Write-Host "Registrando: RAC_Local_Manha (09:00 diario)" -ForegroundColor Cyan
 $action  = New-ScheduledTaskAction -Execute "cmd.exe" `
     -Argument "/c `"$CollectScript`" 2 alta media >> `"$BaseDir\logs\scheduler.log`" 2>&1"
 $trigger = New-ScheduledTaskTrigger -Daily -At "9:00AM"
+# WakeToRun: acorda o notebook em suspensao no horario (senao a coleta so rodaria
+# quando alguem usasse a maquina). StartWhenAvailable: se a hora foi perdida
+# (desligado), roda assim que possivel. RestartCount/Interval: retenta se a
+# execucao falhar (ex.: pull/coleta com erro transiente).
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 3)
+    -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10) `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 3)
 Register-ScheduledTask -TaskName "RAC_Local_Manha" `
     -Action $action -Trigger $trigger -Settings $settings -Principal $taskPrincipal `
     -Description "Coleta local autenticada (Magalu+Shopee+CB) - Abertura, 2 pgs, alta+media" `
@@ -131,7 +145,8 @@ $action  = New-ScheduledTaskAction -Execute "cmd.exe" `
     -Argument "/c `"$CollectScript`" 1 alta >> `"$BaseDir\logs\scheduler.log`" 2>&1"
 $trigger = New-ScheduledTaskTrigger -Daily -At "8:00PM"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+    -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10) `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 Register-ScheduledTask -TaskName "RAC_Local_Noite" `
     -Action $action -Trigger $trigger -Settings $settings -Principal $taskPrincipal `
     -Description "Coleta local autenticada (Magalu+Shopee+CB) - Fechamento, 1 pg, alta" `
