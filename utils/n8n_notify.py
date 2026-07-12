@@ -807,3 +807,46 @@ def notify_end(
         "buybox_losses":  changes.get("buybox_losses", []),
     })
     logger.debug("[N8N] Notificação de fim enviada.")
+
+
+def notify_scheduler_failure(slot: str, exit_code: int) -> None:
+    """
+    Alerta curto de falha da coleta AGENDADA local (Task Scheduler do notebook).
+
+    Chamado por scripts/local_scheduled_collect.bat quando a coleta agendada de
+    Magalu/Shopee/Casas Bahia termina com exit != 0 — avisa no mesmo dia, em vez
+    de o buraco ser descoberto depois no dashboard.
+
+    Diferente de notify_start/notify_end (que exigem N8N_WEBHOOK_URL), aqui a
+    entrega é best-effort por qualquer canal: tenta o webhook e, sem webhook ou
+    com falha, cai direto na Bot API do Telegram.
+
+    Args:
+        slot: Identificação da execução agendada ("manha", "noite" ou "legado")
+        exit_code: Código de saída da coleta (repassado pelo .bat)
+    """
+    import socket
+
+    try:
+        host = socket.gethostname()
+    except Exception:
+        host = "?"
+
+    msg = (
+        "🚨 <b>Coleta local agendada FALHOU</b>\n"
+        f"🕑 Slot: <b>{_esc(slot)}</b> — exit <code>{int(exit_code)}</code>\n"
+        f"💻 Host: {_esc(host)}\n"
+        "📄 Detalhes: logs/scheduler.log e logs/driver_stderr.log\n"
+        "🩺 Diagnóstico: scripts\\check_local_scheduler.ps1"
+    )
+    delivered = _send({
+        "event":     "scheduler_failure",
+        "chat_id":   _chat_id(),
+        "message":   msg,
+        "slot":      slot,
+        "exit_code": int(exit_code),
+    })
+    if delivered:
+        logger.info(f"[N8N] Alerta de falha do agendamento enviado (slot={slot}, exit={exit_code})")
+    else:
+        logger.warning(f"[N8N] Alerta de falha do agendamento NÃO entregue (slot={slot}, exit={exit_code})")

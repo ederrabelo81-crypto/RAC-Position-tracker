@@ -38,11 +38,14 @@ GitHub Actions                                          [backup agendado]
   └─ pricetrack_daily.yml → cron 09:00 UTC (06:00 BRT) + auto-heal de gaps (14d)
 
 PC pessoal Windows (IP residencial)                     [ML + coleta autenticada]
-  ├─ Task Scheduler 09:00/20:00 (RAC_Local_Manha/Noite) → run_local_scheduled.bat
-  │    git pull (self-update) → collect_local_authenticated.bat
+  ├─ Task Scheduler 09:00/20:00 + catch-up no logon (RAC_Local_Manha/Noite)
+  │    → run_local_scheduled.bat (git pull self-update)
+  │    → local_scheduled_collect.bat (janela de turno 9-12h/20-23h + marcador
+  │      diário + alerta Telegram em falha) → collect_local_authenticated.bat
   │    Chrome COMUM logado (perfil dedicado, RAC_LOCAL_CHROME=1) → ataque via CDP
   │    → coleta Magalu + Shopee + Casas Bahia → upload
-  │    Setup: scripts\setup_local_scheduler.ps1 · docs/COLETA_LOCAL_AUTENTICADA.md
+  │    Setup: scripts\setup_local_scheduler.ps1 · Diagnóstico: check_local_scheduler.ps1
+  │    Detalhes: docs/COLETA_LOCAL_AUTENTICADA.md
   └─ Task Scheduler 10:00/21:00 (RAC_Coleta_Manha/Tarde) → collect_manha.bat / collect_tarde.bat
        → coleta Mercado Livre (IP de datacenter da VM é bloqueado pelo ML)
        + Shopee de reforço, se houver sessão capturada → upload
@@ -193,7 +196,10 @@ cobrindo as 4 plataformas que dependem de IP residencial (Mercado Livre) ou se
 beneficiam dele (Magalu, Shopee, Casas Bahia):
 
 **1. Magalu + Shopee + Casas Bahia — 09:00/20:00 (`RAC_Local_Manha/Noite`)**
-Chrome comum + perfil dedicado, atacado via CDP (`rebrowser-playwright`).
+Chrome comum + perfil dedicado, atacado via CDP (`rebrowser-playwright`). As
+tarefas também disparam no **logon** (catch-up com janela de turno 9–12h/20–23h
+e marcador diário — cobre notebook desligado no horário sem duplicar coleta) e
+alertam no Telegram quando a coleta agendada falha.
 
 ```powershell
 # Setup (1x): perfil dedicado + login Shopee + agendamento 09:00/20:00
@@ -202,6 +208,9 @@ PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1
 
 # Manual
 scripts\collect_local_authenticated.bat 1                          # ciclo completo
+
+# A tarefa agendada não rodou? Diagnóstico completo (sem Admin):
+PowerShell -ExecutionPolicy Bypass -File scripts\check_local_scheduler.ps1
 ```
 
 📄 Detalhes e troubleshooting: `docs/COLETA_LOCAL_AUTENTICADA.md`
@@ -386,8 +395,10 @@ rac-position-tracker/
 │   ├── pricetrack_api_import.py  # Import diário via API PriceTrack
 │   ├── setup_local_profile.py    # Login 1x na Shopee (Chrome comum, perfil dedicado) 🆕
 │   ├── collect_local_authenticated.bat  # Magalu+Shopee+CB no PC (Chrome comum+CDP) 🆕
-│   ├── run_local_scheduled.bat   # Wrapper agendado: git pull + coleta local 🆕
-│   ├── setup_local_scheduler.ps1 # Task Scheduler 09:00/20:00 (Magalu+Shopee+CB) 🆕
+│   ├── run_local_scheduled.bat   # Estágio A agendado (estável): git pull + estágio B 🆕
+│   ├── local_scheduled_collect.bat # Estágio B: janela de turno + marcador + alerta 🆕
+│   ├── setup_local_scheduler.ps1 # Task Scheduler 09:00/20:00 + logon (Magalu+Shopee+CB) 🆕
+│   ├── check_local_scheduler.ps1 # Diagnóstico: por que a tarefa não rodou? 🆕
 │   ├── collect_manha.bat / collect_tarde.bat  # Coleta ML (+Shopee) no PC, 10:00/21:00
 │   ├── install_tasks.bat         # Task Scheduler p/ collect_manha/tarde.bat (ML)
 │   ├── daily_status_check.py     # Watchdog PASS/FAIL + cobertura de campos
@@ -493,9 +504,17 @@ Dashboard usa o subset `requirements_app.txt`.
 
 ---
 
-## ✅ Validação Operacional — 11/07/2026
+## ✅ Validação Operacional — 12/07/2026
 
-- ✅ **Coleta local no PC Windows com self-update** 🆕 — `run_local_scheduled.bat`
+- ✅ **Agendamento local Windows corrigido de vez** 🆕 — a Action das tarefas
+  `RAC_Local_*` era `cmd.exe /c "..." >> "..."`; com o espaço no caminho do
+  projeto o cmd.exe descartava as aspas e a tarefa morria **sem escrever log**
+  (por isso Magalu/Shopee/Casas Bahia "não rodavam"). Agora a Action é o
+  próprio `.bat` (log interno), com catch-up no logon (janela de turno +
+  marcador diário), alerta Telegram em falha e diagnóstico via
+  `scripts\check_local_scheduler.ps1`. **Requer re-rodar
+  `setup_local_scheduler.ps1` uma vez no notebook.**
+- ✅ **Coleta local no PC Windows com self-update** — `run_local_scheduled.bat`
   roda `git pull` antes de cada coleta agendada (09:00/20:00), eliminando a
   defasagem entre o código do notebook e o do repositório
 - ✅ **Chrome comum + perfil dedicado** (Jul/2026) — substitui o antigo CDP com
