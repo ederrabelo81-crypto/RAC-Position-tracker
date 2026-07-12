@@ -4,26 +4,26 @@
 # Coleta Magalu + Shopee + Casas Bahia com o Chrome real logado (perfil
 # dedicado data\chrome_profile), IP residencial, SEM CDP e SEM porta de debug.
 #
-# Cria 2 tarefas (nao precisa mais da tarefa de "abrir Chrome CDP no logon" —
+# Cria 2 tarefas (nao precisa mais da tarefa de "abrir Chrome CDP no logon" -
 # o proprio Python abre o Chrome quando a coleta roda):
 #   1. RAC_Local_Manha  - 09:00 diario + catch-up no logon (janela 9-12h)
 #   2. RAC_Local_Noite  - 20:00 diario + catch-up no logon (janela 20-23h)
 #
 # A ACTION das tarefas e o proprio run_local_scheduled.bat, com argumento so
-# "manha"/"noite" — SEM "cmd.exe /c" e SEM redirect ">> log". Motivo (causa
+# "manha"/"noite" - SEM "cmd.exe /c" e SEM redirect ">> log". Motivo (causa
 # raiz das coletas agendadas que "nao rodavam"): com 4 aspas + ">>" o cmd.exe
 # descarta a primeira e a ultima aspas do /c; como o caminho do projeto tem
 # espaco (C:\Users\Eder Rabelo\...), o comando virava "C:\Users\Eder ..." e a
 # tarefa morria na hora, sem escrever log. A tarefa do ML (install_tasks.bat)
-# sempre funcionou porque usa o .bat direto com log interno — este setup agora
+# sempre funcionou porque usa o .bat direto com log interno - este setup agora
 # segue o mesmo padrao (o log e feito dentro do .bat, em logs\scheduler.log).
 #
 # O run_local_scheduled.bat faz `git pull` e SO ENTAO roda a coleta (via
-# local_scheduled_collect.bat) — o notebook sempre coleta com o codigo mais
+# local_scheduled_collect.bat) - o notebook sempre coleta com o codigo mais
 # novo, sem depender de sync_windows.bat manual. O gatilho de logon cobre o
 # notebook desligado/deslogado no horario: ao logar, a tarefa dispara e o
 # local_scheduled_collect.bat decide (janela de turno + marcador diario) se
-# ainda cabe coletar — sem duplicar e sem gravar turno errado.
+# ainda cabe coletar - sem duplicar e sem gravar turno errado.
 #
 # Remove as tarefas antigas que dependiam do Chrome CDP / perfil copiado
 # (RAC_Autenticada_*, RAC_Chrome_CDP_Startup, RAC_Magalu_*) para nao duplicar.
@@ -42,7 +42,7 @@
 param(
     [switch]$Remove,
     # Usuario Windows dono das tarefas. Preenchido automaticamente no hop de
-    # elevacao (ver abaixo) para preservar o usuario INTERATIVO original —
+    # elevacao (ver abaixo) para preservar o usuario INTERATIVO original -
     # se a UAC usar credenciais de outro admin, $env:USERNAME apos a elevacao
     # seria o admin, e as tarefas rodariam na sessao errada (Chrome nao abriria).
     [string]$TaskUser = ""
@@ -50,7 +50,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Pausa so quando ha console interativo — evita travar/erro em execucao
+# Pausa so quando ha console interativo - evita travar/erro em execucao
 # agendada/nao-interativa (a tarefa que chama este script nao tem teclado).
 function Wait-Key {
     if ([Environment]::UserInteractive -and $Host.Name -eq "ConsoleHost") {
@@ -90,7 +90,7 @@ if (-not $isAdmin) {
 $BaseDir = Split-Path -Parent $PSScriptRoot
 # Wrapper agendado: faz `git pull` e SO ENTAO chama collect_local_authenticated.bat.
 # As tarefas nao passam por sync_windows.bat, entao sem esse pull o .bat em disco
-# fica defasado (um fix mergeado na vespera so valeria apos sync manual — foi o que
+# fica defasado (um fix mergeado na vespera so valeria apos sync manual - foi o que
 # fez Magalu/Shopee/Casas Bahia nao coletarem numa manha com o .bat ainda quebrado).
 $CollectScript = Join-Path $BaseDir "scripts\run_local_scheduled.bat"
 
@@ -123,10 +123,10 @@ if (-not (Test-Path $CollectScript)) {
     Write-Error "Script nao encontrado: $CollectScript"
     exit 1
 }
-# Estagio B (logica de janela/marcador) — precisa existir no disco tambem
+# Estagio B (logica de janela/marcador) - precisa existir no disco tambem
 $StageB = Join-Path $BaseDir "scripts\local_scheduled_collect.bat"
 if (-not (Test-Path $StageB)) {
-    Write-Error "Script nao encontrado: $StageB — rode scripts\sync_windows.bat (ou git pull) antes."
+    Write-Error "Script nao encontrado: $StageB - rode scripts\sync_windows.bat (ou git pull) antes."
     exit 1
 }
 
@@ -146,7 +146,7 @@ $taskPrincipal = New-ScheduledTaskPrincipal -UserId $TaskUser -LogonType Interac
 # ACTION = o proprio .bat, com aspas embutidas (mesmo formato da tarefa do ML,
 # que nunca falhou). NUNCA voltar para "cmd.exe /c ... >> log": com espacos no
 # caminho o cmd.exe descarta aspas e a tarefa morre sem log (ver cabecalho).
-# Paginas/prioridade ficam no local_scheduled_collect.bat — a Action so leva o
+# Paginas/prioridade ficam no local_scheduled_collect.bat - a Action so leva o
 # slot, entao ajustes futuros chegam via git pull sem re-registrar a tarefa.
 function New-RacAction([string]$Slot) {
     New-ScheduledTaskAction -Execute "`"$CollectScript`"" -Argument $Slot `
@@ -156,7 +156,7 @@ function New-RacAction([string]$Slot) {
 # Gatilho de catch-up: ao logar no Windows, a tarefa dispara (com 2 min de
 # folga pra rede/Wi-Fi subir) e o estagio B decide se ainda cabe coletar
 # (janela do turno + marcador diario). Cobre notebook desligado/deslogado
-# no horario agendado — principal buraco do agendamento fixo.
+# no horario agendado - principal buraco do agendamento fixo.
 function New-RacLogonTrigger {
     $t = New-ScheduledTaskTrigger -AtLogOn -User $TaskUser
     $t.Delay = "PT2M"
@@ -167,7 +167,7 @@ function New-RacLogonTrigger {
 # quando alguem usasse a maquina). StartWhenAvailable: se a hora foi perdida
 # (desligado), roda assim que possivel. RestartCount/Interval: retenta se a
 # execucao falhar (ex.: pull/coleta com erro transiente). IgnoreNew: os gatilhos
-# de horario e de logon podem coincidir — nao empilha instancias.
+# de horario e de logon podem coincidir - nao empilha instancias.
 Write-Host "Registrando: RAC_Local_Manha (09:00 diario + catch-up no logon)" -ForegroundColor Cyan
 $triggers = @((New-ScheduledTaskTrigger -Daily -At "9:00AM"), (New-RacLogonTrigger))
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
