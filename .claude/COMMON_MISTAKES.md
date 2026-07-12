@@ -125,6 +125,22 @@ próprio pull) que faz o pull e chama o estágio B
 (janela de turno, marcador, alerta) mora no estágio B — nunca no A.
 **Files:** `scripts/run_local_scheduled.bat`, `scripts/local_scheduled_collect.bat`
 
+## 13. Caractere não-ASCII em .ps1 quebra o parse no Windows PowerShell 5.1
+
+**Wrong:** Travessão (—), aspas tipográficas ou acentos em STRINGS de `.ps1`
+(em `.bat` vale para o arquivo inteiro — ver commit 33a2af6).
+**Why:** O PowerShell 5.1 lê `.ps1` SEM BOM como ANSI (cp1252). O travessão
+UTF-8 (`E2 80 94`) vira `â€"` — e o byte `0x94` decodifica como ASPA
+tipográfica (U+201D), que o parser aceita como delimitador de string: a string
+fecha no meio, o resto vira "código" e as chaves desbalanceiam
+(`MissingEndCurlyBrace` apontando para um bloco correto). Em comentário `#` é
+inofensivo (só vira mojibake) — por isso o bug passa despercebido até alguém
+usar o caractere numa string. Incidente 12/07: um travessão numa `Write-Error`
+do setup impediu o re-registro das tarefas no notebook.
+**Right:** Scripts Windows (`.ps1`/`.bat`) 100% ASCII — sem acento, travessão
+vira `-`. Validar antes de commitar: `grep -nP '[^\x00-\x7F]' script.ps1`.
+**Files:** `scripts/setup_local_scheduler.ps1`, `scripts/check_local_scheduler.ps1`
+
 ## 8. Amazon Seller Field Captures Rating
 
 **Wrong:** Use `.a-size-small.a-color-base` selector for seller name.
