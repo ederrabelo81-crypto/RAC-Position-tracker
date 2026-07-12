@@ -96,9 +96,20 @@ foreach ($name in @("RAC_Local_Manha", "RAC_Local_Noite")) {
         $hex = "0x{0:X8}" -f $code
         Write-Info "Ultima execucao: $($info.LastRunTime) | resultado: $code ($hex) = $meaning"
         Write-Info "Proxima execucao: $($info.NextRunTime) | execucoes perdidas: $($info.NumberOfMissedRuns)"
+
+        # O Task Scheduler preserva LastRunTime/LastTaskResult quando a tarefa
+        # e re-registrada (mesmo nome). Um erro ANTERIOR ao re-registro e
+        # historico da definicao antiga - nao reflete a Action atual.
+        $regDate = $null
+        try { if ($task.Date) { $regDate = [datetime]$task.Date } } catch { $regDate = $null }
+        $isStale = ($regDate -and $info.LastRunTime -and $info.LastRunTime -lt $regDate)
+
         if ($code -ne 0 -and $code -ne 267009 -and $code -ne 267008) {
             if ($code -eq 267011) {
                 Write-Warn "$name nunca rodou desde o registro"
+            } elseif ($isStale) {
+                Write-Info "Registrada em: $regDate (depois da ultima execucao)"
+                Write-Warn "$name: o erro acima e de ANTES do re-registro (definicao antiga) - valide a nova com: Start-ScheduledTask -TaskName '$name'"
             } else {
                 Write-Bad "$name terminou com erro na ultima execucao ($meaning)"
             }
@@ -203,7 +214,9 @@ if (Test-Path $logFile) {
         Write-Warn "scheduler.log sem escrita ha mais de 26h - nenhuma tarefa rodou nesse periodo (com a Action antiga a tarefa falha SEM logar; veja o resultado decodificado acima)"
     }
     Write-Info "--- ultimas linhas ---"
-    Get-Content $logFile -Tail 12 | ForEach-Object { Write-Info $_ }
+    # -Encoding UTF8: o log e UTF-8 (PYTHONUTF8=1); sem isso o PS 5.1 le como
+    # ANSI e os acentos/emojis do Loguru viram mojibake na tela.
+    Get-Content $logFile -Tail 12 -Encoding UTF8 | ForEach-Object { Write-Info $_ }
 } else {
     Write-Warn "logs\scheduler.log nao existe - a coleta agendada nunca chegou a escrever log nesta maquina"
 }
