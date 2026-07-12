@@ -99,6 +99,32 @@ login, nenhum cliente CDP está conectado → Google passa. Ligue com
 **Files:** `scrapers/local_browser.py`, `scripts/setup_local_profile.py`,
 `docs/COLETA_LOCAL_AUTENTICADA.md`
 
+## 11. Task Scheduler — Action `cmd /c "..." >> "log"` morre com espaço no caminho
+
+**Wrong:** Registrar tarefa com Action `cmd.exe /c "C:\...\script.bat" args >> "C:\...\log" 2>&1`.
+**Why:** Com 4 aspas + `>>`, o cmd.exe descarta a PRIMEIRA e a ÚLTIMA aspas do `/c`.
+O caminho do projeto tem espaço (`C:\Users\Eder Rabelo\...`) → o comando vira
+`C:\Users\Eder ...` → a tarefa falha na hora (LastTaskResult=1) **sem escrever
+log nenhum**. Foi a causa de RAC_Local_* (Magalu/Shopee/CB) "não rodar" enquanto
+a tarefa do ML (bat direto via schtasks) sempre funcionou.
+**Right:** Action = o próprio `.bat` (Execute com aspas embutidas, Argument só o
+slot `manha`/`noite`), e o log feito DENTRO do .bat (`>> logs\scheduler.log`),
+como `collect_manha.bat`. Diagnóstico: `scripts/check_local_scheduler.ps1`.
+**Files:** `scripts/setup_local_scheduler.ps1`, `scripts/run_local_scheduled.bat`
+
+## 12. .bat que dá `git pull` em si mesmo corrompe o parse do cmd
+
+**Wrong:** Rodar `git pull` num .bat e deixar linhas executáveis DEPOIS do pull
+no mesmo arquivo (ou alterar esse .bat no repo achando que é inofensivo).
+**Why:** O cmd.exe lê o .bat em execução por offset de bytes; o pull troca o
+arquivo no meio e o parse corrompe ("- foi inesperado neste momento.").
+**Right:** Estágio A estável (`run_local_scheduled.bat`): um ÚNICO bloco entre
+parênteses (o cmd parseia o bloco inteiro ANTES de executar → sobrevive ao
+próprio pull) que faz o pull e chama o estágio B
+(`local_scheduled_collect.bat`), lido SÓ depois do pull. Toda lógica que evolui
+(janela de turno, marcador, alerta) mora no estágio B — nunca no A.
+**Files:** `scripts/run_local_scheduled.bat`, `scripts/local_scheduled_collect.bat`
+
 ## 8. Amazon Seller Field Captures Rating
 
 **Wrong:** Use `.a-size-small.a-color-base` selector for seller name.

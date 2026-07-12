@@ -113,20 +113,52 @@ VM/GitHub.
 ### Automatizar (Task Scheduler)
 
 ```powershell
-# Agenda 09:00 (Abertura) e 20:00 (Fechamento). Remove as tarefas antigas de CDP.
+# Agenda 09:00 (Abertura) e 20:00 (Fechamento) + catch-up no logon.
+# Remove as tarefas antigas de CDP. RE-RODE 1x depois de atualizar o repo.
 PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1
 ```
 
-As tarefas chamam `scripts\run_local_scheduled.bat`, que faz **`git pull`
-(self-update) antes de coletar** e só então invoca `collect_local_authenticated.bat`.
-Assim a coleta agendada sempre roda com o código mais novo — sem depender de rodar
-`sync_windows.bat` na mão. (Foi essa defasagem que, numa manhã, fez a tarefa rodar
-um `.bat` ainda quebrado e não coletar Magalu/Shopee/Casas Bahia enquanto o ML,
-por outro launcher, seguia normal.) Para pular o pull num teste manual, defina
-`RAC_NO_SELFUPDATE=1`.
+Como funciona (endurecido em Jul/2026, após dois incidentes de "a tarefa não
+rodou"):
 
-O notebook precisa estar **ligado e com você logado no Windows** nos horários (o
-Chrome abre na sua sessão de UI e usa o seu IP residencial). As tarefas usam
+- A **Action da tarefa é o próprio `run_local_scheduled.bat`** — sem `cmd /c` e
+  sem `>> log` na Action. O formato antigo (`cmd.exe /c "..." args >> "..."`)
+  quebrava com o **espaço no caminho do projeto** (`C:\Users\Eder Rabelo\...`):
+  o cmd.exe descarta a primeira e a última aspas do `/c`, o comando vira
+  `C:\Users\Eder ...` e a tarefa morre na hora, **sem escrever log** — era a
+  causa raiz de Magalu/Shopee/Casas Bahia "não rodarem" enquanto a tarefa do ML
+  (registrada com o `.bat` direto) seguia normal. O log agora é interno:
+  `logs\scheduler.log`.
+- `run_local_scheduled.bat` (estágio A, **estável** — não mexer sem
+  necessidade) faz **`git pull` (self-update)** e chama
+  `local_scheduled_collect.bat` (estágio B), que é lido **depois** do pull e
+  portanto sempre executa na versão mais nova. Pular o pull num teste:
+  `RAC_NO_SELFUPDATE=1`.
+- O estágio B aplica **janela de turno** (manhã 9–12h / noite 20–23h) e
+  **marcador diário** (`logs\coleta_<slot>_<data>.done`). O gatilho de **logon**
+  faz o catch-up: se o notebook estava desligado/deslogado às 9h/20h, a coleta
+  roda no próximo logon **dentro da janela** — sem duplicar (marcador) e sem
+  gravar turno errado (`get_turno()` marca Abertura até 12h). Se a coleta
+  falhar, o marcador não é gravado e o próximo logon na janela tenta de novo.
+- Coleta agendada com exit ≠ 0 dispara **alerta no Telegram**
+  (`notify_scheduler_failure` em `utils/n8n_notify.py`).
+
+> ⚠️ **A Action fica congelada no Task Scheduler.** Depois de atualizar o repo
+> com este fix, é obrigatório **re-rodar o `setup_local_scheduler.ps1` uma
+> vez** — sem isso a tarefa continua registrada no formato antigo (quebrado).
+> Daí em diante, mudanças de comportamento chegam via `git pull` (estágio B),
+> sem precisar re-registrar nada.
+
+**A tarefa não rodou? Rode o diagnóstico** (não precisa de Admin) — decodifica o
+resultado da última execução, detecta Action no formato antigo, código
+atrasado, venv/rebrowser/perfil ausentes e mostra o fim do `scheduler.log`:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File scripts\check_local_scheduler.ps1
+```
+
+O notebook precisa estar **ligado e com você logado no Windows** nos horários —
+ou logar depois, dentro da janela (o catch-up cobre). As tarefas usam
 `-WakeToRun` (acorda o notebook em suspensão) e retentam em caso de falha.
 
 ---
@@ -153,6 +185,9 @@ Chrome abre na sua sessão de UI e usa o seu IP residencial). As tarefas usam
 | Shopee 403 / circuit breaker | Perfil sem login na Shopee | `python scripts\setup_local_profile.py` e faça login; confira com `--check` |
 | "Chrome não encontrado" | Chrome fora do caminho padrão | Defina `RAC_CHROME_EXE` com o caminho do `chrome.exe` |
 | "Chrome não expôs a porta de debug" | Já havia um Chrome nesse perfil sem a porta, ou porta ocupada | Feche Chromes desse perfil; ou mude `RAC_CDP_PORT` |
+| **Tarefa agendada não rodou** / `scheduler.log` sem linhas novas | Action antiga (`cmd /c` + aspas + espaço no caminho) morre sem log; ou tarefa nunca re-registrada | Rode `scripts\check_local_scheduler.ps1`; correção padrão: `git pull` + re-rodar `setup_local_scheduler.ps1` |
+| Log mostra "fora da janela … pulando" | Tarefa disparou atrasada (fora de 9–12h / 20–23h) | Comportamento correto — protege o turno do registro; o próximo slot/logon cobre |
+| Log mostra "ja coletado hoje" | Gatilho de logon disparou após coleta OK | Comportamento correto (marcador diário evita duplicar) |
 | Quero conferir o login | — | `python scripts\setup_local_profile.py --check` |
 
 > **Importante sobre o Google:** o Google só recusa login em browsers
