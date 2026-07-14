@@ -210,6 +210,20 @@ class TestJul2026Wrapper:
         assert recs[0]["Seller / Vendedor"] is None
         assert recs[0]["Buy Box Seller"] is None
 
+    def test_positions_contiguous_after_skip(self, scraper):
+        """Card só-asset pulado no meio não deixa buraco na Posição Geral."""
+        items = [
+            _wrapper_jul2026(itemid=1),
+            {"item_card_displayed_asset": {"name": "placeholder"}},  # pulado
+            _wrapper_jul2026(itemid=3),
+        ]
+        recs = scraper._parse_items(items, "kw", {}, page=0)
+        assert [r["Posição Geral"] for r in recs] == [1, 2]
+
+    def test_positions_use_page_offset(self, scraper):
+        recs = scraper._parse_items([_wrapper_jul2026()], "kw", {}, page=1)
+        assert recs[0]["Posição Geral"] == 61  # page 1 → offset 60 + 1
+
     def test_rating_fallback_from_asset(self, scraper):
         """Sem item_rating, cai no asset.rating.rating_text."""
         w = _wrapper_jul2026()

@@ -710,7 +710,8 @@ class ShopeeScraper(BaseScraper):
         page: int,
     ) -> List[Dict[str, Any]]:
         records: List[Dict[str, Any]] = []
-        for idx, wrapper in enumerate(items):
+        emitted = 0  # posição pelos itens EMITIDOS (pulados não deixam buraco)
+        for wrapper in items:
             item = self._extract_item_payload(wrapper)
             # Bloco de apresentação (formato Jul/2026): carrega name/preço/
             # seller_flag/sold, irmão do item_data dentro do wrapper.
@@ -769,7 +770,8 @@ class ShopeeScraper(BaseScraper):
                 f"{_SHOPEE_BASE}/product/{shopid}/{itemid}" if shopid and itemid else None
             )
 
-            pos = page * _ITEMS_PER_PAGE + idx + 1
+            emitted += 1
+            pos = page * _ITEMS_PER_PAGE + emitted
             records.append(self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
