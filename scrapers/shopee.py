@@ -594,7 +594,7 @@ class ShopeeScraper(BaseScraper):
         scd = item.get("item_card_display_sold_count")
         if isinstance(scd, dict):
             n = scd.get("historical_sold_count")
-            if n:
+            if n is not None:  # 0 vendas é um valor válido, não "ausente"
                 return f"{n} vendidos"
             txt = scd.get("historical_sold_count_text") or scd.get("display_sold_count_text")
             if txt:
@@ -721,7 +721,10 @@ class ShopeeScraper(BaseScraper):
             )
             if not isinstance(asset, dict):
                 asset = {}
-            if not item and not asset:
+            # Exige o item_data resolvido: o card Jul/2026 sempre o traz junto do
+            # asset. Card só-asset (ex.: placeholder de ads) não tem ids/URL —
+            # pular evita registro sem produto real consumindo posição de busca.
+            if not item:
                 continue
 
             name = self._extract_name(item, asset)
@@ -745,8 +748,8 @@ class ShopeeScraper(BaseScraper):
                 or item.get("shopName")
                 or shop_data.get("shop_name")
                 or shop_data.get("name")
-                or asset.get("shop_location")
-                or item.get("shop_location")
+                # NÃO usar shop_location como fallback: é cidade/UF, não o nome
+                # do vendedor — atribuiria seller falso ao buy box.
                 or None
             )
             tipo_seller = self._classify_seller(item, asset)

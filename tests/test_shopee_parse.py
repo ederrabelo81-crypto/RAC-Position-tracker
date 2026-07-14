@@ -188,6 +188,28 @@ class TestJul2026Wrapper:
         assert "192" in r["Tag Destaque"]
         assert r["URL Produto"] == "https://shopee.com.br/product/1009975506/58260116699"
 
+    def test_sold_zero_is_valid(self, scraper):
+        """0 vendas é valor válido, não 'ausente'."""
+        item = {"item_card_display_sold_count": {"historical_sold_count": 0}}
+        assert scraper._extract_sold(item, {}) == "0 vendidos"
+
+    def test_asset_only_card_skipped(self, scraper):
+        """Card só-asset (sem item_data) não vira registro (sem ids/URL)."""
+        recs = scraper._parse_items(
+            [{"item_card_displayed_asset": {"name": "AC sem ids"}}], "kw", {}, page=0
+        )
+        assert recs == []
+
+    def test_shop_location_not_used_as_seller(self, scraper):
+        """shop_location (cidade) nunca vira Seller/Buy Box."""
+        w = _wrapper_jul2026()
+        del w["item_data"]["shop_data"]
+        w["item_data"]["shop_location"] = "Minas Gerais"
+        w["item_card_displayed_asset"]["shop_location"] = "Minas Gerais"
+        recs = scraper._parse_items([w], "kw", {}, page=0)
+        assert recs[0]["Seller / Vendedor"] is None
+        assert recs[0]["Buy Box Seller"] is None
+
     def test_rating_fallback_from_asset(self, scraper):
         """Sem item_rating, cai no asset.rating.rating_text."""
         w = _wrapper_jul2026()
