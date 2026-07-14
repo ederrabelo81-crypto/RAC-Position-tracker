@@ -127,6 +127,135 @@ class TestExtractNameAndPrice:
         raw = scraper._extract_raw_price({"price_info": {"price": 199900000}})
         assert scraper._normalize_price(raw) == 1999.00
 
+    def test_name_from_displayed_asset(self, scraper):
+        """Formato Jul/2026: nome vive em item_card_displayed_asset.name."""
+        asset = {"name": "Ar Condicionado LG 18000 BTU"}
+        assert scraper._extract_name({}, asset) == "Ar Condicionado LG 18000 BTU"
+
+    def test_price_from_item_card_display_price(self, scraper):
+        """Formato Jul/2026: preço em item_data.item_card_display_price.price."""
+        item = {"item_card_display_price": {"price": 307401000}}
+        assert scraper._normalize_price(scraper._extract_raw_price(item, {})) == 3074.01
+
+    def test_price_from_asset_display_price(self, scraper):
+        asset = {"display_price": {"price": 199900000}}
+        assert scraper._normalize_price(scraper._extract_raw_price({}, asset)) == 1999.00
+
+
+def _wrapper_jul2026(**over):
+    """Wrapper realista do search_items (formato Jul/2026): dados em item_data
+    + item_card_displayed_asset, com itemid/shopid no topo."""
+    w = {
+        "itemid": 58260116699,
+        "shopid": 1009975506,
+        "item_card_displayed_asset": {
+            "name": "Ar condicionado LG Dual Inverter 18000 BTU Quente Frio 220v",
+            "seller_flag": {"name": "OFFICIAL_SHOP"},
+            "sold_count": {"text": "192 Vendido(s)"},
+            "display_price": {"price": 307401000},
+            "rating": {"rating_text": "5.0"},
+        },
+        "item_data": {
+            "itemid": 58260116699,
+            "shopid": 1009975506,
+            "item_card_display_price": {"price": 307401000, "original_price": 559900000},
+            "item_card_display_sold_count": {"historical_sold_count": 192},
+            "shop_data": {"shop_name": "Engage Eletro "},
+            "item_rating": {"rating_star": 5, "rating_count": [25, 0, 0, 0, 0, 25]},
+            "global_brand": {"display_name": "LG"},
+        },
+    }
+    w.update(over)
+    return w
+
+
+class TestJul2026Wrapper:
+    def test_parses_name_price_seller(self, scraper):
+        recs = scraper._parse_items([_wrapper_jul2026()], "ar condicionado split", {}, page=0)
+        assert len(recs) == 1
+        r = recs[0]
+        # produto é o nome normalizado pelo _build_record; basta estar populado
+        # (não-NULL) e preservar marca/capacidade — o que destrava o dashboard.
+        assert r["Produto / SKU"]
+        assert "LG" in r["Produto / SKU"]
+        assert "18" in r["Produto / SKU"]
+        assert r["Preço (R$)"] == 3074.01
+        assert r["Seller / Vendedor"] == "Engage Eletro"  # normalize_text apara o espaço
+        assert r["Buy Box Seller"] == "Engage Eletro"
+        assert r["Tipo Seller"] == "Shopee Mall"  # seller_flag OFFICIAL_SHOP
+        assert r["Avaliação"] == 5.0
+        assert r["Qtd Avaliações"] == 50
+        assert "192" in r["Tag Destaque"]
+        assert r["URL Produto"] == "https://shopee.com.br/product/1009975506/58260116699"
+
+    def test_sold_zero_is_valid(self, scraper):
+        """0 vendas é valor válido, não 'ausente'."""
+        item = {"item_card_display_sold_count": {"historical_sold_count": 0}}
+        assert scraper._extract_sold(item, {}) == "0 vendidos"
+
+    def test_asset_only_card_skipped(self, scraper):
+        """Card só-asset (sem item_data) não vira registro (sem ids/URL)."""
+        recs = scraper._parse_items(
+            [{"item_card_displayed_asset": {"name": "AC sem ids"}}], "kw", {}, page=0
+        )
+        assert recs == []
+
+    def test_shop_location_not_used_as_seller(self, scraper):
+        """shop_location (cidade) nunca vira Seller/Buy Box."""
+        w = _wrapper_jul2026()
+        del w["item_data"]["shop_data"]
+        w["item_data"]["shop_location"] = "Minas Gerais"
+        w["item_card_displayed_asset"]["shop_location"] = "Minas Gerais"
+        recs = scraper._parse_items([w], "kw", {}, page=0)
+        assert recs[0]["Seller / Vendedor"] is None
+        assert recs[0]["Buy Box Seller"] is None
+
+    def test_positions_contiguous_after_skip(self, scraper):
+        """Card só-asset pulado no meio não deixa buraco na Posição Geral."""
+        items = [
+            _wrapper_jul2026(itemid=1),
+            {"item_card_displayed_asset": {"name": "placeholder"}},  # pulado
+            _wrapper_jul2026(itemid=3),
+        ]
+        recs = scraper._parse_items(items, "kw", {}, page=0)
+        assert [r["Posição Geral"] for r in recs] == [1, 2]
+
+    def test_positions_use_page_offset(self, scraper):
+        recs = scraper._parse_items([_wrapper_jul2026()], "kw", {}, page=1)
+        assert recs[0]["Posição Geral"] == 61  # page 1 → offset 60 + 1
+
+    def test_positions_carry_offset_across_pages(self, scraper):
+        """start_offset mantém a numeração contígua entre páginas, mesmo quando
+        uma página anterior emitiu menos de 60 (card pulado)."""
+        # Página 1 emite 2 (com 1 card pulado no meio).
+        p1 = scraper._parse_items(
+            [_wrapper_jul2026(itemid=1),
+             {"item_card_displayed_asset": {"name": "skip"}},
+             _wrapper_jul2026(itemid=3)],
+            "kw", {}, page=0, start_offset=0,
+        )
+        assert [r["Posição Geral"] for r in p1] == [1, 2]
+        # Página 2 continua de onde parou (start_offset = 2), sem buraco.
+        p2 = scraper._parse_items(
+            [_wrapper_jul2026(itemid=4)], "kw", {}, page=1, start_offset=len(p1),
+        )
+        assert p2[0]["Posição Geral"] == 3
+
+    def test_rating_fallback_from_asset(self, scraper):
+        """Sem item_rating, cai no asset.rating.rating_text."""
+        w = _wrapper_jul2026()
+        del w["item_data"]["item_rating"]
+        recs = scraper._parse_items([w], "kw", {}, page=0)
+        assert recs[0]["Avaliação"] == 5.0
+
+    def test_no_hollow_dump_for_jul2026(self, scraper, tmp_path, monkeypatch):
+        """Formato novo agora parseia name/price → não dispara o dump."""
+        monkeypatch.chdir(tmp_path)
+        s = ShopeeScraper()
+        recs = s._parse_items([_wrapper_jul2026(), _wrapper_jul2026()], "kw", {}, page=0)
+        s._maybe_dump_hollow_parse("kw", 0, [_wrapper_jul2026()], recs)
+        assert s._shape_dumped is False
+
 
 class TestHollowParseDump:
     def test_dump_fires_when_name_and_price_missing(self, scraper, tmp_path, monkeypatch):

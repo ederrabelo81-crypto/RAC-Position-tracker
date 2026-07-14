@@ -291,7 +291,13 @@ class ShopeeScraper(BaseScraper):
                 if not data_items:
                     continue
                 any_items = True
-                recs = self._parse_items(data_items, keyword, keyword_category_map, page)
+                # start_offset = itens já emitidos nas páginas anteriores, para
+                # posição contígua entre páginas (constante nesta varredura de
+                # respostas da página; só o best_records é mantido/estendido).
+                recs = self._parse_items(
+                    data_items, keyword, keyword_category_map, page,
+                    start_offset=len(all_records),
+                )
                 if len(recs) > len(best_records):
                     best_records, best_items = recs, data_items
 
@@ -478,7 +484,17 @@ class ShopeeScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _classify_seller(item: dict) -> str:
+    def _classify_seller(item: dict, asset: Optional[dict] = None) -> str:
+        asset = asset or {}
+        # Loja oficial (Shopee Mall): sinalizada no asset via seller_flag /
+        # in_title_image_flags == "OFFICIAL_SHOP" (formato Jul/2026), ou pelo
+        # legado is_official_shop.
+        flag = asset.get("seller_flag")
+        if isinstance(flag, dict) and flag.get("name") == "OFFICIAL_SHOP":
+            return "Shopee Mall"
+        for f in asset.get("in_title_image_flags") or []:
+            if isinstance(f, dict) and f.get("name") == "OFFICIAL_SHOP":
+                return "Shopee Mall"
         if item.get("is_official_shop"):
             return "Shopee Mall"
         if item.get("is_preferred_plus_seller") or item.get("shopee_verified"):
@@ -532,33 +548,68 @@ class ShopeeScraper(BaseScraper):
     )
 
     @classmethod
-    def _extract_name(cls, item: dict) -> Optional[str]:
-        """Nome do produto tentando as chaves conhecidas + `price_info`/nested."""
-        for key in cls._NAME_KEYS:
-            val = item.get(key)
-            if isinstance(val, str) and val.strip():
-                return val
+    def _extract_name(cls, item: dict, asset: Optional[dict] = None) -> Optional[str]:
+        """Nome do produto: no formato Jul/2026 vive em
+        ``item_card_displayed_asset.name``; no legado, direto no item."""
+        for src in (asset or {}, item):
+            if not isinstance(src, dict):
+                continue
+            for key in cls._NAME_KEYS:
+                val = src.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val
         return None
 
     @classmethod
-    def _extract_raw_price(cls, item: dict) -> Any:
-        """Preço cru: chaves diretas e, como fallback, dentro de `price_info`.
-
-        Versões novas da API às vezes aninham o preço num sub-dict
-        (``price_info``/``price_detail``). Varre-o com as mesmas chaves.
-        """
+    def _extract_raw_price(cls, item: dict, asset: Optional[dict] = None) -> Any:
+        """Preço cru (escala ×100000). Formato Jul/2026: preço vive em
+        ``item_data.item_card_display_price.price`` ou em
+        ``item_card_displayed_asset.display_price.price``. Fallback: chaves
+        diretas legadas e sub-dicts ``price_info``/``price_detail``."""
+        asset = asset or {}
+        # Novo: preço "vigente" nos blocos de display. `price` é o valor
+        # exibido (com promo); só cai em `original_price` se não houver.
+        for holder, keys in (
+            (item.get("item_card_display_price"), ("price", "original_price")),
+            (asset.get("display_price"), ("price",)),
+        ):
+            if isinstance(holder, dict):
+                for key in keys:
+                    val = holder.get(key)
+                    if val:
+                        return val
+        # Legado: chave direta no item.
         for key in cls._PRICE_KEYS:
             val = item.get(key)
             if val:
                 return val
-        for holder in ("price_info", "price_detail", "item_price"):
-            sub = item.get(holder)
+        for holder_key in ("price_info", "price_detail", "item_price"):
+            sub = item.get(holder_key)
             if isinstance(sub, dict):
                 for key in cls._PRICE_KEYS:
                     val = sub.get(key)
                     if val:
                         return val
         return None
+
+    @staticmethod
+    def _extract_sold(item: dict, asset: Optional[dict] = None) -> Optional[str]:
+        """Texto de volume de vendas (Tag Destaque). Formato Jul/2026:
+        ``item_data.item_card_display_sold_count`` ou ``asset.sold_count.text``."""
+        asset = asset or {}
+        scd = item.get("item_card_display_sold_count")
+        if isinstance(scd, dict):
+            n = scd.get("historical_sold_count")
+            if n is not None:  # 0 vendas é um valor válido, não "ausente"
+                return f"{n} vendidos"
+            txt = scd.get("historical_sold_count_text") or scd.get("display_sold_count_text")
+            if txt:
+                return txt
+        sc = asset.get("sold_count")
+        if isinstance(sc, dict) and sc.get("text"):
+            return sc["text"]
+        sold = item.get("historical_sold") or item.get("sold")
+        return f"{sold} vendidos" if sold else None
 
     @staticmethod
     def _normalize_price(raw_price: Any) -> Optional[float]:
@@ -663,18 +714,44 @@ class ShopeeScraper(BaseScraper):
         keyword: str,
         keyword_category_map: dict,
         page: int,
+        start_offset: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+        # Base de posição: pelos itens JÁ emitidos nas páginas anteriores
+        # (start_offset), mantendo a numeração contígua entre páginas mesmo
+        # quando algum card é pulado. Sem start_offset, cai no offset por página
+        # (page × 60) — assume 60 emitidos/página.
+        base = start_offset if start_offset is not None else page * _ITEMS_PER_PAGE
         records: List[Dict[str, Any]] = []
-        for idx, wrapper in enumerate(items):
+        emitted = 0  # posição pelos itens EMITIDOS (pulados não deixam buraco)
+        for wrapper in items:
             item = self._extract_item_payload(wrapper)
+            # Bloco de apresentação (formato Jul/2026): carrega name/preço/
+            # seller_flag/sold, irmão do item_data dentro do wrapper.
+            asset = (
+                wrapper.get("item_card_displayed_asset")
+                if isinstance(wrapper, dict)
+                else None
+            )
+            if not isinstance(asset, dict):
+                asset = {}
+            # Exige o item_data resolvido: o card Jul/2026 sempre o traz junto do
+            # asset. Card só-asset (ex.: placeholder de ads) não tem ids/URL —
+            # pular evita registro sem produto real consumindo posição de busca.
             if not item:
                 continue
 
-            name = self._extract_name(item)
-            price_float = self._normalize_price(self._extract_raw_price(item))
+            name = self._extract_name(item, asset)
+            price_float = self._normalize_price(self._extract_raw_price(item, asset))
 
             rating_info = item.get("item_rating") or {}
             rating = rating_info.get("rating_star")
+            if rating is None:
+                # Fallback formato novo: asset.rating.rating_text ("5.0").
+                asset_rating = asset.get("rating") if isinstance(asset.get("rating"), dict) else {}
+                try:
+                    rating = float(asset_rating["rating_text"]) if asset_rating.get("rating_text") else None
+                except (TypeError, ValueError):
+                    rating = None
             rating_counts = rating_info.get("rating_count") or []
             review_count = sum(rating_counts) if isinstance(rating_counts, list) else None
 
@@ -684,24 +761,29 @@ class ShopeeScraper(BaseScraper):
                 or item.get("shopName")
                 or shop_data.get("shop_name")
                 or shop_data.get("name")
-                or item.get("shop_location")
+                # NÃO usar shop_location como fallback: é cidade/UF, não o nome
+                # do vendedor — atribuiria seller falso ao buy box.
                 or None
             )
-            tipo_seller = self._classify_seller(item)
+            tipo_seller = self._classify_seller(item, asset)
 
             shop_rating = item.get("shop_rating")
             reputacao = f"{round(shop_rating, 2)}" if isinstance(shop_rating, (int, float)) else None
 
-            sold = item.get("historical_sold") or item.get("sold")
-            tag_destaque = f"{sold} vendidos" if sold else None
+            tag_destaque = self._extract_sold(item, asset)
 
-            shopid = item.get("shopid") or item.get("shop_id")
-            itemid = item.get("itemid") or item.get("item_id")
+            shopid = item.get("shopid") or item.get("shop_id") or (
+                wrapper.get("shopid") or wrapper.get("shop_id") if isinstance(wrapper, dict) else None
+            )
+            itemid = item.get("itemid") or item.get("item_id") or (
+                wrapper.get("itemid") or wrapper.get("item_id") if isinstance(wrapper, dict) else None
+            )
             url_produto = (
                 f"{_SHOPEE_BASE}/product/{shopid}/{itemid}" if shopid and itemid else None
             )
 
-            pos = page * _ITEMS_PER_PAGE + idx + 1
+            emitted += 1
+            pos = base + emitted
             records.append(self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
@@ -792,7 +874,10 @@ class ShopeeScraper(BaseScraper):
                 logger.info(f"[{self.platform_name}] Sem mais resultados (pág {page+1}).")
                 break
 
-            records = self._parse_items(items, keyword, keyword_category_map, page)
+            records = self._parse_items(
+                items, keyword, keyword_category_map, page,
+                start_offset=len(all_records),
+            )
             if not records:
                 # Itens vieram mas nada parseou → estrutura da API mudou.
                 self._dump_debug_response(keyword, page, data)
