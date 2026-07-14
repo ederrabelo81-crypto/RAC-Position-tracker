@@ -133,3 +133,35 @@ complementar: `python main.py --platforms ml_api` (fora do `all`; requer
 
 *Gerado na revisão geral de Jun/2026. Dados: Supabase `coletas` até 2026-06-01;
 adendo com dados até 2026-06-11.*
+
+---
+
+## Adendo (14/07/2026) — Shopee: "0 produtos" com API respondendo (fecha D1)
+
+Sintoma: coleta local (Chrome real logado, `RAC_LOCAL_CHROME=1`) logava
+`Pág 1/1: 0 produtos (browser local)` para todas as keywords — **sem** os
+sinais de bloqueio (`nenhuma resposta de search_items capturada`) nem de busca
+vazia (`Sem mais resultados`).
+
+**Causa raiz:** a API v4 estava respondendo com itens, mas `_parse_items` só
+reconhecia o invólucro `item_basic`/`item`. A Shopee trocou o **wrapper de cada
+item** do `search_items` (versões novas entregam os campos do produto direto no
+wrapper — formato "flat" — ou sob `item_data`), então `wrapper.get("item_basic")`
+caía em `{}` e **todos os itens eram descartados em silêncio**. É a materialização
+do D1 (o "campo do item mudou" que não dava para corrigir às cegas em Jun).
+
+**Fix (`scrapers/shopee.py`):**
+1. `_extract_item_payload` — reconhece `item_basic`/`item`/`item_data`/`basic`/
+   `data`, invólucro aninhado e o formato flat (wrapper com `itemid`/`item_id`).
+2. Fallbacks de nome de campo: `itemid`↔`item_id`, `shopid`↔`shop_id`,
+   `name`↔`title`, `shop_name`↔`shopName`↔`shop_data.*` (recupera o `seller`).
+3. `_normalize_price` — trata a escala ×100000 e o valor já em reais.
+4. **Dump de diagnóstico** (`logs/shopee_debug_<kw>_pN.json` + chaves reais do
+   1º item) quando itens vêm mas nada parseia — futura troca de estrutura vira
+   erro diagnosticável, não coleta vazia silenciosa.
+5. `_search_via_browser` passa a escolher a resposta que **parseia mais**
+   registros (não cegamente a 1ª), evitando que uma chamada de ads/prefetch
+   mascare os resultados reais.
+
+Cobertura: `tests/test_shopee_parse.py` (extrator de payload, normalização de
+preço e parsing dos formatos antigo/novo/misto).
