@@ -93,6 +93,18 @@ class TestNormalizePrice:
     def test_bool_rejected(self, scraper):
         assert scraper._normalize_price(True) is None
 
+    def test_non_finite_rejected(self, scraper):
+        """nan / inf (numérico ou string) nunca viram preço."""
+        assert scraper._normalize_price(float("nan")) is None
+        assert scraper._normalize_price(float("inf")) is None
+        assert scraper._normalize_price("nan") is None
+        assert scraper._normalize_price("inf") is None
+
+    def test_brazilian_decimal_string_rejected(self, scraper):
+        """Decimal BR ("1999,00") é rejeitado, não inflado 100x para 199900."""
+        assert scraper._normalize_price("1999,00") is None
+        assert scraper._normalize_price("1.999,00") is None
+
 
 class TestExtractNameAndPrice:
     def test_name_alias_keys(self, scraper):

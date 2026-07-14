@@ -27,6 +27,7 @@ o browser por keyword.
 """
 
 import json
+import math
 import random
 import time
 from typing import Any, Dict, List, Optional
@@ -565,18 +566,22 @@ class ShopeeScraper(BaseScraper):
 
         Historicamente a Shopee guarda o preço × 100000 (ex.: 199900000 →
         R$ 1.999,00). Alguns formatos entregam já em reais, ou como string
-        numérica ("199900000"). Heurística: só divide por 100000 quando o
-        número é grande o suficiente para ser a escala ×100000 (um AC custa
-        centenas/milhares de reais, então o valor cru fica na casa de 10^7–10^9).
+        numérica SEM separadores ("199900000"). Heurística: só divide por
+        100000 quando o número é grande o suficiente para ser a escala ×100000
+        (um AC custa centenas/milhares de reais → valor cru na casa de 10^7–10^9).
         """
-        # String puramente numérica → coage; "R$ 10"/vazio → None.
+        # String numérica LIMPA → coage. Não removemos separadores: um decimal
+        # BR ("1999,00") viraria "199900" e inflaria o preço 100x. Qualquer
+        # string com vírgula/símbolo/separador cai no float() e vira None (seguro
+        # por omissão) — a API v4 entrega o preço como inteiro sem separadores.
         if isinstance(raw_price, str):
-            token = raw_price.strip().replace(",", "")
             try:
-                raw_price = float(token)
+                raw_price = float(raw_price.strip())
             except (ValueError, AttributeError):
                 return None
         if not isinstance(raw_price, (int, float)) or isinstance(raw_price, bool):
+            return None
+        if not math.isfinite(raw_price):  # rejeita nan / inf / -inf
             return None
         if raw_price <= 0:
             return None
@@ -609,7 +614,9 @@ class ShopeeScraper(BaseScraper):
         if self._shape_dumped or not records:
             return
         missing = self._count_missing_core(records)
-        if missing < max(1, len(records) // 2):
+        # Maioria ESTRITA: metade exata não conta (não consome o dump único do
+        # processo numa página só "meio oca"). Página de 1 registro oco dispara.
+        if missing <= len(records) // 2:
             return
         logger.error(
             f"[{self.platform_name}] '{keyword}' p{page+1}: {missing}/{len(records)} "
