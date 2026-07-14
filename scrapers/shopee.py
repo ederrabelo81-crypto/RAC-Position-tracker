@@ -291,7 +291,13 @@ class ShopeeScraper(BaseScraper):
                 if not data_items:
                     continue
                 any_items = True
-                recs = self._parse_items(data_items, keyword, keyword_category_map, page)
+                # start_offset = itens já emitidos nas páginas anteriores, para
+                # posição contígua entre páginas (constante nesta varredura de
+                # respostas da página; só o best_records é mantido/estendido).
+                recs = self._parse_items(
+                    data_items, keyword, keyword_category_map, page,
+                    start_offset=len(all_records),
+                )
                 if len(recs) > len(best_records):
                     best_records, best_items = recs, data_items
 
@@ -708,7 +714,13 @@ class ShopeeScraper(BaseScraper):
         keyword: str,
         keyword_category_map: dict,
         page: int,
+        start_offset: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+        # Base de posição: pelos itens JÁ emitidos nas páginas anteriores
+        # (start_offset), mantendo a numeração contígua entre páginas mesmo
+        # quando algum card é pulado. Sem start_offset, cai no offset por página
+        # (page × 60) — assume 60 emitidos/página.
+        base = start_offset if start_offset is not None else page * _ITEMS_PER_PAGE
         records: List[Dict[str, Any]] = []
         emitted = 0  # posição pelos itens EMITIDOS (pulados não deixam buraco)
         for wrapper in items:
@@ -771,7 +783,7 @@ class ShopeeScraper(BaseScraper):
             )
 
             emitted += 1
-            pos = page * _ITEMS_PER_PAGE + emitted
+            pos = base + emitted
             records.append(self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
@@ -862,7 +874,10 @@ class ShopeeScraper(BaseScraper):
                 logger.info(f"[{self.platform_name}] Sem mais resultados (pág {page+1}).")
                 break
 
-            records = self._parse_items(items, keyword, keyword_category_map, page)
+            records = self._parse_items(
+                items, keyword, keyword_category_map, page,
+                start_offset=len(all_records),
+            )
             if not records:
                 # Itens vieram mas nada parseou → estrutura da API mudou.
                 self._dump_debug_response(keyword, page, data)

@@ -224,6 +224,23 @@ class TestJul2026Wrapper:
         recs = scraper._parse_items([_wrapper_jul2026()], "kw", {}, page=1)
         assert recs[0]["Posição Geral"] == 61  # page 1 → offset 60 + 1
 
+    def test_positions_carry_offset_across_pages(self, scraper):
+        """start_offset mantém a numeração contígua entre páginas, mesmo quando
+        uma página anterior emitiu menos de 60 (card pulado)."""
+        # Página 1 emite 2 (com 1 card pulado no meio).
+        p1 = scraper._parse_items(
+            [_wrapper_jul2026(itemid=1),
+             {"item_card_displayed_asset": {"name": "skip"}},
+             _wrapper_jul2026(itemid=3)],
+            "kw", {}, page=0, start_offset=0,
+        )
+        assert [r["Posição Geral"] for r in p1] == [1, 2]
+        # Página 2 continua de onde parou (start_offset = 2), sem buraco.
+        p2 = scraper._parse_items(
+            [_wrapper_jul2026(itemid=4)], "kw", {}, page=1, start_offset=len(p1),
+        )
+        assert p2[0]["Posição Geral"] == 3
+
     def test_rating_fallback_from_asset(self, scraper):
         """Sem item_rating, cai no asset.rating.rating_text."""
         w = _wrapper_jul2026()
