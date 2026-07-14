@@ -86,6 +86,76 @@ class TestNormalizePrice:
         assert scraper._normalize_price(None) is None
         assert scraper._normalize_price("R$ 10") is None
 
+    def test_numeric_string_scale(self, scraper):
+        """String puramente numérica é coagida e escalada."""
+        assert scraper._normalize_price("199900000") == 1999.00
+
+    def test_bool_rejected(self, scraper):
+        assert scraper._normalize_price(True) is None
+
+    def test_non_finite_rejected(self, scraper):
+        """nan / inf (numérico ou string) nunca viram preço."""
+        assert scraper._normalize_price(float("nan")) is None
+        assert scraper._normalize_price(float("inf")) is None
+        assert scraper._normalize_price("nan") is None
+        assert scraper._normalize_price("inf") is None
+
+    def test_brazilian_decimal_string_rejected(self, scraper):
+        """Decimal BR ("1999,00") é rejeitado, não inflado 100x para 199900."""
+        assert scraper._normalize_price("1999,00") is None
+        assert scraper._normalize_price("1.999,00") is None
+
+
+class TestExtractNameAndPrice:
+    def test_name_alias_keys(self, scraper):
+        assert scraper._extract_name({"title": "AC T"}) == "AC T"
+        assert scraper._extract_name({"item_name": "AC I"}) == "AC I"
+        assert scraper._extract_name({"display_name": "AC D"}) == "AC D"
+
+    def test_name_missing(self, scraper):
+        assert scraper._extract_name({"foo": "bar"}) is None
+        assert scraper._extract_name({"name": "   "}) is None
+
+    def test_price_alias_keys(self, scraper):
+        assert scraper._extract_raw_price({"price_min": 199900000}) == 199900000
+        assert scraper._extract_raw_price(
+            {"price_before_discount": 250000000}
+        ) == 250000000
+
+    def test_price_nested_holder(self, scraper):
+        """Preço aninhado sob price_info (formato novo)."""
+        raw = scraper._extract_raw_price({"price_info": {"price": 199900000}})
+        assert scraper._normalize_price(raw) == 1999.00
+
+
+class TestHollowParseDump:
+    def test_dump_fires_when_name_and_price_missing(self, scraper, tmp_path, monkeypatch):
+        """Itens parseiam pelo id mas sem name/price → dispara o dump de amostra."""
+        monkeypatch.chdir(tmp_path)
+        s = ShopeeScraper()
+        # Wrapper flat com id/seller mas SEM name e SEM price (regressão Jul/2026).
+        items = [
+            {"itemid": i, "shopid": 9, "shop_name": "Loja X"} for i in range(1, 5)
+        ]
+        recs = s._parse_items(items, "ar condicionado", {}, page=0)
+        assert len(recs) == 4
+        assert all(r["Produto / SKU"] in (None, "") for r in recs)
+        assert all(r["Preço (R$)"] is None for r in recs)
+
+        s._maybe_dump_hollow_parse("ar condicionado", 0, items, recs)
+        assert s._shape_dumped is True
+        dumps = list((tmp_path / "logs").glob("shopee_debug_*.json"))
+        assert dumps, "esperava um dump de amostra crua em logs/"
+
+    def test_dump_skipped_when_core_fields_present(self, scraper, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        s = ShopeeScraper()
+        items = [_item_fields(itemid=1), _item_fields(itemid=2)]
+        recs = s._parse_items(items, "kw", {}, page=0)
+        s._maybe_dump_hollow_parse("kw", 0, items, recs)
+        assert s._shape_dumped is False
+        assert not list((tmp_path / "logs").glob("shopee_debug_*.json"))
+
 
 class TestParseItems:
     def test_parses_flat_and_wrapped(self, scraper):

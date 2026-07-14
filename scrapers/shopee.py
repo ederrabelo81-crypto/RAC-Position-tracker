@@ -27,6 +27,7 @@ o browser por keyword.
 """
 
 import json
+import math
 import random
 import time
 from typing import Any, Dict, List, Optional
@@ -104,6 +105,9 @@ class ShopeeScraper(BaseScraper):
         self._hard_blocked: bool = False        # 403/anti-fraude na keyword atual
         self._blocked_keyword_streak: int = 0
         self.collection_aborted: bool = False
+        # Dump de diagnóstico de "parse oco" (itens parseiam mas name/price vêm
+        # nulos → nova troca de chave da API). Uma amostra por processo basta.
+        self._shape_dumped: bool = False
 
         # ── Modo browser local (Chrome real logado) ──────────────────────
         # Quando RAC_LOCAL_CHROME=1: coletamos DENTRO do Chrome logado do
@@ -307,6 +311,7 @@ class ShopeeScraper(BaseScraper):
                 self._hard_blocked = True
                 break
 
+            self._maybe_dump_hollow_parse(keyword, page, best_items, best_records)
             all_records.extend(best_records)
             logger.info(
                 f"[{self.platform_name}] Pág {page+1}/{page_limit}: "
@@ -514,21 +519,112 @@ class ShopeeScraper(BaseScraper):
             return wrapper
         return {}
 
+    # Chaves de NOME do produto já vistas no wrapper do search_items. A Shopee
+    # renomeia/aninha esse campo entre redesigns — mantê-las num leque evita
+    # produto NULL silencioso quando só a chave muda (ver regressão Jul/2026).
+    _NAME_KEYS = ("name", "title", "item_name", "display_name", "product_name")
+    # Chaves de PREÇO cruas (todas na escala/formato que _normalize_price trata).
+    # `*_before_discount` fica por último — é o preço "de", só usado se não
+    # houver o preço vigente.
+    _PRICE_KEYS = (
+        "price", "price_min", "price_max",
+        "price_before_discount", "price_min_before_discount",
+    )
+
+    @classmethod
+    def _extract_name(cls, item: dict) -> Optional[str]:
+        """Nome do produto tentando as chaves conhecidas + `price_info`/nested."""
+        for key in cls._NAME_KEYS:
+            val = item.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
+        return None
+
+    @classmethod
+    def _extract_raw_price(cls, item: dict) -> Any:
+        """Preço cru: chaves diretas e, como fallback, dentro de `price_info`.
+
+        Versões novas da API às vezes aninham o preço num sub-dict
+        (``price_info``/``price_detail``). Varre-o com as mesmas chaves.
+        """
+        for key in cls._PRICE_KEYS:
+            val = item.get(key)
+            if val:
+                return val
+        for holder in ("price_info", "price_detail", "item_price"):
+            sub = item.get(holder)
+            if isinstance(sub, dict):
+                for key in cls._PRICE_KEYS:
+                    val = sub.get(key)
+                    if val:
+                        return val
+        return None
+
     @staticmethod
     def _normalize_price(raw_price: Any) -> Optional[float]:
         """Converte o preço bruto da API para reais.
 
         Historicamente a Shopee guarda o preço × 100000 (ex.: 199900000 →
-        R$ 1.999,00). Alguns formatos entregam já em reais. Heurística: só
-        divide por 100000 quando o número é grande o suficiente para ser a
-        escala ×100000 (um AC custa centenas/milhares de reais, então o valor
-        cru fica na casa de 10^7–10^9).
+        R$ 1.999,00). Alguns formatos entregam já em reais, ou como string
+        numérica SEM separadores ("199900000"). Heurística: só divide por
+        100000 quando o número é grande o suficiente para ser a escala ×100000
+        (um AC custa centenas/milhares de reais → valor cru na casa de 10^7–10^9).
         """
-        if not isinstance(raw_price, (int, float)) or raw_price <= 0:
+        # String numérica LIMPA → coage. Não removemos separadores: um decimal
+        # BR ("1999,00") viraria "199900" e inflaria o preço 100x. Qualquer
+        # string com vírgula/símbolo/separador cai no float() e vira None (seguro
+        # por omissão) — a API v4 entrega o preço como inteiro sem separadores.
+        if isinstance(raw_price, str):
+            try:
+                raw_price = float(raw_price.strip())
+            except (ValueError, AttributeError):
+                return None
+        if not isinstance(raw_price, (int, float)) or isinstance(raw_price, bool):
+            return None
+        if not math.isfinite(raw_price):  # rejeita nan / inf / -inf
+            return None
+        if raw_price <= 0:
             return None
         if raw_price >= 1_000_000:
             return round(raw_price / 100000, 2)
         return round(float(raw_price), 2)
+
+    @staticmethod
+    def _count_missing_core(records: List[Dict[str, Any]]) -> int:
+        """Nº de registros sem nome de produto OU sem preço — sinal de que a
+        API mudou a chave de ``name``/``price`` (itens parseiam pelo id, mas os
+        campos-núcleo vêm nulos). Alimenta o dump de diagnóstico."""
+        miss = 0
+        for r in records:
+            if not r.get("Produto / SKU") or r.get("Preço (R$)") is None:
+                miss += 1
+        return miss
+
+    def _maybe_dump_hollow_parse(
+        self, keyword: str, page: int, items: List[dict], records: List[Dict[str, Any]]
+    ) -> None:
+        """Dispara o dump quando itens parseiam mas a maioria vem SEM nome/preço.
+
+        O ``_dump_debug_response`` clássico só cobre "0 parsearam". Este cobre o
+        modo insidioso da regressão Jul/2026: os itens parseiam pelo ``itemid``
+        (seller/URL/rating vêm), porém ``name``/``price`` estão sob uma chave
+        nova → ``produto``/``preco`` gravam NULL em silêncio. Aqui capturamos a
+        amostra crua para mapear a chave nova. Uma amostra por processo basta.
+        """
+        if self._shape_dumped or not records:
+            return
+        missing = self._count_missing_core(records)
+        # Maioria ESTRITA: metade exata não conta (não consome o dump único do
+        # processo numa página só "meio oca"). Página de 1 registro oco dispara.
+        if missing <= len(records) // 2:
+            return
+        logger.error(
+            f"[{self.platform_name}] '{keyword}' p{page+1}: {missing}/{len(records)} "
+            "itens parsearam SEM nome ou preço — a Shopee provavelmente trocou a "
+            "chave de name/price no wrapper. Salvando amostra crua para mapear."
+        )
+        self._dump_debug_response(keyword, page, {"items": items})
+        self._shape_dumped = True
 
     def _dump_debug_response(self, keyword: str, page: int, data: dict) -> None:
         """Salva a resposta crua quando itens vêm mas nada parseia.
@@ -574,16 +670,8 @@ class ShopeeScraper(BaseScraper):
             if not item:
                 continue
 
-            name = item.get("name") or item.get("title")
-            # Preço: Shopee guarda o valor × 100000 (ex.: R$ 1.999,00 → 199900000).
-            # Alguns formatos novos entregam o preço já em reais/centavos —
-            # se o número for "pequeno" para um AC, não dividir por 100000.
-            raw_price = (
-                item.get("price")
-                or item.get("price_min")
-                or item.get("price_max")
-            )
-            price_float = self._normalize_price(raw_price)
+            name = self._extract_name(item)
+            price_float = self._normalize_price(self._extract_raw_price(item))
 
             rating_info = item.get("item_rating") or {}
             rating = rating_info.get("rating_star")
@@ -710,6 +798,7 @@ class ShopeeScraper(BaseScraper):
                 self._dump_debug_response(keyword, page, data)
                 self._hard_blocked = True
                 break
+            self._maybe_dump_hollow_parse(keyword, page, items, records)
             all_records.extend(records)
             logger.info(
                 f"[{self.platform_name}] Pág {page+1}/{page_limit}: "
