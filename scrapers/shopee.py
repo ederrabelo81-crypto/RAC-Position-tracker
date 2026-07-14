@@ -275,23 +275,45 @@ class ShopeeScraper(BaseScraper):
                 self._hard_blocked = True
                 break
 
-            # Usa a 1ª resposta de search_items da página (a SERP pode re-disparar
-            # a chamada ou pré-buscar; concatenar duplicaria itens/posições).
-            items: List[dict] = captured[0].get("items") or []
-            if not items:
+            # A SERP pode disparar VÁRIAS chamadas search_items (ads, prefetch,
+            # resultados). Em vez de assumir que a 1ª é a boa, escolhe a resposta
+            # que parseia MAIS registros — assim uma chamada de ads/vazia no topo
+            # não mascara os resultados reais. Não concatena (duplicaria posições).
+            best_records: List[Dict[str, Any]] = []
+            best_items: List[dict] = []
+            any_items = False
+            for data in captured:
+                data_items = data.get("items") or []
+                if not data_items:
+                    continue
+                any_items = True
+                recs = self._parse_items(data_items, keyword, keyword_category_map, page)
+                if len(recs) > len(best_records):
+                    best_records, best_items = recs, data_items
+
+            if not any_items:
                 logger.info(
                     f"[{self.platform_name}] Sem mais resultados (pág {page+1})."
                 )
                 break
 
-            records = self._parse_items(items, keyword, keyword_category_map, page)
-            all_records.extend(records)
+            if not best_records:
+                # Itens presentes mas nada parseou → estrutura da API mudou.
+                # Dump para diagnóstico e marca como bloqueio (circuit breaker).
+                first_with_items = next(
+                    (d for d in captured if d.get("items")), captured[0]
+                )
+                self._dump_debug_response(keyword, page, first_with_items)
+                self._hard_blocked = True
+                break
+
+            all_records.extend(best_records)
             logger.info(
                 f"[{self.platform_name}] Pág {page+1}/{page_limit}: "
-                f"{len(records)} produtos (browser local)"
+                f"{len(best_records)} produtos (browser local)"
             )
 
-            if len(items) < _ITEMS_PER_PAGE:
+            if len(best_items) < _ITEMS_PER_PAGE:
                 break
             time.sleep(random.uniform(*_INTER_PAGE_DELAY))
 
@@ -458,6 +480,87 @@ class ShopeeScraper(BaseScraper):
             return "Preferred+"
         return "3P"
 
+    # Chaves de wrapper já vistas em respostas do search_items ao longo do tempo.
+    # A Shopee troca o invólucro do item entre redesigns — antes era sempre
+    # `item_basic`; versões mais novas usam `item`/`item_data` ou entregam os
+    # campos do produto direto no wrapper (sem invólucro).
+    _ITEM_WRAPPER_KEYS = ("item_basic", "item", "item_data", "basic", "data")
+
+    @classmethod
+    def _extract_item_payload(cls, wrapper: dict) -> Dict[str, Any]:
+        """Localiza o dict do produto dentro de um item da resposta.
+
+        Tenta as chaves de invólucro conhecidas e, se nenhuma existir, aceita o
+        próprio wrapper quando ele já carrega os campos do produto (``itemid``/
+        ``item_id``) — formato "flat" das versões mais novas da API. Retorna
+        ``{}`` quando não reconhece a estrutura (dispara o dump de diagnóstico).
+        """
+        if not isinstance(wrapper, dict):
+            return {}
+        for key in cls._ITEM_WRAPPER_KEYS:
+            payload = wrapper.get(key)
+            if isinstance(payload, dict) and payload:
+                # O invólucro pode conter um sub-invólucro (ex.: item_data.item).
+                if not (payload.get("itemid") or payload.get("item_id")):
+                    for inner in cls._ITEM_WRAPPER_KEYS:
+                        nested = payload.get(inner)
+                        if isinstance(nested, dict) and (
+                            nested.get("itemid") or nested.get("item_id")
+                        ):
+                            return nested
+                return payload
+        # Formato "flat": o wrapper É o item.
+        if wrapper.get("itemid") or wrapper.get("item_id"):
+            return wrapper
+        return {}
+
+    @staticmethod
+    def _normalize_price(raw_price: Any) -> Optional[float]:
+        """Converte o preço bruto da API para reais.
+
+        Historicamente a Shopee guarda o preço × 100000 (ex.: 199900000 →
+        R$ 1.999,00). Alguns formatos entregam já em reais. Heurística: só
+        divide por 100000 quando o número é grande o suficiente para ser a
+        escala ×100000 (um AC custa centenas/milhares de reais, então o valor
+        cru fica na casa de 10^7–10^9).
+        """
+        if not isinstance(raw_price, (int, float)) or raw_price <= 0:
+            return None
+        if raw_price >= 1_000_000:
+            return round(raw_price / 100000, 2)
+        return round(float(raw_price), 2)
+
+    def _dump_debug_response(self, keyword: str, page: int, data: dict) -> None:
+        """Salva a resposta crua quando itens vêm mas nada parseia.
+
+        Grava em ``logs/shopee_debug_<keyword>_p<N>.json`` e loga as chaves reais
+        do 1º wrapper — assim uma mudança de estrutura da API é diagnosticável
+        sem re-rodar às cegas (padrão de dump de debug do projeto).
+        """
+        try:
+            from pathlib import Path
+            import re
+
+            items = data.get("items") or []
+            first_keys = sorted(items[0].keys()) if items and isinstance(items[0], dict) else []
+            logger.error(
+                f"[{self.platform_name}] '{keyword}' p{page+1}: API retornou "
+                f"{len(items)} itens mas 0 parsearam — estrutura do wrapper mudou. "
+                f"Chaves do 1º item: {first_keys}"
+            )
+            slug = re.sub(r"[^a-z0-9]+", "_", keyword.lower()).strip("_")[:40] or "kw"
+            out = Path("logs") / f"shopee_debug_{slug}_p{page+1}.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(
+                json.dumps(items[:3], indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            logger.error(
+                f"[{self.platform_name}] Amostra (3 itens) salva em {out} — "
+                "envie este arquivo para mapear o novo campo do produto."
+            )
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] Falha ao gerar dump de debug: {exc}")
+
     def _parse_items(
         self,
         items: List[dict],
@@ -467,24 +570,35 @@ class ShopeeScraper(BaseScraper):
     ) -> List[Dict[str, Any]]:
         records: List[Dict[str, Any]] = []
         for idx, wrapper in enumerate(items):
-            item = wrapper.get("item_basic") or wrapper.get("item") or {}
+            item = self._extract_item_payload(wrapper)
             if not item:
                 continue
 
-            name = item.get("name")
-            # Preço: Shopee guarda em centavos × 100000
-            raw_price = item.get("price")
-            price_float = (
-                round(raw_price / 100000, 2) if isinstance(raw_price, (int, float)) and raw_price > 0
-                else None
+            name = item.get("name") or item.get("title")
+            # Preço: Shopee guarda o valor × 100000 (ex.: R$ 1.999,00 → 199900000).
+            # Alguns formatos novos entregam o preço já em reais/centavos —
+            # se o número for "pequeno" para um AC, não dividir por 100000.
+            raw_price = (
+                item.get("price")
+                or item.get("price_min")
+                or item.get("price_max")
             )
+            price_float = self._normalize_price(raw_price)
 
             rating_info = item.get("item_rating") or {}
             rating = rating_info.get("rating_star")
             rating_counts = rating_info.get("rating_count") or []
             review_count = sum(rating_counts) if isinstance(rating_counts, list) else None
 
-            shop_name = item.get("shop_name") or item.get("shop_location") or None
+            shop_data = item.get("shop_data") if isinstance(item.get("shop_data"), dict) else {}
+            shop_name = (
+                item.get("shop_name")
+                or item.get("shopName")
+                or shop_data.get("shop_name")
+                or shop_data.get("name")
+                or item.get("shop_location")
+                or None
+            )
             tipo_seller = self._classify_seller(item)
 
             shop_rating = item.get("shop_rating")
@@ -493,7 +607,8 @@ class ShopeeScraper(BaseScraper):
             sold = item.get("historical_sold") or item.get("sold")
             tag_destaque = f"{sold} vendidos" if sold else None
 
-            shopid, itemid = item.get("shopid"), item.get("itemid")
+            shopid = item.get("shopid") or item.get("shop_id")
+            itemid = item.get("itemid") or item.get("item_id")
             url_produto = (
                 f"{_SHOPEE_BASE}/product/{shopid}/{itemid}" if shopid and itemid else None
             )
@@ -590,6 +705,11 @@ class ShopeeScraper(BaseScraper):
                 break
 
             records = self._parse_items(items, keyword, keyword_category_map, page)
+            if not records:
+                # Itens vieram mas nada parseou → estrutura da API mudou.
+                self._dump_debug_response(keyword, page, data)
+                self._hard_blocked = True
+                break
             all_records.extend(records)
             logger.info(
                 f"[{self.platform_name}] Pág {page+1}/{page_limit}: "
