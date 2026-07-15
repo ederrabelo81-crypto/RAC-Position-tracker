@@ -1467,12 +1467,25 @@ class MagaluScraper(BaseScraper):
                 skipped_no_price += 1
                 continue
 
-            # Detecta patrocinado — campo varia, tentamos vários
+            # Detecta patrocinado — o campo varia entre versões do payload do
+            # Next.js; testamos as chaves conhecidas + um badge/label textual
+            # explícito ("Patrocinado"/"Anúncio"). Conservador: sem sinal
+            # claro, fica orgânico (não infere ads por heurística frouxa).
+            _badge_txt = " ".join(str(v) for v in (
+                prod.get("badge"),
+                self._deep_get(prod, "label", "text"),
+                prod.get("tag"),
+            ) if v).lower()
             sponsored = bool(
                 prod.get("sponsored")
                 or prod.get("isSponsored")
                 or prod.get("isAd")
+                or prod.get("advertisement")
                 or self._deep_get(prod, "marketing", "sponsored")
+                or self._deep_get(prod, "advertising", "sponsored")
+                or "patrocinad" in _badge_txt
+                or "anúncio" in _badge_txt
+                or "anuncio" in _badge_txt
             )
 
             pos_general = offset + idx + 1

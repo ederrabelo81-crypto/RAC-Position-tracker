@@ -309,3 +309,40 @@ class TestParseItems:
         """Wrapper irreconhecível → 0 registros (não crash)."""
         recs = scraper._parse_items([{"foo": 1}, {"bar": 2}], "kw", {}, page=0)
         assert recs == []
+
+
+class TestSponsoredDetection:
+    """Detecção conservadora de Shopee Ads via sinal explícito (adsid/is_ads)."""
+
+    def test_is_sponsored_signals(self, scraper):
+        assert scraper._is_sponsored({"adsid": "12345"}) is True
+        assert scraper._is_sponsored({"adsid": 999}) is True
+        assert scraper._is_sponsored({"is_ads": True}) is True
+        assert scraper._is_sponsored({"ads": 1}) is True
+        # wrapper/asset também são inspecionados
+        assert scraper._is_sponsored({}, {"adsid": 7}, {}) is True
+
+    def test_not_sponsored_without_signal(self, scraper):
+        """adsid ausente/zerado e sem is_ads → orgânico (não infere ads)."""
+        assert scraper._is_sponsored({"itemid": 1}) is False
+        assert scraper._is_sponsored({"adsid": "0"}) is False
+        assert scraper._is_sponsored({"adsid": 0}) is False
+        assert scraper._is_sponsored({"adsid": None}) is False
+
+    def test_parse_marks_patrocinado(self, scraper):
+        """Item com adsid vira Patrocinado=Sim + posição patrocinada."""
+        items = [
+            _item_fields(itemid=1, name="AC Ad", adsid="98765"),
+            _item_fields(itemid=2, name="AC Org"),
+        ]
+        recs = scraper._parse_items(items, "kw", {}, page=0)
+        assert len(recs) == 2
+        ad = next(r for r in recs if r["Produto / SKU"] == "AC Ad")
+        org = next(r for r in recs if r["Produto / SKU"] == "AC Org")
+        assert ad["Patrocinado?"] == "Sim"
+        assert ad["Posição Patrocinada"] == 1
+        assert ad["Posição Orgânica"] is None
+        assert org["Patrocinado?"] == "Não"
+        assert org["Posição Patrocinada"] is None
+        # posição geral segue contígua na SERP para ambos
+        assert {r["Posição Geral"] for r in recs} == {1, 2}
