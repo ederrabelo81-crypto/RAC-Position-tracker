@@ -183,12 +183,20 @@ class MLScraper(BaseScraper):
         super().__init__(headless=False)
 
     def _is_login_gate(self) -> bool:
-        """Retorna True se a página atual for o login/device-verification gate do ML."""
-        url = self._page.url
-        if "account-verification" in url or "webdevice" in url:
-            return True
+        """
+        Retorna True se a página atual for o login/device-verification gate do ML.
+
+        Robusto a uso offline/testes: se não houver página Playwright associada
+        (parser chamado com HTML avulso), retorna False em vez de estourar.
+        """
+        page = getattr(self, "_page", None)
+        if page is None:
+            return False
         try:
-            content = self._page.content()
+            url = page.url
+            if "account-verification" in url or "webdevice" in url:
+                return True
+            content = page.content()
             return "Para continuar, acesse sua conta" in content
         except Exception:
             return False

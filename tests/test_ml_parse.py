@@ -292,6 +292,22 @@ class TestSelectItems:
         records = scraper._parse_results(html, "ar condicionado", {}, page_offset=0)
         assert len(records) == 1
 
+    def test_parse_results_html_vazio_sem_page(self, tmp_path, monkeypatch):
+        # uso offline: parser chamado sem página Playwright associada. O ramo de
+        # diagnóstico (0 itens) não pode estourar ao consultar _is_login_gate —
+        # deve preservar o retorno normal de lista vazia.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "logs").mkdir()
+        scraper = MLScraper.__new__(MLScraper)  # sem _page
+        records = scraper._parse_results("<html><body>vazio</body></html>",
+                                         "ar condicionado", {}, page_offset=0)
+        assert records == []
+
+    def test_is_login_gate_sem_page(self):
+        # _is_login_gate deve degradar para False (não AttributeError) quando
+        # não há página associada.
+        assert MLScraper._is_login_gate(MLScraper.__new__(MLScraper)) is False
+
 
 # ---------------------------------------------------------------------------
 # Heurística de bloqueio — distingue bloqueio/desafio de mudança de DOM
