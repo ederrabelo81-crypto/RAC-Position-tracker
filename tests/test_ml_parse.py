@@ -14,7 +14,7 @@ Rode: pytest tests/test_ml_parse.py
 import pytest
 from bs4 import BeautifulSoup
 
-from scrapers.mercado_livre import MLScraper
+from scrapers.mercado_livre import MLScraper, _BLOCK_SIGNALS_RE
 
 
 def _item(html: str):
@@ -231,6 +231,93 @@ class TestDetectTipoSeller:
 
     def test_card_vazio(self):
         assert MLScraper._detect_tipo_seller(_item(CARD_BARE), None) == "3P"
+
+
+# ---------------------------------------------------------------------------
+# Seleção de container — resiliência a mudança do wrapper da SERP
+# ---------------------------------------------------------------------------
+
+class TestSelectItems:
+    def test_wrapper_classico(self):
+        html = CARD_ORGANIC_POLY + CARD_BARE  # dois <li.ui-search-layout__item>
+        soup = BeautifulSoup(f"<ol>{html}</ol>", "html.parser")
+        items, sel = MLScraper._select_items(soup)
+        assert len(items) == 2
+        assert sel == "li.ui-search-layout__item"
+
+    def test_fallback_poly_card_sem_li(self):
+        # ML removeu o <li> wrapper — só restam os .poly-card. Deve casar no
+        # fallback e ainda achar todos os cards (sem contagem duplicada).
+        html = """
+        <ol class="ui-search-layout">
+          <div class="poly-card"><a class="poly-component__title" href="/p/MLB1">A</a></div>
+          <div class="poly-card"><a class="poly-component__title" href="/p/MLB2">B</a></div>
+        </ol>"""
+        soup = BeautifulSoup(html, "html.parser")
+        items, sel = MLScraper._select_items(soup)
+        assert len(items) == 2
+        assert sel == "div.poly-card"
+
+    def test_prioridade_sem_duplicar(self):
+        # Com o <li> presente E .poly-card aninhado, deve parar no <li> (1º
+        # candidato) e contar 1 por produto — nunca somar os dois seletores.
+        soup = BeautifulSoup(f"<ol>{CARD_ORGANIC_POLY}</ol>", "html.parser")
+        items, sel = MLScraper._select_items(soup)
+        assert len(items) == 1
+        assert sel == "li.ui-search-layout__item"
+
+    def test_nada_casa(self):
+        soup = BeautifulSoup("<div class='xpto'>vazio</div>", "html.parser")
+        items, sel = MLScraper._select_items(soup)
+        assert items == []
+        assert sel is None
+
+    def test_parse_results_usa_fallback(self):
+        # ponta-a-ponta: _parse_results deve extrair via .poly-card quando o
+        # wrapper <li> não existe mais no HTML.
+        html = """
+        <ol class="ui-search-layout">
+          <div class="poly-card">
+            <a class="poly-component__title" href="https://www.mercadolivre.com.br/x/p/MLB1">
+              Ar Condicionado Midea 9000
+            </a>
+            <div class="andes-money-amount">
+              <span class="andes-money-amount__fraction">1.999</span>
+              <span class="andes-money-amount__cents">00</span>
+            </div>
+          </div>
+        </ol>"""
+        scraper = MLScraper.__new__(MLScraper)  # sem __init__ (evita browser)
+        scraper._last_screenshot_busca = None    # atributo normalmente setado no __init__
+        records = scraper._parse_results(html, "ar condicionado", {}, page_offset=0)
+        assert len(records) == 1
+
+
+# ---------------------------------------------------------------------------
+# Heurística de bloqueio — distingue bloqueio/desafio de mudança de DOM
+# ---------------------------------------------------------------------------
+
+class TestBlockSignals:
+    @pytest.mark.parametrize("html", [
+        "<html><body>Para continuar, acesse sua conta</body></html>",
+        '<div class="g-recaptcha"></div>',
+        "<p>Access Denied</p>",
+        "<p>We detected unusual traffic from your network</p>",
+        '<script src="/gz/webdevice/account-verification"></script>',
+        "<p>Please complete the robot challenge to continue</p>",
+    ])
+    def test_sinais_reais_de_bloqueio(self, html):
+        assert _BLOCK_SIGNALS_RE.search(html) is not None
+
+    @pytest.mark.parametrize("html", [
+        # texto benigno que a regex antiga (robot|verifica|blocked) marcava
+        "<h2>Robô Aspirador Inteligente 12000</h2>",
+        "<p>Verifique a voltagem antes de comprar</p>",
+        "<meta name='robots' content='index,follow'>",
+        "<p>Ar Condicionado com filtro que bloqueia poeira</p>",
+    ])
+    def test_texto_benigno_nao_marca(self, html):
+        assert _BLOCK_SIGNALS_RE.search(html) is None
 
 
 # ---------------------------------------------------------------------------
