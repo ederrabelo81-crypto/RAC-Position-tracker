@@ -38,9 +38,11 @@ except ImportError:
 # Extração de campos de insight (avaliação/patrocinado/seller) — usa a MESMA
 # lógica do scraper de produção quando o repo está disponível, evitando drift
 # entre diagnóstico e coleta. Sem o repo, degrada para título/preço apenas.
+_ML_SELECTORS = None
 try:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from scrapers.mercado_livre import MLScraper  # noqa: E402
+    from scrapers.mercado_livre import _SELECTORS as _ML_SELECTORS  # noqa: E402
 
     HAVE_SCRAPER = True
 except Exception as _exc:  # repo/deps indisponíveis → modo standalone
@@ -48,25 +50,30 @@ except Exception as _exc:  # repo/deps indisponíveis → modo standalone
     _SCRAPER_IMPORT_ERROR = _exc
 
 # ---------------------------------------------------------------------------
-# Seletores (espelha scrapers/mercado_livre.py)
+# Seletores — fonte única: importa a lista de PRODUÇÃO quando o repo está
+# disponível (evita drift entre diagnóstico e coleta). Só cai para a lista
+# embutida no modo standalone (rodando o script sem o pacote instalado).
 # ---------------------------------------------------------------------------
-ITEM_CONTAINER   = "li.ui-search-layout__item"
-# Fallbacks espelham scrapers/mercado_livre.py — usa o 1º seletor que casar.
-ITEM_CONTAINER_CANDIDATES = [
-    "li.ui-search-layout__item",
-    "div.ui-search-result__wrapper",
-    "div.poly-card",
-    "li.ui-search-layout--grid__item",
-    ".ui-search-result",
-]
-TITLE_CANDIDATES = [
-    ".poly-component__title",
-    "a.poly-component__title",
-    "h2.poly-box",
-    ".poly-component__title-wrapper",
-    "h2.ui-search-item__title",
-    ".ui-search-item__title",
-]
+if _ML_SELECTORS is not None:
+    ITEM_CONTAINER_CANDIDATES = list(_ML_SELECTORS["item_container_candidates"])
+    TITLE_CANDIDATES          = list(_ML_SELECTORS["title_candidates"])
+else:
+    # Fallback standalone — mantenha em sincronia com scrapers/mercado_livre.py.
+    ITEM_CONTAINER_CANDIDATES = [
+        "li.ui-search-layout__item",
+        "div.ui-search-result__wrapper",
+        "div.poly-card",
+        "li.ui-search-layout--grid__item",
+        ".ui-search-result",
+    ]
+    TITLE_CANDIDATES = [
+        ".poly-component__title",
+        "a.poly-component__title",
+        "h2.poly-box",
+        ".poly-component__title-wrapper",
+        "h2.ui-search-item__title",
+        ".ui-search-item__title",
+    ]
 PRICE_CONTAINER  = ".andes-money-amount:not(.andes-money-amount--previous)"
 PRICE_FRACTION   = ".andes-money-amount__fraction"
 PRICE_CENTS      = ".andes-money-amount__cents"

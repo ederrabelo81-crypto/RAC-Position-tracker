@@ -14,7 +14,7 @@ Rode: pytest tests/test_ml_parse.py
 import pytest
 from bs4 import BeautifulSoup
 
-from scrapers.mercado_livre import MLScraper
+from scrapers.mercado_livre import MLScraper, _BLOCK_SIGNALS_RE
 
 
 def _item(html: str):
@@ -291,6 +291,33 @@ class TestSelectItems:
         scraper._last_screenshot_busca = None    # atributo normalmente setado no __init__
         records = scraper._parse_results(html, "ar condicionado", {}, page_offset=0)
         assert len(records) == 1
+
+
+# ---------------------------------------------------------------------------
+# Heurística de bloqueio — distingue bloqueio/desafio de mudança de DOM
+# ---------------------------------------------------------------------------
+
+class TestBlockSignals:
+    @pytest.mark.parametrize("html", [
+        "<html><body>Para continuar, acesse sua conta</body></html>",
+        '<div class="g-recaptcha"></div>',
+        "<p>Access Denied</p>",
+        "<p>We detected unusual traffic from your network</p>",
+        '<script src="/gz/webdevice/account-verification"></script>',
+        "<p>Please complete the robot challenge to continue</p>",
+    ])
+    def test_sinais_reais_de_bloqueio(self, html):
+        assert _BLOCK_SIGNALS_RE.search(html) is not None
+
+    @pytest.mark.parametrize("html", [
+        # texto benigno que a regex antiga (robot|verifica|blocked) marcava
+        "<h2>Robô Aspirador Inteligente 12000</h2>",
+        "<p>Verifique a voltagem antes de comprar</p>",
+        "<meta name='robots' content='index,follow'>",
+        "<p>Ar Condicionado com filtro que bloqueia poeira</p>",
+    ])
+    def test_texto_benigno_nao_marca(self, html):
+        assert _BLOCK_SIGNALS_RE.search(html) is None
 
 
 # ---------------------------------------------------------------------------

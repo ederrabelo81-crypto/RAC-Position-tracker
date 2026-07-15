@@ -155,6 +155,19 @@ _KNOWN_TAG_RE = re.compile(
     re.I,
 )
 
+# sinais de bloqueio/desafio — usados só quando 0 itens são encontrados, para
+# distinguir "ML mudou o DOM" de "IP bloqueado / login gate / captcha".
+# Padrões ancorados em frases reais de bloqueio (evita falso positivo com texto
+# benigno como "robôs de cozinha" ou meta robots); aplicado ao HTML completo.
+_BLOCK_SIGNALS_RE = re.compile(
+    r"Para continuar, acesse sua conta"     # login gate ML
+    r"|account-verification|/gz/webdevice"  # device verification ML
+    r"|g-recaptcha|hcaptcha|px-captcha|captcha-delivery"  # widgets de captcha
+    r"|unusual\s+traffic|access\s+denied|pardon\s+our\s+interruption"
+    r"|(?:robot|bot)[^<>]{0,40}(?:check|challenge|verification)",
+    re.I,
+)
+
 
 class MLScraper(BaseScraper):
     """Scraper modular para o Mercado Livre."""
@@ -499,8 +512,8 @@ class MLScraper(BaseScraper):
             except Exception:
                 debug_path = "(não gravado)"
             page_title = soup.title.get_text(strip=True) if soup.title else ""
-            looks_blocked = bool(
-                re.search(r"robot|captcha|verifica|unusual|blocked", html[:5000], re.I)
+            looks_blocked = self._is_login_gate() or bool(
+                _BLOCK_SIGNALS_RE.search(html)
             )
             tried = ", ".join(_SELECTORS["item_container_candidates"])
             logger.warning(
