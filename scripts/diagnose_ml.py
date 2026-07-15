@@ -51,6 +51,14 @@ except Exception as _exc:  # repo/deps indisponíveis → modo standalone
 # Seletores (espelha scrapers/mercado_livre.py)
 # ---------------------------------------------------------------------------
 ITEM_CONTAINER   = "li.ui-search-layout__item"
+# Fallbacks espelham scrapers/mercado_livre.py — usa o 1º seletor que casar.
+ITEM_CONTAINER_CANDIDATES = [
+    "li.ui-search-layout__item",
+    "div.ui-search-result__wrapper",
+    "div.poly-card",
+    "li.ui-search-layout--grid__item",
+    ".ui-search-result",
+]
 TITLE_CANDIDATES = [
     ".poly-component__title",
     "a.poly-component__title",
@@ -128,8 +136,13 @@ def diagnose_html(html: str, url: str = "", label: str = "HTML") -> None:
         return
 
     soup  = BeautifulSoup(html, "html.parser")
-    items = soup.select(ITEM_CONTAINER)
-    print(f"\n  Containers ({ITEM_CONTAINER}): {len(items)}")
+    items, used_selector = [], None
+    for sel in ITEM_CONTAINER_CANDIDATES:
+        found = soup.select(sel)
+        if found:
+            items, used_selector = found, sel
+            break
+    print(f"\n  Containers ({used_selector or 'nenhum seletor casou'}): {len(items)}")
 
     if not items:
         # Mostra as 30 classes mais comuns para diagnóstico

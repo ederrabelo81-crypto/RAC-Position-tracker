@@ -39,7 +39,19 @@ from utils.text import parse_rating, parse_review_count
 # Seletores CSS centralizados — atualize aqui se o ML mudar o DOM
 # ---------------------------------------------------------------------------
 _SELECTORS = {
-    # container de cada resultado (orgânico e patrocinado)
+    # container de cada resultado (orgânico e patrocinado).
+    # ML migra a classe do wrapper periodicamente (redesigns "Poly"); por isso
+    # tentamos vários seletores em ordem de prioridade e usamos o PRIMEIRO que
+    # retornar itens (ver _select_items). Nunca fazemos união — cada card é um
+    # único nó, então parar no primeiro que casar evita contagem duplicada.
+    "item_container_candidates": [
+        "li.ui-search-layout__item",     # wrapper clássico (atual/legado)
+        "div.ui-search-result__wrapper", # wrapper interno (variante Poly)
+        "div.poly-card",                 # o próprio card Poly (fallback direto)
+        "li.ui-search-layout--grid__item",  # variante grid recente
+        ".ui-search-result",             # legado pré-Poly
+    ],
+    # mantido para retrocompat/diagnóstico — espelha o 1º candidato
     "item_container":  "li.ui-search-layout__item",
 
     # título do produto — o ML migrou para o sistema "Poly" em 2024/2025.
@@ -428,6 +440,24 @@ class MLScraper(BaseScraper):
     # Parse de todos os itens de uma página HTML
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _select_items(soup: BeautifulSoup) -> tuple:
+        """
+        Localiza os cards de resultado testando os seletores de container em
+        ordem de prioridade e retornando o PRIMEIRO que casar com itens.
+
+        ML troca a classe do wrapper a cada redesign; percorrer candidatos torna
+        o scraper resiliente a essas mudanças sem exigir patch a cada quebra.
+
+        Returns:
+            Tupla (itens, seletor_usado). Se nada casar, ([], None).
+        """
+        for sel in _SELECTORS["item_container_candidates"]:
+            found = soup.select(sel)
+            if found:
+                return found, sel
+        return [], None
+
     def _parse_results(
         self,
         html: str,
@@ -449,21 +479,36 @@ class MLScraper(BaseScraper):
             Lista de dicts no formato do DataFrame de saída.
         """
         soup = BeautifulSoup(html, "html.parser")
-        items = soup.select(_SELECTORS["item_container"])
+        items, used_selector = self._select_items(soup)
+        if used_selector and used_selector != _SELECTORS["item_container_candidates"][0]:
+            # o wrapper primário sumiu — sinaliza qual fallback salvou a coleta
+            logger.warning(
+                f"[{self.platform_name}] Container primário ausente; usando "
+                f"fallback {used_selector!r} ({len(items)} itens). "
+                "Revise _SELECTORS se isto persistir (ML mudou o DOM)."
+            )
         logger.info(f"[{self.platform_name}] {len(items)} itens encontrados na página")
 
-        # Diagnóstico: se nenhum item for encontrado, salva HTML para inspeção
+        # Diagnóstico: se nenhum item for encontrado, salva HTML e caracteriza
+        # a falha (bloqueio/desafio vs. mudança de DOM) para o próximo incidente.
         if not items:
             debug_path = f"logs/ml_debug_{page_offset}.html"
             try:
                 with open(debug_path, "w", encoding="utf-8") as f:
                     f.write(html)
-                logger.warning(
-                    f"[{self.platform_name}] Nenhum item encontrado. "
-                    f"HTML salvo em {debug_path} para diagnóstico."
-                )
             except Exception:
-                pass
+                debug_path = "(não gravado)"
+            page_title = soup.title.get_text(strip=True) if soup.title else ""
+            looks_blocked = bool(
+                re.search(r"robot|captcha|verifica|unusual|blocked", html[:5000], re.I)
+            )
+            tried = ", ".join(_SELECTORS["item_container_candidates"])
+            logger.warning(
+                f"[{self.platform_name}] Nenhum item encontrado "
+                f"(keyword='{keyword}', title={page_title!r}, "
+                f"len_html={len(html)}, possível_bloqueio={looks_blocked}). "
+                f"Seletores testados: [{tried}]. HTML salvo em {debug_path}."
+            )
 
         records = []
         organic_counter  = 0
