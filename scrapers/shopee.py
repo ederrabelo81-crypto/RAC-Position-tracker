@@ -501,6 +501,26 @@ class ShopeeScraper(BaseScraper):
             return "Preferred+"
         return "3P"
 
+    @staticmethod
+    def _is_sponsored(item: dict, wrapper: Any = None, asset: Optional[dict] = None) -> bool:
+        """Anúncio patrocinado (Shopee Ads).
+
+        Best-effort e CONSERVADOR: só marca patrocinado quando a API expõe um
+        sinal explícito de ads — `adsid` não-nulo/≠0 ou `is_ads`/`ads` truthy —
+        em qualquer camada do card (item, wrapper ou asset). Sem sinal, mantém
+        orgânico (comportamento atual): nunca infere ads por heurística frouxa,
+        pra não inflar o Share of Voice Patrocinado.
+        """
+        for src in (item, asset, wrapper):
+            if not isinstance(src, dict):
+                continue
+            adsid = src.get("adsid", src.get("ads_id"))
+            if adsid not in (None, 0, "0", "", "None"):
+                return True
+            if src.get("is_ads") or src.get("ads"):
+                return True
+        return False
+
     # Chaves de wrapper já vistas em respostas do search_items ao longo do tempo.
     # A Shopee troca o invólucro do item entre redesigns — antes era sempre
     # `item_basic`; versões mais novas usam `item`/`item_data` ou entregam os
@@ -723,6 +743,7 @@ class ShopeeScraper(BaseScraper):
         base = start_offset if start_offset is not None else page * _ITEMS_PER_PAGE
         records: List[Dict[str, Any]] = []
         emitted = 0  # posição pelos itens EMITIDOS (pulados não deixam buraco)
+        sponsored_counter = 0  # posição patrocinada (Shopee Ads), quando sinalizado
         for wrapper in items:
             item = self._extract_item_payload(wrapper)
             # Bloco de apresentação (formato Jul/2026): carrega name/preço/
@@ -784,13 +805,20 @@ class ShopeeScraper(BaseScraper):
 
             emitted += 1
             pos = base + emitted
+            # Posição geral mantém a numeração contígua da SERP; patrocinado
+            # (quando a API sinaliza) não conta como slot orgânico.
+            if self._is_sponsored(item, wrapper, asset):
+                sponsored_counter += 1
+                pos_organic, pos_sponsored = None, sponsored_counter
+            else:
+                pos_organic, pos_sponsored = pos, None
             records.append(self._build_record(
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
                 title=name,
                 position_general=pos,
-                position_organic=pos,
-                position_sponsored=None,
+                position_organic=pos_organic,
+                position_sponsored=pos_sponsored,
                 price_float=price_float,
                 seller=shop_name,
                 buy_box_seller=shop_name,

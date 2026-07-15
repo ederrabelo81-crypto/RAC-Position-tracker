@@ -1839,6 +1839,119 @@ def _fmt_brl(value: float) -> str:
         return "—"
 
 
+# ---------------------------------------------------------------------------
+# Multi-marketplace helpers — buy box / seller / reputação / patrocinado agora
+# vêm de TODAS as plataformas (Mercado Livre, Amazon, Google Shopping, Leroy
+# Merlin, Magalu, Casas Bahia, Shopee), não só do Mercado Livre. Estes
+# utilitários (1) centralizam a detecção de 1P/loja oficial cobrindo a convenção
+# de CADA marketplace e (2) tornam explícito, em cada página de insight, quais
+# plataformas contribuem para a métrica e a cobertura real do campo no período.
+# ---------------------------------------------------------------------------
+
+# Marketplaces de foco (Mai/2026). Dealers (Leveros, Frigelar, …) saíram do foco
+# mas seguem no banco; as páginas de buy box/seller consideram todas as linhas.
+FOCUS_MARKETPLACES = [
+    "Mercado Livre", "Amazon", "Google Shopping",
+    "Leroy Merlin", "Magalu", "Casas Bahia", "Shopee",
+]
+
+
+def _is_first_party(tipo_series: pd.Series) -> pd.Series:
+    """Máscara booleana: o `tipo_seller` indica 1ª parte / loja oficial.
+
+    Cobre a convenção de cada marketplace num único ponto:
+      • Mercado Livre → "Loja Oficial"
+      • Amazon / Leroy Merlin / Magalu / Casas Bahia → "1P"
+      • Shopee → "Shopee Mall"
+      • Google Shopping → "Loja da Marca (1P)"
+    "Preferred+" (Shopee) e "Varejista" (Google) NÃO são 1P.
+    """
+    tipo = tipo_series.fillna("").astype(str).str.strip()
+    return tipo.str.contains(
+        r"1P|Loja Oficial|Loja da Marca|Shopee Mall|\bMall\b",
+        case=False, regex=True,
+    )
+
+
+def _platform_field_coverage(
+    df: pd.DataFrame,
+    field: str,
+    truthy: bool = False,
+) -> pd.DataFrame:
+    """Cobertura (% preenchido) de um campo por plataforma no período.
+
+    Args:
+        df: DataFrame já filtrado (saída de query_coletas).
+        field: coluna a medir (ex.: "buy_box_seller", "avaliacao").
+        truthy: True mede valores "verdadeiros" (bool, ex. patrocinado); False
+                mede não-nulos e não-vazios.
+
+    Returns:
+        DataFrame [Plataforma, Linhas, "% preenchido"] por cobertura desc.
+    """
+    if df.empty or "plataforma" not in df.columns or field not in df.columns:
+        return pd.DataFrame()
+
+    col = df[field]
+    if truthy:
+        filled = col.fillna(False).astype(bool)
+    else:
+        filled = col.notna()
+        if col.dtype == object:
+            filled &= col.astype(str).str.strip().ne("")
+
+    cov = (
+        df.assign(_filled=filled)
+        .groupby("plataforma", as_index=False)
+        .agg(Linhas=("_filled", "size"), _ok=("_filled", "sum"))
+    )
+    cov["% preenchido"] = (cov["_ok"] / cov["Linhas"] * 100).round(0)
+    return (
+        cov.drop(columns="_ok")
+        .rename(columns={"plataforma": "Plataforma"})
+        .sort_values(["% preenchido", "Linhas"], ascending=[False, False])
+    )
+
+
+def _render_coverage(
+    df: pd.DataFrame,
+    field: str,
+    label: str,
+    truthy: bool = False,
+    expanded: bool = False,
+) -> None:
+    """Expander com a cobertura do campo por marketplace no período.
+
+    Deixa explícito na própria página que TODAS as plataformas coletadas entram
+    na análise — e quais ainda têm lacuna de coleta (0%) no período. Assim que a
+    coleta passar a preencher o campo numa plataforma, ela aparece aqui sozinha.
+    """
+    cov = _platform_field_coverage(df, field, truthy=truthy)
+    if cov.empty:
+        return
+    com_dado = int((cov["% preenchido"] > 0).sum())
+    total = len(cov)
+    with st.expander(
+        f"🌐 Cobertura de {label} por marketplace "
+        f"({com_dado}/{total} plataformas com dado no período)",
+        expanded=expanded,
+    ):
+        st.caption(
+            "Todas as plataformas coletadas entram nesta análise. Uma plataforma "
+            "em 0% ainda não expõe este campo no período (limitação de "
+            "coleta/anti-bot) — passa a contar automaticamente quando a coleta "
+            "começar a preenchê-lo."
+        )
+        st.dataframe(
+            cov, use_container_width=True, hide_index=True,
+            column_config={
+                "% preenchido": st.column_config.ProgressColumn(
+                    "% preenchido", format="%d%%", min_value=0, max_value=100,
+                ),
+            },
+        )
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def _overview_data(
     start_str: str,
@@ -4311,6 +4424,11 @@ def page_buybox_position():
         )
     
     st.markdown("</div>", unsafe_allow_html=True)
+
+    # Todas as plataformas coletadas entram na análise (proxy = posição ≤ N).
+    # A cobertura do vencedor real da buy box, usado no agrupamento por seller,
+    # varia por marketplace — explicitada aqui.
+    _render_coverage(df_top, "buy_box_seller", "buy box (seller)")
     st.divider()
 
     tab_wins, tab_timeline, tab_detail = st.tabs(
@@ -4406,7 +4524,9 @@ def page_buybox_position():
             if df_grp.empty:
                 st.info(
                     "Nenhuma plataforma no filtro atual expõe `buy_box_seller`. "
-                    "Tente ML, Amazon ou Leroy num período recente."
+                    "O campo é preenchido por Mercado Livre, Leroy Merlin, "
+                    "Magalu, Shopee, Google Shopping e Casas Bahia (Amazon fica "
+                    "sem seller na SERP). Amplie o período ou os filtros."
                 )
 
         if group_col not in df_top.columns or "data" not in df_top.columns:
@@ -4571,10 +4691,11 @@ def page_share_of_buybox() -> None:
 
     share_1p = None
     if "tipo_seller" in bb.columns:
-        tipo = bb["tipo_seller"].fillna("").astype(str).str.strip()
-        non_empty = tipo.ne("")
+        non_empty = bb["tipo_seller"].fillna("").astype(str).str.strip().ne("")
         if non_empty.any():
-            first_party = tipo.str.contains("1P|Loja Oficial|Mall", case=False, regex=True)
+            # _is_first_party cobre a convenção de cada marketplace (Loja
+            # Oficial/1P/Shopee Mall/Loja da Marca), não só a do ML.
+            first_party = _is_first_party(bb["tipo_seller"])
             share_1p = first_party.sum() / non_empty.sum() * 100
 
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -4585,8 +4706,14 @@ def page_share_of_buybox() -> None:
     c5.metric(
         "Share 1P / Oficial",
         f"{share_1p:.0f}%" if share_1p is not None else "—",
-        help="% de buy box vencida por 1P / Loja Oficial / Mall (campo Tipo Seller)",
+        help="% de buy box vencida por 1P / Loja Oficial / Shopee Mall / Loja "
+             "da Marca — convenção de todas as plataformas (campo Tipo Seller)",
     )
+
+    # Buy box vem de TODAS as plataformas coletadas, não só do ML. A cobertura
+    # real de `buy_box_seller` e `tipo_seller` por marketplace fica explícita:
+    _render_coverage(df, "buy_box_seller", "buy box (seller)")
+    _render_coverage(df, "tipo_seller", "tipo de seller (1P/3P)")
     st.divider()
 
     tab_seller, tab_tipo, tab_comp, tab_timeline, tab_detail = st.tabs(
@@ -5294,6 +5421,12 @@ def page_reputacao() -> None:
         f"{total_reviews_mcjv:,}" if total_reviews_mcjv is not None else "—",
         help="Soma do nº de avaliações dos produtos MCJV (máx. por produto, sem dupla contagem)",
     )
+
+    # Avaliação/reputação vêm de TODAS as plataformas coletadas. Hoje quem
+    # entrega `avaliacao` é Amazon, Shopee, Google Shopping e Magalu; a
+    # cobertura real por marketplace no período fica explícita aqui.
+    _render_coverage(df, "avaliacao", "avaliação do produto")
+    _render_coverage(df, "reputacao_seller", "reputação do seller")
     st.divider()
 
     tab_heat, tab_scatter, tab_rep, tab_ful = st.tabs(
@@ -5410,11 +5543,12 @@ def page_reputacao() -> None:
     # ── Tab 3: buy box win-rate por reputação do seller ─────────────────────
     with tab_rep:
         st.info(
-            "Cobertura limitada: `reputacao_seller` só é preenchida pela coleta "
-            "complementar via API oficial do ML (`python main.py --platforms "
-            "ml_api` — requer ML_APP_ID/ML_APP_SECRET no .env e o setup único "
-            "`python scripts/ml_oauth_setup.py`) e pela Shopee — confira "
-            "a página 🩺 Data Health."
+            "Cobertura limitada: `reputacao_seller` é um campo previsto para "
+            "todas as plataformas, mas hoje depende de coleta complementar — "
+            "API oficial do ML (`python main.py --platforms ml_api`, requer "
+            "ML_APP_ID/ML_APP_SECRET + `python scripts/ml_oauth_setup.py`) e o "
+            "`shop_rating` da Shopee. Veja a cobertura real por marketplace no "
+            "expander acima e na página 🩺 Data Health."
         )
         if not {"reputacao_seller", "buy_box_seller"} <= set(df.columns):
             st.warning("Colunas de reputação/buy box indisponíveis no schema.")
@@ -5558,9 +5692,11 @@ def page_sov_patrocinado() -> None:
     if not load_btn:
         st.info("Defina os filtros na barra lateral e clique em **Carregar SoV**.")
         st.caption(
-            "💡 Plataformas com ads: ML (Product Ads — extração corrigida em "
-            "Jun/2026), Amazon (AMS) e Magalu (HEROs). A cobertura real por "
-            "plataforma está na página 🩺 Data Health."
+            "💡 A análise considera todas as plataformas coletadas. Hoje quem "
+            "marca anúncio patrocinado na coleta é Mercado Livre (Product Ads) e "
+            "Amazon (AMS); Google Shopping/Magalu/Shopee ainda não sinalizam o "
+            "flag na SERP capturada. A cobertura real por plataforma aparece no "
+            "expander de cobertura e na página 🩺 Data Health."
         )
         return
 
@@ -5617,6 +5753,11 @@ def page_sov_patrocinado() -> None:
     c4.metric("Keywords c/ ads", f"{kws_com_ads:,}")
     c5.metric("Marca líder em ads", lider or "—",
               help="Marca com mais anúncios patrocinados no período")
+
+    # A análise cruza todas as plataformas coletadas; a cobertura do flag
+    # `patrocinado` por marketplace (0% = scraper ainda não sinaliza ads) fica
+    # explícita para o leitor não confundir ausência de ads com falta de coleta.
+    _render_coverage(df, "patrocinado", "flag patrocinado", truthy=True)
     st.divider()
 
     tab_midia, tab_kw, tab_dupla, tab_evo = st.tabs(
