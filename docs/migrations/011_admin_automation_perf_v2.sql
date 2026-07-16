@@ -91,16 +91,34 @@ BEGIN
     -- (index scan na PK) em vez da tabela inteira. Nomes novos só aparecem em
     -- linhas novas, então o hot path (pós-coleta) fica em ~200ms; full_scan passa
     -- p_since_id=NULL e mantém a varredura histórica completa.
-    INSERT INTO produtos_depara_nome (nome_coletado, estado, marca_norm, origem)
-    SELECT DISTINCT c.produto, 'REVISAR', fn_marca_norm_seed(c.marca), 'auto_seed'
-    FROM coletas c
-    WHERE (p_since_id IS NULL OR c.id > p_since_id)
-      AND NULLIF(BTRIM(c.produto), '') IS NOT NULL
-      AND NOT EXISTS (
-          SELECT 1 FROM produtos_depara_nome d
-          WHERE d.nome_coletado = c.produto
-      )
-    ON CONFLICT (nome_coletado) DO NOTHING;
+    --
+    -- Os ramos NULL/incremental são SEPARADOS de propósito: um guard único
+    -- "(p_since_id IS NULL OR c.id > p_since_id)" impede o planner de fixar a
+    -- condição de índice "c.id > $1" quando o PL/pgSQL troca para o generic
+    -- cached plan (após ~5 execuções), fazendo o hot path recair em seq scan.
+    -- Com o predicado isolado, o generic plan mantém o Index Scan na PK.
+    IF p_since_id IS NULL THEN
+        INSERT INTO produtos_depara_nome (nome_coletado, estado, marca_norm, origem)
+        SELECT DISTINCT c.produto, 'REVISAR', fn_marca_norm_seed(c.marca), 'auto_seed'
+        FROM coletas c
+        WHERE NULLIF(BTRIM(c.produto), '') IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM produtos_depara_nome d
+              WHERE d.nome_coletado = c.produto
+          )
+        ON CONFLICT (nome_coletado) DO NOTHING;
+    ELSE
+        INSERT INTO produtos_depara_nome (nome_coletado, estado, marca_norm, origem)
+        SELECT DISTINCT c.produto, 'REVISAR', fn_marca_norm_seed(c.marca), 'auto_seed'
+        FROM coletas c
+        WHERE c.id > p_since_id
+          AND NULLIF(BTRIM(c.produto), '') IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM produtos_depara_nome d
+              WHERE d.nome_coletado = c.produto
+          )
+        ON CONFLICT (nome_coletado) DO NOTHING;
+    END IF;
     GET DIAGNOSTICS v_coletas = ROW_COUNT;
 
     INSERT INTO produtos_depara_nome (nome_coletado, estado, marca_norm, origem)
