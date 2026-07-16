@@ -23,43 +23,26 @@ _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from utils.supabase_client import _get_client  # reutiliza client já configurado
+from config import KEYWORDS_LIST as _KEYWORDS_LIST  # fonte única do de-para keyword→categoria
 
 _BRT = timedelta(hours=-3)
 _BATCH_SIZE = 500
 
-# Mapeamento keyword → categoria (espelho de magalu_shopee/src/config/queries.ts)
+# Mapeamento keyword → categoria.
+# Fonte única: config.KEYWORDS_LIST (a mesma lista usada em config.py e
+# espelhada em magalu_shopee/src/config/queries.ts). Derivar daqui evita o
+# drift do espelho manual — antes esta era uma 3ª cópia da tabela, que ficava
+# desatualizada a cada mudança de keyword (rows caíam no default "Genérica" e
+# categorias renomeadas ficavam obsoletas).
+#
+# Keywords aposentadas ainda podem aparecer em CSVs antigos re-importados;
+# preservamos a categoria histórica para não caírem no default.
+_LEGACY_CATEGORY_MAP: dict[str, str] = {
+    "ar condicionado midea 12000": "Marca",  # removida em Jul/2026
+}
 _CATEGORY_MAP: dict[str, str] = {
-    "ar condicionado split":                    "Genérica",
-    "ar condicionado inverter":                 "Genérica",
-    "ar condicionado":                          "Genérica",
-    "ar condicionado split inverter":           "Genérica",
-    "ar condicionado 9000 btus":               "Capacidade BTU",
-    "ar condicionado 12000 btus":              "Capacidade BTU",
-    "ar condicionado 18000 btus":              "Capacidade BTU",
-    "ar condicionado 24000 btus":              "Capacidade BTU",
-    "ar condicionado 9000 btus inverter":      "Capacidade + Tipo",
-    "ar condicionado 12000 btus inverter":     "Capacidade + Tipo",
-    "split 12000 btus inverter":               "Capacidade + Tipo",
-    "split 9000 btus inverter":                "Capacidade + Tipo",
-    "ar condicionado midea":                   "Marca",
-    "midea inverter":                          "Marca",
-    "midea 12000 btus":                        "Marca",
-    "ar condicionado midea 12000":             "Marca",
-    "midea ecomaster":                         "Modelo Midea",
-    "midea airvolution":                       "Modelo Midea",
-    "ar condicionado lg":                      "Marca",
-    "lg dual inverter":                        "Marca",
-    "ar condicionado lg dual inverter 12000":  "Marca",
-    "ar condicionado samsung":                 "Marca",
-    "samsung windfree":                        "Marca",
-    "ar condicionado gree":                    "Marca",
-    "ar condicionado elgin":                   "Marca",
-    "ar condicionado philco":                  "Marca",
-    "ar condicionado tcl":                     "Marca",
-    "melhor ar condicionado custo benefício":  "Intenção Compra",
-    "melhor ar condicionado 2026":             "Intenção Compra",
-    "comprar ar condicionado":                 "Intenção Compra",
-    "ar condicionado em promoção":             "Preço / Promoção",
+    **_LEGACY_CATEGORY_MAP,
+    **{kw.term.strip().lower(): kw.category for kw in _KEYWORDS_LIST},
 }
 
 
