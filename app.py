@@ -4725,6 +4725,7 @@ def page_share_of_buybox() -> None:
         if modo.startswith("Snapshot"):
             _df = _filter_latest_run(_df)
         st.session_state["sbb_df"] = _df
+        st.session_state["sbb_params"] = {"start_date": start_date, "end_date": end_date}
 
     df = st.session_state.get("sbb_df")
     if df is None:
@@ -4735,6 +4736,12 @@ def page_share_of_buybox() -> None:
             "A coleta de buy box começou no fim de Maio/2026."
         )
         return
+
+    # Datas do CARREGAMENTO (não as da sidebar, que podem ter mudado sem novo
+    # Carregar) — mantém nomes dos CSVs coerentes com os dados exibidos.
+    _sbb_params = st.session_state.get("sbb_params", {})
+    start_date = _sbb_params.get("start_date", start_date)
+    end_date   = _sbb_params.get("end_date", end_date)
 
     if df.empty or "buy_box_seller" not in df.columns:
         st.warning("Nenhum dado com informação de buy box para os filtros selecionados.")
@@ -5034,11 +5041,18 @@ def page_availability():
                 skus_resolvidos=sel_skus_resolvidos or None,
                 limit=50000,
             )
+        st.session_state["av_params"] = {"start_date": start_date, "end_date": end_date}
 
     df = st.session_state.get("av_df")
     if df is None:
         st.info("Set your filters in the sidebar and click **Load Availability**.")
         return
+
+    # Datas do CARREGAMENTO (não as da sidebar, que podem ter mudado sem novo
+    # Load) — mantém nomes dos CSVs coerentes com os dados exibidos.
+    _av_params = st.session_state.get("av_params", {})
+    start_date = _av_params.get("start_date", start_date)
+    end_date   = _av_params.get("end_date", end_date)
 
     if df.empty or "posicao_geral" not in df.columns:
         st.warning("No data found for the selected filters.")
@@ -5797,6 +5811,7 @@ def page_sov_patrocinado() -> None:
                 keywords=sel_keywords or None,
                 limit=50000,
             )
+        st.session_state["sov_params"] = {"start_date": start_date, "end_date": end_date}
 
     df = st.session_state.get("sov_df")
     if df is None:
@@ -5809,6 +5824,12 @@ def page_sov_patrocinado() -> None:
             "expander de cobertura e na página 🩺 Data Health."
         )
         return
+
+    # Datas do CARREGAMENTO (não as da sidebar, que podem ter mudado sem novo
+    # Carregar) — mantém nomes dos CSVs coerentes com os dados exibidos.
+    _sov_params = st.session_state.get("sov_params", {})
+    start_date = _sov_params.get("start_date", start_date)
+    end_date   = _sov_params.get("end_date", end_date)
 
     if df.empty:
         st.warning("Nenhum dado para os filtros selecionados.")
