@@ -211,7 +211,12 @@ def _step_normalize_platforms(client, ctx: Dict[str, Any]) -> StepResult:
 def _step_seed_depara(client, ctx: Dict[str, Any]) -> StepResult:
     if ctx["dry_run"]:
         return StepResult("seed_depara", summary="dry-run — seed pulado", details={})
-    resp = client.rpc("seed_depara_nomes_novos").execute()
+    # Incremental: só varre coletas.id > watermark (índice pkey) em vez da tabela
+    # inteira — o anti-join/DISTINCT sobre 620k+ linhas estourava o statement
+    # timeout (57014). p_since_id=None (full_scan) mantém a varredura completa.
+    resp = client.rpc(
+        "seed_depara_nomes_novos", {"p_since_id": ctx.get("since_id")}
+    ).execute()
     data = resp.data if isinstance(resp.data, dict) else (resp.data[0] if resp.data else {})
     novos = int(data.get("novos_coletas", 0) or 0) + int(data.get("novos_rac", 0) or 0)
     return StepResult(
@@ -651,11 +656,19 @@ def _step_sku_backfill(client, ctx: Dict[str, Any]) -> StepResult:
             break
         nome = row["nome_coletado"]
         try:
-            pend = (client.table("coletas")
-                    .select("id", count="exact", head=True)
-                    .eq("produto", nome)
-                    .is_("sku_resolvido", "null")
-                    .execute().count or 0)
+            # Gate barato: existe ao menos 1 linha órfã (sku_resolvido NULL)?
+            # Usa o índice parcial idx_coletas_produto_orphan — o count="exact"
+            # com head=True varria todas as ~5k linhas do produto (heap scan de
+            # ~3,5s por nome) e estourava o timeout, retornando 500/corpo vazio
+            # ("JSON could not be generated"). limit(1000) para o cursor cedo e
+            # dá um número suficiente para o preview do dry-run.
+            orfas = (client.table("coletas")
+                     .select("id")
+                     .eq("produto", nome)
+                     .is_("sku_resolvido", "null")
+                     .limit(1000)
+                     .execute().data or [])
+            pend = len(orfas)
             if pend == 0:
                 continue
             if ctx["dry_run"]:
@@ -747,8 +760,32 @@ def _step_resolver_pendentes(client, ctx: Dict[str, Any]) -> StepResult:
 def _step_refresh_cache(client, ctx: Dict[str, Any]) -> StepResult:
     if ctx["dry_run"]:
         return StepResult("refresh_cache", summary="dry-run — refresh pulado", details={})
-    client.rpc("refresh_filter_options").execute()
-    return StepResult("refresh_cache", summary="materialized view atualizada", details={})
+    # A MV mv_filter_options_90d recalcula 5 array_agg(DISTINCT ...) sobre ~90
+    # dias de `coletas` (varredura de 620k+ linhas, dezenas de segundos). Não
+    # cabe no statement_timeout do PostgREST no volume atual, então um 57014
+    # aqui NÃO deve derrubar o run inteiro para `partial` — é só o cache de
+    # filtros do dashboard (tolerante a defasagem; a MV é reaproveitada até o
+    # próximo refresh que conseguir concluir). Erros reais (não-timeout) ainda
+    # sobem como falha da etapa.
+    try:
+        client.rpc("refresh_filter_options").execute()
+        return StepResult("refresh_cache", summary="materialized view atualizada", details={})
+    except Exception as exc:
+        msg = str(exc)
+        if "57014" in msg or "statement timeout" in msg.lower():
+            logger.warning(
+                "[AdminAuto] refresh_cache: MV excedeu o statement_timeout — "
+                "pulado (cache de filtros segue com o snapshot anterior). "
+                "Refresh completo exige rodar sob service_role (120s) ou "
+                "agendar via pg_cron."
+            )
+            return StepResult(
+                "refresh_cache",
+                ok=True,
+                summary="pulado — MV excedeu o statement_timeout (cache mantém snapshot anterior)",
+                details={"skipped": "statement_timeout"},
+            )
+        raise
 
 
 _STEP_FUNCS: Dict[str, Callable] = {

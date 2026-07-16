@@ -472,16 +472,24 @@ def log_auditoria_run(
         plat_col  = df.get("Plataforma",    df.get("plataforma",   pd.Series()))
         kw_col    = df.get("Keyword Buscada", df.get("keyword",    pd.Series()))
         prod_col  = df.get("Produto / SKU", df.get("Produto/SKU",  df.get("produto", pd.Series())))
+        marca_col = df.get("Marca Monitorada", df.get("marca",     pd.Series()))
         preco_col = df.get("Preço (R$)",    df.get("preco",        pd.Series()))
 
+        # A constraint do banco dedup por `produto` JÁ NORMALIZADO (upload passa
+        # por _map_record → normalize_product_name + truncate 500). Se a auditoria
+        # deduplicasse pelo nome cru, dois títulos que normalizam para o mesmo
+        # produto contariam como 2 "esperados" mas viram 1 linha no banco — falsa
+        # DISCREPÂNCIA. Aplicamos a MESMA transformação aqui.
         seen: set = set()
         csv_ac = 0
-        for plat, kw, p, r in zip(plat_col, kw_col, prod_col, preco_col):
+        for plat, kw, p, m, r in zip(plat_col, kw_col, prod_col, marca_col, preco_col):
             prod_str  = str(p) if pd.notna(p) else ""
             preco_val = float(r) if pd.notna(r) else None
             if not is_valid_product(prod_str, preco_val):
                 continue
-            key = (str(plat) if pd.notna(plat) else "", str(kw) if pd.notna(kw) else "", prod_str)
+            marca_str = str(m) if pd.notna(m) else None
+            prod_key = (normalize_product_name(prod_str, marca_str) or prod_str)[:500]
+            key = (str(plat) if pd.notna(plat) else "", str(kw) if pd.notna(kw) else "", prod_key)
             if key not in seen:
                 seen.add(key)
                 csv_ac += 1
