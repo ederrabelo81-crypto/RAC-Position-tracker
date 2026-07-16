@@ -4707,7 +4707,27 @@ def page_share_of_buybox() -> None:
         )
         load_btn = st.button("🔄 Carregar Buy Box", type="primary", use_container_width=True)
 
-    if not load_btn:
+    # Persiste o df carregado (já com o modo Snapshot/Todos aplicado) em
+    # session_state: ligar/desligar o toggle de share neutro e trocar de aba
+    # re-renderiza SEM refazer a consulta nem voltar à tela "Carregar Buy Box".
+    # `st.button` só retorna True no rerun do clique — mesmo padrão de
+    # page_price_evolution. Trocar o modo/filtros exige novo clique em Carregar.
+    if load_btn:
+        with st.spinner("Carregando dados…"):
+            _df = query_coletas(
+                start_date, end_date,
+                platforms=sel_platforms or None,
+                brands=sel_brands or None,
+                familias_resolvidas=sel_familias or None,
+                skus_resolvidos=sel_skus_resolvidos or None,
+                limit=50000,
+            )
+        if modo.startswith("Snapshot"):
+            _df = _filter_latest_run(_df)
+        st.session_state["sbb_df"] = _df
+
+    df = st.session_state.get("sbb_df")
+    if df is None:
         st.info("Defina os filtros na barra lateral e clique em **Carregar Buy Box**.")
         st.caption(
             "💡 A cobertura de `buy_box_seller` varia por plataforma e scraper — "
@@ -4715,19 +4735,6 @@ def page_share_of_buybox() -> None:
             "A coleta de buy box começou no fim de Maio/2026."
         )
         return
-
-    with st.spinner("Carregando dados…"):
-        df = query_coletas(
-            start_date, end_date,
-            platforms=sel_platforms or None,
-            brands=sel_brands or None,
-            familias_resolvidas=sel_familias or None,
-            skus_resolvidos=sel_skus_resolvidos or None,
-            limit=50000,
-        )
-
-    if modo.startswith("Snapshot"):
-        df = _filter_latest_run(df)
 
     if df.empty or "buy_box_seller" not in df.columns:
         st.warning("Nenhum dado com informação de buy box para os filtros selecionados.")
@@ -5006,26 +5013,32 @@ def page_availability():
 
         load_btn = st.button("🔄 Load Availability", type="primary", use_container_width=True)
 
-    if not load_btn:
+    # Persistimos o df carregado em session_state para que ligar/desligar o
+    # toggle de share neutro (e trocar de aba) re-renderize SEM voltar à tela
+    # "click Load" e sem refazer a consulta — mesmo padrão de
+    # page_price_evolution. `st.button` só retorna True no rerun do clique.
+    if load_btn:
+        with st.spinner("Loading data..."):
+            st.session_state["av_df"] = query_coletas(
+                start_date,
+                end_date,
+                platforms=sel_platforms or None,
+                platform_types=sel_tipo or None,
+                brands=sel_brands or None,
+                sellers=sel_sellers or None,
+                keywords=sel_keywords or None,
+                products=sel_skus or None,
+                btu_filter=sel_btu or None,
+                product_types=sel_ptype or None,
+                familias_resolvidas=sel_familias or None,
+                skus_resolvidos=sel_skus_resolvidos or None,
+                limit=50000,
+            )
+
+    df = st.session_state.get("av_df")
+    if df is None:
         st.info("Set your filters in the sidebar and click **Load Availability**.")
         return
-
-    with st.spinner("Loading data..."):
-        df = query_coletas(
-            start_date,
-            end_date,
-            platforms=sel_platforms or None,
-            platform_types=sel_tipo or None,
-            brands=sel_brands or None,
-            sellers=sel_sellers or None,
-            keywords=sel_keywords or None,
-            products=sel_skus or None,
-            btu_filter=sel_btu or None,
-            product_types=sel_ptype or None,
-            familias_resolvidas=sel_familias or None,
-            skus_resolvidos=sel_skus_resolvidos or None,
-            limit=50000,
-        )
 
     if df.empty or "posicao_geral" not in df.columns:
         st.warning("No data found for the selected filters.")
@@ -5771,7 +5784,22 @@ def page_sov_patrocinado() -> None:
         sel_keywords  = st.multiselect("Keywords", opts["keywords"], key="sov_keywords")
         load_btn = st.button("🔄 Carregar SoV", type="primary", use_container_width=True)
 
-    if not load_btn:
+    # Persiste o df carregado em session_state: ligar/desligar o toggle de share
+    # neutro e trocar de aba re-renderiza SEM refazer a consulta nem voltar à
+    # tela "Carregar SoV". `st.button` só retorna True no rerun do clique —
+    # mesmo padrão de page_price_evolution.
+    if load_btn:
+        with st.spinner("Carregando dados…"):
+            st.session_state["sov_df"] = query_coletas(
+                start_date, end_date,
+                platforms=sel_platforms or None,
+                brands=sel_brands or None,
+                keywords=sel_keywords or None,
+                limit=50000,
+            )
+
+    df = st.session_state.get("sov_df")
+    if df is None:
         st.info("Defina os filtros na barra lateral e clique em **Carregar SoV**.")
         st.caption(
             "💡 A análise considera todas as plataformas coletadas. Hoje quem "
@@ -5781,15 +5809,6 @@ def page_sov_patrocinado() -> None:
             "expander de cobertura e na página 🩺 Data Health."
         )
         return
-
-    with st.spinner("Carregando dados…"):
-        df = query_coletas(
-            start_date, end_date,
-            platforms=sel_platforms or None,
-            brands=sel_brands or None,
-            keywords=sel_keywords or None,
-            limit=50000,
-        )
 
     if df.empty:
         st.warning("Nenhum dado para os filtros selecionados.")
