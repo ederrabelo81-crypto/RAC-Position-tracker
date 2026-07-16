@@ -29,6 +29,19 @@ from typing import Dict, List, Optional
 # ---------------------------------------------------------------------------
 # Keywords de busca — organizadas por categoria e prioridade
 # Prioridade: 'alta' = diário | 'media' = 3x/semana | 'baixa' = semanal
+#
+# Revisão Jul/2026 — rebalanceamento de marcas + queries conversacionais:
+#   • Keywords de marca/modelo retornam SERPs dominadas pela própria marca.
+#     A lista anterior tinha 6 termos Midea (alta) vs 1-3 por concorrente, o
+#     que inflava mecanicamente o appearance share da Midea nas métricas
+#     agregadas. Corrigido: 4 Midea (alta) e cobertura simétrica de
+#     concorrentes tier-1 (LG, Samsung, Gree, Consul). Share of shelf neutro
+#     deve usar apenas BRAND_NEUTRAL_CATEGORIES (ver abaixo).
+#   • "Modelo Midea" → "Modelo / Linha" (agora inclui linhas concorrentes).
+#     Registros históricos mantêm o valor antigo — filtrar pelos dois.
+#   • Nova categoria "Conversacional IA": queries em linguagem natural no
+#     padrão de perguntas feitas a LLMs (ChatGPT/Gemini/Meta AI) e AI
+#     Overviews — canal de descoberta em forte crescimento no BR.
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -45,6 +58,12 @@ KEYWORDS_LIST: List[Keyword] = [
     Keyword("ar condicionado inverter",                 "Genérica",          "alta"),
     Keyword("ar condicionado",                          "Genérica",          "alta"),
     Keyword("ar condicionado split inverter",           "Genérica",          "alta"),
+    # Qualificador nº1 do consumidor BR depois de BTU/inverter (ciclo reverso)
+    Keyword("ar condicionado quente e frio",            "Genérica",          "alta"),
+
+    # ── Segmento emergente ──────────────────────────────────────
+    # Google Trends BR (verão 2025/26): buscas por "portátil" +~500% no pico
+    Keyword("ar condicionado portátil",                 "Segmento",          "media"),
 
     # ── Capacidade / BTU ────────────────────────────────────────
     # 9k e 12k são os BTUs mais buscados no Brasil (ambientes até 20m²)
@@ -59,31 +78,78 @@ KEYWORDS_LIST: List[Keyword] = [
     Keyword("split 12000 btus inverter",                "Capacidade + Tipo", "alta"),
     Keyword("split 9000 btus inverter",                 "Capacidade + Tipo", "alta"),
 
-    # ── Marca Midea ─────────────────────────────────────────────
+    # ── Marca monitorada (Midea) ────────────────────────────────
+    # 2 termos alta (era 4+2 modelos) — "ar condicionado midea 12000" removido
+    # (quase-duplicata de "midea 12000 btus", que desceu para media)
     Keyword("ar condicionado midea",                    "Marca",             "alta"),
     Keyword("midea inverter",                           "Marca",             "alta"),
-    Keyword("midea 12000 btus",                         "Marca",             "alta"),
-    Keyword("ar condicionado midea 12000",              "Marca",             "alta"),
-    Keyword("midea ecomaster",                          "Modelo Midea",      "alta"),
-    Keyword("midea airvolution",                        "Modelo Midea",      "alta"),
+    Keyword("midea 12000 btus",                         "Marca",             "media"),
+
+    # ── Modelo / Linha (própria + concorrentes) ─────────────────
+    # "lg dual inverter" e "samsung windfree" migraram de "Marca" — são
+    # linhas de produto, mesmo nível de granularidade dos modelos Midea
+    Keyword("midea ecomaster",                          "Modelo / Linha",    "alta"),
+    Keyword("midea airvolution",                        "Modelo / Linha",    "alta"),
+    Keyword("lg dual inverter",                         "Modelo / Linha",    "alta"),
+    Keyword("samsung windfree",                         "Modelo / Linha",    "alta"),
 
     # ── Concorrentes ────────────────────────────────────────────
+    # Tier-1 em alta (paridade com Midea); tier-2 em media; nicho em baixa
     Keyword("ar condicionado lg",                       "Marca",             "alta"),
-    Keyword("lg dual inverter",                         "Marca",             "alta"),
-    Keyword("ar condicionado lg dual inverter 12000",   "Marca",             "alta"),
     Keyword("ar condicionado samsung",                  "Marca",             "alta"),
-    Keyword("samsung windfree",                         "Marca",             "alta"),
-    Keyword("ar condicionado gree",                     "Marca",             "media"),
+    Keyword("ar condicionado gree",                     "Marca",             "alta"),
+    Keyword("ar condicionado consul",                   "Marca",             "alta"),
+    Keyword("ar condicionado lg dual inverter 12000",   "Marca",             "media"),
+    Keyword("ar condicionado electrolux",               "Marca",             "media"),
     Keyword("ar condicionado elgin",                    "Marca",             "media"),
     Keyword("ar condicionado philco",                   "Marca",             "media"),
     Keyword("ar condicionado tcl",                      "Marca",             "media"),
+    Keyword("ar condicionado daikin",                   "Marca",             "baixa"),
+    Keyword("ar condicionado hisense",                  "Marca",             "baixa"),
 
     # ── Intenção de compra ──────────────────────────────────────
     # Versões com acento são suficientes — marketplaces normalizam acento
+    # ⚠️ "melhor ar condicionado <ano>": atualizar o ano a cada virada
     Keyword("melhor ar condicionado custo benefício",   "Intenção Compra",   "alta"),
     Keyword("melhor ar condicionado 2026",              "Intenção Compra",   "alta"),
     Keyword("comprar ar condicionado",                  "Intenção Compra",   "media"),
     Keyword("ar condicionado em promoção",              "Preço / Promoção",  "media"),
+
+    # ── Conversacional / IA ─────────────────────────────────────
+    # Linguagem natural no padrão de prompts a LLMs e AI Overviews:
+    # necessidade (quarto), atributo (econômico, silencioso, conectado).
+    # Marketplaces normalizam stopwords — as queries retornam SERP válida.
+    Keyword("ar condicionado inverter mais econômico",  "Conversacional IA", "media"),
+    Keyword("melhor ar condicionado para quarto",       "Conversacional IA", "media"),
+    Keyword("ar condicionado silencioso",               "Conversacional IA", "media"),
+    Keyword("ar condicionado wifi",                     "Conversacional IA", "baixa"),
+]
+
+# ---------------------------------------------------------------------------
+# Categorias brand-neutral vs brand-directed — para métricas de share.
+#
+# Keywords dirigidas a marca ("ar condicionado midea", "samsung windfree")
+# retornam SERPs dominadas pela própria marca: incluí-las em share of shelf /
+# appearance share agregado infla a marca com mais keywords na lista (viés de
+# coleta, não de mercado). Métricas de share neutras devem filtrar
+# `Categoria Keyword` ∈ BRAND_NEUTRAL_CATEGORIES; as categorias dirigidas
+# servem para monitorar buy box, sortimento e preço da marca específica.
+# "Modelo Midea" é o valor legado (registros até Jul/2026), mantido para
+# filtros retroativos no histórico.
+# ---------------------------------------------------------------------------
+BRAND_NEUTRAL_CATEGORIES: List[str] = [
+    "Genérica",
+    "Segmento",
+    "Capacidade BTU",
+    "Capacidade + Tipo",
+    "Intenção Compra",
+    "Preço / Promoção",
+    "Conversacional IA",
+]
+BRAND_DIRECTED_CATEGORIES: List[str] = [
+    "Marca",
+    "Modelo / Linha",
+    "Modelo Midea",  # legado
 ]
 
 # Mantém compatibilidade com o formato dict usado em config legado
