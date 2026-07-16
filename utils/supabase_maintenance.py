@@ -225,31 +225,45 @@ def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, 
         entry: Dict[str, Any] = {"target": target}
 
         for col in _COLUMNS:
-            try:
-                count_resp = (
-                    client.table("coletas")
-                    .select("id", count="exact")
-                    .eq(col, source)
-                    .execute()
-                )
-                count = count_resp.count or 0
-            except Exception as exc:
-                logger.warning(f"[Supabase] Erro ao contar {col}={source!r}: {exc}")
-                count = -1
-
-            entry[col] = count
-
-            if dry_run or count <= 0:
+            # `plataforma` e `seller` são indexados (coletas_plataforma_data_idx
+            # e idx_coletas_seller — migration 011), então a igualdade é um index
+            # scan barato. Antes, o count="exact" sobre `seller` (sem índice)
+            # varria as 620k+ linhas (~16s) e estourava o statement timeout
+            # (57014). No dry-run só contamos; fora dele fazemos o UPDATE direto
+            # e derivamos a contagem das linhas retornadas (representation),
+            # evitando uma segunda query.
+            if dry_run:
+                try:
+                    count = (
+                        client.table("coletas")
+                        .select("id", count="exact", head=True)
+                        .eq(col, source)
+                        .execute()
+                        .count
+                    ) or 0
+                except Exception as exc:
+                    logger.warning(f"[Supabase] Erro ao contar {col}={source!r}: {exc}")
+                    count = -1
+                entry[col] = count
                 continue
 
             try:
-                client.table("coletas").update({col: target}).eq(col, source).execute()
-                total_updated += count
-                logger.info(
-                    f"[Supabase] {col} normalizado: {source!r} → {target!r} ({count} registros)"
+                resp = (
+                    client.table("coletas")
+                    .update({col: target})
+                    .eq(col, source)
+                    .execute()
                 )
+                count = len(resp.data or [])
+                entry[col] = count
+                if count:
+                    total_updated += count
+                    logger.info(
+                        f"[Supabase] {col} normalizado: {source!r} → {target!r} ({count} registros)"
+                    )
             except Exception as exc:
                 errors += 1
+                entry[col] = -1
                 logger.warning(
                     f"[Supabase] Erro ao normalizar {col} {source!r}: {exc}"
                 )
