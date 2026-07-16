@@ -1839,6 +1839,78 @@ def _fmt_brl(value: float) -> str:
         return "—"
 
 
+def _brand_neutral_toggle(df: pd.DataFrame, key: str) -> pd.DataFrame:
+    """Toggle "excluir keywords de marca" para métricas de share sem viés.
+
+    Keywords dirigidas a marca (categoria em `BRAND_DIRECTED_CATEGORIES` —
+    "Marca", "Modelo / Linha" e o legado "Modelo Midea") retornam SERPs
+    dominadas pela própria marca. Incluí-las em share of shelf / appearance
+    share / share of voice infla a marca que tem MAIS keywords na lista de
+    coleta — viés de composição da coleta, não sinal de mercado. Ligado, o
+    toggle restringe o DataFrame às categorias brand-neutral
+    (`config.BRAND_NEUTRAL_CATEGORIES`: Genérica, Segmento, Capacidade BTU,
+    Capacidade + Tipo, Intenção Compra, Preço / Promoção, Conversacional IA).
+
+    Default DESLIGADO — preserva os números que o time já acompanha e as
+    comparações históricas. No-op seguro se a coluna `categoria` não existir
+    ou estiver vazia (dados antigos), ou se o filtro zerar a base.
+
+    Args:
+        df: DataFrame de coleta; espera-se a coluna `categoria` (Categoria
+            Keyword).
+        key: chave única do widget Streamlit na página.
+
+    Returns:
+        DataFrame filtrado às categorias brand-neutral quando o toggle está
+        ativo e há dados; caso contrário, o DataFrame original inalterado.
+    """
+    if "categoria" not in df.columns:
+        return df
+
+    cat = df["categoria"].fillna("").astype(str).str.strip()
+    if cat.eq("").all():
+        # Sem `categoria` preenchida (coleta antiga) — o toggle não teria efeito.
+        return df
+
+    try:
+        from config import BRAND_NEUTRAL_CATEGORIES
+    except ImportError:
+        return df
+
+    neutral_mask = cat.isin(BRAND_NEUTRAL_CATEGORIES)
+    n_directed = int((~neutral_mask & cat.ne("")).sum())
+
+    on = st.toggle(
+        "Excluir keywords de marca (share neutro)",
+        value=False,
+        key=key,
+        help=(
+            "Keywords dirigidas a marca (ex.: 'ar condicionado midea', "
+            "'samsung windfree') trazem SERPs dominadas pela própria marca. "
+            "Ligue para calcular o share só sobre buscas genéricas (Genérica, "
+            "Capacidade BTU, Intenção Compra, Conversacional IA…) e remover o "
+            "viés de quantas keywords cada marca tem na coleta."
+        ),
+    )
+    if not on:
+        return df
+
+    filtered = df[neutral_mask].copy()
+    if filtered.empty:
+        st.warning(
+            "Nenhum registro em categoria brand-neutral no período/filtros — "
+            "mostrando todos os dados."
+        )
+        return df
+
+    st.caption(
+        f"🔎 **Share neutro ativo** — {n_directed:,} registro(s) de keywords "
+        f"de marca excluído(s); base agora com {len(filtered):,} registro(s) "
+        "de buscas genéricas."
+    )
+    return filtered
+
+
 # ---------------------------------------------------------------------------
 # Multi-marketplace helpers — buy box / seller / reputação / patrocinado agora
 # vêm de TODAS as plataformas (Mercado Livre, Amazon, Google Shopping, Leroy
@@ -4683,6 +4755,11 @@ def page_share_of_buybox() -> None:
         st.dataframe(cov, use_container_width=True, hide_index=True)
         return
 
+    # Share neutro: keywords de marca surfacem os produtos da própria marca, o
+    # que enviesa quais sellers vencem a buy box no agregado. Ligado, restringe
+    # a análise a buscas genéricas.
+    bb = _brand_neutral_toggle(bb, key="sbb_brand_neutral")
+
     # ── KPIs ──────────────────────────────────────────────────────────────────
     n_records   = len(bb)
     n_sellers   = bb["buy_box_seller"].nunique()
@@ -4959,6 +5036,11 @@ def page_availability():
     if df_all.empty:
         st.warning("No records with position data in this range.")
         return
+
+    # Share neutro: opcionalmente exclui keywords de marca do appearance share
+    # e do visibility score (share of shelf) — governa a página inteira (cards
+    # + todas as abas) para uma leitura consistente.
+    df_all = _brand_neutral_toggle(df_all, key="av_brand_neutral")
 
     # --- Summary metrics with enhanced cards ---
     st.markdown("""
@@ -5715,6 +5797,10 @@ def page_sov_patrocinado() -> None:
     if "patrocinado" not in df.columns and "posicao_patrocinada" not in df.columns:
         st.warning("Colunas de patrocinado indisponíveis no schema.")
         return
+
+    # Share neutro: exclui keywords de marca do share of voice (default off).
+    # Aplicado antes de derivar `_spon` para KPIs e abas ficarem consistentes.
+    df = _brand_neutral_toggle(df, key="sov_brand_neutral")
 
     spon = pd.Series(False, index=df.index)
     if "patrocinado" in df.columns:
