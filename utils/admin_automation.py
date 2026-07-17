@@ -57,7 +57,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from loguru import logger
 
-from utils.supabase_client import _get_client
+from utils.supabase_client import _get_client, is_quota_restricted_error
 from utils.text import is_valid_product
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1057,6 +1057,25 @@ def run_admin_automation(
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         _persist_run(None, report)
         return report
+
+    # Projeto restrito por cota (disco cheio → HTTP 402): as 11 etapas falhariam
+    # igual (mutex, watermark, cada varredura…). Detecta cedo com um probe barato
+    # e pula a pipeline com UMA mensagem clara, em vez de despejar 11 erros 402.
+    try:
+        client.table("coletas").select("id").limit(1).execute()
+    except Exception as exc:
+        if is_quota_restricted_error(exc):
+            logger.error(
+                "[AdminAuto] 🚫 Projeto Supabase RESTRITO por cota de armazenamento "
+                "(exceed_db_size_quota) — automação PULADA (as etapas falhariam "
+                "igual). Libere espaço no banco (tabelas pricetrack_daily/coletas) "
+                "ou faça upgrade do plano. O CSV da coleta já está salvo."
+            )
+            report["status"] = "skipped"
+            report["finished_at"] = datetime.now(timezone.utc).isoformat()
+            report["duration_s"] = round(time.time() - t0, 1)
+            return report
+        # Qualquer outro erro: segue o fluxo normal — não mascara problemas reais.
 
     # Serializa execuções (migration 008): dry-run é read-only e não disputa
     # locks; os demais pegam o mutex e pulam se outro run já estiver rodando —

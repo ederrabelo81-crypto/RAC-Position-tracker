@@ -129,6 +129,41 @@ def _get_client() -> Optional["Client"]:
         return None
 
 
+def is_quota_restricted_error(exc: Exception) -> bool:
+    """
+    Detecta o estado "projeto restrito por cota" do Supabase.
+
+    Quando o banco estoura a cota de armazenamento (disco cheio no plano free),
+    o Supabase RESTRINGE o projeto inteiro: a API REST (PostgREST) passa a
+    responder HTTP 402 com `exceed_db_size_quota` em TODAS as operações — leitura
+    e escrita. Nesse estado não adianta reenviar lotes nem rodar a automação;
+    o único caminho é liberar espaço no banco ou fazer upgrade do plano.
+
+    Args:
+        exc: exceção capturada de uma chamada ao Supabase (postgrest APIError etc.).
+
+    Returns:
+        True se o erro indica projeto restrito por cota de armazenamento.
+
+    Example:
+        >>> try:
+        ...     client.table("coletas").insert(rows).execute()
+        ... except Exception as exc:
+        ...     if is_quota_restricted_error(exc):
+        ...         logger.error("Banco cheio — libere espaço ou faça upgrade.")
+    """
+    if str(getattr(exc, "code", "")) == "402":
+        return True
+    msg = str(exc).lower()
+    return (
+        "exceed_db_size_quota" in msg
+        or "restricted due to the following violations" in msg
+        or "'code': 402" in msg
+        or '"code": 402' in msg
+        or '"code":402' in msg
+    )
+
+
 def _map_record(record: Dict[str, Any]) -> Dict[str, Any]:
     """
     Converte um registro do formato interno do bot para o formato da tabela.
@@ -324,6 +359,10 @@ def upload_to_supabase(
     # o primeiro erro de coluna ausente ativa este flag e os lotes seguintes
     # já são enviados sem essas chaves.
     drop_optional = False
+    # Projeto restrito por cota (disco cheio → HTTP 402): TODOS os lotes falham
+    # igual. No 1º lote com esse erro abortamos o restante (fail-fast) em vez de
+    # repetir a mesma falha N vezes.
+    quota_restricted = False
 
     def _strip_optional(batch_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [
@@ -372,6 +411,12 @@ def upload_to_supabase(
                     f"Inseridas={inseridas}"
                 )
         except Exception as exc:
+            # Projeto restrito por cota de armazenamento (disco cheio) → a API
+            # devolve HTTP 402 em todos os lotes. Aborta o restante (fail-fast).
+            if is_quota_restricted_error(exc):
+                quota_restricted = True
+                errors += len(batch)
+                break
             # Banco sem as colunas opcionais (url/screenshots) → remove e tenta de novo
             if not drop_optional and _is_missing_column_error(exc):
                 drop_optional = True
@@ -400,11 +445,27 @@ def upload_to_supabase(
                 f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} falhou: {exc}"
             )
 
-    ignorados = total - sent - errors
+    nao_enviados = total - sent - errors  # lotes pulados após o abort por cota
+    ignorados = 0 if quota_restricted else nao_enviados
     logger.info(
         f"[INSERT] Run={run_id or 'NULL'} | "
         f"Tentadas={total} | Inseridas={sent} | Já existiam={ignorados} | Erros={errors}"
+        + (f" | Não enviados (abortado)={nao_enviados}" if quota_restricted else "")
     )
+
+    if quota_restricted:
+        logger.error(
+            "[Supabase] 🚫 Projeto RESTRITO por cota de armazenamento "
+            "(exceed_db_size_quota): a API respondeu HTTP 402 e o upload foi "
+            f"abortado — 0 de {total} registros gravados.\n"
+            "   • O CSV local JÁ está salvo — nada foi perdido.\n"
+            "   • Reenvie quando o banco voltar: "
+            "python scripts/upload_csv.py <arquivo.csv> (idempotente).\n"
+            "   • Para RESTAURAR o serviço: libere espaço no banco (as maiores "
+            "tabelas são pricetrack_daily e coletas) ou faça upgrade do plano "
+            "Supabase / remova o spend cap."
+        )
+        return False
 
     if errors == 0:
         if sent == 0 and ignorados > 0:
