@@ -72,6 +72,14 @@ def main() -> None:
     )
 
     if report["status"] == "skipped":
+        reason = report.get("skip_reason")
+        if reason == "quota_restricted":
+            # run_admin_automation já logou a mensagem acionável completa —
+            # não repetir (preserva o fail-fast silencioso), só propaga o código.
+            sys.exit(1)
+        if reason == "locked":
+            logger.info("Automação pulada — outra execução em andamento (mutex).")
+            sys.exit(0)
         logger.error("Automação pulada — verifique SUPABASE_URL/SUPABASE_KEY no .env")
         sys.exit(1)
     sys.exit(0 if report["errors"] == 0 else 2)
