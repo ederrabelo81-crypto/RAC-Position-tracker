@@ -74,11 +74,8 @@ def main() -> None:
     if report["status"] == "skipped":
         reason = report.get("skip_reason")
         if reason == "quota_restricted":
-            logger.error(
-                "Automação pulada — banco Supabase RESTRITO por cota "
-                "(exceed_db_size_quota). Libere espaço (pricetrack_daily/coletas) "
-                "ou faça upgrade do plano; não é problema de .env."
-            )
+            # run_admin_automation já logou a mensagem acionável completa —
+            # não repetir (preserva o fail-fast silencioso), só propaga o código.
             sys.exit(1)
         if reason == "locked":
             logger.info("Automação pulada — outra execução em andamento (mutex).")
