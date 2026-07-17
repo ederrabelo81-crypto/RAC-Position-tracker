@@ -1046,6 +1046,7 @@ def run_admin_automation(
         "finished_at": None,
         "duration_s": 0.0,
         "status": "skipped",
+        "skip_reason": None,  # None | no_credentials | quota_restricted | locked
         "errors": 0,
         "watermark_id": None,
         "steps": [],
@@ -1054,6 +1055,7 @@ def run_admin_automation(
 
     if client is None:
         logger.warning("[AdminAuto] Supabase não configurado — automação pulada.")
+        report["skip_reason"] = "no_credentials"
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         _persist_run(None, report)
         return report
@@ -1072,8 +1074,12 @@ def run_admin_automation(
                 "ou faça upgrade do plano. O CSV da coleta já está salvo."
             )
             report["status"] = "skipped"
+            report["skip_reason"] = "quota_restricted"
             report["finished_at"] = datetime.now(timezone.utc).isoformat()
             report["duration_s"] = round(time.time() - t0, 1)
+            # Espelho local (sem client → não reinsere no banco restrito) para
+            # auditar o skip e evitar que should_run re-dispare sem registro.
+            _persist_run(None, report)
             return report
         # Qualquer outro erro: segue o fluxo normal — não mascara problemas reais.
 
@@ -1089,6 +1095,7 @@ def run_admin_automation(
                 f"andamento (mutex admin_automation_lock)."
             )
             report["status"] = "skipped"
+            report["skip_reason"] = "locked"
             report["finished_at"] = datetime.now(timezone.utc).isoformat()
             report["duration_s"] = round(time.time() - t0, 1)
             return report  # skip de mutex não é persistido (evita ruído no histórico)

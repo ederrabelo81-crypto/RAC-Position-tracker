@@ -131,13 +131,19 @@ def _get_client() -> Optional["Client"]:
 
 def is_quota_restricted_error(exc: Exception) -> bool:
     """
-    Detecta o estado "projeto restrito por cota" do Supabase.
+    Detecta o estado "projeto restrito por cota de ARMAZENAMENTO" do Supabase.
 
-    Quando o banco estoura a cota de armazenamento (disco cheio no plano free),
-    o Supabase RESTRINGE o projeto inteiro: a API REST (PostgREST) passa a
-    responder HTTP 402 com `exceed_db_size_quota` em TODAS as operações — leitura
-    e escrita. Nesse estado não adianta reenviar lotes nem rodar a automação;
-    o único caminho é liberar espaço no banco ou fazer upgrade do plano.
+    Quando o banco estoura a cota de disco (plano free), o Supabase RESTRINGE o
+    projeto inteiro: a API REST (PostgREST) passa a responder HTTP 402 com o
+    marcador `exceed_db_size_quota` em TODAS as operações — leitura e escrita.
+    Nesse estado não adianta reenviar lotes nem rodar a automação; o único
+    caminho é liberar espaço no banco ou fazer upgrade do plano.
+
+    Detecta pelo marcador específico `exceed_db_size_quota` — e NÃO por um HTTP
+    402 genérico. Outras restrições 402 (cota de egress, pagamento em atraso)
+    exigem remediação diferente e não devem disparar a mensagem de "disco cheio"
+    nem abortar o upload como se fosse falta de espaço; essas caem no tratamento
+    de erro comum.
 
     Args:
         exc: exceção capturada de uma chamada ao Supabase (postgrest APIError etc.).
@@ -152,16 +158,7 @@ def is_quota_restricted_error(exc: Exception) -> bool:
         ...     if is_quota_restricted_error(exc):
         ...         logger.error("Banco cheio — libere espaço ou faça upgrade.")
     """
-    if str(getattr(exc, "code", "")) == "402":
-        return True
-    msg = str(exc).lower()
-    return (
-        "exceed_db_size_quota" in msg
-        or "restricted due to the following violations" in msg
-        or "'code': 402" in msg
-        or '"code": 402' in msg
-        or '"code":402' in msg
-    )
+    return "exceed_db_size_quota" in str(exc).lower()
 
 
 def _map_record(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -354,6 +351,7 @@ def upload_to_supabase(
     total   = len(rows)
     batches = math.ceil(total / _BATCH_SIZE)
     sent    = 0
+    dupes   = 0  # linhas ignoradas por já existirem (acumulado entre lotes)
     errors  = 0
     # Quando o banco ainda não tem as colunas opcionais (url/screenshots),
     # o primeiro erro de coluna ausente ativa este flag e os lotes seguintes
@@ -400,6 +398,7 @@ def upload_to_supabase(
             inseridas = len(result.data) if result.data else 0
             ignoradas = len(batch) - inseridas
             sent += inseridas
+            dupes += ignoradas
             if ignoradas:
                 logger.info(
                     f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} | "
@@ -433,20 +432,29 @@ def upload_to_supabase(
                     ).execute()
                     inseridas = len(result.data) if result.data else 0
                     sent += inseridas
+                    dupes += len(batch) - inseridas
                     logger.info(
                         f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} | "
                         f"Inseridas={inseridas} (sem colunas opcionais)"
                     )
                     continue
                 except Exception as exc2:
+                    # A cota pode estourar também no reenvio sem colunas opcionais.
+                    if is_quota_restricted_error(exc2):
+                        quota_restricted = True
+                        errors += len(batch)
+                        break
                     exc = exc2
             errors += len(batch)
             logger.warning(
                 f"[INSERT] Plataforma={plataforma} | Lote {i+1}/{batches} falhou: {exc}"
             )
 
-    nao_enviados = total - sent - errors  # lotes pulados após o abort por cota
-    ignorados = 0 if quota_restricted else nao_enviados
+    # `dupes` = já existiam (contadas nos lotes processados); `nao_enviados` =
+    # linhas em lotes nunca tentados (só quando abortamos por cota). Sem abort,
+    # nao_enviados é sempre 0 e o resumo fecha: total = sent + dupes + errors.
+    ignorados = dupes
+    nao_enviados = total - sent - dupes - errors
     logger.info(
         f"[INSERT] Run={run_id or 'NULL'} | "
         f"Tentadas={total} | Inseridas={sent} | Já existiam={ignorados} | Erros={errors}"
@@ -457,7 +465,7 @@ def upload_to_supabase(
         logger.error(
             "[Supabase] 🚫 Projeto RESTRITO por cota de armazenamento "
             "(exceed_db_size_quota): a API respondeu HTTP 402 e o upload foi "
-            f"abortado — 0 de {total} registros gravados.\n"
+            f"abortado — {sent} de {total} registros gravados.\n"
             "   • O CSV local JÁ está salvo — nada foi perdido.\n"
             "   • Reenvie quando o banco voltar: "
             "python scripts/upload_csv.py <arquivo.csv> (idempotente).\n"

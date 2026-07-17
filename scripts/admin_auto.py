@@ -72,6 +72,17 @@ def main() -> None:
     )
 
     if report["status"] == "skipped":
+        reason = report.get("skip_reason")
+        if reason == "quota_restricted":
+            logger.error(
+                "Automação pulada — banco Supabase RESTRITO por cota "
+                "(exceed_db_size_quota). Libere espaço (pricetrack_daily/coletas) "
+                "ou faça upgrade do plano; não é problema de .env."
+            )
+            sys.exit(1)
+        if reason == "locked":
+            logger.info("Automação pulada — outra execução em andamento (mutex).")
+            sys.exit(0)
         logger.error("Automação pulada — verifique SUPABASE_URL/SUPABASE_KEY no .env")
         sys.exit(1)
     sys.exit(0 if report["errors"] == 0 else 2)
