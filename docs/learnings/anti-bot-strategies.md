@@ -15,7 +15,7 @@
 - `navigator.permissions.query` override for notifications
 
 ### Context settings
-- Random User-Agent from config.USER_AGENTS (5 modern UAs)
+- Random User-Agent from config.USER_AGENTS (4 modern UAs — Chromium-family only, see below)
 - Viewport: 1366x768
 - Locale: pt-BR, timezone: America/Sao_Paulo
 
@@ -76,6 +76,22 @@
 ### PerimeterX (Magalu alternate)
 - Detection: `#px-captcha`, `_pxAppId` in HTML
 - Response: log warning, return empty results
+
+### Mercado Livre — login gate por UA/engine mismatch (fix Jul/2026)
+- `_launch()` (scrapers/base.py) só lança engines Chromium reais (`channel`
+  "chrome" -> "msedge" -> chromium puro) — nunca Firefox
+- `USER_AGENTS` (config.py) tinha um UA Firefox (`rv:125.0 ... Firefox/125.0`)
+  misturado no pool. Quando sorteado (~1/5 execuções), o contexto ficava com
+  TLS handshake + `window.chrome`/plugins/permissions de Chromium real, mas
+  `navigator.userAgent`/header `User-Agent` anunciando Firefox — mismatch
+  clássico de bot detection
+- Sintoma: `_is_login_gate()` disparava ("Para continuar, acesse sua conta")
+  em quase 100% das keywords pelo resto da run (UA é sorteado 1x por
+  instância do scraper em `__init__`, reutilizado até `_rotate_browser()`)
+- Fix: removido o UA Firefox de `USER_AGENTS` — pool agora é 100%
+  Chrome/Edge (Chromium-family), consistente com o engine que `_launch()`
+  de fato sempre lança
+- **Files:** `config.py` `USER_AGENTS`
 
 ### Akamai Bot Manager (Casas Bahia — stand-by)
 - Requires session cookies with Akamai tokens (AKA_A2, ak_bmsc, bm_sz)
