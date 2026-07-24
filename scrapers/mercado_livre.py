@@ -30,8 +30,9 @@ from bs4 import BeautifulSoup, Tag
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import MAX_PAGES
+from config import MAX_PAGES, PAGE_TIMEOUT
 from scrapers.base import BaseScraper
+from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
 from utils.text import parse_rating, parse_review_count
 
 
@@ -181,6 +182,49 @@ class MLScraper(BaseScraper):
         #   Xvfb :99 -screen 0 1366x768x24 &
         #   export DISPLAY=:99
         super().__init__(headless=False)
+        # Modo browser local (RAC_LOCAL_CHROME) — mesmo Chrome real/perfil
+        # dedicado compartilhado com Shopee/Magalu/Casas Bahia. Um browser
+        # Playwright lançado do zero (mesmo com stealth) ainda tem sinais de
+        # automação que o ML cruza com IP de datacenter para mostrar o login
+        # gate; o Chrome comum + CDP evita isso (ver scrapers/local_browser.py).
+        self._local_active: bool = False
+
+    def _launch(self) -> None:
+        """Preferência: Chrome real local (perfil dedicado) via CDP; senão, launch próprio."""
+        if is_local_chrome_enabled():
+            lb = get_local_browser()
+            if lb is not None:
+                page = lb.new_page()
+                if page is not None:
+                    self._context = lb.context
+                    self._page = page
+                    self._page.set_default_timeout(PAGE_TIMEOUT)
+                    self._local_active = True
+                    logger.info(
+                        f"[{self.platform_name}] Chrome real local (perfil "
+                        "compartilhado) — fingerprint nativo, sem login gate"
+                    )
+                    return
+            logger.warning(
+                f"[{self.platform_name}] RAC_LOCAL_CHROME ligado mas o Chrome local "
+                "não abriu — caindo para launch próprio (Playwright)"
+            )
+        super()._launch()
+
+    def _close(self) -> None:
+        # Modo browser local: fecha SÓ a aba dedicada — o Chrome é
+        # compartilhado e fechado no fim da coleta (close_local_browser).
+        if self._local_active:
+            try:
+                if self._page and not self._page.is_closed():
+                    self._page.close()
+            except Exception:
+                pass
+            self._page = None
+            self._context = None
+            self._local_active = False
+            return
+        super()._close()
 
     def _is_login_gate(self) -> bool:
         """

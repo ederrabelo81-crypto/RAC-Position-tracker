@@ -17,8 +17,10 @@ O que precisa (e o que NÃO precisa) de login
 --------------------------------------------
   * **Shopee** — PRECISA de login (a API v4 responde 403 sem conta). Pode ser
     via Google (funciona neste Chrome comum) ou e-mail/telefone.
-  * **Casas Bahia** e **Magalu** — NÃO precisam de conta nenhuma. Só dependem
-    de IP residencial + Chrome real, que este modo já entrega.
+  * **Mercado Livre**, **Casas Bahia** e **Magalu** — NÃO precisam de conta
+    nenhuma. Só dependem de IP residencial + Chrome real, que este modo já
+    entrega (o "login gate" do ML é acionado por browser automatizado, não
+    por falta de conta).
 
 USO:
     python scripts/setup_local_profile.py            # abre a Shopee p/ login
@@ -26,7 +28,7 @@ USO:
     python scripts/setup_local_profile.py --no-login  # só abre o Chrome (aquecer)
 
 Depois de logar, rode a coleta:
-    RAC_LOCAL_CHROME=1 python main.py --platforms magalu shopee casasbahia --pages 1
+    RAC_LOCAL_CHROME=1 python main.py --platforms ml magalu shopee casasbahia --pages 1
     (no Windows: scripts\\collect_local_authenticated.bat)
 """
 
@@ -189,7 +191,7 @@ def main() -> int:
     print("   1. Na janela do Chrome que abriu, faça LOGIN na Shopee.")
     print("      • Pode ser 'Continuar com o Google' (funciona neste Chrome comum)")
     print("        ou e-mail/telefone + senha.")
-    print("   2. Casas Bahia e Magalu NÃO precisam de login — pode ignorar.")
+    print("   2. Mercado Livre, Casas Bahia e Magalu NÃO precisam de login — pode ignorar.")
     print("   3. Deixe o Chrome ABERTO e volte aqui.")
     print("─" * 66)
     try:
@@ -203,9 +205,9 @@ def main() -> int:
         "\n    scripts\\collect_local_authenticated.bat 1     (jeito recomendado)\n"
         "\n  Ou manualmente. ATENÇÃO à sua shell:\n"
         "    PowerShell:  $env:RAC_LOCAL_CHROME=\"1\"; python main.py "
-        "--platforms magalu shopee casasbahia --pages 1\n"
+        "--platforms ml magalu shopee casasbahia --pages 1\n"
         "    cmd.exe   :  set RAC_LOCAL_CHROME=1 && python main.py "
-        "--platforms magalu shopee casasbahia --pages 1\n"
+        "--platforms ml magalu shopee casasbahia --pages 1\n"
         "  (No PowerShell, `set VAR=1` NÃO exporta env — tem que ser `$env:`.)\n"
         "\n  Dica: deixe este Chrome ABERTO — a coleta reaproveita ele "
         "(perfil quente)."
