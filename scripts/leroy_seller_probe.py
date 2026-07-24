@@ -30,7 +30,7 @@ import argparse
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -129,6 +129,46 @@ def cmd_html(path: str, seller_id: Optional[str]) -> int:
     return 0
 
 
+def extract_seller_ids(marketplace_sellers: Any) -> list[str]:
+    """
+    Normaliza `marketplaceSellers` para uma lista de seller IDs.
+
+    Cobre os três shapes que o scraper aceita, para o relatório de lacunas não
+    contar um hit como 3P e ao mesmo tempo omitir os IDs dele:
+
+    - lista de strings — ``["5e6fd1d9…"]`` (shape observado em produção)
+    - lista de dicts   — ``[{"sellerId": "…", "sellerName": "…"}]``
+    - dict indexado    — ``{"5e6fd1d9…": {...}}``
+
+    Args:
+        marketplace_sellers: valor bruto do campo, em qualquer formato.
+
+    Returns:
+        Lista de IDs como string, vazia se o formato for irreconhecível.
+
+    Example:
+        >>> extract_seller_ids([{"sellerId": "abc"}, "def"])
+        ['abc', 'def']
+    """
+    ids: list[str] = []
+    if isinstance(marketplace_sellers, list):
+        for entry in marketplace_sellers:
+            if isinstance(entry, str) and entry:
+                ids.append(entry)
+            elif isinstance(entry, dict):
+                sid = (
+                    entry.get("sellerId")
+                    or entry.get("seller_id")
+                    or entry.get("id")
+                    or entry.get("_id")
+                )
+                if sid:
+                    ids.append(str(sid))
+    elif isinstance(marketplace_sellers, dict):
+        ids = [str(sid) for sid in marketplace_sellers if sid]
+    return ids
+
+
 def cmd_scan(cache: LeroySellerCache, keyword: str, pages: int) -> int:
     """Consulta a Algolia e reporta quais seller IDs aparecem e quais faltam."""
     from scrapers.leroy_merlin import (
@@ -142,6 +182,7 @@ def cmd_scan(cache: LeroySellerCache, keyword: str, pages: int) -> int:
     urls: dict[str, str] = {}
     n_1p = 0
     n_3p = 0
+    n_sem_id = 0   # hits 3P cujo shape não expôs nenhum ID (shape novo do índice)
 
     for page in range(pages):
         payload = {"query": keyword, "hitsPerPage": _ITEMS_PER_PAGE, "page": page}
@@ -162,8 +203,6 @@ def cmd_scan(cache: LeroySellerCache, keyword: str, pages: int) -> int:
                 n_1p += 1
                 continue
             n_3p += 1
-            if not isinstance(ms, list):
-                continue
             slug = hit.get("url") or hit.get("linkText") or hit.get("slug")
             slug = str(slug) if slug else None
             url = (
@@ -172,10 +211,13 @@ def cmd_scan(cache: LeroySellerCache, keyword: str, pages: int) -> int:
                 if slug.startswith("/")
                 else f"https://www.leroymerlin.com.br/{slug.strip('/')}/p"
             )
-            # Conta *todos* os IDs do hit, não só o da buy box: o objetivo do
-            # scan é achar lacunas no cache, e parar no primeiro esconderia
-            # sellers desconhecidos em produtos multi-oferta.
-            for sid in (s for s in ms if isinstance(s, str)):
+            # Conta *todos* os IDs do hit, em qualquer shape: o objetivo do scan
+            # é achar lacunas no cache, então parar no primeiro (ou ignorar
+            # shapes que o scraper aceita) esconderia sellers desconhecidos.
+            seller_ids = extract_seller_ids(ms)
+            if not seller_ids:
+                n_sem_id += 1
+            for sid in seller_ids:
                 counts[sid] += 1
                 if url and sid not in urls:
                     urls[sid] = url
@@ -188,6 +230,11 @@ def cmd_scan(cache: LeroySellerCache, keyword: str, pages: int) -> int:
         f"'{keyword}': {n_1p + n_3p} hits | {n_1p} 1P | {n_3p} 3P | "
         f"{len(counts)} seller ID(s) únicos, {len(desconhecidos)} desconhecido(s)"
     )
+    if n_sem_id:
+        logger.warning(
+            f"{n_sem_id} hit(s) 3P sem nenhum ID extraível — shape novo de "
+            "`marketplaceSellers`? Rode com LEROY_DEBUG_HITS=5 para inspecionar."
+        )
     for sid, n in counts.most_common():
         known = LEROY_SELLER_ID_MAP.get(sid) or cache.get(sid)
         status = f"✓ {known}" if known else "✗ DESCONHECIDO"
