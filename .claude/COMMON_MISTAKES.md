@@ -95,9 +95,11 @@ o login).
 estável (`data/chrome_profile`, não é cópia) com a porta de debug, e ATACAR via
 `connect_over_cdp` com **rebrowser-playwright** (oculta o `Runtime.enable`). No
 login, nenhum cliente CDP está conectado → Google passa. Ligue com
-`RAC_LOCAL_CHROME=1`. Só a Shopee precisa de login; CB/Magalu não.
+`RAC_LOCAL_CHROME=1`. Só a Shopee precisa de login; ML/CB/Magalu não (Jul/2026:
+o Mercado Livre também passou a usar este Chrome real via `RAC_LOCAL_CHROME` —
+seu "login gate" era acionado pelo Playwright lançado do zero, não por conta).
 **Files:** `scrapers/local_browser.py`, `scripts/setup_local_profile.py`,
-`docs/COLETA_LOCAL_AUTENTICADA.md`
+`scrapers/mercado_livre.py` `_launch()`/`_close()`, `docs/COLETA_LOCAL_AUTENTICADA.md`
 
 ## 11. Task Scheduler — Action `cmd /c "..." >> "log"` morre com espaço no caminho
 

@@ -1,6 +1,6 @@
-# Coleta local autenticada — Shopee, Magalu e Casas Bahia (notebook Windows)
+# Coleta local autenticada — Mercado Livre, Shopee, Magalu e Casas Bahia (notebook Windows)
 
-> **Objetivo:** rodar as coletas dos 3 marketplaces protegidos por antibot
+> **Objetivo:** rodar as coletas dos marketplaces protegidos por antibot
 > direto do seu notebook, com o seu Chrome real, sem a extensão do Chrome e de
 > forma automatizável (Task Scheduler).
 >
@@ -14,10 +14,12 @@
 | Plataforma | Login? | Observação |
 |------------|--------|------------|
 | **Shopee** | ✅ **Sim** | A API v4 responde 403 sem conta. Pode ser via **Google** (funciona neste modo) ou e-mail/telefone. |
+| **Mercado Livre** | ❌ Não | O login gate é acionado por browser automatizado (Playwright do zero), não por falta de conta — o Chrome real resolve sem precisar logar. |
 | **Casas Bahia** | ❌ Não | Só precisa de IP residencial + Chrome real. |
 | **Magalu** | ❌ Não | Idem. |
 
-> Só a Shopee exige login. Casas Bahia e Magalu **não** precisam de conta.
+> Só a Shopee exige login. Mercado Livre, Casas Bahia e Magalu **não**
+> precisam de conta.
 
 ---
 
@@ -47,8 +49,8 @@ ligada. Depois **atacamos via CDP** (`connect_over_cdp`) usando o fork
   página vê um browser 100% humano — **o login pelo Google passa**. Na coleta, o
   CDP ataca esse mesmo Chrome real (fingerprint aceito pelo Akamai).
 - **IP residencial** do notebook — a combinação que os antibots aceitam.
-- Um único Chrome por execução, compartilhado pelos 3 scrapers (uma aba cada). O
-  Chrome fica **aberto** entre execuções (perfil "quente").
+- Um único Chrome por execução, compartilhado por todos os scrapers (uma aba
+  cada). O Chrome fica **aberto** entre execuções (perfil "quente").
 
 ---
 
@@ -83,9 +85,9 @@ scripts\collect_local_authenticated.bat
 scripts\collect_local_authenticated.bat 1
 scripts\collect_local_authenticated.bat 2 alta media
 
-# Equivalente cru ao .bat (os 3 marketplaces) — ATENÇÃO à shell:
-#   PowerShell:  $env:RAC_LOCAL_CHROME="1"; python main.py --platforms magalu shopee casasbahia --pages 1
-#   cmd.exe   :  set RAC_LOCAL_CHROME=1 && python main.py --platforms magalu shopee casasbahia --pages 1
+# Equivalente cru ao .bat (os 4 marketplaces) — ATENÇÃO à shell:
+#   PowerShell:  $env:RAC_LOCAL_CHROME="1"; python main.py --platforms ml magalu shopee casasbahia --pages 1
+#   cmd.exe   :  set RAC_LOCAL_CHROME=1 && python main.py --platforms ml magalu shopee casasbahia --pages 1
 
 # Teste isolado de UMA plataforma (ex.: Casas Bahia, que não precisa de login):
 #   PowerShell:  $env:RAC_LOCAL_CHROME="1"; python main.py --platforms casasbahia --pages 1
@@ -97,9 +99,9 @@ scripts\collect_local_authenticated.bat 2 alta media
 > simples, o `.bat` (que já seta certo). No começo do log a coleta imprime
 > `[Chrome local] RAC_LOCAL_CHROME=ON/OFF` — confira que está **ON**.
 
-`RAC_LOCAL_CHROME=1` liga o modo Chrome comum + CDP para os 3 scrapers. Sem essa
-env, o comportamento é o antigo (curl_cffi/CDP externo) — nada muda na
-VM/GitHub.
+`RAC_LOCAL_CHROME=1` liga o modo Chrome comum + CDP para os 4 scrapers (ML,
+Magalu, Shopee, Casas Bahia). Sem essa env, o comportamento é o antigo
+(curl_cffi/CDP externo/launch próprio) — nada muda na VM/GitHub.
 
 > 🔇 **"cannot get world … session closed" inundando o console?** É ruído do
 > driver do `rebrowser-playwright` ([issue #57](https://github.com/rebrowser/rebrowser-patches/issues/57))
@@ -167,7 +169,7 @@ ou logar depois, dentro da janela (o catch-up cobre). As tarefas usam
 
 | Env | Default | Efeito |
 |-----|---------|--------|
-| `RAC_LOCAL_CHROME` | (desligado) | `1` liga o modo Chrome comum + CDP (Shopee/Magalu/CB). |
+| `RAC_LOCAL_CHROME` | (desligado) | `1` liga o modo Chrome comum + CDP (ML/Shopee/Magalu/CB). |
 | `RAC_CHROME_PROFILE_DIR` | `data/chrome_profile` | Diretório do perfil dedicado. |
 | `RAC_CDP_PORT` | `9222` | Porta do DevTools do Chrome comum. |
 | `RAC_CHROME_EXE` | (auto) | Caminho do `chrome.exe`/`msedge.exe` se a busca automática falhar. |
@@ -183,6 +185,7 @@ ou logar depois, dentro da janela (o catch-up cobre). As tarefas usam
 | "Debugger pausado em outra guia" | Chrome sendo detectado (idem acima) | Instale o rebrowser; confira `--check` |
 | Google recusa login | Você tentou logar **antes** de o Chrome comum abrir, ou em outro browser | Logue **na janela que o `setup_local_profile.py` abre** (é um Chrome comum, o Google aceita) |
 | Shopee 403 / circuit breaker | Perfil sem login na Shopee | `python scripts\setup_local_profile.py` e faça login; confira com `--check` |
+| ML "Login gate detectado" mesmo com `RAC_LOCAL_CHROME=1` | O log não mostra "Chrome real local" — o Chrome comum não abriu (checar `[LocalBrowser]` no log) | Rode `python scripts\setup_local_profile.py --no-login` pra confirmar que o Chrome sobe; confira `RAC_LOCAL_CHROME=ON` no início do log |
 | "Chrome não encontrado" | Chrome fora do caminho padrão | Defina `RAC_CHROME_EXE` com o caminho do `chrome.exe` |
 | "Chrome não expôs a porta de debug" | Já havia um Chrome nesse perfil sem a porta, ou porta ocupada | Feche Chromes desse perfil; ou mude `RAC_CDP_PORT` |
 | **Tarefa agendada não rodou** / `scheduler.log` sem linhas novas | Action antiga (`cmd /c` + aspas + espaço no caminho) morre sem log; ou tarefa nunca re-registrada | Rode `scripts\check_local_scheduler.ps1`; correção padrão: `git pull` + re-rodar `setup_local_scheduler.ps1` |
