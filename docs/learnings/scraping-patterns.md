@@ -75,3 +75,39 @@ Migrated 2024/2025. Old `data-testid` selectors are all gone.
 Current: `li[class*="nm-product-card"]` for items.
 API intercept: `/api/product-search/v3/queries/search` returns JSON.
 Seller field is polymorphic: string OR dict with `.name` key.
+
+## Leroy Merlin — Seller ID opaco (Algolia) → PDP
+
+O índice Algolia `production_products` expõe o seller **apenas** como ObjectId
+opaco em `marketplaceSellers` (ex: `["5e6fd1d90a8aa474fe271e83"]`). Não existe
+nome de lojista em campo algum do hit: nada de `sellers[]`, `installmentsBySeller`,
+`sellerName` ou escalares equivalentes.
+
+Duas armadilhas já pagas:
+
+1. **A API de seller da VTEX não existe aqui.** Leroy Merlin BR roda Next.js +
+   Algolia, não VTEX — `/api/catalog_system/pub/seller/{id}` nunca devolve nome.
+   Em produção o contador `resolved_via_vtex_api` ficou em **0 sobre 1.707
+   registros**. Camada removida.
+2. **Mapa estático não escala.** Com 1 ID mapeado à mão, ~60% dos registros
+   caíam em `"3P (não identificado)"`.
+
+Solução: a única fonte do nome é o **PDP** ("Vendido e entregue por X"). A chave
+de resolução é o *seller ID*, não o produto — 1.707 registros colapsam em algumas
+dezenas de IDs únicos, então basta **1 PDP por seller novo**. O resultado é
+persistido em `data/leroy_sellers.json`, e a partir da 2ª coleta o custo de rede
+tende a zero.
+
+Camadas em `scrapers/leroy_merlin.py` (custo zero → custo de rede):
+`LEROY_SELLER_ID_MAP` → cache em disco → cache do run → campos inline do hit →
+campos escalares → **PDP** → sentinela `3P (não identificado)`.
+
+Detalhes que importam:
+- A resolução é **batch por página** (`_resolve_pending_sellers`): classifica os
+  24 hits primeiro, junta os IDs únicos pendentes, só então abre PDPs.
+- IDs que falham entram em quarentena (`retry_days=7`) — não se gasta um PDP por
+  run com o mesmo ID morto.
+- Fetch do PDP tenta `requests` e cai para o browser Playwright já aberto.
+- Knobs: `LEROY_PDP_RESOLVE=0` desliga, `LEROY_PDP_MAX_PER_RUN` (padrão 40) limita.
+- Diagnóstico: `python scripts/leroy_seller_probe.py --scan "ar condicionado lg"`
+  lista os IDs de uma busca e marca quais ainda são desconhecidos.

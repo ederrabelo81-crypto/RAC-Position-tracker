@@ -11,6 +11,14 @@ Estratégia (em ordem de prioridade):
 
 Plataforma: Next.js + Algolia InstantSearch (client-side rendering).
 Paginação: page param 0-indexed na Algolia API.
+
+Seller / buy box (Jul/2026)
+---------------------------
+O índice Algolia só expõe o seller como ObjectId opaco em ``marketplaceSellers``
+— não há nome em campo algum. A resolução acontece em camadas de custo zero
+(mapa estático → cache em disco → campos inline do hit) e, para o que sobra,
+abrindo **1 PDP por seller novo** (não por produto), com o resultado persistido
+em ``data/leroy_sellers.json``. Ver `utils/leroy_sellers.py`.
 """
 
 import json
@@ -28,18 +36,44 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
+from utils.leroy_sellers import (
+    LeroySellerCache,
+    extract_seller_from_pdp,
+    is_leroy_self,
+)
 from utils.text import parse_price, parse_rating, parse_review_count, now_brt
 
 _ITEMS_PER_PAGE = 24
 
-# Mapeamento estático de IDs VTEX/MongoDB → nomes de seller.
-# IDs são estáveis — populados à medida que aparecem nos logs de debug.
-# Para confirmar um ID novo: abrir o PDP do produto e verificar o seller.
+# Mapeamento estático de IDs MongoDB (marketplaceSellers) → nomes de seller.
+# IDs são estáveis. Serve como semente: o cache persistente
+# (data/leroy_sellers.json) é populado automaticamente via PDP e tem prioridade
+# de escrita, mas este mapa continua valendo para correções manuais.
 LEROY_SELLER_ID_MAP: dict[str, str] = {
     "6353074400c2dc08ca5a2114": "Elgin",
 }
 
-_VTEX_SELLER_API = "https://www.leroymerlin.com.br/api/catalog_system/pub/seller/{seller_id}"
+# Sentinela usada quando nem o cache nem o PDP identificam o lojista.
+UNRESOLVED_SELLER = "3P (não identificado)"
+
+# --- Resolução via PDP (única fonte que expõe o nome do lojista) -------------
+# O índice Algolia só traz o ObjectId do seller; o nome aparece apenas no PDP
+# ("Vendido e entregue por X"). Como a chave é o *seller ID* e não o produto,
+# basta 1 PDP por ID novo — dezenas por run na primeira coleta, ~zero depois,
+# graças ao cache em disco.
+_PDP_RESOLVE_ENABLED = os.environ.get("LEROY_PDP_RESOLVE", "1") not in ("0", "false", "False")
+_PDP_MAX_PER_RUN = int(os.environ.get("LEROY_PDP_MAX_PER_RUN", "40") or 40)
+_PDP_TIMEOUT = float(os.environ.get("LEROY_PDP_TIMEOUT", "12") or 12)
+
+_PDP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+}
 
 # Algolia credentials exposed in the Leroy Merlin page HTML
 _ALGOLIA_APP_ID    = "1CF3ZT43ZU"
@@ -135,8 +169,13 @@ class LeroyMerlinScraper(BaseScraper):
         super().__init__(headless=headless)
         self._captured_products: List[Dict] = []
         self._dynamic_seller_cache: dict[str, str] = {}
-        self._seller_unresolved: set[str] = set()
         self._seller_warned: set[str] = set()  # IDs already warned — suppresses repeat WARNINGs
+        # Cache persistente id → nome (data/leroy_sellers.json). Sobrevive entre
+        # runs, então o custo de PDP é pago uma vez por seller novo.
+        self._seller_cache = LeroySellerCache()
+        self._pdp_session: Optional[requests.Session] = None
+        self._pdp_budget = _PDP_MAX_PER_RUN
+        self._pdp_requests_strikes = 0  # falhas seguidas do caminho leve (requests)
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -144,13 +183,21 @@ class LeroyMerlinScraper(BaseScraper):
             "marketplace_sellers_list_str": 0,   # Caso B — MongoDB ID
             "marketplace_sellers_dict": 0,       # Caso C
             "resolved_via_static_map": 0,
+            "resolved_via_disk_cache": 0,
             "resolved_via_dynamic_cache": 0,
             "resolved_via_inline_hit": 0,
-            "resolved_via_vtex_api": 0,
+            "resolved_via_pdp": 0,
             "resolved_via_scalar_fields": 0,
+            "pdp_fetch_attempts": 0,
+            "pdp_fetch_failures": 0,
             "fallback_3p_unidentified": 0,
             "fallback_leroy_default": 0,
         }
+        if len(self._seller_cache):
+            logger.info(
+                f"[{self.platform_name}] Cache de sellers: "
+                f"{len(self._seller_cache)} IDs conhecidos"
+            )
 
     # ------------------------------------------------------------------
     # URL
@@ -231,58 +278,141 @@ class LeroyMerlinScraper(BaseScraper):
             logger.warning(f"[{self.platform_name}] Algolia API erro: {e}")
             return []
 
-    def _resolve_seller_id(self, seller_id: str) -> Optional[str]:
-        """Resolve um ID de seller VTEX/MongoDB para nome legível.
+    def _lookup_seller_id(self, seller_id: str) -> Optional[str]:
+        """
+        Resolve um seller ID **sem custo de rede**.
 
-        Camadas: cache estático → cache dinâmico → API VTEX.
-        IDs não resolvidos são memorados em `_seller_unresolved` para evitar
-        chamadas repetidas na mesma execução.
+        Camadas: mapa estático → cache em disco → cache da execução atual.
+        A resolução cara (PDP) fica em `_resolve_via_pdp`, chamada só para os
+        IDs que sobram depois desta.
+
+        Args:
+            seller_id: ObjectId vindo de ``marketplaceSellers``.
+
+        Returns:
+            Nome do seller, ou None se nenhum cache conhece o ID.
         """
         if not seller_id or not isinstance(seller_id, str):
             return None
 
         if seller_id in LEROY_SELLER_ID_MAP:
+            self._seller_metrics["resolved_via_static_map"] += 1
             return LEROY_SELLER_ID_MAP[seller_id]
 
+        cached = self._seller_cache.get(seller_id)
+        if cached:
+            self._seller_metrics["resolved_via_disk_cache"] += 1
+            return cached
+
         if seller_id in self._dynamic_seller_cache:
+            self._seller_metrics["resolved_via_dynamic_cache"] += 1
             return self._dynamic_seller_cache[seller_id]
 
-        if seller_id in self._seller_unresolved:
+        return None
+
+    # ------------------------------------------------------------------
+    # Resolução via PDP
+    # ------------------------------------------------------------------
+
+    def _fetch_pdp_html(self, url: str) -> Optional[str]:
+        """
+        Baixa o HTML de um PDP.
+
+        Tenta primeiro ``requests`` (rápido, sem browser). Se falhar — bloqueio,
+        timeout ou resposta suspeita de challenge — cai para o browser
+        Playwright já aberto, que carrega cookies e fingerprint reais.
+
+        Args:
+            url: URL absoluta do PDP.
+
+        Returns:
+            HTML da página, ou None se ambas as estratégias falharem.
+        """
+        # Se o caminho leve já falhou 3x seguidas (bloqueio/DNS), não insiste —
+        # vai direto ao browser e economiza uma requisição por PDP restante.
+        if self._pdp_requests_strikes < 3:
+            if self._pdp_session is None:
+                self._pdp_session = requests.Session()
+                self._pdp_session.headers.update(_PDP_HEADERS)
+            try:
+                resp = self._pdp_session.get(url, timeout=_PDP_TIMEOUT, allow_redirects=True)
+                html = resp.text or ""
+                # <1KB ou status != 200 = challenge/erro, não PDP renderizado.
+                if resp.status_code == 200 and len(html) > 1024:
+                    self._pdp_requests_strikes = 0
+                    return html
+                self._pdp_requests_strikes += 1
+                logger.debug(
+                    f"[{self.platform_name}] PDP via requests inutilizável "
+                    f"(HTTP {resp.status_code}, {len(html)} bytes): {url[:80]}"
+                )
+            except requests.RequestException as exc:
+                self._pdp_requests_strikes += 1
+                logger.debug(f"[{self.platform_name}] PDP via requests falhou: {exc}")
+
+            if self._pdp_requests_strikes == 3:
+                logger.info(
+                    f"[{self.platform_name}] PDP via requests indisponível "
+                    "(3 falhas) — usando o browser para o resto do run."
+                )
+
+        # Fallback: browser já aberto pelo BaseScraper.
+        if self._page is None:
+            return None
+        try:
+            self._page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            return self._page.content()
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] PDP via browser falhou: {exc}")
             return None
 
-        try:
-            url = _VTEX_SELLER_API.format(seller_id=seller_id)
-            resp = requests.get(
-                url,
-                headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
-                timeout=8,
-                allow_redirects=True,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                name = (
-                    data.get("Name")
-                    or data.get("SellerName")
-                    or data.get("name")
-                    or (data.get("Seller") or {}).get("Name")
-                )
-                if name and isinstance(name, str) and name.strip():
-                    clean = name.strip()
-                    self._dynamic_seller_cache[seller_id] = clean
-                    logger.info(
-                        f"[{self.platform_name}] Seller resolvido via API VTEX: "
-                        f"{seller_id} → {clean}"
-                    )
-                    return clean
-            else:
-                logger.debug(
-                    f"[{self.platform_name}] API seller {seller_id[:8]}… → HTTP {resp.status_code}"
-                )
-        except Exception as e:
-            logger.debug(f"[{self.platform_name}] Falha ao resolver seller {seller_id[:8]}…: {e}")
+    def _resolve_via_pdp(self, seller_id: str, product_url: Optional[str]) -> Optional[str]:
+        """
+        Abre o PDP de um produto do seller e extrai o nome do lojista.
 
-        self._seller_unresolved.add(seller_id)
-        return None
+        É a única fonte que expõe o nome ("Vendido e entregue por X") — o índice
+        Algolia só carrega o ObjectId. Custa 1 requisição por *seller novo*
+        (não por produto), e o resultado é persistido em disco.
+
+        Args:
+            seller_id: ObjectId do seller a resolver.
+            product_url: URL de um PDP representativo desse seller.
+
+        Returns:
+            Nome do seller, ou None (quota estourada, sem URL, fetch falhou ou
+            o PDP não expôs o lojista).
+        """
+        if not _PDP_RESOLVE_ENABLED or not product_url:
+            return None
+        if self._pdp_budget <= 0:
+            return None
+        if not self._seller_cache.should_retry(seller_id):
+            return None
+
+        self._pdp_budget -= 1
+        self._seller_metrics["pdp_fetch_attempts"] += 1
+
+        html = self._fetch_pdp_html(product_url)
+        if not html:
+            self._seller_metrics["pdp_fetch_failures"] += 1
+            self._seller_cache.mark_failed(seller_id, product_url)
+            return None
+
+        name = extract_seller_from_pdp(html, seller_id)
+        # Produto marcado como 3P no Algolia não pode resolver para a própria
+        # Leroy — sinal de PDP genérico/errado, melhor descartar.
+        if not name or is_leroy_self(name):
+            self._seller_metrics["pdp_fetch_failures"] += 1
+            self._seller_cache.mark_failed(seller_id, product_url)
+            return None
+
+        self._seller_cache.put(seller_id, name)
+        self._dynamic_seller_cache[seller_id] = name
+        self._seller_metrics["resolved_via_pdp"] += 1
+        logger.info(
+            f"[{self.platform_name}] Seller resolvido via PDP: {seller_id} → {name}"
+        )
+        return name
 
     # Scalar fields in the Algolia hit that may carry the seller name directly.
     # NOTE: "brand" intentionally excluded — product attribute, not a seller.
@@ -360,22 +490,26 @@ class LeroyMerlinScraper(BaseScraper):
 
         return None
 
-    def _extract_algolia_seller(self, hit: dict) -> str:
+    def _classify_hit_seller(self, hit: dict) -> Dict[str, Any]:
         """
-        Extrai o seller de um hit Algolia da Leroy Merlin.
+        Classifica o seller de um hit Algolia **sem tocar na rede**.
 
-        Resolution order for 3P products (marketplaceSellers = ["<mongo_id>"]):
-          1. Static map (LEROY_SELLER_ID_MAP) — instant, no I/O
-          2. Dynamic in-memory cache — instant, no I/O
-          3. Inline hit fields: `sellers` array + `installmentsBySeller` dict
-             (VTEX standard, zero network cost, populated by Algolia indexer)
-          4. VTEX catalog seller API — last resort; many MongoDB-style IDs
-             return HTTP 404 because the endpoint only accepts VTEX numeric IDs
-          5. Scalar hit fields (sellerName, seller, merchant, …)
-          6. Sentinel "3P (não identificado)" — WARNING logged once per unique ID
+        Camadas (todas de custo zero):
+          1. ``marketplaceSellers`` ausente/vazio → 1P (sortimento Leroy)
+          2. Lista de dicts com nome inline
+          3. Mapa estático → cache em disco → cache da execução
+          4. Campos inline do hit (`sellers`, `installmentsBySeller`)
+          5. Campos escalares (sellerName, merchant, …)
 
-        NEVER reads seller IDs from regionalAttributes, boitataFacets, or any
-        other field — those IDs are invalid for the VTEX seller API.
+        Quando nada resolve, devolve ``seller=None`` e o ``seller_id`` fica
+        pendente para a rodada de PDP em `_parse_algolia_hits`.
+
+        Args:
+            hit: hit bruto da API Algolia.
+
+        Returns:
+            Dict com ``seller`` (str|None), ``seller_id`` (str|None),
+            ``qtd_sellers`` (int|None) e ``tipo_seller`` ("1P"|"3P").
         """
         self._seller_metrics["total_hits"] += 1
 
@@ -394,7 +528,19 @@ class LeroyMerlinScraper(BaseScraper):
         if not marketplace_sellers:
             self._seller_metrics["marketplace_sellers_absent"] += 1
             self._seller_metrics["fallback_leroy_default"] += 1
-            return "Leroy Merlin"
+            return {
+                "seller": "Leroy Merlin",
+                "seller_id": None,
+                "qtd_sellers": 1,
+                "tipo_seller": "1P",
+            }
+
+        # Nº de sellers de marketplace anunciados pelo próprio índice.
+        qtd_sellers = (
+            len(marketplace_sellers)
+            if isinstance(marketplace_sellers, (list, dict))
+            else None
+        )
 
         if isinstance(marketplace_sellers, list) and marketplace_sellers:
             first = marketplace_sellers[0]
@@ -410,26 +556,36 @@ class LeroyMerlinScraper(BaseScraper):
                 )
                 if seller:
                     self._seller_metrics["resolved_via_inline_hit"] += 1
-                    return str(seller).strip()
-                # dict with no usable seller field
+                    return {
+                        "seller": str(seller).strip(),
+                        "seller_id": None,
+                        "qtd_sellers": qtd_sellers,
+                        "tipo_seller": "3P",
+                    }
+                # dict sem campo utilizável — cai para 1P por falta de evidência
                 self._seller_metrics["fallback_leroy_default"] += 1
-                return "Leroy Merlin"
+                return {
+                    "seller": "Leroy Merlin",
+                    "seller_id": None,
+                    "qtd_sellers": qtd_sellers,
+                    "tipo_seller": "1P",
+                }
 
-            # Case B: list of MongoDB ObjectId strings — multi-layer resolution
+            # Case B: list of MongoDB ObjectId strings
             if isinstance(first, str):
                 self._seller_metrics["marketplace_sellers_list_str"] += 1
 
-                # Layer 1: static map
-                if first in LEROY_SELLER_ID_MAP:
-                    self._seller_metrics["resolved_via_static_map"] += 1
-                    return LEROY_SELLER_ID_MAP[first]
+                # Layers 1-3: mapa estático / cache em disco / cache do run
+                cached = self._lookup_seller_id(first)
+                if cached:
+                    return {
+                        "seller": cached,
+                        "seller_id": first,
+                        "qtd_sellers": qtd_sellers,
+                        "tipo_seller": "3P",
+                    }
 
-                # Layer 2: dynamic in-memory cache
-                if first in self._dynamic_seller_cache:
-                    self._seller_metrics["resolved_via_dynamic_cache"] += 1
-                    return self._dynamic_seller_cache[first]
-
-                # Layer 3: inline `sellers` / `installmentsBySeller` — zero network cost
+                # Layer 4: inline `sellers` / `installmentsBySeller`
                 inline = self._find_seller_in_hit(hit, first)
                 if inline:
                     self._dynamic_seller_cache[first] = inline
@@ -437,13 +593,12 @@ class LeroyMerlinScraper(BaseScraper):
                     logger.debug(
                         f"[{self.platform_name}] Seller resolvido inline: {first[:8]}… → {inline}"
                     )
-                    return inline
-
-                # Layer 4: VTEX catalog API (may 404 for MongoDB-style IDs)
-                resolved = self._resolve_seller_id(first)
-                if resolved:
-                    self._seller_metrics["resolved_via_vtex_api"] += 1
-                    return resolved
+                    return {
+                        "seller": inline,
+                        "seller_id": first,
+                        "qtd_sellers": qtd_sellers,
+                        "tipo_seller": "3P",
+                    }
 
                 # Layer 5: scalar name fields
                 for field in self._SELLER_NAME_FIELDS:
@@ -452,17 +607,20 @@ class LeroyMerlinScraper(BaseScraper):
                         name = val.strip()
                         self._dynamic_seller_cache[first] = name
                         self._seller_metrics["resolved_via_scalar_fields"] += 1
-                        return name
+                        return {
+                            "seller": name,
+                            "seller_id": first,
+                            "qtd_sellers": qtd_sellers,
+                            "tipo_seller": "3P",
+                        }
 
-                # Layer 6: sentinel — warn once per unique ID
-                if first not in self._seller_warned:
-                    self._seller_warned.add(first)
-                    logger.warning(
-                        f"[{self.platform_name}] Seller ID não resolvido: {first} "
-                        f"(produto: {str(hit.get('name', '?'))[:60]})"
-                    )
-                self._seller_metrics["fallback_3p_unidentified"] += 1
-                return "3P (não identificado)"
+                # Pendente — a rodada de PDP tenta resolver antes do fallback.
+                return {
+                    "seller": None,
+                    "seller_id": first,
+                    "qtd_sellers": qtd_sellers,
+                    "tipo_seller": "3P",
+                }
 
         # Case C: dict keyed by sellerId
         if isinstance(marketplace_sellers, dict) and marketplace_sellers:
@@ -477,10 +635,52 @@ class LeroyMerlinScraper(BaseScraper):
                 )
                 if seller:
                     self._seller_metrics["resolved_via_inline_hit"] += 1
-                    return str(seller).strip()
+                    return {
+                        "seller": str(seller).strip(),
+                        "seller_id": str(first_key),
+                        "qtd_sellers": qtd_sellers,
+                        "tipo_seller": "3P",
+                    }
 
         self._seller_metrics["fallback_leroy_default"] += 1
-        return "Leroy Merlin"
+        return {
+            "seller": "Leroy Merlin",
+            "seller_id": None,
+            "qtd_sellers": qtd_sellers,
+            "tipo_seller": "1P",
+        }
+
+    def _resolve_pending_sellers(
+        self,
+        pending: Dict[str, str],
+    ) -> Dict[str, str]:
+        """
+        Resolve, via PDP, os seller IDs que sobraram das camadas de cache.
+
+        Roda **uma vez por página**, sobre IDs *únicos* — é isso que torna a
+        estratégia viável: 24 hits podem virar 1-3 PDPs, e cada ID resolvido
+        nunca mais é buscado (cache em disco).
+
+        Args:
+            pending: mapa ``seller_id → URL de um PDP representativo``.
+
+        Returns:
+            Mapa ``seller_id → nome`` apenas dos que foram resolvidos.
+        """
+        if not pending or not _PDP_RESOLVE_ENABLED:
+            return {}
+
+        resolved: Dict[str, str] = {}
+        for seller_id, product_url in pending.items():
+            name = self._resolve_via_pdp(seller_id, product_url)
+            if name:
+                resolved[seller_id] = name
+            self._random_delay(min_s=0.4, max_s=1.2)
+
+        # Salva também quando nada resolveu: a quarentena dos IDs que falharam
+        # é o que evita repetir os mesmos PDPs mortos na próxima coleta.
+        self._seller_cache.save()
+        return resolved
 
     def _parse_algolia_hits(
         self,
@@ -489,9 +689,36 @@ class LeroyMerlinScraper(BaseScraper):
         keyword_category_map: dict,
         page_offset: int,
     ) -> List[Dict[str, Any]]:
+        # --- Passada 1: classifica sellers e junta os IDs pendentes ---
+        # Trabalhar por ID único (e não por produto) é o que torna a resolução
+        # via PDP barata: dezenas de hits colapsam em poucos IDs novos.
+        seller_info: List[Dict[str, Any]] = []
+        pending: Dict[str, str] = {}
+        for hit in hits:
+            info = self._classify_hit_seller(hit)
+            seller_info.append(info)
+            sid = info.get("seller_id")
+            if info.get("seller") is None and sid and sid not in pending:
+                url = self._extract_algolia_url(hit)
+                if url:
+                    pending[sid] = url
+
+        # --- Passada 2: resolve os pendentes abrindo 1 PDP por seller novo ---
+        if pending:
+            logger.debug(
+                f"[{self.platform_name}] {len(pending)} seller(s) pendente(s) "
+                f"para resolução via PDP"
+            )
+            resolved = self._resolve_pending_sellers(pending)
+            for info in seller_info:
+                sid = info.get("seller_id")
+                if info.get("seller") is None and sid in resolved:
+                    info["seller"] = resolved[sid]
+
         records = []
 
         for idx, hit in enumerate(hits):
+            info = seller_info[idx]
             # Título: prioridade para nome curto (name/shortName/title).
             # "description" em Leroy tende a conter texto de bullet points.
             title = (
@@ -542,9 +769,22 @@ class LeroyMerlinScraper(BaseScraper):
                     f"{json.dumps(hit, ensure_ascii=False)[:800]}"
                 )
 
-            seller = self._extract_algolia_seller(hit)
-            # 1P = sortimento próprio Leroy; qualquer outro = 3P marketplace
-            tipo_seller = "1P" if (seller or "").strip() == "Leroy Merlin" else "3P"
+            seller = info.get("seller")
+            if seller is None:
+                # Nem cache nem PDP identificaram o lojista — WARNING uma vez
+                # por ID único, para o log continuar legível.
+                sid = info.get("seller_id")
+                if sid and sid not in self._seller_warned:
+                    self._seller_warned.add(sid)
+                    logger.warning(
+                        f"[{self.platform_name}] Seller ID não resolvido: {sid} "
+                        f"(produto: {str(hit.get('name', '?'))[:60]})"
+                    )
+                self._seller_metrics["fallback_3p_unidentified"] += 1
+                seller = UNRESOLVED_SELLER
+            tipo_seller = info.get("tipo_seller") or (
+                "1P" if seller.strip() == "Leroy Merlin" else "3P"
+            )
 
             rating = (
                 hit.get("rating")
@@ -574,6 +814,7 @@ class LeroyMerlinScraper(BaseScraper):
                 price_float=price_float,
                 seller=seller,
                 buy_box_seller=seller,
+                qtd_sellers=info.get("qtd_sellers"),
                 tipo_seller=tipo_seller,
                 is_fulfillment=False,
                 rating=float(rating) if rating else None,
@@ -586,7 +827,7 @@ class LeroyMerlinScraper(BaseScraper):
             n_1p = sum(1 for r in records if r.get("Seller / Vendedor") == "Leroy Merlin")
             n_unresolved = sum(
                 1 for r in records
-                if r.get("Seller / Vendedor") == "3P (não identificado)"
+                if r.get("Seller / Vendedor") == UNRESOLVED_SELLER
             )
             n_3p_resolved = len(records) - n_1p - n_unresolved
             logger.info(
