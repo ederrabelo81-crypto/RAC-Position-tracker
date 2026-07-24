@@ -147,3 +147,17 @@ vira `-`. Validar antes de commitar: `grep -nP '[^\x00-\x7F]' script.ps1`.
 **Why:** Rating text "4,5 de 5 estrelas" matches the same class.
 **Right:** Use `_extract_seller()` with text pattern matching: "Vendido por" split, `por ` prefix, length guards.
 **Files:** `scrapers/amazon.py` `_extract_seller()`
+
+## 14. Mercado Livre Login Gate — UA de Firefox num browser Chromium (Jul/2026)
+
+**Wrong:** Manter um User-Agent de Firefox em `config.USER_AGENTS`.
+**Why:** `BaseScraper._launch()` só lança engines Chromium reais (`channel`
+"chrome" -> "msedge" -> chromium puro) — nunca Firefox. Quando o UA Firefox
+era sorteado (~1/5 execuções, escolhido 1x em `__init__` e reusado pela run
+inteira), o contexto tinha TLS handshake + `window.chrome`/plugins/permissions
+de Chromium real mas `navigator.userAgent` anunciando Firefox — mismatch
+clássico de bot detection. Resultado: `_is_login_gate()` disparava em quase
+100% das keywords da run inteira ("Login gate detectado").
+**Right:** `USER_AGENTS` só com UAs Chrome/Edge (Chromium-family), consistente
+com o engine que `_launch()` de fato sempre lança.
+**Files:** `config.py` `USER_AGENTS`, `scrapers/base.py` `_launch()`
