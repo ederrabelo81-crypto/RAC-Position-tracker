@@ -27,6 +27,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -42,6 +43,8 @@ from utils.leroy_sellers import (
     extract_seller_from_pdp,
     is_leroy_self,
 )
+
+_OBJECT_ID_RE = re.compile(r"[0-9a-f]{24}", re.IGNORECASE)
 
 _HEADERS = {
     "User-Agent": (
@@ -140,6 +143,12 @@ def extract_seller_ids(marketplace_sellers: Any) -> list[str]:
     - lista de dicts   — ``[{"sellerId": "…", "sellerName": "…"}]``
     - dict indexado    — ``{"5e6fd1d9…": {...}}``
 
+    No shape de dict, uma chave só é aceita como seller ID quando o valor é um
+    dict (mesma condição do Caso C do scraper) ou quando a própria chave tem
+    cara de ObjectId. Sem isso, um dict que não é indexado por ID — ex.
+    ``{"id": "…"}`` — viraria um seller fantasma chamado "id" no relatório,
+    inventando uma lacuna de cache e engolindo o aviso de shape novo.
+
     Args:
         marketplace_sellers: valor bruto do campo, em qualquer formato.
 
@@ -149,6 +158,8 @@ def extract_seller_ids(marketplace_sellers: Any) -> list[str]:
     Example:
         >>> extract_seller_ids([{"sellerId": "abc"}, "def"])
         ['abc', 'def']
+        >>> extract_seller_ids({"id": "nao-e-indexado"})
+        []
     """
     ids: list[str] = []
     if isinstance(marketplace_sellers, list):
@@ -165,7 +176,11 @@ def extract_seller_ids(marketplace_sellers: Any) -> list[str]:
                 if sid:
                     ids.append(str(sid))
     elif isinstance(marketplace_sellers, dict):
-        ids = [str(sid) for sid in marketplace_sellers if sid]
+        for key, value in marketplace_sellers.items():
+            if not key:
+                continue
+            if isinstance(value, dict) or _OBJECT_ID_RE.fullmatch(str(key)):
+                ids.append(str(key))
     return ids
 
 

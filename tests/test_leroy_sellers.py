@@ -436,6 +436,22 @@ class TestExtractSellerIdsDoProbe:
         from scripts.leroy_seller_probe import extract_seller_ids
         assert extract_seller_ids({SELLER_ID: {"sellerName": "X"}}) == [SELLER_ID]
 
+    def test_dict_indexado_com_valor_escalar(self):
+        """Chave com cara de ObjectId é aceita mesmo sem dict no valor."""
+        from scripts.leroy_seller_probe import extract_seller_ids
+        assert extract_seller_ids({SELLER_ID: "Refri Center"}) == [SELLER_ID]
+
+    def test_dict_nao_indexado_nao_gera_seller_fantasma(self):
+        """
+        `{"id": "..."}` é o shape que o scraper trata como inesperado. Emitir a
+        chave aqui criaria um seller chamado "id" no relatório — lacuna de cache
+        inventada — e silenciaria o aviso de shape novo, que é o diagnóstico
+        correto para esse caso.
+        """
+        from scripts.leroy_seller_probe import extract_seller_ids
+        assert extract_seller_ids({"id": "nao-e-dict"}) == []
+        assert extract_seller_ids({"sellerName": "Refri Center"}) == []
+
     def test_shapes_mistos_e_entradas_inuteis(self):
         from scripts.leroy_seller_probe import extract_seller_ids
         assert extract_seller_ids([SELLER_ID, {"semId": 1}, "", None]) == [SELLER_ID]
