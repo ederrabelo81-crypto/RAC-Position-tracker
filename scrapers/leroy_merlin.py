@@ -61,9 +61,34 @@ UNRESOLVED_SELLER = "3P (não identificado)"
 # ("Vendido e entregue por X"). Como a chave é o *seller ID* e não o produto,
 # basta 1 PDP por ID novo — dezenas por run na primeira coleta, ~zero depois,
 # graças ao cache em disco.
+#
+# O .env do projeto só é carregado tarde (por `utils/supabase_client`, no fim do
+# main.py), então sem este load explícito os knobs abaixo só funcionariam como
+# variável de ambiente de shell. Mesmo padrão já usado por supabase_client.py e
+# import_history.py; `load_dotenv` não sobrescreve o que já está no ambiente.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:  # python-dotenv é opcional em alguns ambientes de CI
+    pass
+
 _PDP_RESOLVE_ENABLED = os.environ.get("LEROY_PDP_RESOLVE", "1") not in ("0", "false", "False")
 _PDP_MAX_PER_RUN = int(os.environ.get("LEROY_PDP_MAX_PER_RUN", "40") or 40)
 _PDP_TIMEOUT = float(os.environ.get("LEROY_PDP_TIMEOUT", "12") or 12)
+
+# Marcadores de página de challenge/bloqueio. Akamai & cia costumam responder
+# HTTP 200 com um interstitial de JS, indistinguível de um PDP pelo tamanho.
+# Só afeta a contagem de strikes do caminho leve — o browser é tentado de
+# qualquer forma antes de desistir de um seller.
+_PDP_CHALLENGE_MARKERS = (
+    "px-captcha",
+    "challenge-form",
+    "captcha-delivery",
+    "access denied",
+    "acesso negado",
+    "unusual traffic",
+)
 
 _PDP_HEADERS = {
     "User-Agent": (
@@ -314,49 +339,67 @@ class LeroyMerlinScraper(BaseScraper):
     # Resolução via PDP
     # ------------------------------------------------------------------
 
-    def _fetch_pdp_html(self, url: str) -> Optional[str]:
+    def _fetch_pdp_requests(self, url: str) -> Optional[str]:
         """
-        Baixa o HTML de um PDP.
+        Caminho leve: baixa o PDP com ``requests``, sem browser.
 
-        Tenta primeiro ``requests`` (rápido, sem browser). Se falhar — bloqueio,
-        timeout ou resposta suspeita de challenge — cai para o browser
-        Playwright já aberto, que carrega cookies e fingerprint reais.
+        Descarta respostas que não são PDP renderizado — status != 200, corpo
+        <1KB ou marcadores de challenge (Akamai responde HTTP 200 com
+        interstitial de JS, que passaria pelo teste de tamanho).
 
         Args:
             url: URL absoluta do PDP.
 
         Returns:
-            HTML da página, ou None se ambas as estratégias falharem.
+            HTML da página, ou None se a resposta for inutilizável.
         """
-        # Se o caminho leve já falhou 3x seguidas (bloqueio/DNS), não insiste —
-        # vai direto ao browser e economiza uma requisição por PDP restante.
-        if self._pdp_requests_strikes < 3:
-            if self._pdp_session is None:
-                self._pdp_session = requests.Session()
-                self._pdp_session.headers.update(_PDP_HEADERS)
-            try:
-                resp = self._pdp_session.get(url, timeout=_PDP_TIMEOUT, allow_redirects=True)
-                html = resp.text or ""
-                # <1KB ou status != 200 = challenge/erro, não PDP renderizado.
-                if resp.status_code == 200 and len(html) > 1024:
+        if self._pdp_session is None:
+            self._pdp_session = requests.Session()
+            self._pdp_session.headers.update(_PDP_HEADERS)
+
+        try:
+            resp = self._pdp_session.get(url, timeout=_PDP_TIMEOUT, allow_redirects=True)
+            html = resp.text or ""
+            if resp.status_code == 200 and len(html) > 1024:
+                lowered = html[:20_000].lower()
+                marker = next(
+                    (m for m in _PDP_CHALLENGE_MARKERS if m in lowered), None
+                )
+                if marker is None:
                     self._pdp_requests_strikes = 0
                     return html
-                self._pdp_requests_strikes += 1
+                logger.debug(
+                    f"[{self.platform_name}] PDP via requests bloqueado "
+                    f"(marcador '{marker}'): {url[:80]}"
+                )
+            else:
                 logger.debug(
                     f"[{self.platform_name}] PDP via requests inutilizável "
                     f"(HTTP {resp.status_code}, {len(html)} bytes): {url[:80]}"
                 )
-            except requests.RequestException as exc:
-                self._pdp_requests_strikes += 1
-                logger.debug(f"[{self.platform_name}] PDP via requests falhou: {exc}")
+            self._pdp_requests_strikes += 1
+        except requests.RequestException as exc:
+            self._pdp_requests_strikes += 1
+            logger.debug(f"[{self.platform_name}] PDP via requests falhou: {exc}")
 
-            if self._pdp_requests_strikes == 3:
-                logger.info(
-                    f"[{self.platform_name}] PDP via requests indisponível "
-                    "(3 falhas) — usando o browser para o resto do run."
-                )
+        if self._pdp_requests_strikes == 3:
+            logger.info(
+                f"[{self.platform_name}] PDP via requests indisponível "
+                "(3 falhas) — usando o browser para o resto do run."
+            )
+        return None
 
-        # Fallback: browser já aberto pelo BaseScraper.
+    def _fetch_pdp_browser(self, url: str) -> Optional[str]:
+        """
+        Caminho pesado: carrega o PDP no browser Playwright já aberto, que
+        carrega cookies e fingerprint reais.
+
+        Args:
+            url: URL absoluta do PDP.
+
+        Returns:
+            HTML renderizado, ou None se não houver browser ou a navegação falhar.
+        """
         if self._page is None:
             return None
         try:
@@ -392,16 +435,28 @@ class LeroyMerlinScraper(BaseScraper):
         self._pdp_budget -= 1
         self._seller_metrics["pdp_fetch_attempts"] += 1
 
-        html = self._fetch_pdp_html(product_url)
-        if not html:
-            self._seller_metrics["pdp_fetch_failures"] += 1
-            self._seller_cache.mark_failed(seller_id, product_url)
-            return None
+        # Escada de estratégias: o caminho leve não é conclusivo. Uma página de
+        # challenge com HTTP 200 pode escapar dos marcadores, e um PDP pode ter
+        # layout que a extração não alcança — desistir no primeiro fetch
+        # colocaria o seller em quarentena de 7 dias sem nunca tentar o browser.
+        strategies = []
+        if self._pdp_requests_strikes < 3:
+            strategies.append(self._fetch_pdp_requests)
+        strategies.append(self._fetch_pdp_browser)
 
-        name = extract_seller_from_pdp(html, seller_id)
-        # Produto marcado como 3P no Algolia não pode resolver para a própria
-        # Leroy — sinal de PDP genérico/errado, melhor descartar.
-        if not name or is_leroy_self(name):
+        name: Optional[str] = None
+        for fetch in strategies:
+            html = fetch(product_url)
+            if not html:
+                continue
+            candidate = extract_seller_from_pdp(html, seller_id)
+            # Produto marcado como 3P no Algolia não pode resolver para a
+            # própria Leroy — sinal de PDP genérico/errado, melhor descartar.
+            if candidate and not is_leroy_self(candidate):
+                name = candidate
+                break
+
+        if not name:
             self._seller_metrics["pdp_fetch_failures"] += 1
             self._seller_cache.mark_failed(seller_id, product_url)
             return None
@@ -562,13 +617,14 @@ class LeroyMerlinScraper(BaseScraper):
                         "qtd_sellers": qtd_sellers,
                         "tipo_seller": "3P",
                     }
-                # dict sem campo utilizável — cai para 1P por falta de evidência
-                self._seller_metrics["fallback_leroy_default"] += 1
+                # Dict sem campo utilizável. A presença de `marketplaceSellers`
+                # já é evidência de oferta de marketplace, então marcar 1P aqui
+                # inventaria vitória da Leroy — mantém 3P com sentinela.
                 return {
-                    "seller": "Leroy Merlin",
+                    "seller": None,
                     "seller_id": None,
                     "qtd_sellers": qtd_sellers,
-                    "tipo_seller": "1P",
+                    "tipo_seller": "3P",
                 }
 
             # Case B: list of MongoDB ObjectId strings
@@ -642,12 +698,14 @@ class LeroyMerlinScraper(BaseScraper):
                         "tipo_seller": "3P",
                     }
 
-        self._seller_metrics["fallback_leroy_default"] += 1
+        # Formato inesperado de `marketplaceSellers` (string solta, dict com
+        # entrada não-dict, shape novo do índice…). O campo estar preenchido já
+        # indica oferta de marketplace: 3P com sentinela, nunca 1P forjado.
         return {
-            "seller": "Leroy Merlin",
+            "seller": None,
             "seller_id": None,
             "qtd_sellers": qtd_sellers,
-            "tipo_seller": "1P",
+            "tipo_seller": "3P",
         }
 
     def _resolve_pending_sellers(

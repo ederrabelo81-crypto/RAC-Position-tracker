@@ -107,7 +107,15 @@ Detalhes que importam:
   24 hits primeiro, junta os IDs únicos pendentes, só então abre PDPs.
 - IDs que falham entram em quarentena (`retry_days=7`) — não se gasta um PDP por
   run com o mesmo ID morto.
-- Fetch do PDP tenta `requests` e cai para o browser Playwright já aberto.
+- Fetch do PDP tenta `requests` e cai para o browser Playwright já aberto. O
+  caminho leve **não é conclusivo**: Akamai responde HTTP 200 com interstitial
+  de JS, que passa em qualquer teste de tamanho. Por isso a escada tenta o
+  browser sempre que o fetch leve não produzir um *nome*, não apenas quando ele
+  falha — do contrário um run bloqueado jogaria todos os sellers na quarentena
+  de 7 dias sem nunca acionar o fallback.
+- Os knobs precisam de `load_dotenv()` no próprio módulo: o `.env` do projeto só
+  é carregado tarde (por `utils/supabase_client`, no fim do `main.py`), depois
+  dos imports dos scrapers.
 - Knobs: `LEROY_PDP_RESOLVE=0` desliga, `LEROY_PDP_MAX_PER_RUN` (padrão 40) limita.
 - Diagnóstico: `python scripts/leroy_seller_probe.py --scan "ar condicionado lg"`
   lista os IDs de uma busca e marca quais ainda são desconhecidos.

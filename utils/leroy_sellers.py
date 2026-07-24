@@ -321,6 +321,15 @@ class LeroySellerCache:
             logger.warning(f"[LeroySellers] Cache ilegível ({self.path}): {exc}")
             return
 
+        # JSON válido mas não-objeto (lista, número, string) faria `.get`
+        # estourar AttributeError e impediria o scraper de nem iniciar.
+        if not isinstance(data, dict):
+            logger.warning(
+                f"[LeroySellers] Cache com raiz inesperada "
+                f"({type(data).__name__}, esperado objeto): {self.path}"
+            )
+            return
+
         sellers = data.get("sellers")
         if isinstance(sellers, dict):
             self._sellers = {

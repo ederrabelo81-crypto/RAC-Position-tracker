@@ -37,7 +37,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import requests
 from loguru import logger
 
-from utils.leroy_sellers import LeroySellerCache, extract_seller_from_pdp
+from utils.leroy_sellers import (
+    LeroySellerCache,
+    extract_seller_from_pdp,
+    is_leroy_self,
+)
 
 _HEADERS = {
     "User-Agent": (
@@ -90,18 +94,33 @@ def cmd_pdp(cache: LeroySellerCache, url: str, seller_id: Optional[str]) -> int:
         logger.info(f"HTML salvo para inspeção: {dump}")
         return 1
     logger.success(f"Seller: {name}")
-    if seller_id:
-        cache.put(seller_id, name)
-        cache.save()
-        logger.success(f"Gravado no cache: {seller_id} → {name}")
-    else:
+    if not seller_id:
         logger.warning("Sem --seller-id: nada foi gravado no cache.")
+        return 0
+
+    # Mesma guarda do scraper: um ID de marketplace jamais deve ser gravado
+    # apontando para a própria Leroy — envenenaria o cache de forma persistente,
+    # fazendo o produto 3P ser medido como 1P em todas as coletas seguintes.
+    if is_leroy_self(name):
+        logger.error(
+            f"'{name}' é o sortimento 1P da Leroy — não gravado para {seller_id}. "
+            "PDP provavelmente genérico/redirecionado; use --set para forçar."
+        )
+        return 1
+
+    cache.put(seller_id, name)
+    cache.save()
+    logger.success(f"Gravado no cache: {seller_id} → {name}")
     return 0
 
 
 def cmd_html(path: str, seller_id: Optional[str]) -> int:
     """Testa a extração sobre um HTML local (offline)."""
-    html = Path(path).read_text(encoding="utf-8", errors="ignore")
+    try:
+        html = Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError as exc:
+        logger.error(f"Não foi possível ler {path}: {exc}")
+        return 1
     name = extract_seller_from_pdp(html, seller_id)
     if not name:
         logger.error("Nenhuma estratégia extraiu o seller deste HTML.")
@@ -122,6 +141,7 @@ def cmd_scan(cache: LeroySellerCache, keyword: str, pages: int) -> int:
     counts: Counter = Counter()
     urls: dict[str, str] = {}
     n_1p = 0
+    n_3p = 0
 
     for page in range(pages):
         payload = {"query": keyword, "hitsPerPage": _ITEMS_PER_PAGE, "page": page}
@@ -141,20 +161,33 @@ def cmd_scan(cache: LeroySellerCache, keyword: str, pages: int) -> int:
             if not ms:
                 n_1p += 1
                 continue
-            if isinstance(ms, list) and isinstance(ms[0], str):
-                counts[ms[0]] += 1
-                slug = hit.get("url") or hit.get("linkText") or hit.get("slug")
-                if slug and ms[0] not in urls:
-                    slug = str(slug)
-                    urls[ms[0]] = (
-                        slug if slug.startswith("http")
-                        else f"https://www.leroymerlin.com.br{slug}"
-                        if slug.startswith("/")
-                        else f"https://www.leroymerlin.com.br/{slug.strip('/')}/p"
-                    )
+            n_3p += 1
+            if not isinstance(ms, list):
+                continue
+            slug = hit.get("url") or hit.get("linkText") or hit.get("slug")
+            slug = str(slug) if slug else None
+            url = (
+                slug if not slug or slug.startswith("http")
+                else f"https://www.leroymerlin.com.br{slug}"
+                if slug.startswith("/")
+                else f"https://www.leroymerlin.com.br/{slug.strip('/')}/p"
+            )
+            # Conta *todos* os IDs do hit, não só o da buy box: o objetivo do
+            # scan é achar lacunas no cache, e parar no primeiro esconderia
+            # sellers desconhecidos em produtos multi-oferta.
+            for sid in (s for s in ms if isinstance(s, str)):
+                counts[sid] += 1
+                if url and sid not in urls:
+                    urls[sid] = url
 
-    total = n_1p + sum(counts.values())
-    logger.info(f"'{keyword}': {total} hits | {n_1p} 1P | {len(counts)} seller ID(s) 3P únicos")
+    desconhecidos = [
+        sid for sid in counts
+        if not (LEROY_SELLER_ID_MAP.get(sid) or cache.get(sid))
+    ]
+    logger.info(
+        f"'{keyword}': {n_1p + n_3p} hits | {n_1p} 1P | {n_3p} 3P | "
+        f"{len(counts)} seller ID(s) únicos, {len(desconhecidos)} desconhecido(s)"
+    )
     for sid, n in counts.most_common():
         known = LEROY_SELLER_ID_MAP.get(sid) or cache.get(sid)
         status = f"✓ {known}" if known else "✗ DESCONHECIDO"

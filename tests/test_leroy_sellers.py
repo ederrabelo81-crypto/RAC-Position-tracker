@@ -161,6 +161,15 @@ class TestLeroySellerCache:
         cache = LeroySellerCache(path=path)
         assert len(cache) == 0
 
+    @pytest.mark.parametrize("conteudo", ["[]", "42", '"texto"', "null"])
+    def test_json_valido_mas_nao_objeto_nao_quebra(self, tmp_path, conteudo):
+        """JSON válido com raiz não-objeto não pode impedir o scraper de iniciar."""
+        path = tmp_path / "c.json"
+        path.write_text(conteudo, encoding="utf-8")
+        cache = LeroySellerCache(path=path)
+        assert len(cache) == 0
+        assert cache.get(SELLER_ID) is None
+
 
 @pytest.fixture
 def scraper(tmp_path):
@@ -198,6 +207,26 @@ class TestClassifyHitSeller:
             "name": "Ar Condicionado", "marketplaceSellers": [SELLER_ID, "outro_id"],
         })
         assert info["qtd_sellers"] == 2
+
+    def test_dict_sem_nome_nao_vira_1p_falso(self, scraper):
+        """
+        `marketplaceSellers` preenchido já é evidência de oferta de marketplace.
+        Um dict sem nome utilizável não pode ser medido como vitória 1P da
+        Leroy — isso falsearia o share 1P vs 3P, que é o foco da coleta.
+        """
+        info = scraper._classify_hit_seller({
+            "name": "Ar Condicionado", "marketplaceSellers": [{"algoInesperado": 1}],
+        })
+        assert info["tipo_seller"] == "3P"
+        assert info["seller"] is None
+
+    def test_shape_inesperado_nao_vira_1p_falso(self, scraper):
+        """Idem para um shape que nenhuma das ramificações conhece."""
+        info = scraper._classify_hit_seller({
+            "name": "Ar Condicionado", "marketplaceSellers": {"id": "nao-e-dict"},
+        })
+        assert info["tipo_seller"] == "3P"
+        assert info["seller"] is None
 
     def test_sellers_inline_tem_prioridade_sobre_pdp(self, scraper):
         info = scraper._classify_hit_seller({
@@ -268,7 +297,8 @@ class TestParseAlgoliaHitsSemRede:
         """
         dormiu = []
         monkeypatch.setattr(scraper, "_random_delay", lambda **kw: dormiu.append(kw))
-        monkeypatch.setattr(scraper, "_fetch_pdp_html", lambda url: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
         scraper._pdp_budget = 0
 
         resolvidos = scraper._resolve_pending_sellers({SELLER_ID: "https://exemplo/p"})
@@ -280,7 +310,8 @@ class TestParseAlgoliaHitsSemRede:
         """Idem para ID já em quarentena: volta sem rede, logo sem espera."""
         dormiu = []
         monkeypatch.setattr(scraper, "_random_delay", lambda **kw: dormiu.append(kw))
-        monkeypatch.setattr(scraper, "_fetch_pdp_html", lambda url: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
         scraper._seller_cache.mark_failed(SELLER_ID)
 
         scraper._resolve_pending_sellers({SELLER_ID: "https://exemplo/p"})
@@ -293,7 +324,7 @@ class TestParseAlgoliaHitsSemRede:
         dormiu = []
         monkeypatch.setattr(scraper, "_random_delay", lambda **kw: dormiu.append(kw))
         monkeypatch.setattr(
-            scraper, "_fetch_pdp_html",
+            scraper, "_fetch_pdp_requests",
             lambda url: "<html><body>" + "<p>x</p>" * 200 +
                         "<p>Vendido e entregue por Refri Center</p></body></html>",
         )
@@ -301,6 +332,69 @@ class TestParseAlgoliaHitsSemRede:
 
         assert resolvidos == {SELLER_ID: "Refri Center"}
         assert len(dormiu) == 1
+
+    def test_challenge_http_200_nao_impede_o_fallback_de_browser(self, scraper, monkeypatch):
+        """
+        Regressão (P1): Akamai responde HTTP 200 com interstitial de JS, que
+        passa no teste de tamanho. Antes isso era aceito como PDP, a extração
+        falhava e o seller ia para quarentena de 7 dias sem o browser nunca ser
+        tentado — justamente quando o fallback mais importa.
+        """
+        challenge = "<html><body>" + "<p>z</p>" * 200 + "</body></html>"
+        pdp_bom = ("<html><body>" + "<p>x</p>" * 200 +
+                   "<p>Vendido e entregue por Refri Center</p></body></html>")
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: challenge)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: pdp_bom)
+        monkeypatch.setattr(scraper, "_random_delay", lambda **kw: None)
+
+        nome = scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p")
+
+        assert nome == "Refri Center"
+        assert scraper._seller_cache.get(SELLER_ID) == "Refri Center"
+        # e não entrou em quarentena
+        assert scraper._seller_cache.should_retry(SELLER_ID) is True
+
+    def test_pdp_que_resolve_para_a_propria_leroy_e_descartado(self, scraper, monkeypatch):
+        """Um ID de marketplace não pode ser cacheado apontando para a Leroy 1P."""
+        pdp_1p = ("<html><body>" + "<p>x</p>" * 200 +
+                  "<p>Vendido e entregue por Leroy Merlin</p></body></html>")
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: pdp_1p)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: pdp_1p)
+
+        assert scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p") is None
+        assert scraper._seller_cache.get(SELLER_ID) is None
+
+    def test_marcadores_de_challenge_sao_rejeitados_no_caminho_leve(self, scraper):
+        """`_fetch_pdp_requests` não devolve página de challenge com HTTP 200."""
+        class FakeResp:
+            status_code = 200
+            text = "<html><body><div id='px-captcha'></div>" + "<p>z</p>" * 300 + "</body></html>"
+
+        class FakeSession:
+            headers: dict = {}
+            def get(self, *a, **kw):
+                return FakeResp()
+
+        scraper._pdp_session = FakeSession()
+        assert scraper._fetch_pdp_requests("https://exemplo/p") is None
+        assert scraper._pdp_requests_strikes == 1
+
+    def test_pdp_legitimo_passa_no_caminho_leve(self, scraper):
+        """Contraprova: PDP normal não é confundido com challenge."""
+        class FakeResp:
+            status_code = 200
+            text = ("<html><body>" + "<p>x</p>" * 300 +
+                    "<p>Vendido e entregue por Refri Center</p></body></html>")
+
+        class FakeSession:
+            headers: dict = {}
+            def get(self, *a, **kw):
+                return FakeResp()
+
+        scraper._pdp_session = FakeSession()
+        scraper._pdp_requests_strikes = 2
+        assert scraper._fetch_pdp_requests("https://exemplo/p") is not None
+        assert scraper._pdp_requests_strikes == 0   # sucesso zera os strikes
 
     def test_um_pdp_por_id_unico_e_nao_por_produto(self, scraper, monkeypatch):
         """3 produtos do mesmo seller → 1 única entrada pendente."""
