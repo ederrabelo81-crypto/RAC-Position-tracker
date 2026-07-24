@@ -672,10 +672,21 @@ class LeroyMerlinScraper(BaseScraper):
 
         resolved: Dict[str, str] = {}
         for seller_id, product_url in pending.items():
+            # Orçamento estourado: nada mais será buscado nesta execução, então
+            # não há motivo para continuar iterando.
+            if self._pdp_budget <= 0:
+                break
+
+            attempts_before = self._seller_metrics["pdp_fetch_attempts"]
             name = self._resolve_via_pdp(seller_id, product_url)
             if name:
                 resolved[seller_id] = name
-            self._random_delay(min_s=0.4, max_s=1.2)
+
+            # Só espaça quando houve requisição de verdade. IDs em quarentena
+            # voltam sem tocar a rede — dormir aí seria tempo morto acumulado
+            # a cada página das 40 keywords do run.
+            if self._seller_metrics["pdp_fetch_attempts"] > attempts_before:
+                self._random_delay(min_s=0.4, max_s=1.2)
 
         # Salva também quando nada resolveu: a quarentena dos IDs que falharam
         # é o que evita repetir os mesmos PDPs mortos na próxima coleta.
@@ -689,6 +700,14 @@ class LeroyMerlinScraper(BaseScraper):
         keyword_category_map: dict,
         page_offset: int,
     ) -> List[Dict[str, Any]]:
+        # Congela a lista de hits antes de qualquer navegação. No caminho de XHR
+        # o caller passa `self._captured_products`, que o listener de `response`
+        # continua alimentando: se a passada de PDP navegar o browser, os XHRs
+        # do PDP (Algolia de produtos relacionados) entrariam nesta mesma lista
+        # depois de `seller_info` estar montado — desalinhando os índices e
+        # misturando produtos do PDP no resultado da busca.
+        hits = list(hits)
+
         # --- Passada 1: classifica sellers e junta os IDs pendentes ---
         # Trabalhar por ID único (e não por produto) é o que torna a resolução
         # via PDP barata: dezenas de hits colapsam em poucos IDs novos.

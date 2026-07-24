@@ -238,6 +238,70 @@ class TestParseAlgoliaHitsSemRede:
         assert records[0]["Buy Box Seller"] == "Refri Center"
         assert records[0]["Tipo Seller"] == "3P"
 
+    def test_lista_de_hits_mutada_durante_o_parse_nao_desalinha(self, scraper, monkeypatch):
+        """
+        Regressão: no caminho de XHR, `hits` é a própria `_captured_products`,
+        que o listener de `response` segue alimentando. Se a passada de PDP
+        navegar o browser, os XHRs do PDP entram na lista depois de
+        `seller_info` estar montado. O snapshot em `_parse_algolia_hits` evita
+        o IndexError e a mistura de produtos do PDP no resultado da busca.
+        """
+        hits = [{"name": "Ar Condicionado Split 12000", "marketplaceSellers": [SELLER_ID],
+                 "url": "/produto/p"}]
+
+        def resolve_e_poluir(pending):
+            # Simula o listener disparando durante a navegação ao PDP
+            hits.append({"name": "Produto Relacionado do PDP", "url": "/outro/p"})
+            return {SELLER_ID: "Refri Center"}
+
+        monkeypatch.setattr(scraper, "_resolve_pending_sellers", resolve_e_poluir)
+        records = scraper._parse_algolia_hits(hits, "ar condicionado", {}, 0)
+
+        assert len(records) == 1                                   # sem o item intruso
+        assert records[0]["Seller / Vendedor"] == "Refri Center"
+
+    def test_sem_orcamento_de_pdp_nao_ha_espera(self, scraper, monkeypatch):
+        """
+        Regressão: com `_pdp_budget` esgotado, `_resolve_via_pdp` volta sem
+        tocar a rede — a espera entre PDPs não deve acontecer, senão o run
+        acumula minutos de sono inútil ao longo das 40 keywords.
+        """
+        dormiu = []
+        monkeypatch.setattr(scraper, "_random_delay", lambda **kw: dormiu.append(kw))
+        monkeypatch.setattr(scraper, "_fetch_pdp_html", lambda url: None)
+        scraper._pdp_budget = 0
+
+        resolvidos = scraper._resolve_pending_sellers({SELLER_ID: "https://exemplo/p"})
+
+        assert resolvidos == {}
+        assert dormiu == []
+
+    def test_id_em_quarentena_nao_gera_espera(self, scraper, monkeypatch):
+        """Idem para ID já em quarentena: volta sem rede, logo sem espera."""
+        dormiu = []
+        monkeypatch.setattr(scraper, "_random_delay", lambda **kw: dormiu.append(kw))
+        monkeypatch.setattr(scraper, "_fetch_pdp_html", lambda url: None)
+        scraper._seller_cache.mark_failed(SELLER_ID)
+
+        scraper._resolve_pending_sellers({SELLER_ID: "https://exemplo/p"})
+
+        assert dormiu == []
+        assert scraper._seller_metrics["pdp_fetch_attempts"] == 0
+
+    def test_fetch_real_ainda_espaca(self, scraper, monkeypatch):
+        """Contraprova: quando houve requisição, a espera continua valendo."""
+        dormiu = []
+        monkeypatch.setattr(scraper, "_random_delay", lambda **kw: dormiu.append(kw))
+        monkeypatch.setattr(
+            scraper, "_fetch_pdp_html",
+            lambda url: "<html><body>" + "<p>x</p>" * 200 +
+                        "<p>Vendido e entregue por Refri Center</p></body></html>",
+        )
+        resolvidos = scraper._resolve_pending_sellers({SELLER_ID: "https://exemplo/p"})
+
+        assert resolvidos == {SELLER_ID: "Refri Center"}
+        assert len(dormiu) == 1
+
     def test_um_pdp_por_id_unico_e_nao_por_produto(self, scraper, monkeypatch):
         """3 produtos do mesmo seller → 1 única entrada pendente."""
         vistos = {}
