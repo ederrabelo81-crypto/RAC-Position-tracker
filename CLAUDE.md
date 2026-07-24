@@ -750,7 +750,7 @@ python utils/supabase_client.py                   # Run cleanup functions
 |----------|--------|-------|
 | Mercado Livre | ✅ | Buy box + Loja Oficial; browser (default) ou `MLAPIScraper` (API oficial, requer `ML_APP_ID`/`ML_APP_SECRET`) |
 | Amazon | ✅ | Buy box via "Vendido por"; `Qtd Sellers` de "X ofertas"; 1P vs 3P |
-| Leroy Merlin | ✅ | Algolia API; 1P vs 3P marketplace |
+| Leroy Merlin | ✅ | Algolia API; 1P vs 3P marketplace. Seller 3P vem como **ObjectId opaco** — resolvido via PDP ("Vendido e entregue por") com cache persistente em `data/leroy_sellers.json` (1 PDP por seller novo, não por produto). Diagnóstico: `python scripts/leroy_seller_probe.py --scan "<keyword>"` |
 | Google Shopping | ⚠️ | reCAPTCHA em headless; `Qtd Sellers` = nº de lojas comparando |
 | Magalu | ✅ Python | `scrapers/magalu.py` — curl_cffi/browser persistente (Akamai); seller 1P vs 3P. **Automatizado** (substitui coleta manual via extensão Chrome) |
 | Casas Bahia | ✅ | `scrapers/casas_bahia.py` — VTEX intelligent-search + **warm-up de cookies Akamai** (session curl_cffi persistente); `sellers[]` → buy box (`sellerDefault`) |
