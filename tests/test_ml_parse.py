@@ -655,6 +655,100 @@ class TestCobertura:
         assert (tmp_path / "logs" / "ml_card_sample.html").exists()
 
 
+class _FakePage:
+    """Página mínima: devolve um sinal de gate diferente a cada checagem."""
+
+    def __init__(self, sinais):
+        self.sinais = list(sinais)
+        self.url = "https://lista.mercadolivre.com.br/kw"
+        self.gotos = []
+        self.checagens = 0
+
+    def content(self):
+        self.checagens += 1
+        idx = min(self.checagens - 1, len(self.sinais) - 1)
+        return (
+            "<html>Para continuar, acesse sua conta</html>"
+            if self.sinais[idx] else "<html>ok</html>"
+        )
+
+    def goto(self, url, **_):
+        self.gotos.append(url)
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+
+def _scraper_com_pagina(sinais):
+    scraper = MLScraper.__new__(MLScraper)
+    scraper._page = _FakePage(sinais)
+    scraper._wait_for_network_idle = lambda: None
+    scraper._random_delay = lambda *a, **k: None
+    return scraper
+
+
+class TestLoginGateTransitorio:
+    """Gate 1-2s após o goto encerrava a keyword com 0 produtos (25/07 12:28)."""
+
+    def test_gate_transitorio_nao_conta_como_bloqueio(self):
+        # 1ª checagem acusa, 2ª (após assentar) não — é navegação, não bloqueio
+        scraper = _scraper_com_pagina([True, False])
+        assert scraper._is_login_gate(confirm=True) is False
+
+    def test_gate_persistente_e_confirmado(self):
+        scraper = _scraper_com_pagina([True, True])
+        assert scraper._is_login_gate(confirm=True) is True
+
+    def test_sem_confirm_mantem_o_sinal_cru(self):
+        scraper = _scraper_com_pagina([True, False])
+        assert scraper._is_login_gate() is True
+
+    def test_serp_retenta_e_supera_o_desafio(self):
+        # falha nas duas primeiras tentativas, carrega na terceira — exatamente
+        # o que aconteceu com 'ar condicionado 12000 btus'
+        scraper = _scraper_com_pagina([True, True, True, True, False, False])
+        assert scraper._goto_serp("https://lista.mercadolivre.com.br/kw", "kw", 1) is True
+        assert len(scraper._page.gotos) == 3
+
+    def test_serp_desiste_apos_o_limite(self):
+        scraper = _scraper_com_pagina([True])
+        assert scraper._goto_serp("https://lista.mercadolivre.com.br/kw", "kw", 1) is False
+        assert len(scraper._page.gotos) == 3  # 1 + _GATE_RETRIES
+
+    def test_pagina_limpa_nao_gasta_tentativa(self):
+        scraper = _scraper_com_pagina([False])
+        assert scraper._goto_serp("https://lista.mercadolivre.com.br/kw", "kw", 1) is True
+        assert len(scraper._page.gotos) == 1
+
+
+class TestWarmUp:
+    """ML ia direto para /lista com sessão fria — 7 keywords seguidas no gate."""
+
+    def test_aquece_a_home_uma_vez_por_run(self):
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._page = _FakePage([False])
+        scraper._local_active = False
+        scraper._wait_for_network_idle = lambda: None
+        scraper._dismiss_cep_popup = lambda: None
+        scraper._human_scroll = lambda **k: None
+
+        scraper._warm_session()
+        scraper._warm_session()
+        assert scraper._page.gotos == ["https://www.mercadolivre.com.br/"]
+
+    def test_falha_no_warmup_nao_aborta_a_coleta(self):
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._local_active = False
+
+        def explode(*_a, **_k):
+            raise RuntimeError("timeout na home")
+
+        scraper._page = _FakePage([False])
+        scraper._page.goto = explode
+        scraper._warm_session()  # não pode propagar
+        assert scraper._warmed is True
+
+
 class TestBlockSignals:
     @pytest.mark.parametrize("html", [
         "<html><body>Para continuar, acesse sua conta</body></html>",

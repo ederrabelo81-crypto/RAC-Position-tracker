@@ -265,3 +265,56 @@ entrega o DOM real caso ainda não saiam.
   em `output/` e do log de cobertura, não do banco.
 
 *Adendo gerado em 25/07/2026.*
+
+---
+
+## Adendo (25/07/2026, tarde) — ML: login gate em 2/3 das keywords
+
+Coleta local com `RAC_LOCAL_CHROME=1` (Chrome real via CDP), 40 keywords
+configuradas, interrompida na 16ª:
+
+| Keyword | Resultado |
+|---|---|
+| 7 primeiras (split, inverter, genérica, 9000 btus…) | login gate → 0 |
+| `ar condicionado 12000 btus` | falhou 2×, **60 itens na 3ª tentativa** |
+| `24000 btus`, `12000 btus inverter`, `split 12000/9000` | 60 itens |
+| demais | login gate → 0 |
+
+**5 de 15 keywords (33%) renderam dados.** Com `RAC_LOCAL_CHROME=OFF`: 0 de 13.
+É o mesmo padrão do CSV das 11:15 — 40 keywords configuradas, 10 no arquivo.
+
+### O que o tempo de resposta denuncia
+
+- Keyword que **falha**: gate detectado **1–2s** após o `goto`.
+- Keyword que **funciona**: 13–16s até "60 itens encontrados".
+
+Somado ao erro `Execution context was destroyed, most likely because of a
+navigation` (que estourou no `_human_scroll`), a conclusão é que a SERP **navega
+depois do `domcontentloaded`**. A checagem única de gate logo após o
+`_wait_for_network_idle` pegava esse estado transitório e encerrava a keyword.
+
+### Causas e correções
+
+1. **Sessão fria** — `MLScraper` ia direto para `/lista` sem nunca visitar a
+   home. É exatamente o anti-padrão documentado em `local_browser.py` ("um
+   `goto` direto na rota de busca chega ao antibot antes do sensor.js validar a
+   sessão"). Shopee e Casas Bahia já aqueciam; o ML não. Daí as **7 primeiras
+   keywords falharem em bloco** e a coleta "esquentar" no meio da run.
+   → `_warm_session()` visita `mercadolivre.com.br` uma vez por run (via
+   `LocalBrowser.warmup()` no modo CDP). Falha no warm-up não aborta a coleta.
+
+2. **Gate transitório encerrava a keyword** — o primeiro sinal virava `break`
+   com 0 produtos, sem nenhuma tentativa de recuperação.
+   → `_goto_serp()` recarrega até `_GATE_RETRIES + 1` vezes; `_is_login_gate()`
+   ganha o modo `confirm`, que espera a página assentar e re-checa antes de
+   acreditar no bloqueio. `ar condicionado 12000 btus` provou que a 3ª
+   tentativa entrega os 60 itens.
+
+### Observação sobre a página 2
+
+Todas as 5 páginas 2 tomaram gate (`_Desde_49`, 100% de falha) — mas esse log é
+de código **anterior** ao fix de paginação: com 60 cards na página 1, `_Desde_49`
+recoletaria os itens 49..60. Com o offset correto (`_Desde_61`) e o retry acima,
+esse número precisa ser reavaliado na próxima coleta.
+
+*Adendo gerado em 25/07/2026.*
