@@ -1072,14 +1072,25 @@ class TestQuarentenaLegada:
     """
 
     @staticmethod
-    def _cache_legado(path, attempts=1):
+    def _cache_legado(path, attempts=1, idade_dias=0):
+        """
+        Escreve o formato antigo (sem `transient`/`definitive`).
+
+        `last_try` é **relativo ao agora**, nunca uma data fixa: com data fixa, o
+        caso `attempts >= TRANSIENT_ATTEMPTS` cai no time-gate e a janela de
+        `retry_days` expira com o passar do calendário — o teste passaria a
+        falhar sozinho, sem nenhuma mudança de código.
+        """
         import json as _json
+        from datetime import datetime, timedelta, timezone
+
+        quando = datetime.now(timezone.utc) - timedelta(days=idade_dias)
         path.write_text(_json.dumps({
             "sellers": {},
             "unresolved": {
                 SELLER_ID: {
                     "attempts": attempts,
-                    "last_try": "2026-07-25T01:31:00+00:00",
+                    "last_try": quando.isoformat(timespec="seconds"),
                     "sample_url": "https://exemplo/p",
                 }
             },
@@ -1096,6 +1107,19 @@ class TestQuarentenaLegada:
             tmp_path / "c.json", attempts=LeroySellerCache.TRANSIENT_ATTEMPTS
         )
         assert cache.should_retry(SELLER_ID) is False
+
+    def test_legado_esgotado_libera_quando_a_janela_expira(self, tmp_path):
+        """
+        Contraprova do time-gate: passados os `retry_days`, até a entrada legada
+        com tentativas esgotadas volta a ser tentada. É este caminho que a data
+        fixa exercitava por acidente conforme o calendário avançava.
+        """
+        cache = self._cache_legado(
+            tmp_path / "c.json",
+            attempts=LeroySellerCache.TRANSIENT_ATTEMPTS,
+            idade_dias=8,
+        )
+        assert cache.should_retry(SELLER_ID) is True
 
     def test_definitivo_explicito_nao_e_confundido_com_legado(self, tmp_path):
         cache = LeroySellerCache(path=tmp_path / "c.json", retry_days=7)
