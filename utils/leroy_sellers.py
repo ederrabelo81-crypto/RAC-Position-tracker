@@ -57,18 +57,27 @@ _NAME_KEYS = (
 # Chaves que carregam o ID do seller.
 _ID_KEYS = ("sellerId", "seller_id", "id", "_id", "objectID", "sellerObjectId")
 
-# Rótulos do PDP que antecedem o nome do lojista.
-_PDP_LABEL_RE = re.compile(
-    r"(?:vendido\s+e\s+entregue\s+por|vendido\s+por|entregue\s+por|"
-    r"vendido\s+e\s+entregue\s*:|loja\s+parceira\s*:?)\s*"
-    r"([^\n\r|•·]{2,60})",
-    re.IGNORECASE,
+# Rótulos do PDP que antecedem o nome do lojista. Lista **única**: o parser, a
+# espera de hidratação no browser e o diagnóstico do probe derivam todos daqui.
+# Manter duas listas fazia o parser aceitar rótulos ("Entregue por", "Loja
+# parceira:") que a espera não reconhecia — o PDP resolvia, mas só depois de
+# queimar o timeout inteiro mais o fallback de rede, e o diagnóstico ainda
+# reportava "não hidratou".
+_SELLER_LABEL_ALTERNATIVES = (
+    r"vendido\s+e\s+entregue\s+por",
+    r"vendido\s+por",
+    r"entregue\s+por",
+    r"vendido\s+e\s+entregue\s*:",
+    r"loja\s+parceira\s*:?",
 )
 
-# Fallback direto sobre o HTML bruto, para o caso do nome estar em JSON
-# embutido que o parser de __NEXT_DATA__ não alcançou.
-_RAW_JSON_NAME_RE = re.compile(
-    r'"(?:sellerName|storeName|fantasyName|tradeName)"\s*:\s*"([^"]{2,60})"'
+# Compatível com regex JS (sem lookbehind/grupos nomeados): vai para dentro de
+# `wait_for_function` como literal /.../i.
+SELLER_LABEL_PATTERN = "(?:" + "|".join(_SELLER_LABEL_ALTERNATIVES) + ")"
+
+_PDP_LABEL_RE = re.compile(
+    SELLER_LABEL_PATTERN + r"\s*([^\n\r|•·]{2,60})",
+    re.IGNORECASE,
 )
 
 # Chunks do App Router: self.__next_f.push([1,"…json escapado…"])
@@ -86,7 +95,10 @@ _SELLER_KEY_NAME_RE = re.compile(
     r'\s*:\s*"([^"]{2,60})"'
 )
 
-# Único caso em que "name" é aceito: aninhado sob a chave "seller", onde a
+# Chave genérica, liberada só dentro de objeto de oferta/seller comprovado.
+_BARE_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]{2,60})"')
+
+# Caso em que "name" é aceito sem restrição: aninhado sob a chave "seller", onde a
 # intenção é inequívoca — ex. {"seller":{"id":"…","name":"Loja X"}}.
 _SELLER_NESTED_NAME_RE = re.compile(
     r'"seller"\s*:\s*\{[^{}]{0,300}?"name"\s*:\s*"([^"]{2,60})"'
@@ -222,50 +234,119 @@ def _enclosing_object(text: str, idx: int, span: int = 2000) -> str:
         idx: posição de referência (onde o seller ID foi encontrado).
         span: limite de varredura para cada lado, em caracteres.
 
+    A varredura **ignora chaves dentro de strings JSON**: um nome de loja ou
+    descrição contendo ``{``/``}`` desbalancearia a contagem e expandiria o
+    recorte até as ofertas seguintes, reintroduzindo justamente a ambiguidade
+    que esta função existe para eliminar.
+
     Returns:
         Substring do objeto delimitado. Cai para uma janela simples quando as
         chaves não fecham dentro do limite.
     """
     inicio = max(0, idx - span)
-    depth = 0
-    start = None
-    for i in range(idx, inicio - 1, -1):
-        ch = text[i]
-        if ch == "}":
-            depth += 1
-        elif ch == "{":
-            if depth == 0:
-                start = i
-                break
-            depth -= 1
-
     fim = min(len(text), idx + span)
-    depth = 0
-    end = None
-    for i in range(idx, fim):
+
+    # Varredura única para frente, com pilha de aberturas e estado de string.
+    # O primeiro `}` encontrado em/depois de `idx` cujo `{` correspondente
+    # esteja em/antes de `idx` delimita o objeto mais interno que contém `idx`.
+    pilha: list[int] = []
+    in_str = False
+    esc = False
+    for i in range(inicio, fim):
         ch = text[i]
-        if ch == "{":
-            depth += 1
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            pilha.append(i)
         elif ch == "}":
-            if depth == 0:
-                end = i + 1
-                break
-            depth -= 1
+            abertura = pilha.pop() if pilha else None
+            if abertura is not None and i >= idx and abertura <= idx:
+                return text[abertura:i + 1]
 
-    if start is None or end is None:
-        return text[inicio:fim]
-    return text[start:end]
+    # Não fechou dentro do limite: usa a abertura mais interna antes de `idx`.
+    candidatas = [p for p in pilha if p <= idx]
+    if candidatas:
+        return text[candidatas[-1]:fim]
+    return text[inicio:fim]
 
 
-def _names_in(fragment: str) -> list[str]:
-    """Nomes de seller válidos num fragmento, em ordem de aparição."""
+# Chaves que denunciam objeto de *produto*, não de oferta/seller. Usadas para
+# decidir se a chave genérica `name` pode ser lida como nome de lojista.
+_PRODUCT_KEYS = ("offers", "sku", "gtin", "description", "items", "productName")
+
+
+def _names_in(fragment: str, allow_bare_name: bool = False) -> list[str]:
+    """
+    Nomes de seller válidos num fragmento, em ordem de aparição.
+
+    Args:
+        fragment: recorte de JSON a inspecionar.
+        allow_bare_name: aceita a chave genérica ``name``. Só deve ser ligado
+            quando o fragmento é comprovadamente um objeto de oferta/seller
+            (ver `_is_seller_leaf`) — em objeto de produto, ``name`` é o título.
+    """
+    regexes = [_SELLER_KEY_NAME_RE, _SELLER_NESTED_NAME_RE]
+    if allow_bare_name:
+        regexes.append(_BARE_NAME_RE)
+
     nomes: list[str] = []
-    for regex in (_SELLER_KEY_NAME_RE, _SELLER_NESTED_NAME_RE):
+    for regex in regexes:
         for match in regex.finditer(fragment):
             name = clean_seller_name(match.group(1))
-            if name and not is_leroy_self(name):
+            if name and not is_leroy_self(name) and name not in nomes:
                 nomes.append(name)
     return nomes
+
+
+def _structural_braces(fragment: str) -> int:
+    """
+    Conta ``{`` estruturais, ignorando os que estão dentro de strings JSON.
+
+    Um nome como ``"Loja {Matriz}"`` não é aninhamento — contá-lo faria um
+    objeto plano parecer composto.
+    """
+    total = 0
+    in_str = False
+    esc = False
+    for ch in fragment:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            total += 1
+    return total
+
+
+def _is_seller_leaf(fragment: str, seller_id: str) -> bool:
+    """
+    Indica se o fragmento é um objeto de oferta/seller "folha".
+
+    Aceita o shape legítimo ``{"sellerId": "…", "name": "Loja X"}``, sem abrir a
+    porta para o título do produto: exige que o ID esteja no fragmento, que não
+    haja objeto aninhado (uma única ``{`` **estrutural**) e que não apareça chave
+    típica de produto.
+    """
+    if seller_id not in fragment:
+        return False
+    if _structural_braces(fragment) > 1:
+        return False
+    lowered = fragment.lower()
+    return not any(f'"{k.lower()}"' in lowered for k in _PRODUCT_KEYS)
 
 
 def _from_flight_text(text: str, seller_id: Optional[str]) -> Optional[str]:
@@ -291,7 +372,10 @@ def _from_flight_text(text: str, seller_id: Optional[str]) -> Optional[str]:
     if seller_id:
         idx = text.find(seller_id)
         while idx != -1:
-            nomes = _names_in(_enclosing_object(text, idx))
+            objeto = _enclosing_object(text, idx)
+            # `name` puro só entra quando o objeto é comprovadamente de
+            # oferta/seller — aí o shape {"sellerId":…, "name":…} é legítimo.
+            nomes = _names_in(objeto, allow_bare_name=_is_seller_leaf(objeto, seller_id))
             if len(nomes) == 1:
                 return nomes[0]
             if nomes:
@@ -305,7 +389,9 @@ def _from_flight_text(text: str, seller_id: Optional[str]) -> Optional[str]:
             idx = text.find(seller_id, idx + 1)
 
     # Passada 2 — chave explícita de seller em qualquer lugar do payload.
-    for match in _RAW_JSON_NAME_RE.finditer(text):
+    # Usa a mesma regex do caminho ancorado (inclui seller_name/store_name),
+    # senão payloads em snake_case só resolveriam quando há âncora de ID.
+    for match in _SELLER_KEY_NAME_RE.finditer(text):
         name = clean_seller_name(match.group(1))
         if name and not is_leroy_self(name):
             return name
@@ -438,7 +524,7 @@ def extract_seller_from_pdp(html: str, seller_id: Optional[str] = None) -> Optio
     if name:
         return name
 
-    match = _RAW_JSON_NAME_RE.search(html)
+    match = _SELLER_KEY_NAME_RE.search(html)
     if match:
         candidate = clean_seller_name(match.group(1))
         if candidate and not is_leroy_self(candidate):

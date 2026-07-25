@@ -46,6 +46,7 @@ import requests
 from loguru import logger
 
 from utils.leroy_sellers import (
+    SELLER_LABEL_PATTERN,
     LeroySellerCache,
     extract_seller_from_pdp,
     is_leroy_self,
@@ -55,7 +56,7 @@ _OBJECT_ID_RE = re.compile(r"[0-9a-f]{24}", re.IGNORECASE)
 
 # Mesmo rótulo que `_fetch_pdp_browser` espera hidratar, para o diagnóstico
 # reportar o que a coleta realmente procura.
-_SELLER_LABEL_RE = re.compile(r"vendido\s+(?:e\s+entregue\s+)?por", re.IGNORECASE)
+_SELLER_LABEL_RE = re.compile(SELLER_LABEL_PATTERN, re.IGNORECASE)
 
 _HEADERS = {
     "User-Agent": (
@@ -129,6 +130,36 @@ def _diagnose_html(html: str, seller_id: Optional[str]) -> None:
     for label, value in checks:
         print(f"  {label:<38} {value}")
 
+    # Um PDP real tem centenas de KB. Resposta pequena = bloqueio/erro, e aí o
+    # conteúdo *é* o diagnóstico — mostrar título, assinaturas conhecidas e um
+    # trecho evita um round-trip inteiro para descobrir o que a Leroy servriu.
+    titulo = re.search(r"<title[^>]*>(.{0,200}?)</title>", html, re.IGNORECASE | re.DOTALL)
+    if titulo:
+        print(f"  {'<title>':<38} {titulo.group(1).strip()!r}")
+
+    assinaturas = [
+        s for s in (
+            "Access Denied", "Acesso negado", "Request unsuccessful",
+            "Reference #", "Incapsula", "px-captcha", "challenge-form",
+            "captcha", "Not Found", "404", "403", "Forbidden",
+            "unsupported browser", "habilite o javascript", "enable javascript",
+        )
+        if s.lower() in html.lower()
+    ]
+    if assinaturas:
+        print(f"  {'assinaturas de bloqueio/erro':<38} {', '.join(assinaturas)}")
+
+    if len(html) < 50_000:
+        texto = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html,
+                       flags=re.IGNORECASE | re.DOTALL)
+        texto = re.sub(r"<[^>]+>", " ", texto)
+        texto = re.sub(r"\s+", " ", texto).strip()
+        logger.warning(
+            f"Resposta com apenas {len(html):,} bytes — um PDP real tem centenas "
+            "de KB. Provável bloqueio/erro. Texto visível:"
+        )
+        print(f"  {texto[:600]!r}")
+
 
 def _fetch_via_browser(url: str, headless: bool = True) -> Optional[str]:
     """
@@ -138,9 +169,11 @@ def _fetch_via_browser(url: str, headless: bool = True) -> Optional[str]:
     exemplo) é reportada como erro controlado, igual ao caminho via requests —
     e não como traceback.
     """
-    from scrapers.leroy_merlin import LeroyMerlinScraper
-
     try:
+        # Import dentro do try: sem playwright instalado, o próprio import
+        # levanta ImportError e escaparia como traceback.
+        from scrapers.leroy_merlin import LeroyMerlinScraper
+
         with LeroyMerlinScraper(headless=headless) as scraper:
             return scraper._fetch_pdp_browser(url)
     except Exception as exc:
