@@ -472,7 +472,13 @@ class LeroyMerlinScraper(BaseScraper):
         """
         if not html or len(html) < _PDP_MIN_BYTES:
             return False
-        lowered = html[:20_000].lower()
+        # Varre o documento inteiro, não só o começo: um interstitial grande pode
+        # trazer o marcador depois dos primeiros KB. A assimetria justifica o
+        # custo (~1ms) e o risco de falso positivo — esta função só é consultada
+        # quando a extração *já falhou*, então errar para "bloqueio" custa uma
+        # nova tentativa na próxima coleta, enquanto errar para "página íntegra"
+        # custa 7 dias de quarentena.
+        lowered = html.lower()
         return not any(m in lowered for m in _PDP_CHALLENGE_MARKERS)
 
     def _resolve_via_pdp(self, seller_id: str, product_url: Optional[str]) -> Optional[str]:

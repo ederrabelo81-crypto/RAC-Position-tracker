@@ -965,6 +965,24 @@ class TestClassificacaoDeBloqueio:
     def test_looks_like_pdp(self, html, esperado):
         assert LeroyMerlinScraper._looks_like_pdp(html) is esperado
 
+    def test_marcador_depois_dos_primeiros_kb(self):
+        """
+        Interstitial grande pode trazer o marcador longe do início. Limitar a
+        varredura aos primeiros 20 KB classificaria isso como PDP íntegro e
+        renderia quarentena de 7 dias.
+        """
+        html = "<html>" + "z" * 100_000 + "<div id='px-captcha'></div></html>"
+        assert LeroyMerlinScraper._looks_like_pdp(html) is False
+
+    def test_challenge_grande_pelo_browser_segue_transitorio(self, scraper, monkeypatch):
+        html = "<html>" + "z" * 100_000 + "<div id='px-captcha'></div></html>"
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: html)
+
+        assert scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p") is None
+        assert scraper._seller_metrics["pdp_bloqueios"] == 1
+        assert scraper._seller_cache.should_retry(SELLER_ID) is True
+
     def test_challenge_pelo_browser_e_transitorio(self, scraper, monkeypatch):
         """O caso de produção: 3 KB pelo browser não pode virar definitivo."""
         challenge = "<html>" + "y" * 3_000 + "</html>"
