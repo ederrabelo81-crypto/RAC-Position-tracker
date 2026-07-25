@@ -546,3 +546,72 @@ class TestQuarentenaLimpeza:
         cache = LeroySellerCache(path=tmp_path / "c.json")
         assert cache.clear_quarantine() == 0
         assert cache.save() is False
+
+
+class TestAppRouterNaoConfundeProdutoComSeller:
+    """
+    Regressão (P1): a passada ancorada usava a chave genérica `name` numa janela
+    de 400 chars ao redor do seller ID. O título do produto cai nessa janela e
+    não é pego pelo blocklist, então virava o "nome do lojista" — e ia para
+    `data/leroy_sellers.json`, corrompendo todos os registros futuros daquele
+    seller.
+    """
+
+    @staticmethod
+    def _flight(payload: str) -> str:
+        return (
+            "<html><body><script>"
+            f"self.__next_f.push([1,{json.dumps(payload)}])"
+            "</script></body></html>"
+        )
+
+    def test_titulo_de_produto_nao_vira_seller(self):
+        payload = (
+            '{"product":{"name":"Ar Condicionado Portatil Philco","brand":"Philco",'
+            '"description":"Refrigeracao potente para ambientes de ate 20m2",'
+            f'"offers":[{{"sellerId":"{SELLER_ID}","sellerName":"Loja X"}}]}}}}'
+        )
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Loja X"
+
+    def test_sem_seller_no_payload_nao_devolve_titulo(self):
+        """Só título de produto: melhor None do que um nome errado no cache."""
+        payload = (
+            '{"product":{"name":"Ar Condicionado Portatil Philco"},'
+            f'"sellerId":"{SELLER_ID}"}}'
+        )
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) is None
+
+    def test_multi_seller_pega_o_do_mesmo_objeto(self):
+        """
+        O nome do seller anterior fica fisicamente mais perto do ID do que o
+        nome que lhe pertence — por isso a busca é delimitada pelo objeto JSON,
+        não por distância.
+        """
+        payload = (
+            '{"offers":[{"sellerId":"61940b77c220aa3ead390ee2","sellerName":"Errado Ltda"},'
+            f'{{"sellerId":"{SELLER_ID}","sellerName":"Certo Ltda"}}]}}'
+        )
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Certo Ltda"
+
+    def test_ordem_invertida_das_chaves(self):
+        """Nome antes do ID no mesmo objeto continua sendo encontrado."""
+        payload = f'{{"offers":[{{"sellerName":"Antes Ltda","sellerId":"{SELLER_ID}"}}]}}'
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Antes Ltda"
+
+    def test_seller_aninhado_com_name_generico(self):
+        """`name` só é aceito sob a chave "seller", onde é inequívoco."""
+        payload = (
+            f'{{"offers":[{{"sellerId":"{SELLER_ID}",'
+            '"seller":{"id":"x","name":"Frio Total"}}]}'
+        )
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Frio Total"
+
+    def test_objeto_ambiguo_nao_arrisca_o_cache(self):
+        """Vários nomes no mesmo objeto → não chuta, deixa para as camadas seguintes."""
+        payload = (
+            f'{{"sellerId":"{SELLER_ID}","sellerName":"Um Ltda","storeName":"Outro Ltda"}}'
+        )
+        # O fallback genérico ainda pode responder, mas nunca por proximidade
+        # arbitrária dentro de um objeto ambíguo.
+        resultado = extract_seller_from_pdp(self._flight(payload), SELLER_ID)
+        assert resultado in ("Um Ltda", None)

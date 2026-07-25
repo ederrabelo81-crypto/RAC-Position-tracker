@@ -76,11 +76,20 @@ _FLIGHT_PUSH_RE = re.compile(
     r'self\.__next_f\.push\(\[\d+\s*,\s*("(?:[^"\\]|\\.)*")\s*\]\)'
 )
 
-# Qualquer chave de nome, usada só na busca ancorada por proximidade ao ID —
-# ampla de propósito, mas segura porque a janela já está ancorada no seller.
-_ANY_NAME_RE = re.compile(
-    r'"(?:sellerName|seller_name|storeName|store_name|fantasyName|tradeName|name)"'
+# Chaves *específicas de seller* para a busca ancorada no payload do App Router.
+# A chave genérica "name" fica de fora de propósito: numa janela ao redor do
+# seller ID cabe também o nome do produto (`{"name":"Ar Condicionado Portátil
+# Philco", …, "sellerName":"Loja X"}`), e o título do produto seria devolvido
+# como lojista — e persistido no cache, corrompendo o seller para sempre.
+_SELLER_KEY_NAME_RE = re.compile(
+    r'"(?:sellerName|seller_name|storeName|store_name|fantasyName|tradeName)"'
     r'\s*:\s*"([^"]{2,60})"'
+)
+
+# Único caso em que "name" é aceito: aninhado sob a chave "seller", onde a
+# intenção é inequívoca — ex. {"seller":{"id":"…","name":"Loja X"}}.
+_SELLER_NESTED_NAME_RE = re.compile(
+    r'"seller"\s*:\s*\{[^{}]{0,300}?"name"\s*:\s*"([^"]{2,60})"'
 )
 
 # Palavras que denunciam que o texto capturado não é um nome de loja
@@ -199,6 +208,66 @@ def next_flight_text(html: str) -> str:
     return "".join(chunks)
 
 
+def _enclosing_object(text: str, idx: int, span: int = 2000) -> str:
+    """
+    Recorta o objeto JSON mais interno que contém a posição ``idx``.
+
+    Serve para amarrar o nome ao seller certo: num array de ofertas, o nome do
+    lojista anterior fica *fisicamente mais perto* do ID do que o nome que de
+    fato lhe pertence, então janela por distância escolhe errado. Dentro do
+    mesmo objeto não há essa ambiguidade.
+
+    Args:
+        text: payload completo.
+        idx: posição de referência (onde o seller ID foi encontrado).
+        span: limite de varredura para cada lado, em caracteres.
+
+    Returns:
+        Substring do objeto delimitado. Cai para uma janela simples quando as
+        chaves não fecham dentro do limite.
+    """
+    inicio = max(0, idx - span)
+    depth = 0
+    start = None
+    for i in range(idx, inicio - 1, -1):
+        ch = text[i]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            if depth == 0:
+                start = i
+                break
+            depth -= 1
+
+    fim = min(len(text), idx + span)
+    depth = 0
+    end = None
+    for i in range(idx, fim):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            if depth == 0:
+                end = i + 1
+                break
+            depth -= 1
+
+    if start is None or end is None:
+        return text[inicio:fim]
+    return text[start:end]
+
+
+def _names_in(fragment: str) -> list[str]:
+    """Nomes de seller válidos num fragmento, em ordem de aparição."""
+    nomes: list[str] = []
+    for regex in (_SELLER_KEY_NAME_RE, _SELLER_NESTED_NAME_RE):
+        for match in regex.finditer(fragment):
+            name = clean_seller_name(match.group(1))
+            if name and not is_leroy_self(name):
+                nomes.append(name)
+    return nomes
+
+
 def _from_flight_text(text: str, seller_id: Optional[str]) -> Optional[str]:
     """
     Procura o nome do seller no payload do App Router.
@@ -217,15 +286,22 @@ def _from_flight_text(text: str, seller_id: Optional[str]) -> Optional[str]:
     if not text:
         return None
 
-    # Passada 1 — janela ao redor do ID, onde o nome tende a estar junto.
+    # Passada 1 — objeto JSON que contém o ID. Só chaves específicas de seller:
+    # a chave genérica "name" traria o título do produto.
     if seller_id:
         idx = text.find(seller_id)
         while idx != -1:
-            window = text[max(0, idx - 400): idx + 400]
-            for match in _ANY_NAME_RE.finditer(window):
-                name = clean_seller_name(match.group(1))
-                if name and not is_leroy_self(name):
-                    return name
+            nomes = _names_in(_enclosing_object(text, idx))
+            if len(nomes) == 1:
+                return nomes[0]
+            if nomes:
+                # Mais de um nome no mesmo objeto (ex. objeto-pai englobando
+                # várias ofertas): ambíguo demais para arriscar o cache.
+                logger.debug(
+                    f"[LeroySellers] {len(nomes)} nomes no objeto do seller "
+                    f"{seller_id[:8]}… — ambíguo, ignorando a âncora"
+                )
+                break
             idx = text.find(seller_id, idx + 1)
 
     # Passada 2 — chave explícita de seller em qualquer lugar do payload.
