@@ -218,6 +218,22 @@ _BLOCK_SIGNALS_RE = re.compile(
 # zero em UMA keyword é normal, zero em TODAS é detecção quebrada.
 _CRITICAL_FIELDS = ("rating", "review_count", "seller")
 
+# Home do ML — visitada uma vez por run antes da primeira busca. Um `goto`
+# direto na rota de busca chega ao antibot antes do sensor.js validar a sessão;
+# aquecer a home promove os cookies para /lista. Sem isso, as primeiras
+# keywords da run tomam login gate em bloco (7 seguidas em 25/07 12:28).
+_ML_HOME = "https://www.mercadolivre.com.br/"
+
+# Tentativas extras quando a SERP responde com desafio/login gate. O gate do ML
+# é frequentemente transitório: o card chega a navegar DEPOIS do
+# domcontentloaded (visto como "Execution context was destroyed"), e a keyword
+# 'ar condicionado 12000 btus' só rendeu 60 itens na 3ª tentativa.
+_GATE_RETRIES = 2
+
+# Espera antes de re-checar o gate, para não confundir estado transitório de
+# navegação com bloqueio real.
+_GATE_SETTLE_MS = 2_500
+
 
 @dataclass
 class _SerpCursor:
@@ -251,6 +267,7 @@ class MLScraper(BaseScraper):
     _run_keywords: int = 0
     _run_items: int = 0
     _run_sponsored: int = 0
+    _warmed: bool = False
 
     def __init__(self, headless: bool = True) -> None:
         # ML detecta Chromium headless como bot e exibe login gate.
@@ -265,6 +282,7 @@ class MLScraper(BaseScraper):
         # automação que o ML cruza com IP de datacenter para mostrar o login
         # gate; o Chrome comum + CDP evita isso (ver scrapers/local_browser.py).
         self._local_active: bool = False
+        self._warmed = False
         self._run_keywords = 0
         self._run_items = 0
         self._run_sponsored = 0
@@ -307,9 +325,9 @@ class MLScraper(BaseScraper):
             return
         super()._close()
 
-    def _is_login_gate(self) -> bool:
+    def _login_gate_signal(self) -> bool:
         """
-        Retorna True se a página atual for o login/device-verification gate do ML.
+        Sinal cru de login/device-verification na página atual.
 
         Robusto a uso offline/testes: se não houver página Playwright associada
         (parser chamado com HTML avulso), retorna False em vez de estourar.
@@ -325,6 +343,69 @@ class MLScraper(BaseScraper):
             return "Para continuar, acesse sua conta" in content
         except Exception:
             return False
+
+    def _is_login_gate(self, confirm: bool = False) -> bool:
+        """
+        Retorna True se a página atual for o login/device-verification gate do ML.
+
+        Args:
+            confirm: quando True, um sinal positivo é re-checado depois de a
+                     página assentar. A SERP do ML navega DEPOIS do
+                     `domcontentloaded` (o erro "Execution context was
+                     destroyed" durante o scroll é a mesma causa), então checar
+                     uma vez só transforma um estado transitório em keyword
+                     perdida.
+        """
+        hit = self._login_gate_signal()
+        if not hit or not confirm:
+            return hit
+
+        page = getattr(self, "_page", None)
+        if page is None:
+            return hit
+        try:
+            page.wait_for_timeout(_GATE_SETTLE_MS)
+        except Exception:
+            return hit
+        return self._login_gate_signal()
+
+    # ------------------------------------------------------------------
+    # Aquecimento da sessão
+    # ------------------------------------------------------------------
+
+    def _warm_session(self) -> None:
+        """
+        Visita a home do ML uma vez por run, antes da primeira busca.
+
+        Ir direto para `/lista` com sessão fria é o que faz o ML devolver o
+        login gate em série no começo da coleta. Shopee e Casas Bahia já
+        aquecem; o ML nunca aqueceu. Falha no warm-up não aborta a coleta — a
+        busca segue e, se o gate aparecer, o retry por página cuida.
+        """
+        if self._warmed:
+            return
+        self._warmed = True  # uma tentativa por run, mesmo se falhar
+
+        try:
+            if self._local_active:
+                lb = get_local_browser()
+                if lb is not None and lb.warmup(
+                    self._page, _ML_HOME, host_key="mercadolivre"
+                ):
+                    self._dismiss_cep_popup()
+                    logger.info(f"[{self.platform_name}] Sessão aquecida na home (CDP)")
+                    return
+
+            self._page.goto(_ML_HOME, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
+            self._wait_for_network_idle()
+            self._dismiss_cep_popup()
+            self._human_scroll(steps=3, step_px=250)
+            logger.info(f"[{self.platform_name}] Sessão aquecida na home")
+        except Exception as exc:
+            logger.warning(
+                f"[{self.platform_name}] Warm-up da home falhou ({exc}) — "
+                "seguindo direto para a busca."
+            )
 
     # ------------------------------------------------------------------
     # URL helpers
@@ -981,6 +1062,49 @@ class MLScraper(BaseScraper):
             )
 
     # ------------------------------------------------------------------
+    # Carregamento da SERP com insistência no desafio
+    # ------------------------------------------------------------------
+
+    def _goto_serp(self, url: str, keyword: str, page: int) -> bool:
+        """
+        Navega para a SERP e insiste enquanto o ML devolver desafio/login gate.
+
+        O gate do ML é largamente transitório: na coleta de 25/07 a keyword
+        'ar condicionado 12000 btus' falhou duas vezes e rendeu 60 itens na
+        terceira. Antes, o primeiro sinal encerrava a keyword com 0 produtos.
+
+        Returns:
+            True se a página carregou utilizável; False se o gate persistiu.
+        """
+        for attempt in range(1, _GATE_RETRIES + 2):
+            self._page.goto(url, wait_until="domcontentloaded")
+            self._wait_for_network_idle()
+
+            if not self._is_login_gate(confirm=True):
+                if attempt > 1:
+                    logger.info(
+                        f"[{self.platform_name}] Desafio superado na tentativa "
+                        f"{attempt} (keyword='{keyword}', pág. {page})"
+                    )
+                return True
+
+            if attempt <= _GATE_RETRIES:
+                logger.warning(
+                    f"[{self.platform_name}] Desafio/login gate na tentativa "
+                    f"{attempt}/{_GATE_RETRIES + 1} (keyword='{keyword}', "
+                    f"pág. {page}) — recarregando."
+                )
+                self._random_delay()
+
+        logger.error(
+            f"[{self.platform_name}] Login gate persistente após "
+            f"{_GATE_RETRIES + 1} tentativas (keyword='{keyword}', pág. {page}). "
+            "Se isso atingir a maioria das keywords, capture uma sessão: "
+            "python utils/session_grabber.py --site mercadolivre"
+        )
+        return False
+
+    # ------------------------------------------------------------------
     # Método público — ponto de entrada
     # ------------------------------------------------------------------
 
@@ -1008,22 +1132,15 @@ class MLScraper(BaseScraper):
         cursor = _SerpCursor()
         sample_card: Optional[Tag] = None
 
+        self._warm_session()
+
         for page in range(1, page_limit + 1):
             url = self._build_url(keyword, cursor.items_seen)
             logger.info(f"[{self.platform_name}] Página {page}/{page_limit} → {url}")
 
             try:
-                # navega para a URL de busca
-                self._page.goto(url, wait_until="domcontentloaded")
-                self._wait_for_network_idle()
-
-                # --- Detecta login gate (/gz/webdevice/account-verification) ---
-                if self._is_login_gate():
-                    logger.error(
-                        f"[{self.platform_name}] Login gate detectado. "
-                        "Capture uma sessão e tente novamente: "
-                        "python utils/session_grabber.py --site mercadolivre"
-                    )
+                # --- Carrega a SERP, insistindo se vier desafio/login gate ---
+                if not self._goto_serp(url, keyword, page):
                     break
 
                 # --- Trata popup de seleção de CEP (confirmado em produção) ---
