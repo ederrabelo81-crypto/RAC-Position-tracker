@@ -7,6 +7,13 @@ requests>=2.31.0
 curl-cffi>=0.6.0
 beautifulsoup4==4.12.3
 pandas>=2.2.2
+# Histórico frio em Parquet (utils/history) — Drive/disco
+pyarrow>=15.0.0
+# Google Drive como destino do histórico. Opcionais: sem eles o histórico
+# cai no backend local (data/history/) sem quebrar a coleta.
+google-api-python-client>=2.100.0
+google-auth>=2.30.0
+google-auth-oauthlib>=1.2.0
 fake-useragent==1.5.1
 python-dotenv==1.0.1
 loguru==0.7.2

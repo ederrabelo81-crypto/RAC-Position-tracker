@@ -18,7 +18,16 @@ screenshots/
 # Sessões de scraper (cookies Akamai validados — gerados em runtime)
 data/magalu_session.json
 data/magalu_chrome_profile/
+data/chrome_profile/
 utils/sessions/
+
+# Histórico frio (Parquet) — vive no Google Drive, nunca no git.
+# Aqui ficam só o backend local e o cache das partições baixadas.
+data/history/
+
+# Credenciais OAuth do Drive baixadas do Google Cloud Console
+client_secret*.json
+service_account*.json
 
 # Ambiente
 .env

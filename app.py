@@ -869,6 +869,172 @@ def _filter_latest_run(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df_hist, df_filtrado], ignore_index=True)
 
 
+def _filter_history_coletas(
+    df: pd.DataFrame,
+    platforms: list[str] | None = None,
+    platform_types: list[str] | None = None,
+    brands: list[str] | None = None,
+    sellers: list[str] | None = None,
+    keywords: list[str] | None = None,
+    products: list[str] | None = None,
+    btu_filter: list[str] | None = None,
+    product_types: list[str] | None = None,
+    max_position: int | None = None,
+    familias_resolvidas: list[str] | None = None,
+    skus_resolvidos: list[str] | None = None,
+    estados_match: list[str] | None = None,
+) -> pd.DataFrame:
+    """Aplica em pandas os mesmos filtros que `query_coletas` manda ao PostgREST.
+
+    O histórico frio (Parquet) não tem servidor para filtrar, então os
+    predicados são reproduzidos aqui. Espelha `_build_q()` — ao mexer nos
+    filtros de um lado, mexa no outro.
+
+    Args:
+        df: Linhas vindas do histórico, no schema da tabela `coletas`.
+        (demais): Mesmos filtros de `query_coletas`.
+
+    Returns:
+        Subconjunto de `df`. Colunas ausentes no histórico fazem o filtro
+        correspondente ser ignorado (partição antiga sem a coluna nova).
+    """
+    if df.empty:
+        return df
+    out = df
+
+    def _isin(col: str, values) -> None:
+        nonlocal out
+        if values and col in out.columns:
+            out = out[out[col].isin(list(values))]
+
+    _isin("plataforma", _expand_platforms(platforms) if platforms else None)
+    _isin("tipo", platform_types)
+    _isin("marca", _expand_brands(brands) if brands else None)
+    _isin("seller", sellers)
+    _isin("keyword", keywords)
+    _isin("produto", products)
+
+    if max_position is not None and "posicao_geral" in out.columns:
+        pos = pd.to_numeric(out["posicao_geral"], errors="coerce")
+        out = out[pos <= max_position]
+
+    def _any_contains(col: str, patterns: list[str]) -> None:
+        """Mantém linhas cuja coluna casa com QUALQUER padrão (like OR)."""
+        nonlocal out
+        if not patterns or col not in out.columns:
+            return
+        texto = out[col].astype("string").fillna("")
+        mask = pd.Series(False, index=out.index)
+        for pat in patterns:
+            mask |= texto.str.contains(pat, case=False, regex=False, na=False)
+        out = out[mask]
+
+    if btu_filter:
+        alvos: list[str] = []
+        for btu in btu_filter:
+            alvos.append(str(btu))
+            try:
+                dotted = f"{int(btu):,}".replace(",", ".")
+                if dotted != str(btu):
+                    alvos.append(dotted)
+            except ValueError:
+                pass
+        _any_contains("produto", alvos)
+
+    if product_types:
+        pats: list[str] = []
+        for label in product_types:
+            pats.extend(PRODUCT_TYPE_OPTIONS.get(label, [label]))
+        _any_contains("produto", pats)
+
+    final_estados = estados_match if estados_match is not None else _gf_estados()
+    final_familias = familias_resolvidas if familias_resolvidas is not None else _gf_familias()
+    final_skus = skus_resolvidos if skus_resolvidos is not None else _gf_skus_resolvidos()
+
+    _isin("estado_match", final_estados)
+    _isin("familia_resolvida", final_familias)
+
+    if final_skus:
+        # Mesma expansão de `_apply_sku_filter_with_expansion`: família de
+        # linha + voltagem, com queda para sku_resolvido quando o catálogo
+        # não ajuda.
+        cat = get_catalogo()
+        picked = cat[cat["sku"].isin(final_skus)] if not cat.empty else pd.DataFrame()
+        fam_linhas = (picked["familia_linha"].dropna().unique().tolist()
+                      if "familia_linha" in picked.columns else [])
+        if fam_linhas:
+            _isin("familia_resolvida", fam_linhas)
+            voltagens = (picked["voltagem"].dropna().unique().tolist()
+                         if "voltagem" in picked.columns else [])
+            _isin("voltagem_resolvida", voltagens)
+        else:
+            _isin("sku_resolvido", final_skus)
+
+    gf_btu_cat = _gf_btu_catalogo()
+    if gf_btu_cat and not out.empty:
+        cat = get_catalogo()
+        skus_btu = (cat[cat["capacidade_btu"].isin(gf_btu_cat)]["sku"].tolist()
+                    if not cat.empty else [])
+        mask = pd.Series(False, index=out.index)
+        if "familia_resolvida" in out.columns:
+            fam = out["familia_resolvida"].astype("string").fillna("")
+            for btu in gf_btu_cat:
+                mask |= fam.str.contains(f"-{int(btu)}-", regex=False, na=False)
+        if skus_btu and "sku_resolvido" in out.columns:
+            mask |= out["sku_resolvido"].isin(skus_btu)
+        out = out[mask]
+
+    return out
+
+
+def _history_gap_fill(
+    start_date: date,
+    end_date: date,
+    ja_presentes: set,
+    **filtros,
+) -> pd.DataFrame:
+    """Lê do histórico frio os dias que o Supabase não devolveu.
+
+    O histórico é a fonte dos dias que já migraram (fora da janela quente) e
+    também o único socorro quando o banco está restrito por cota — nesse
+    estado a API REST recusa até leitura e `ja_presentes` vem vazio.
+
+    Args:
+        start_date: Primeiro dia pedido.
+        end_date: Último dia pedido.
+        ja_presentes: Dias que o Supabase já entregou (não relidos aqui).
+        **filtros: Repassados a `_filter_history_coletas`.
+
+    Returns:
+        DataFrame filtrado com os dias faltantes; vazio se não há histórico.
+    """
+    try:
+        from utils.history import get_store
+        df = get_store().read("coletas", start=start_date, end=end_date)
+    except Exception as exc:
+        # app.py não usa loguru no escopo global — import local para não
+        # engolir a causa em silêncio.
+        from loguru import logger as _logger
+        _logger.warning(f"[Dashboard] histórico frio indisponível: {exc}")
+        return pd.DataFrame()
+
+    if df.empty:
+        return df
+    if ja_presentes and "data" in df.columns:
+        df = df[~df["data"].isin(ja_presentes)]
+    if df.empty:
+        return df
+
+    df = _filter_history_coletas(df, **filtros)
+    if df.empty:
+        return df
+    if "marca" in df.columns and _MARCA_TO_CANONICAL:
+        df["marca"] = df["marca"].map(
+            lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
+        )
+    return df
+
+
 def query_coletas(
     start_date: date,
     end_date: date,
@@ -892,17 +1058,35 @@ def query_coletas(
     .limit() requests.  We use .range() in a loop to collect up to `limit`
     rows transparently.
     """
-    client = _get_supabase()
-    if client is None:
-        st.error("Supabase não conectado. Verifique o arquivo .env.")
-        return pd.DataFrame()
-
     # Filtro global de Fonte de Dados: se "Coletas (Python)" estiver desligada,
     # esta fonte não contribui com nenhuma linha (silencioso — é um recorte
     # intencional, não erro). A precedência/merge em query_price_evolution_data
     # herda isto automaticamente.
     if "coletas" not in _gf_sources():
         return pd.DataFrame()
+
+    # Filtros repassados ao histórico frio quando ele precisa cobrir dias que
+    # o Supabase não tem (migrados pela janela quente, ou banco indisponível).
+    _hist_filtros = dict(
+        platforms=platforms, platform_types=platform_types, brands=brands,
+        sellers=sellers, keywords=keywords, products=products,
+        btu_filter=btu_filter, product_types=product_types,
+        max_position=max_position, familias_resolvidas=familias_resolvidas,
+        skus_resolvidos=skus_resolvidos, estados_match=estados_match,
+    )
+
+    client = _get_supabase()
+    if client is None:
+        # Sem banco o relatório ainda sai — o histórico frio cobre o período.
+        df_hist = _history_gap_fill(start_date, end_date, set(), **_hist_filtros)
+        if df_hist.empty:
+            st.error("Supabase não conectado e histórico frio vazio. Verifique o .env.")
+        else:
+            st.info(
+                f"Supabase não conectado — exibindo {len(df_hist):,} linha(s) do "
+                f"histórico frio (Parquet)."
+            )
+        return df_hist
 
     def _build_q():
         """Fresh filtered query (no cursor yet — added per-page in the loop).
@@ -1010,7 +1194,9 @@ def query_coletas(
                 break  # safety: cursor unusable without (data, id)
 
         if not all_data:
-            return pd.DataFrame()
+            # Banco sem linhas no período: pode ser recorte legítimo ou dias já
+            # migrados para o histórico frio. O frio decide.
+            return _history_gap_fill(start_date, end_date, set(), **_hist_filtros)
 
         df = pd.DataFrame(all_data)
         df["data"] = pd.to_datetime(df["data"]).dt.date
@@ -1025,10 +1211,27 @@ def query_coletas(
             df["marca"] = df["marca"].map(
                 lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
             )
+
+        # Costura com o histórico frio: só os dias que o banco NÃO devolveu.
+        # Precedência do Supabase, onde a automação Admin aplica de-para.
+        df_frio = _history_gap_fill(
+            start_date, end_date, set(df["data"].dropna().unique()), **_hist_filtros
+        )
+        if not df_frio.empty:
+            df = pd.concat([df, df_frio], ignore_index=True)
         return df
     except Exception as exc:
-        st.error(f"Erro na consulta: {exc}")
-        return pd.DataFrame()
+        # Com o projeto restrito por cota (HTTP 402) a API recusa até leitura —
+        # aqui o histórico é o único caminho, e falhar seria pior que degradar.
+        df_frio = _history_gap_fill(start_date, end_date, set(), **_hist_filtros)
+        if df_frio.empty:
+            st.error(f"Erro na consulta: {exc}")
+            return pd.DataFrame()
+        st.warning(
+            f"Supabase indisponível ({exc}) — exibindo {len(df_frio):,} linha(s) "
+            f"do histórico frio (Parquet)."
+        )
+        return df_frio
 
 
 _SUPABASE_PAGE_PT = 1000
