@@ -710,11 +710,21 @@ class LeroySellerCache:
         Falhas **transitórias** (página não chegou) são liberadas de imediato,
         até ``TRANSIENT_ATTEMPTS``: um rate-limit de dez segundos não deve
         custar uma semana de seller não identificado.
+
+        Entradas **legadas** — gravadas antes da distinção transitório/definitivo
+        existir, sem nenhuma das duas chaves — recebem o benefício da dúvida e
+        são tratadas como transitórias. Sem isso, instalar a correção não
+        recuperava uma quarentena escrita pela versão anterior: em produção
+        (jul/2026) isso deixou ~40 IDs bloqueados e a coleta seguinte fez zero
+        tentativas de PDP, exatamente o blackout que a distinção evita.
         """
         entry = self._unresolved.get(seller_id)
         if not entry:
             return True
-        if entry.get("transient") and int(entry.get("attempts", 0)) < self.TRANSIENT_ATTEMPTS:
+        legado = "transient" not in entry and "definitive" not in entry
+        if (entry.get("transient") or legado) and (
+            int(entry.get("attempts", 0)) < self.TRANSIENT_ATTEMPTS
+        ):
             return True
         last_try = entry.get("last_try")
         if not last_try:
