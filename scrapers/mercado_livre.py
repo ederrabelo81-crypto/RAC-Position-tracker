@@ -8,9 +8,11 @@ Estratégia de extração:
   - Distinção Orgânico/Patrocinado: 5 camadas — classe do container, chip
     legado/Poly, texto "Patrocinado", aria-label/title e href de ad-tracking
     (click1.mercadolivre / mclics)
-  - Avaliação/reviews: seletores Poly (.poly-reviews__*) + legados + texto
-    acessível "Avaliação 4,8 de 5 (1.234 avaliações)" + camada ESTRUTURAL
-    (nós "4.8" e "(1.234)" adjacentes), imune a renomeação de classe
+  - Avaliação: widget compacto (.poly-component__review-compacted) + Poly com
+    contagem + legados + texto acessível + camada ESTRUTURAL (nós "4.8" e
+    "(1.234)" adjacentes), imune a renomeação de classe.
+    ⚠️ A SERP atual NÃO traz qtd de avaliações — o widget compacto é só
+    estrela + nota (DOM real em tests/fixtures/ml_card_grid_20260725.html)
   - Loja Oficial: só com sinal explícito e escopado ao bloco do seller
   - Fulfillment (FULL): classe + atributo acessível + nó de texto exato
   - Preço: fragmentos `.andes-money-amount__fraction` + `.andes-money-amount__cents`
@@ -93,7 +95,12 @@ _SELECTORS = {
     # os nomes "poly-component__reviews-*" nunca bateram em produção
     # (cobertura 0% Mar→Jun/2026 — ver docs/DIAGNOSTICO_COLETA_JUN2026.md)
     "rating_candidates": [
-        ".poly-reviews__rating",            # Poly atual
+        # widget "compacto" — é o que o ML serve hoje no grid (confirmado no DOM
+        # real em 25/07/2026): estrela + nota, SEM contagem. O escopo é
+        # obrigatório: `.polylabel-label` sozinho também rotula "ou", "em" e
+        # trechos de preço dentro do mesmo card.
+        ".poly-component__review-compacted .polylabel-label",
+        ".poly-reviews__rating",            # variante com contagem
         ".poly-component__reviews-rating",  # variante antiga (mantida por segurança)
         ".ui-search-reviews__rating-number", # legado
     ],
@@ -212,11 +219,15 @@ _BLOCK_SIGNALS_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 # Campos cuja ausência total NUMA KEYWORD denuncia quebra de extração.
-# `sponsored` fica de fora de propósito: uma SERP de cauda longa pode não ter
-# nenhum anúncio, e tratar isso como quebra geraria WARNING falso e sobrescreveria
-# o card de amostra. Ads são avaliados no fim da run (ver `_log_run_summary`):
-# zero em UMA keyword é normal, zero em TODAS é detecção quebrada.
-_CRITICAL_FIELDS = ("rating", "review_count", "seller")
+#
+# Ficam de fora de propósito (avaliados só no fim da run, em `_log_run_summary`):
+#   `sponsored`    — SERP de cauda longa pode não ter anúncio nenhum.
+#   `review_count` — o card do ML hoje usa o widget COMPACTO
+#                    (`poly-component__review-compacted`), que renderiza estrela
+#                    + nota e NENHUMA contagem (DOM real de 25/07/2026: zero
+#                    ocorrências de "avalia" no card). Cobrar esse campo por
+#                    keyword geraria WARNING em todas elas, todo dia.
+_CRITICAL_FIELDS = ("rating", "seller")
 
 # Home do ML — visitada uma vez por run antes da primeira busca. Um `goto`
 # direto na rota de busca chega ao antibot antes do sensor.js validar a sessão;
@@ -267,6 +278,7 @@ class MLScraper(BaseScraper):
     _run_keywords: int = 0
     _run_items: int = 0
     _run_sponsored: int = 0
+    _run_review_counts: int = 0
     _warmed: bool = False
 
     def __init__(self, headless: bool = True) -> None:
@@ -286,6 +298,7 @@ class MLScraper(BaseScraper):
         self._run_keywords = 0
         self._run_items = 0
         self._run_sponsored = 0
+        self._run_review_counts = 0
 
     def _launch(self) -> None:
         """Preferência: Chrome real local (perfil dedicado) via CDP; senão, launch próprio."""
@@ -1018,6 +1031,7 @@ class MLScraper(BaseScraper):
         self._run_keywords += 1
         self._run_items += total
         self._run_sponsored += cov.get("sponsored", 0)
+        self._run_review_counts += cov.get("review_count", 0)
 
         zerados = [f for f in _CRITICAL_FIELDS if not cov.get(f)]
         if not zerados:
@@ -1051,8 +1065,15 @@ class MLScraper(BaseScraper):
 
         logger.info(
             f"[{self.platform_name}] run: {self._run_keywords} keywords, "
-            f"{self._run_items} cards, {self._run_sponsored} patrocinados"
+            f"{self._run_items} cards, {self._run_sponsored} patrocinados, "
+            f"{self._run_review_counts} com qtd de avaliações"
         )
+        if self._run_items and not self._run_review_counts:
+            logger.info(
+                f"[{self.platform_name}] Qtd de avaliações ausente em todos os "
+                f"{self._run_items} cards — esperado enquanto o ML servir o "
+                "widget compacto (estrela + nota, sem contagem)."
+            )
         if self._run_items and not self._run_sponsored:
             logger.warning(
                 f"[{self.platform_name}] ZERO patrocinados em "

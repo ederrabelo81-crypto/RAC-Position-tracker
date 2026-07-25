@@ -11,6 +11,8 @@ que cada camada de detecção precisa cobrir. Validação contra o DOM vivo:
 
 Rode: pytest tests/test_ml_parse.py
 """
+from pathlib import Path
+
 import pytest
 from bs4 import BeautifulSoup
 from loguru import logger
@@ -653,6 +655,89 @@ class TestCobertura:
         )
         scraper._log_coverage("kw", cursor, _item(CARD_BARE))
         assert (tmp_path / "logs" / "ml_card_sample.html").exists()
+
+
+class TestCardRealDaSERP:
+    """
+    Fixture capturada da SERP viva em 25/07/2026 (`logs/ml_card_sample.html`),
+    grid desktop. É a única evidência não-deduzida do DOM atual — os testes
+    anteriores usam HTML sintético.
+    """
+
+    @pytest.fixture
+    def card(self):
+        caminho = Path(__file__).parent / "fixtures" / "ml_card_grid_20260725.html"
+        return BeautifulSoup(caminho.read_text(encoding="utf-8"), "html.parser").select_one("li")
+
+    def test_avaliacao_do_widget_compacto(self, card):
+        # o ML serve `poly-component__review-compacted`: estrela + nota, sem
+        # contagem. NENHUM dos seletores pré-Jul/2026 casa aqui — foi isso que
+        # manteve `avaliacao` em 0% por 35 mil registros.
+        rating, count = MLScraper._extract_reviews(card)
+        assert rating == 4.7
+        assert count is None
+
+    def test_qtd_avaliacoes_nao_existe_no_card(self, card):
+        # guarda contra "consertar" um campo que a plataforma não expõe mais
+        assert "avalia" not in str(card).lower()
+
+    def test_loja_oficial_pelo_aria_label_do_cockade(self, card):
+        assert MLScraper._official_store_evidence(card, "Leveros") == "atributo-acessivel"
+
+    def test_cockade_nao_esta_na_classe(self, card):
+        # a svg do selo tem class="polylabel-icon"; "cockade" só aparece no
+        # <use href="#poly_cockade">. O seletor [class*=cockade] nunca casou.
+        assert card.select_one('[class*="cockade" i]') is None
+
+    def test_preco_ignora_o_riscado_a_parcela_e_o_cupom(self, card):
+        # o card tem 4 valores: 3.299 (antes), 2.999 (agora), 329,90 (parcela)
+        # e 2.899 (cupom). Só o "agora" pode virar Preço (R$).
+        assert MLScraper._extract_price(card) == 2999.0
+
+    def test_url_limpa_o_fragmento_de_tracking(self, card):
+        assert MLScraper._extract_url(card) == (
+            "https://www.mercadolivre.com.br/"
+            "ar-condicionado-split-fujitsu-inverter-frioquente-9000-btu-r-32/p/MLB35630510"
+        )
+
+    def test_card_organico_nao_e_patrocinado(self, card):
+        assert MLScraper._is_sponsored(card) is False
+
+    def test_icone_de_bookmark_nao_vira_fulfillment(self, card):
+        # a classe `poly-bookmark__icon-full` contém "full" — não pode ser lida
+        # como Mercado Envios Full
+        assert 'poly-bookmark__icon-full' in str(card)
+        assert MLScraper._is_fulfillment(card) is False
+
+    def test_record_completo(self, card):
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._last_screenshot_busca = None
+        cursor = _SerpCursor()
+        rec = scraper._parse_results(
+            f"<ol>{card}</ol>", "ar condicionado 9000 btus", {}, cursor=cursor
+        )[0]
+
+        assert rec["Marca Monitorada"] == "Fujitsu"
+        assert rec["Seller / Vendedor"] == "Leveros"
+        assert rec["Buy Box Seller"] == "Leveros"
+        assert rec["Tipo Seller"] == "Loja Oficial"
+        assert rec["Avaliação"] == 4.7
+        assert rec["Preço (R$)"] == 2999.0
+        assert rec["Posição Orgânica"] == 1
+        assert rec["Patrocinado?"] == "Não"
+
+    def test_qtd_avaliacoes_zerada_nao_dispara_alerta(self, card, tmp_path, monkeypatch):
+        # `review_count` saiu de _CRITICAL_FIELDS: como o widget compacto nunca
+        # traz contagem, cobrá-lo por keyword geraria WARNING + dump todo dia
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "logs").mkdir()
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._last_screenshot_busca = None
+        cursor = _SerpCursor()
+        scraper._parse_results(f"<ol>{card}</ol>", "kw", {}, cursor=cursor)
+        assert "review_count" not in cursor.coverage
+        scraper._log_coverage("kw", cursor, card)
+        assert not (tmp_path / "logs" / "ml_card_sample.html").exists()
 
 
 class _FakePage:

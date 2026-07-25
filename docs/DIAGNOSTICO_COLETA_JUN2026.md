@@ -318,3 +318,85 @@ recoletaria os itens 49..60. Com o offset correto (`_Desde_61`) e o retry acima,
 esse número precisa ser reavaliado na próxima coleta.
 
 *Adendo gerado em 25/07/2026.*
+
+---
+
+## Adendo (25/07/2026, noite) — DOM real do card: o que se confirmou e o que eu errei
+
+`logs/ml_card_sample.html` (gravado pela própria instrumentação, quando
+`review_count` zerou) trouxe o **primeiro card real** desde o rollout do Poly.
+Fixture congelada em `tests/fixtures/ml_card_grid_20260725.html`.
+
+### Estrutura real (grid desktop, 25/07/2026)
+
+```html
+<li class="ui-search-layout__item"><div class="ui-search-result__wrapper">
+  <div class="andes-card poly-card poly-card--grid-card poly-card--CORE">
+    <div class="poly-card__content">
+      <h3 class="poly-component__title-wrapper"><a class="poly-component__title" href=".../p/MLB35630510#polycard_client=…">…</a></h3>
+      <span class="poly-component__seller">Leveros
+        <svg aria-label="Loja oficial" class="polylabel-icon"><use href="#poly_cockade"></use></svg>
+      </span>
+      <span class="poly-component__review-compacted">
+        <svg class="polylabel-icon"><use href="#poly_star_fill"></use></svg>
+        <span class="polylabel-label">4.7</span>
+      </span>
+      <div class="poly-component__price">… 3.299 (riscado) … 2.999 (atual) … 329,90 (parcela) …</div>
+      <div class="poly-component__coupons">… 2.899 com Cupom …</div>
+    </div>
+  </div>
+</div></li>
+```
+
+### Confirmado
+
+| Campo | Resultado no card real |
+|---|---|
+| Avaliação | **4.7** — recuperada. Nenhum seletor anterior a Jul/2026 casa aqui |
+| Preço | **2999.0** — ignora riscado (3.299), parcela (329,90) e cupom (2.899) |
+| URL | PDP limpo, fragmento `#polycard_client=…` removido |
+| Seller / Buy Box | `Leveros` |
+| Tipo Seller | `Loja Oficial`, via `aria-label="Loja oficial"` |
+| Patrocinado | `False` (correto — card orgânico) |
+
+### ❗ Correção ao adendo anterior: o "falso positivo de 86%" foi um diagnóstico errado
+
+O adendo da manhã afirmou que `tipo_seller = "Loja Oficial"` em 86% era falso
+positivo em massa. **O DOM real desmente isso.** O selo é
+`<svg aria-label="Loja oficial">` **dentro** de `.poly-component__seller`, e o
+código antigo o lia pela camada `[aria-label*="loja oficial" i]` — sinal
+legítimo. O outro seletor daquela camada, `[class*="cockade" i]`, **nunca casou
+com nada**: a classe da svg é `polylabel-icon`; "cockade" só aparece no
+`<use href="#poly_cockade">`.
+
+A leitura correta da correlação "519/519 cards com seller vieram como Loja
+Oficial" é a oposta da que fiz: **o ML só renderiza a linha do seller para loja
+oficial**. Os 81 cards sem seller são 3P comuns, cujo nome a SERP não expõe.
+
+O que era de fato falso positivo eram os **14 registros com "Loja Oficial" e
+seller vazio** — esses vinham da varredura de texto no card inteiro, removida no
+PR #258. Ou seja: a correção continua válida e mais precisa, mas o tamanho do
+problema era ~2%, não 86%.
+
+### `qtd_avaliacoes` não é bug — o dado não existe mais
+
+O widget é `poly-component__review-compacted`: estrela + nota, **sem contagem**.
+Busca por "avalia"/"opini" no card: **zero ocorrências**. Não há o que extrair.
+`review_count` saiu de `_CRITICAL_FIELDS` (senão gera WARNING e reescreve o card
+de amostra em toda keyword, todo dia) e passou a ser reportado só no resumo da
+run.
+
+### `fulfillment` — provavelmente também indeterminável
+
+O card **não tem bloco de logística**: zero ocorrências de "frete", "grátis",
+"envio", "chega". O único "full" do HTML é a classe `poly-bookmark__icon-full`
+(ícone de favoritar), que o parser corretamente ignora.
+
+Se a SERP não renderiza mais o selo FULL, gravar `Fulfillment? = "Não"` em ~99%
+dos registros está **afirmando algo que não sabemos** — mesmo defeito de
+categoria do antigo `buy_box_seller = "Mercado Livre"`. O certo seria gravar
+nulo. Não mudei: `is_fulfillment` é `bool` em `_build_record` e a coluna é
+`boolean` no Supabase, então virar tri-state afeta base, dashboard e as outras
+6 plataformas — decisão do mantenedor, com uma amostra de um card só.
+
+*Adendo gerado em 25/07/2026 com DOM capturado em produção.*
