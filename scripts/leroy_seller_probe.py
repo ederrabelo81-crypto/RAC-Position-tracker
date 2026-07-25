@@ -53,6 +53,10 @@ from utils.leroy_sellers import (
 
 _OBJECT_ID_RE = re.compile(r"[0-9a-f]{24}", re.IGNORECASE)
 
+# Mesmo rótulo que `_fetch_pdp_browser` espera hidratar, para o diagnóstico
+# reportar o que a coleta realmente procura.
+_SELLER_LABEL_RE = re.compile(r"vendido\s+(?:e\s+entregue\s+)?por", re.IGNORECASE)
+
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -101,13 +105,18 @@ def _diagnose_html(html: str, seller_id: Optional[str]) -> None:
     from utils.leroy_sellers import next_flight_text
 
     flight = next_flight_text(html)
+    # Mesmo casamento usado pela espera de hidratação em `_fetch_pdp_browser`,
+    # para o diagnóstico refletir exatamente o que a coleta procura — um
+    # "endido" solto em outro contexto não conta como bloco hidratado.
+    rotulo = _SELLER_LABEL_RE.search(html)
     checks = [
         ("tamanho do HTML", f"{len(html):,} bytes"),
         ("__NEXT_DATA__ (Pages Router)", "SIM" if "__NEXT_DATA__" in html else "não"),
         ("__next_f (App Router)", "SIM" if "self.__next_f" in html else "não"),
         ("payload do App Router decodificado", f"{len(flight):,} chars"),
         ("JSON-LD", "SIM" if "application/ld+json" in html else "não"),
-        ("texto 'Vendido'", "SIM" if "endido" in html else "não (não hidratou?)"),
+        ("rótulo 'Vendido … por'",
+         f"SIM ({rotulo.group(0)!r})" if rotulo else "não (não hidratou?)"),
         ('"sellerName" no HTML', "SIM" if "sellerName" in html else "não"),
         ('"sellerName" no payload', "SIM" if "sellerName" in flight else "não"),
     ]
@@ -122,11 +131,24 @@ def _diagnose_html(html: str, seller_id: Optional[str]) -> None:
 
 
 def _fetch_via_browser(url: str, headless: bool = True) -> Optional[str]:
-    """Baixa o PDP pelo Playwright, com a mesma espera de hidratação da coleta."""
+    """
+    Baixa o PDP pelo Playwright, com a mesma espera de hidratação da coleta.
+
+    Falha de inicialização do browser (Playwright sem chromium instalado, por
+    exemplo) é reportada como erro controlado, igual ao caminho via requests —
+    e não como traceback.
+    """
     from scrapers.leroy_merlin import LeroyMerlinScraper
 
-    with LeroyMerlinScraper(headless=headless) as scraper:
-        return scraper._fetch_pdp_browser(url)
+    try:
+        with LeroyMerlinScraper(headless=headless) as scraper:
+            return scraper._fetch_pdp_browser(url)
+    except Exception as exc:
+        logger.error(
+            f"Não foi possível iniciar o browser: {exc}\n"
+            "  → Instale o chromium: python -m playwright install chromium"
+        )
+        return None
 
 
 def cmd_pdp(
@@ -211,7 +233,14 @@ def cmd_clear_quarantine(cache: LeroySellerCache) -> int:
             f"última em {info.get('last_try', '?')}"
         )
     n = cache.clear_quarantine()
-    cache.save()
+    # Sem persistir, os IDs continuam bloqueados depois que o processo sai —
+    # anunciar sucesso aqui seria mentir sobre o estado do cache.
+    if not cache.save():
+        logger.error(
+            f"Falha ao gravar {cache.path} — os {n} ID(s) seguem em quarentena. "
+            "Verifique permissão de escrita e tente de novo."
+        )
+        return 1
     logger.success(f"{n} ID(s) liberados — a próxima coleta tentará o PDP de novo.")
     return 0
 

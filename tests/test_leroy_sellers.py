@@ -504,9 +504,39 @@ class TestAppRouterPayload:
         shell = "<html><body><div id='__next'></div><script>self.__next_f=[]</script></body></html>"
         assert extract_seller_from_pdp(shell, SELLER_ID) is None
 
-    def test_push_malformado_nao_quebra(self):
-        html = '<html><body><script>self.__next_f.push([1,"\\uD800 quebrado])</script></body></html>'
+    def test_push_com_json_invalido_nao_quebra(self):
+        """
+        Exercita de fato o `except JSONDecodeError` de `next_flight_text`: o
+        push precisa **casar** a regex e falhar no `json.loads`. `\\x` não é
+        escape válido em JSON, mas passa pelo `\\\\.` da regex.
+        """
+        from utils.leroy_sellers import _FLIGHT_PUSH_RE, next_flight_text
+
+        html = r'<html><body><script>self.__next_f.push([1,"ruim \x escape"])</script></body></html>'
+        assert _FLIGHT_PUSH_RE.search(html), "o push precisa casar a regex"
+        assert next_flight_text(html) == ""          # chunk descartado, sem exceção
         assert extract_seller_from_pdp(html, SELLER_ID) is None
+
+    def test_push_que_nem_casa_a_regex_e_ignorado(self):
+        """Push truncado (sem fechar a string) simplesmente não casa."""
+        from utils.leroy_sellers import _FLIGHT_PUSH_RE
+
+        html = '<html><body><script>self.__next_f.push([1,"truncado])</script></body></html>'
+        assert not _FLIGHT_PUSH_RE.search(html)
+        assert extract_seller_from_pdp(html, SELLER_ID) is None
+
+    def test_chunk_valido_sobrevive_a_chunk_invalido(self):
+        """Um chunk quebrado não pode derrubar a leitura dos demais."""
+        payload = (
+            f'{{"offers":[{{"sellerId":"{SELLER_ID}","sellerName":"Frio Total"}}]}}'
+        )
+        html = (
+            "<html><body><script>"
+            r'self.__next_f.push([1,"ruim \x escape"]);'
+            f"self.__next_f.push([1,{json.dumps(payload)}])"
+            "</script></body></html>"
+        )
+        assert extract_seller_from_pdp(html, SELLER_ID) == "Frio Total"
 
     def test_nao_devolve_a_propria_leroy(self):
         """Payload que só traz a Leroy 1P não serve para um ID de marketplace."""
@@ -615,3 +645,36 @@ class TestAppRouterNaoConfundeProdutoComSeller:
         # arbitrária dentro de um objeto ambíguo.
         resultado = extract_seller_from_pdp(self._flight(payload), SELLER_ID)
         assert resultado in ("Um Ltda", None)
+
+
+class TestClearQuarantineCLI:
+    """
+    `--clear-quarantine` não pode anunciar sucesso se a gravação falhou: os IDs
+    seguiriam bloqueados após o processo sair, e o operador acharia que liberou.
+    """
+
+    def test_retorna_erro_quando_nao_persiste(self, tmp_path, monkeypatch):
+        from scripts.leroy_seller_probe import cmd_clear_quarantine
+
+        cache = LeroySellerCache(path=tmp_path / "c.json")
+        cache.mark_failed(SELLER_ID, "https://exemplo/p")
+        monkeypatch.setattr(cache, "save", lambda: False)   # simula OSError na escrita
+
+        assert cmd_clear_quarantine(cache) == 1
+
+    def test_retorna_sucesso_quando_persiste(self, tmp_path):
+        from scripts.leroy_seller_probe import cmd_clear_quarantine
+
+        path = tmp_path / "c.json"
+        cache = LeroySellerCache(path=path)
+        cache.mark_failed(SELLER_ID)
+
+        assert cmd_clear_quarantine(cache) == 0
+        # e a liberação sobrevive ao processo
+        assert LeroySellerCache(path=path).should_retry(SELLER_ID) is True
+
+    def test_quarentena_vazia_e_sucesso_sem_escrita(self, tmp_path):
+        from scripts.leroy_seller_probe import cmd_clear_quarantine
+
+        cache = LeroySellerCache(path=tmp_path / "c.json")
+        assert cmd_clear_quarantine(cache) == 0
