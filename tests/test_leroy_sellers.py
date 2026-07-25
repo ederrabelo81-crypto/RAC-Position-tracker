@@ -413,3 +413,51 @@ class TestParseAlgoliaHitsSemRede:
         records = scraper._parse_algolia_hits(hits, "ar condicionado", {}, 0)
         assert len(vistos) == 1
         assert all(r["Seller / Vendedor"] == "Refri Center" for r in records)
+
+
+class TestExtractSellerIdsDoProbe:
+    """
+    O relatório de lacunas do `--scan` precisa enxergar os três shapes que o
+    scraper aceita — contar um hit como 3P e omitir os IDs dele daria falsa
+    sensação de cobertura do cache.
+    """
+
+    def test_lista_de_strings(self):
+        from scripts.leroy_seller_probe import extract_seller_ids
+        assert extract_seller_ids([SELLER_ID, "outro"]) == [SELLER_ID, "outro"]
+
+    def test_lista_de_dicts(self):
+        from scripts.leroy_seller_probe import extract_seller_ids
+        ms = [{"sellerId": SELLER_ID, "sellerName": "Refri Center"},
+              {"seller_id": "b"}, {"id": "c"}, {"_id": "d"}]
+        assert extract_seller_ids(ms) == [SELLER_ID, "b", "c", "d"]
+
+    def test_dict_indexado_por_id(self):
+        from scripts.leroy_seller_probe import extract_seller_ids
+        assert extract_seller_ids({SELLER_ID: {"sellerName": "X"}}) == [SELLER_ID]
+
+    def test_dict_indexado_com_valor_escalar(self):
+        """Chave com cara de ObjectId é aceita mesmo sem dict no valor."""
+        from scripts.leroy_seller_probe import extract_seller_ids
+        assert extract_seller_ids({SELLER_ID: "Refri Center"}) == [SELLER_ID]
+
+    def test_dict_nao_indexado_nao_gera_seller_fantasma(self):
+        """
+        `{"id": "..."}` é o shape que o scraper trata como inesperado. Emitir a
+        chave aqui criaria um seller chamado "id" no relatório — lacuna de cache
+        inventada — e silenciaria o aviso de shape novo, que é o diagnóstico
+        correto para esse caso.
+        """
+        from scripts.leroy_seller_probe import extract_seller_ids
+        assert extract_seller_ids({"id": "nao-e-dict"}) == []
+        assert extract_seller_ids({"sellerName": "Refri Center"}) == []
+
+    def test_shapes_mistos_e_entradas_inuteis(self):
+        from scripts.leroy_seller_probe import extract_seller_ids
+        assert extract_seller_ids([SELLER_ID, {"semId": 1}, "", None]) == [SELLER_ID]
+
+    def test_formato_irreconhecivel(self):
+        from scripts.leroy_seller_probe import extract_seller_ids
+        assert extract_seller_ids("string-solta") == []
+        assert extract_seller_ids(None) == []
+        assert extract_seller_ids(42) == []
