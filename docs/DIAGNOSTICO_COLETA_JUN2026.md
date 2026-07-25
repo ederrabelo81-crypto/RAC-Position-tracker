@@ -165,3 +165,103 @@ do D1 (o "campo do item mudou" que não dava para corrigir às cegas em Jun).
 
 Cobertura: `tests/test_shopee_parse.py` (extrator de payload, normalização de
 preço e parsing dos formatos antigo/novo/misto).
+
+---
+
+## Adendo (25/07/2026) — ML: coleta "funcionando" com metade dos campos ocos
+
+Gatilho: CSV `rac_monitoramento_20260725_1115.csv` (600 registros de ML, 10
+keywords). A coleta **não estava bloqueada** — 600/600 linhas com título, preço,
+URL e posição. O que degradou foi a **extração de campos** e a **paginação**.
+
+### O que o CSV e o Supabase mostraram
+
+| Campo | Preenchimento | Veredito |
+|---|---|---|
+| `avaliacao` / `qtd_avaliacoes` | **0 de 35.445** registros de ML | quebrado desde sempre |
+| `qtd_sellers` / `reputacao_seller` | 0% | nunca coletados pelo scraper de browser |
+| `fulfillment` | ~1% | selo FULL não detectado |
+| `tipo_seller = "Loja Oficial"` | **86%** | falso positivo em massa |
+| `buy_box_seller = "Mercado Livre"` | 13,5% | valor inventado |
+| `posicao_organica` | duplicada entre páginas | corrompe share/SOV |
+
+O fix de Jun/2026 acertou `patrocinado` (0% → ~26%) e `tag` (0% → ~25%), mas
+`avaliacao` continuou zerada: os nomes `.poly-reviews__rating`/`__total` também
+não existem no DOM real. E a detecção de Loja Oficial passou de **0% para 86%** —
+trocou um extremo errado por outro.
+
+### Causas raiz e correções (`scrapers/mercado_livre.py`)
+
+1. **Avaliação zerada** — as duas camadas anteriores dependem de nome de classe
+   do Poly, que já mudou duas vezes. Nova camada **estrutural**: o widget de
+   reviews renderiza dois nós de texto vizinhos, `4.8` e `(1.234)`; casamos o nó
+   inteiro (`^[0-5][.,]\d$` + `^\(\d…\)$`), formato que nada mais no card produz
+   (preço tem 3 decimais, parcela tem "x", título é longo). Imune à próxima
+   renomeação de classe.
+
+2. **"Loja Oficial" em 86%** — `item.find(string=/loja oficial/)` varria o card
+   inteiro, marcando 3P evidentes ("KARZEN ELETRO", "REFRIGERAÇÃO MOTA") e até
+   cards sem seller. Agora só conta sinal **explícito e escopado ao bloco do
+   seller**: label legado, nome já rotulado, atributo acessível, href de vitrine
+   (`/loja/<slug>`) ou cockade **dentro** do bloco do seller. A camada que
+   disparou é registrada e logada por run.
+
+3. **Fulfillment em ~1%** — o selo FULL é ícone, não texto. Passa a checar
+   `[class*="fulfillment"]` e `aria-label`/`title`/`alt`. O fallback textual
+   agora casa o nó **inteiro**: o `\bfull\b` solto marcaria "Ar Condicionado
+   **Full** DC Inverter" como fulfillment.
+
+4. **Paginação com passo fixo** — `_ITEMS_PER_PAGE = 48` ficou obsoleto: a SERP
+   passou a servir ~60 cards, então a página 2 (`_Desde_49`) **recoletava os
+   itens 49..60** da página 1. O offset agora vem de `_SerpCursor.items_seen`
+   (contagem real de cards), e a constante foi removida para não voltar a
+   mentir.
+
+5. **Posição orgânica reiniciando por página** — os contadores viviam dentro de
+   `_parse_results`, então a página 2 recomeçava em "Orgânica 1". Confirmado no
+   banco (16/07, `ar condicionado inverter mais econômico`: duas linhas em cada
+   posição de 2 a 32). Contadores passaram para o cursor da keyword.
+
+6. **Seller inventado** — sem `.poly-component__seller` o código caía para
+   `"Mercado Livre"`, o que fez o próprio ML virar o 2º maior "vencedor de buy
+   box" da categoria. Agora fica nulo.
+
+7. **URL de patrocinado** — vinha como link de tracking `click1…/mclics`, que
+   expira e não casa com o catálogo. O `item_id` embutido é convertido em
+   permalink canônico (`produto.mercadolivre.com.br/MLB-…`).
+
+8. **Cobertura instrumentada** — cada keyword loga `title=…/n price=…/n
+   rating=…/n …`; campo crítico zerado vira WARNING e grava
+   `logs/ml_card_sample.html`. Foi a ausência disso que deixou `avaliacao`
+   passar meses em 0% sem ninguém notar. Patrocinado é avaliado só no
+   **fim da run**: zero numa keyword de cauda longa é rotina, zero em todas as
+   keywords é a regressão de Mar→Jun/2026.
+
+9. **URL de patrocinado de loja oficial** — o candidato genérico
+   `a[href*="mercadolivre.com"]` também casa o link da vitrine (`/loja/<slug>`),
+   que no Poly vem depois do título. Em card patrocinado de loja oficial — a
+   combinação mais comum no topo da SERP — isso devolvia a **página da loja** no
+   lugar do produto. Âncoras de vitrine passam a ser ignoradas.
+
+### Limite desta correção
+
+Os itens 4–7 são deduzidos de dados observados (CSV + Supabase) e estão
+cobertos por teste. Os itens 1–3 mexem em **como** se lê o card: a lógica está
+testada, mas **não foi validada contra o DOM vivo** — o ambiente de
+desenvolvimento não alcança `lista.mercadolivre.com.br` (403 em IP de
+datacenter). A validação é a própria próxima coleta: o log de cobertura dirá se
+`rating`/`oficial`/`fulfillment` saíram do zero, e o `ml_card_sample.html`
+entrega o DOM real caso ainda não saiam.
+
+### Ainda em aberto
+
+- `qtd_sellers` e `reputacao_seller` **não existem na SERP** do ML — só no PDP
+  (inviável: ~60 itens × 31 keywords × 2 turnos) ou na API oficial. Continua
+  valendo o D4: `python main.py --platforms ml_api` com `ML_APP_ID`/
+  `ML_APP_SECRET`.
+- **Supabase sem gravação desde 16/07/2026** (última inserção 16/07 21:18 UTC,
+  todas as plataformas). **Não é bug**: é restrição de acesso conhecida, com
+  retorno previsto para **11/08/2026**. Até lá a validação da coleta sai do CSV
+  em `output/` e do log de cobertura, não do banco.
+
+*Adendo gerado em 25/07/2026.*
