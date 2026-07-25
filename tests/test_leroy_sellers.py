@@ -461,3 +461,220 @@ class TestExtractSellerIdsDoProbe:
         assert extract_seller_ids("string-solta") == []
         assert extract_seller_ids(None) == []
         assert extract_seller_ids(42) == []
+
+
+def _pdp_app_router(seller_id: str, seller_name: str, split: bool = False) -> str:
+    """
+    PDP em App Router: sem `__NEXT_DATA__`, dados em `self.__next_f.push`.
+
+    Foi este shape que fez 100% das resoluções falharem em produção (jul/2026):
+    `pdp_fetch_attempts: 7 | resolved_via_pdp: 0`.
+    """
+    payload = (
+        '{"product":{"name":"Ar Condicionado Split","offers":[{"sellerId":"'
+        + seller_id + '","sellerName":"' + seller_name + '"}]}}'
+    )
+    if split:
+        # O streaming real fragmenta no meio do JSON, às vezes no meio da chave
+        corte = payload.index(seller_name) - 3
+        pushes = (
+            f"self.__next_f.push([1,{json.dumps(payload[:corte])}]);"
+            f"self.__next_f.push([1,{json.dumps(payload[corte:])}])"
+        )
+    else:
+        pushes = f"self.__next_f.push([1,{json.dumps(payload)}])"
+    return f"<html><body><div id='__next'></div><script>{pushes}</script></body></html>"
+
+
+class TestAppRouterPayload:
+    def test_resolve_ancorado_no_id(self):
+        html = _pdp_app_router(SELLER_ID, "Frio Total")
+        assert extract_seller_from_pdp(html, SELLER_ID) == "Frio Total"
+
+    def test_resolve_sem_ancora(self):
+        html = _pdp_app_router(SELLER_ID, "Frio Total")
+        assert extract_seller_from_pdp(html, None) == "Frio Total"
+
+    def test_chunks_fragmentados_sao_reconstituidos(self):
+        """A concatenação dos pushes remonta o JSON partido pelo streaming."""
+        html = _pdp_app_router(SELLER_ID, "Refri Center", split=True)
+        assert extract_seller_from_pdp(html, SELLER_ID) == "Refri Center"
+
+    def test_shell_sem_dados_continua_none(self):
+        shell = "<html><body><div id='__next'></div><script>self.__next_f=[]</script></body></html>"
+        assert extract_seller_from_pdp(shell, SELLER_ID) is None
+
+    def test_push_com_json_invalido_nao_quebra(self):
+        """
+        Exercita de fato o `except JSONDecodeError` de `next_flight_text`: o
+        push precisa **casar** a regex e falhar no `json.loads`. `\\x` não é
+        escape válido em JSON, mas passa pelo `\\\\.` da regex.
+        """
+        from utils.leroy_sellers import _FLIGHT_PUSH_RE, next_flight_text
+
+        html = r'<html><body><script>self.__next_f.push([1,"ruim \x escape"])</script></body></html>'
+        assert _FLIGHT_PUSH_RE.search(html), "o push precisa casar a regex"
+        assert next_flight_text(html) == ""          # chunk descartado, sem exceção
+        assert extract_seller_from_pdp(html, SELLER_ID) is None
+
+    def test_push_que_nem_casa_a_regex_e_ignorado(self):
+        """Push truncado (sem fechar a string) simplesmente não casa."""
+        from utils.leroy_sellers import _FLIGHT_PUSH_RE
+
+        html = '<html><body><script>self.__next_f.push([1,"truncado])</script></body></html>'
+        assert not _FLIGHT_PUSH_RE.search(html)
+        assert extract_seller_from_pdp(html, SELLER_ID) is None
+
+    def test_chunk_valido_sobrevive_a_chunk_invalido(self):
+        """Um chunk quebrado não pode derrubar a leitura dos demais."""
+        payload = (
+            f'{{"offers":[{{"sellerId":"{SELLER_ID}","sellerName":"Frio Total"}}]}}'
+        )
+        html = (
+            "<html><body><script>"
+            r'self.__next_f.push([1,"ruim \x escape"]);'
+            f"self.__next_f.push([1,{json.dumps(payload)}])"
+            "</script></body></html>"
+        )
+        assert extract_seller_from_pdp(html, SELLER_ID) == "Frio Total"
+
+    def test_nao_devolve_a_propria_leroy(self):
+        """Payload que só traz a Leroy 1P não serve para um ID de marketplace."""
+        html = _pdp_app_router(SELLER_ID, "Leroy Merlin")
+        assert extract_seller_from_pdp(html, SELLER_ID) is None
+
+    def test_next_flight_text_vazio_sem_pushes(self):
+        from utils.leroy_sellers import next_flight_text
+        assert next_flight_text("<html><body>nada aqui</body></html>") == ""
+
+
+class TestQuarentenaLimpeza:
+    def test_clear_quarantine_libera_ids(self, tmp_path):
+        cache = LeroySellerCache(path=tmp_path / "c.json")
+        cache.mark_failed(SELLER_ID, "https://exemplo/p")
+        cache.mark_failed("outro_id")
+        assert cache.should_retry(SELLER_ID) is False
+
+        assert cache.clear_quarantine() == 2
+        assert cache.should_retry(SELLER_ID) is True
+        assert cache.quarantined == {}
+
+    def test_clear_quarantine_persiste(self, tmp_path):
+        path = tmp_path / "c.json"
+        cache = LeroySellerCache(path=path)
+        cache.mark_failed(SELLER_ID)
+        cache.save()
+
+        c2 = LeroySellerCache(path=path)
+        assert c2.should_retry(SELLER_ID) is False
+        c2.clear_quarantine()
+        c2.save()
+
+        assert LeroySellerCache(path=path).should_retry(SELLER_ID) is True
+
+    def test_clear_quarantine_vazia_e_noop(self, tmp_path):
+        cache = LeroySellerCache(path=tmp_path / "c.json")
+        assert cache.clear_quarantine() == 0
+        assert cache.save() is False
+
+
+class TestAppRouterNaoConfundeProdutoComSeller:
+    """
+    Regressão (P1): a passada ancorada usava a chave genérica `name` numa janela
+    de 400 chars ao redor do seller ID. O título do produto cai nessa janela e
+    não é pego pelo blocklist, então virava o "nome do lojista" — e ia para
+    `data/leroy_sellers.json`, corrompendo todos os registros futuros daquele
+    seller.
+    """
+
+    @staticmethod
+    def _flight(payload: str) -> str:
+        return (
+            "<html><body><script>"
+            f"self.__next_f.push([1,{json.dumps(payload)}])"
+            "</script></body></html>"
+        )
+
+    def test_titulo_de_produto_nao_vira_seller(self):
+        payload = (
+            '{"product":{"name":"Ar Condicionado Portatil Philco","brand":"Philco",'
+            '"description":"Refrigeracao potente para ambientes de ate 20m2",'
+            f'"offers":[{{"sellerId":"{SELLER_ID}","sellerName":"Loja X"}}]}}}}'
+        )
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Loja X"
+
+    def test_sem_seller_no_payload_nao_devolve_titulo(self):
+        """Só título de produto: melhor None do que um nome errado no cache."""
+        payload = (
+            '{"product":{"name":"Ar Condicionado Portatil Philco"},'
+            f'"sellerId":"{SELLER_ID}"}}'
+        )
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) is None
+
+    def test_multi_seller_pega_o_do_mesmo_objeto(self):
+        """
+        O nome do seller anterior fica fisicamente mais perto do ID do que o
+        nome que lhe pertence — por isso a busca é delimitada pelo objeto JSON,
+        não por distância.
+        """
+        payload = (
+            '{"offers":[{"sellerId":"61940b77c220aa3ead390ee2","sellerName":"Errado Ltda"},'
+            f'{{"sellerId":"{SELLER_ID}","sellerName":"Certo Ltda"}}]}}'
+        )
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Certo Ltda"
+
+    def test_ordem_invertida_das_chaves(self):
+        """Nome antes do ID no mesmo objeto continua sendo encontrado."""
+        payload = f'{{"offers":[{{"sellerName":"Antes Ltda","sellerId":"{SELLER_ID}"}}]}}'
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Antes Ltda"
+
+    def test_seller_aninhado_com_name_generico(self):
+        """`name` só é aceito sob a chave "seller", onde é inequívoco."""
+        payload = (
+            f'{{"offers":[{{"sellerId":"{SELLER_ID}",'
+            '"seller":{"id":"x","name":"Frio Total"}}]}'
+        )
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Frio Total"
+
+    def test_objeto_ambiguo_nao_arrisca_o_cache(self):
+        """Vários nomes no mesmo objeto → não chuta, deixa para as camadas seguintes."""
+        payload = (
+            f'{{"sellerId":"{SELLER_ID}","sellerName":"Um Ltda","storeName":"Outro Ltda"}}'
+        )
+        # O fallback genérico ainda pode responder, mas nunca por proximidade
+        # arbitrária dentro de um objeto ambíguo.
+        resultado = extract_seller_from_pdp(self._flight(payload), SELLER_ID)
+        assert resultado in ("Um Ltda", None)
+
+
+class TestClearQuarantineCLI:
+    """
+    `--clear-quarantine` não pode anunciar sucesso se a gravação falhou: os IDs
+    seguiriam bloqueados após o processo sair, e o operador acharia que liberou.
+    """
+
+    def test_retorna_erro_quando_nao_persiste(self, tmp_path, monkeypatch):
+        from scripts.leroy_seller_probe import cmd_clear_quarantine
+
+        cache = LeroySellerCache(path=tmp_path / "c.json")
+        cache.mark_failed(SELLER_ID, "https://exemplo/p")
+        monkeypatch.setattr(cache, "save", lambda: False)   # simula OSError na escrita
+
+        assert cmd_clear_quarantine(cache) == 1
+
+    def test_retorna_sucesso_quando_persiste(self, tmp_path):
+        from scripts.leroy_seller_probe import cmd_clear_quarantine
+
+        path = tmp_path / "c.json"
+        cache = LeroySellerCache(path=path)
+        cache.mark_failed(SELLER_ID)
+
+        assert cmd_clear_quarantine(cache) == 0
+        # e a liberação sobrevive ao processo
+        assert LeroySellerCache(path=path).should_retry(SELLER_ID) is True
+
+    def test_quarentena_vazia_e_sucesso_sem_escrita(self, tmp_path):
+        from scripts.leroy_seller_probe import cmd_clear_quarantine
+
+        cache = LeroySellerCache(path=tmp_path / "c.json")
+        assert cmd_clear_quarantine(cache) == 0

@@ -9,10 +9,17 @@ Uso:
     python scripts/leroy_seller_probe.py --list
 
     # Resolve o seller a partir de uma URL de PDP (grava no cache)
-    python scripts/leroy_seller_probe.py --pdp https://www.leroymerlin.com.br/...
+    python scripts/leroy_seller_probe.py --pdp "https://www.leroymerlin.com.br/..."
 
     # Idem, ancorando no ID que apareceu no WARNING da coleta
-    python scripts/leroy_seller_probe.py --pdp <url> --seller-id 5e6fd1d9...
+    python scripts/leroy_seller_probe.py --pdp "URL" --seller-id 5e6fd1d9...
+
+    # Pelo Playwright (o que a coleta usa) — necessário quando o site bloqueia
+    # requests. Sempre grava logs/leroy_pdp_probe.html e imprime diagnóstico.
+    python scripts/leroy_seller_probe.py --pdp "URL" --seller-id ID --browser
+
+    # Libera IDs em quarentena (use depois de ajustar o parser)
+    python scripts/leroy_seller_probe.py --clear-quarantine
 
     # Testa a extração sobre um HTML já salvo (offline, sem rede)
     python scripts/leroy_seller_probe.py --html logs/pdp_dump.html
@@ -45,6 +52,10 @@ from utils.leroy_sellers import (
 )
 
 _OBJECT_ID_RE = re.compile(r"[0-9a-f]{24}", re.IGNORECASE)
+
+# Mesmo rótulo que `_fetch_pdp_browser` espera hidratar, para o diagnóstico
+# reportar o que a coleta realmente procura.
+_SELLER_LABEL_RE = re.compile(r"vendido\s+(?:e\s+entregue\s+)?por", re.IGNORECASE)
 
 _HEADERS = {
     "User-Agent": (
@@ -83,18 +94,95 @@ def cmd_list(cache: LeroySellerCache) -> int:
     return 0
 
 
-def cmd_pdp(cache: LeroySellerCache, url: str, seller_id: Optional[str]) -> int:
+def _diagnose_html(html: str, seller_id: Optional[str]) -> None:
+    """
+    Reporta o que o HTML contém, para orientar o ajuste do parser.
+
+    Responde as perguntas que decidem qual camada de extração pode funcionar:
+    o PDP é Pages Router (``__NEXT_DATA__``) ou App Router (``__next_f``)? o
+    rótulo textual já foi hidratado? o próprio seller ID aparece no documento?
+    """
+    from utils.leroy_sellers import next_flight_text
+
+    flight = next_flight_text(html)
+    # Mesmo casamento usado pela espera de hidratação em `_fetch_pdp_browser`,
+    # para o diagnóstico refletir exatamente o que a coleta procura — um
+    # "endido" solto em outro contexto não conta como bloco hidratado.
+    rotulo = _SELLER_LABEL_RE.search(html)
+    checks = [
+        ("tamanho do HTML", f"{len(html):,} bytes"),
+        ("__NEXT_DATA__ (Pages Router)", "SIM" if "__NEXT_DATA__" in html else "não"),
+        ("__next_f (App Router)", "SIM" if "self.__next_f" in html else "não"),
+        ("payload do App Router decodificado", f"{len(flight):,} chars"),
+        ("JSON-LD", "SIM" if "application/ld+json" in html else "não"),
+        ("rótulo 'Vendido … por'",
+         f"SIM ({rotulo.group(0)!r})" if rotulo else "não (não hidratou?)"),
+        ('"sellerName" no HTML', "SIM" if "sellerName" in html else "não"),
+        ('"sellerName" no payload', "SIM" if "sellerName" in flight else "não"),
+    ]
+    if seller_id:
+        checks.append((f"seller_id {seller_id[:10]}… no HTML",
+                       "SIM" if seller_id in html else "não"))
+        checks.append((f"seller_id {seller_id[:10]}… no payload",
+                       "SIM" if seller_id in flight else "não"))
+    logger.info("Diagnóstico do HTML:")
+    for label, value in checks:
+        print(f"  {label:<38} {value}")
+
+
+def _fetch_via_browser(url: str, headless: bool = True) -> Optional[str]:
+    """
+    Baixa o PDP pelo Playwright, com a mesma espera de hidratação da coleta.
+
+    Falha de inicialização do browser (Playwright sem chromium instalado, por
+    exemplo) é reportada como erro controlado, igual ao caminho via requests —
+    e não como traceback.
+    """
+    from scrapers.leroy_merlin import LeroyMerlinScraper
+
+    try:
+        with LeroyMerlinScraper(headless=headless) as scraper:
+            return scraper._fetch_pdp_browser(url)
+    except Exception as exc:
+        logger.error(
+            f"Não foi possível iniciar o browser: {exc}\n"
+            "  → Instale o chromium: python -m playwright install chromium"
+        )
+        return None
+
+
+def cmd_pdp(
+    cache: LeroySellerCache,
+    url: str,
+    seller_id: Optional[str],
+    use_browser: bool = False,
+    headless: bool = True,
+) -> int:
     """Resolve o seller a partir de um PDP online e grava no cache."""
-    html = _fetch(url)
+    html = _fetch_via_browser(url, headless=headless) if use_browser else _fetch(url)
     if not html:
+        if not use_browser:
+            logger.warning(
+                "O caminho leve falhou (provável bloqueio). Repita com --browser "
+                "para carregar o PDP no Playwright, que é o que a coleta usa."
+            )
         return 1
+
+    # Sempre grava o dump: mesmo em caso de sucesso ele serve de fixture para
+    # teste, e em caso de falha é a única evidência do que a Leroy serviu.
+    dump = Path("logs") / "leroy_pdp_probe.html"
+    dump.parent.mkdir(parents=True, exist_ok=True)
+    dump.write_text(html, encoding="utf-8")
+    logger.info(f"HTML salvo: {dump}")
+
+    _diagnose_html(html, seller_id)
+
     name = extract_seller_from_pdp(html, seller_id)
     if not name:
-        logger.error("Nenhuma estratégia extraiu o seller deste PDP.")
-        dump = Path("logs") / "leroy_pdp_probe.html"
-        dump.parent.mkdir(parents=True, exist_ok=True)
-        dump.write_text(html, encoding="utf-8")
-        logger.info(f"HTML salvo para inspeção: {dump}")
+        logger.error(
+            "Nenhuma estratégia extraiu o seller deste PDP. Use o diagnóstico "
+            f"acima e o dump em {dump} para ajustar extract_seller_from_pdp."
+        )
         return 1
     logger.success(f"Seller: {name}")
     if not seller_id:
@@ -124,11 +212,36 @@ def cmd_html(path: str, seller_id: Optional[str]) -> int:
     except OSError as exc:
         logger.error(f"Não foi possível ler {path}: {exc}")
         return 1
+    _diagnose_html(html, seller_id)
     name = extract_seller_from_pdp(html, seller_id)
     if not name:
         logger.error("Nenhuma estratégia extraiu o seller deste HTML.")
         return 1
     logger.success(f"Seller: {name}")
+    return 0
+
+
+def cmd_clear_quarantine(cache: LeroySellerCache) -> int:
+    """Libera os IDs em quarentena para nova tentativa na próxima coleta."""
+    presos = cache.quarantined
+    if not presos:
+        logger.info("Nenhum ID em quarentena.")
+        return 0
+    for sid, info in presos.items():
+        logger.info(
+            f"  {sid} — {info.get('attempts', '?')} tentativa(s), "
+            f"última em {info.get('last_try', '?')}"
+        )
+    n = cache.clear_quarantine()
+    # Sem persistir, os IDs continuam bloqueados depois que o processo sai —
+    # anunciar sucesso aqui seria mentir sobre o estado do cache.
+    if not cache.save():
+        logger.error(
+            f"Falha ao gravar {cache.path} — os {n} ID(s) seguem em quarentena. "
+            "Verifique permissão de escrita e tente de novo."
+        )
+        return 1
+    logger.success(f"{n} ID(s) liberados — a próxima coleta tentará o PDP de novo.")
     return 0
 
 
@@ -285,14 +398,31 @@ def main() -> int:
     parser.add_argument("--scan", metavar="KEYWORD", help="lista os seller IDs de uma busca")
     parser.add_argument("--pages", type=int, default=2, help="páginas no --scan (padrão: 2)")
     parser.add_argument("--set", metavar="ID=NOME", help="grava um par id=nome manualmente")
+    parser.add_argument(
+        "--browser", action="store_true",
+        help="no --pdp, carrega pelo Playwright (igual à coleta) em vez de requests",
+    )
+    parser.add_argument(
+        "--no-headless", action="store_true",
+        help="com --browser, abre o Chrome visível para acompanhar",
+    )
+    parser.add_argument(
+        "--clear-quarantine", action="store_true",
+        help="libera os IDs em quarentena para nova tentativa",
+    )
     args = parser.parse_args()
 
     cache = LeroySellerCache()
 
     if args.list:
         return cmd_list(cache)
+    if args.clear_quarantine:
+        return cmd_clear_quarantine(cache)
     if args.pdp:
-        return cmd_pdp(cache, args.pdp, args.seller_id)
+        return cmd_pdp(
+            cache, args.pdp, args.seller_id,
+            use_browser=args.browser, headless=not args.no_headless,
+        )
     if args.html:
         return cmd_html(args.html, args.seller_id)
     if args.scan:

@@ -76,6 +76,8 @@ except ImportError:  # python-dotenv é opcional em alguns ambientes de CI
 _PDP_RESOLVE_ENABLED = os.environ.get("LEROY_PDP_RESOLVE", "1") not in ("0", "false", "False")
 _PDP_MAX_PER_RUN = int(os.environ.get("LEROY_PDP_MAX_PER_RUN", "40") or 40)
 _PDP_TIMEOUT = float(os.environ.get("LEROY_PDP_TIMEOUT", "12") or 12)
+# Tempo máximo esperando o bloco de seller hidratar no browser.
+_PDP_HYDRATE_TIMEOUT = float(os.environ.get("LEROY_PDP_HYDRATE_TIMEOUT", "10000") or 10000)
 
 # Marcadores de página de challenge/bloqueio. Akamai & cia costumam responder
 # HTTP 200 com um interstitial de JS, indistinguível de um PDP pelo tamanho.
@@ -404,9 +406,35 @@ class LeroyMerlinScraper(BaseScraper):
             return None
         try:
             self._page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            return self._page.content()
         except Exception as exc:
             logger.debug(f"[{self.platform_name}] PDP via browser falhou: {exc}")
+            return None
+
+        # O PDP é Next.js: no `domcontentloaded` só existe o shell, e o bloco
+        # "Vendido e entregue por" ainda não foi hidratado. Ler content() aqui
+        # devolve HTML sem seller nenhum — era isso que fazia 100% das
+        # resoluções falharem em produção (jul/2026). Espera o texto aparecer.
+        try:
+            self._page.wait_for_function(
+                "() => /vendido (e entregue )?por/i.test(document.body.innerText)",
+                timeout=_PDP_HYDRATE_TIMEOUT,
+            )
+        except Exception:
+            # Não é fatal: o payload do App Router pode trazer o seller mesmo
+            # sem o texto renderizado. Dá uma última chance à rede acalmar.
+            logger.debug(
+                f"[{self.platform_name}] Rótulo de seller não hidratou em "
+                f"{_PDP_HYDRATE_TIMEOUT:.0f}ms — seguindo com o HTML disponível"
+            )
+            try:
+                self._page.wait_for_load_state("networkidle", timeout=5_000)
+            except Exception:
+                pass
+
+        try:
+            return self._page.content()
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] content() do PDP falhou: {exc}")
             return None
 
     def _resolve_via_pdp(self, seller_id: str, product_url: Optional[str]) -> Optional[str]:
