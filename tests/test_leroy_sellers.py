@@ -775,3 +775,73 @@ class TestRotuloCompartilhado:
         from utils.leroy_sellers import SELLER_LABEL_PATTERN
 
         assert not _re.search(SELLER_LABEL_PATTERN, "produto defendido por garantia", _re.IGNORECASE)
+
+
+class TestRotuloUnicoNaoDiverge:
+    """
+    Manter duas listas de rótulos fazia o parser aceitar "Entregue por" e "Loja
+    parceira:" sem que a espera de hidratação os reconhecesse: o PDP resolvia,
+    mas só depois de queimar o timeout inteiro + fallback de rede. Agora as duas
+    derivam de `_SELLER_LABEL_ALTERNATIVES`, e este teste trava o acoplamento.
+    """
+
+    @pytest.mark.parametrize("texto", [
+        "Vendido e entregue por Loja X",
+        "Vendido por Loja X",
+        "Entregue por Loja X",
+        "Vendido e entregue: Loja X",
+        "Loja parceira: Loja X",
+        "LOJA PARCEIRA Loja X",
+    ])
+    def test_parser_e_espera_concordam(self, texto):
+        import re as _re
+        from utils.leroy_sellers import SELLER_LABEL_PATTERN, _PDP_LABEL_RE
+
+        assert bool(_PDP_LABEL_RE.search(texto)) == bool(
+            _re.search(SELLER_LABEL_PATTERN, texto, _re.IGNORECASE)
+        )
+
+    def test_padrao_e_compativel_com_regex_js(self):
+        """Vai para dentro de `wait_for_function` como /.../i — sem lookbehind,
+        sem grupos nomeados, sem `/` a escapar."""
+        from utils.leroy_sellers import SELLER_LABEL_PATTERN
+
+        assert "(?<" not in SELLER_LABEL_PATTERN
+        assert "(?P<" not in SELLER_LABEL_PATTERN
+        assert "/" not in SELLER_LABEL_PATTERN
+
+    def test_regex_morta_foi_removida(self):
+        """`_RAW_JSON_NAME_RE` ficou sem uso quando os dois call sites migraram."""
+        import utils.leroy_sellers as mod
+
+        assert not hasattr(mod, "_RAW_JSON_NAME_RE")
+
+
+class TestChavesEmStringNaoContamAninhamento:
+    def test_structural_braces_ignora_strings(self):
+        from utils.leroy_sellers import _structural_braces
+
+        frag = f'{{"sellerId":"{SELLER_ID}","name":"Loja {{Matriz}}"}}'
+        assert frag.count("{") == 2          # contagem bruta engana
+        assert _structural_braces(frag) == 1  # estrutural é 1
+
+    def test_is_seller_leaf_com_chave_no_nome(self):
+        from utils.leroy_sellers import _is_seller_leaf
+
+        frag = f'{{"sellerId":"{SELLER_ID}","name":"Loja {{Matriz}}"}}'
+        assert _is_seller_leaf(frag, SELLER_ID) is True
+
+    def test_objeto_realmente_aninhado_continua_rejeitado(self):
+        from utils.leroy_sellers import _is_seller_leaf
+
+        frag = f'{{"sellerId":"{SELLER_ID}","name":"X","extra":{{"a":1}}}}'
+        assert _is_seller_leaf(frag, SELLER_ID) is False
+
+    def test_resolve_name_puro_com_chave_no_nome(self):
+        payload = f'{{"sellerId":"{SELLER_ID}","name":"Loja {{Matriz}}"}}'
+        html = (
+            "<html><body><script>"
+            f"self.__next_f.push([1,{json.dumps(payload)}])"
+            "</script></body></html>"
+        )
+        assert extract_seller_from_pdp(html, SELLER_ID) == "Loja {Matriz}"

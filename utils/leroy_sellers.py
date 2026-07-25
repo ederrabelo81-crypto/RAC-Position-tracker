@@ -57,23 +57,27 @@ _NAME_KEYS = (
 # Chaves que carregam o ID do seller.
 _ID_KEYS = ("sellerId", "seller_id", "id", "_id", "objectID", "sellerObjectId")
 
-# Rótulos do PDP que antecedem o nome do lojista.
-# Fonte única do rótulo de seller: usado pelo parser, pela espera de hidratação
-# no browser (convertido para regex JS) e pelo diagnóstico do probe. Divergir
-# entre eles faz o diagnóstico afirmar "hidratou" onde a coleta não reconhece.
-SELLER_LABEL_PATTERN = r"vendido\s+(?:e\s+entregue\s+)?por"
-
-_PDP_LABEL_RE = re.compile(
-    r"(?:vendido\s+e\s+entregue\s+por|vendido\s+por|entregue\s+por|"
-    r"vendido\s+e\s+entregue\s*:|loja\s+parceira\s*:?)\s*"
-    r"([^\n\r|•·]{2,60})",
-    re.IGNORECASE,
+# Rótulos do PDP que antecedem o nome do lojista. Lista **única**: o parser, a
+# espera de hidratação no browser e o diagnóstico do probe derivam todos daqui.
+# Manter duas listas fazia o parser aceitar rótulos ("Entregue por", "Loja
+# parceira:") que a espera não reconhecia — o PDP resolvia, mas só depois de
+# queimar o timeout inteiro mais o fallback de rede, e o diagnóstico ainda
+# reportava "não hidratou".
+_SELLER_LABEL_ALTERNATIVES = (
+    r"vendido\s+e\s+entregue\s+por",
+    r"vendido\s+por",
+    r"entregue\s+por",
+    r"vendido\s+e\s+entregue\s*:",
+    r"loja\s+parceira\s*:?",
 )
 
-# Fallback direto sobre o HTML bruto, para o caso do nome estar em JSON
-# embutido que o parser de __NEXT_DATA__ não alcançou.
-_RAW_JSON_NAME_RE = re.compile(
-    r'"(?:sellerName|storeName|fantasyName|tradeName)"\s*:\s*"([^"]{2,60})"'
+# Compatível com regex JS (sem lookbehind/grupos nomeados): vai para dentro de
+# `wait_for_function` como literal /.../i.
+SELLER_LABEL_PATTERN = "(?:" + "|".join(_SELLER_LABEL_ALTERNATIVES) + ")"
+
+_PDP_LABEL_RE = re.compile(
+    SELLER_LABEL_PATTERN + r"\s*([^\n\r|•·]{2,60})",
+    re.IGNORECASE,
 )
 
 # Chunks do App Router: self.__next_f.push([1,"…json escapado…"])
@@ -302,18 +306,44 @@ def _names_in(fragment: str, allow_bare_name: bool = False) -> list[str]:
     return nomes
 
 
+def _structural_braces(fragment: str) -> int:
+    """
+    Conta ``{`` estruturais, ignorando os que estão dentro de strings JSON.
+
+    Um nome como ``"Loja {Matriz}"`` não é aninhamento — contá-lo faria um
+    objeto plano parecer composto.
+    """
+    total = 0
+    in_str = False
+    esc = False
+    for ch in fragment:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            total += 1
+    return total
+
+
 def _is_seller_leaf(fragment: str, seller_id: str) -> bool:
     """
     Indica se o fragmento é um objeto de oferta/seller "folha".
 
     Aceita o shape legítimo ``{"sellerId": "…", "name": "Loja X"}``, sem abrir a
     porta para o título do produto: exige que o ID esteja no fragmento, que não
-    haja objeto aninhado (uma única ``{``) e que não apareça chave típica de
-    produto.
+    haja objeto aninhado (uma única ``{`` **estrutural**) e que não apareça chave
+    típica de produto.
     """
     if seller_id not in fragment:
         return False
-    if fragment.count("{") > 1:
+    if _structural_braces(fragment) > 1:
         return False
     lowered = fragment.lower()
     return not any(f'"{k.lower()}"' in lowered for k in _PRODUCT_KEYS)
