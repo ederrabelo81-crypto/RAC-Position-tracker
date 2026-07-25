@@ -13,6 +13,7 @@ Rode: pytest tests/test_ml_parse.py
 """
 import pytest
 from bs4 import BeautifulSoup
+from loguru import logger
 
 from scrapers.mercado_livre import MLScraper, _SerpCursor, _BLOCK_SIGNALS_RE
 
@@ -471,6 +472,33 @@ class TestUrlDeAnuncio:
             "https://www.mercadolivre.com.br/ar-lg/p/MLB77"
         )
 
+    def test_vitrine_da_loja_nao_vira_url_do_produto(self):
+        # patrocinado de loja oficial: o candidato genérico a[href*=mercadolivre]
+        # casava o link da vitrine (que vem depois do título) e devolvia a loja
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <a class="poly-component__title"
+             href="https://click1.mercadolivre.com.br/mclics/clicks/external/MLB/count?a=zz&pdp_filters=item_id%3AMLB6392032212">
+            Ar Condicionado TCL Elite G2
+          </a>
+          <span class="poly-component__seller">
+            <a href="https://www.mercadolivre.com.br/loja/webcontinental">Por Webcontinental</a>
+          </span>
+        </div></li>"""
+        assert MLScraper._extract_url(_item(html)) == (
+            "https://produto.mercadolivre.com.br/MLB-6392032212"
+        )
+
+    def test_organico_de_loja_oficial_mantem_o_pdp(self):
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <a class="poly-component__title" href="https://www.mercadolivre.com.br/ar-midea/p/MLB42">x</a>
+          <a href="https://www.mercadolivre.com.br/loja/midea">Por Midea</a>
+        </div></li>"""
+        assert MLScraper._extract_url(_item(html)) == (
+            "https://www.mercadolivre.com.br/ar-midea/p/MLB42"
+        )
+
     def test_ad_sem_item_id_preserva_o_link(self):
         html = """
         <li class="ui-search-layout__item"><div class="poly-card">
@@ -575,6 +603,44 @@ class TestCobertura:
         assert cursor.coverage["review_count"] == 1
         assert cursor.coverage["seller"] == 1
         assert "oficial" not in cursor.coverage
+
+    def test_keyword_sem_ads_nao_e_tratada_como_quebra(self, tmp_path, monkeypatch):
+        # SERP de cauda longa pode não ter anúncio: isso não é DOM quebrado, e
+        # não pode gerar WARNING nem sobrescrever o card de amostra
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "logs").mkdir()
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._last_screenshot_busca = None
+        cursor = _SerpCursor()
+        scraper._parse_results(
+            f'<ol class="ui-search-layout">{CARD_POLY_ATUAL_3P}</ol>',
+            "kw sem ads", {}, cursor=cursor,
+        )
+        assert "sponsored" not in cursor.coverage
+        scraper._log_coverage("kw sem ads", cursor, _item(CARD_POLY_ATUAL_3P))
+        assert not (tmp_path / "logs" / "ml_card_sample.html").exists()
+
+    def test_run_sem_nenhum_ad_avisa_no_fechamento(self, caplog):
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._run_keywords, scraper._run_items, scraper._run_sponsored = 30, 1800, 0
+        mensagens = []
+        handler_id = logger.add(lambda m: mensagens.append(m), level="WARNING")
+        try:
+            scraper._log_run_summary()
+        finally:
+            logger.remove(handler_id)
+        assert any("ZERO patrocinados" in m for m in mensagens)
+
+    def test_run_com_ads_nao_avisa(self):
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._run_keywords, scraper._run_items, scraper._run_sponsored = 30, 1800, 470
+        mensagens = []
+        handler_id = logger.add(lambda m: mensagens.append(m), level="WARNING")
+        try:
+            scraper._log_run_summary()
+        finally:
+            logger.remove(handler_id)
+        assert mensagens == []
 
     def test_dump_de_amostra_quando_campo_zera(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

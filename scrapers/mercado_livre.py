@@ -211,8 +211,12 @@ _BLOCK_SIGNALS_RE = re.compile(
 # Estado acumulado entre as páginas de UMA keyword
 # ---------------------------------------------------------------------------
 
-# Campos cuja ausência total denuncia quebra de extração (viram WARNING no log).
-_CRITICAL_FIELDS = ("rating", "review_count", "seller", "sponsored")
+# Campos cuja ausência total NUMA KEYWORD denuncia quebra de extração.
+# `sponsored` fica de fora de propósito: uma SERP de cauda longa pode não ter
+# nenhum anúncio, e tratar isso como quebra geraria WARNING falso e sobrescreveria
+# o card de amostra. Ads são avaliados no fim da run (ver `_log_run_summary`):
+# zero em UMA keyword é normal, zero em TODAS é detecção quebrada.
+_CRITICAL_FIELDS = ("rating", "review_count", "seller")
 
 
 @dataclass
@@ -241,6 +245,13 @@ class MLScraper(BaseScraper):
 
     platform_name = "Mercado Livre"
 
+    # Agregados da run inteira (todas as keywords) — ver _log_run_summary.
+    # Declarados na classe porque o parser também é usado offline via
+    # `MLScraper.__new__` (testes e scripts/diagnose_ml.py), que pula o __init__.
+    _run_keywords: int = 0
+    _run_items: int = 0
+    _run_sponsored: int = 0
+
     def __init__(self, headless: bool = True) -> None:
         # ML detecta Chromium headless como bot e exibe login gate.
         # Forçamos headless=False — no Oracle VM use xvfb para display virtual:
@@ -254,6 +265,9 @@ class MLScraper(BaseScraper):
         # automação que o ML cruza com IP de datacenter para mostrar o login
         # gate; o Chrome comum + CDP evita isso (ver scrapers/local_browser.py).
         self._local_active: bool = False
+        self._run_keywords = 0
+        self._run_items = 0
+        self._run_sponsored = 0
 
     def _launch(self) -> None:
         """Preferência: Chrome real local (perfil dedicado) via CDP; senão, launch próprio."""
@@ -278,6 +292,7 @@ class MLScraper(BaseScraper):
         super()._launch()
 
     def _close(self) -> None:
+        self._log_run_summary()
         # Modo browser local: fecha SÓ a aba dedicada — o Chrome é
         # compartilhado e fechado no fim da coleta (close_local_browser).
         if self._local_active:
@@ -619,6 +634,12 @@ class MLScraper(BaseScraper):
         O id do item vem embutido nesse link (`pdp_filters=item_id%3AMLB…`), então
         quando só há âncora de ad reconstruímos o permalink canônico.
 
+        Âncoras de vitrine (`/loja/<slug>`) são ignoradas: o candidato genérico
+        `a[href*="mercadolivre.com"]` também casa o link da loja oficial, que no
+        Poly vem DEPOIS do título. Num card patrocinado de loja oficial — a
+        combinação mais comum no topo da SERP — isso devolvia a página da loja
+        no lugar do produto anunciado.
+
         Returns:
             URL do PDP, ou None se o card não tiver âncora alguma.
         """
@@ -633,6 +654,8 @@ class MLScraper(BaseScraper):
                 if _AD_HREF_RE.search(href):
                     ad_hrefs.append(href)
                     continue
+                if _OFFICIAL_HREF_RE.search(href):
+                    continue  # vitrine da loja, não é o produto
                 return href  # âncora direta para o PDP — melhor caso
 
         for href in ad_hrefs:
@@ -911,6 +934,10 @@ class MLScraper(BaseScraper):
         if camadas:
             logger.debug(f"[{self.platform_name}] Loja Oficial por camada: {camadas}")
 
+        self._run_keywords += 1
+        self._run_items += total
+        self._run_sponsored += cov.get("sponsored", 0)
+
         zerados = [f for f in _CRITICAL_FIELDS if not cov.get(f)]
         if not zerados:
             return
@@ -929,6 +956,29 @@ class MLScraper(BaseScraper):
             f"{', '.join(zerados)} ({total} cards lidos). O DOM do card mudou — "
             f"card de amostra em {dump}."
         )
+
+    def _log_run_summary(self) -> None:
+        """
+        Fecha a run com o veredito sobre patrocinados.
+
+        Uma keyword sem anúncio é rotina; a coleta inteira sem um único anúncio
+        não é — foi assim que `patrocinado` ficou 0% de Mar a Jun/2026. O sinal
+        só faz sentido agregado, por isso mora aqui e não no log por keyword.
+        """
+        if not self._run_keywords:
+            return
+
+        logger.info(
+            f"[{self.platform_name}] run: {self._run_keywords} keywords, "
+            f"{self._run_items} cards, {self._run_sponsored} patrocinados"
+        )
+        if self._run_items and not self._run_sponsored:
+            logger.warning(
+                f"[{self.platform_name}] ZERO patrocinados em "
+                f"{self._run_keywords} keywords ({self._run_items} cards). "
+                "A SERP do ML sempre tem ads no topo — detecção provavelmente "
+                "quebrada (ou a sessão está sem ads)."
+            )
 
     # ------------------------------------------------------------------
     # Método público — ponto de entrada

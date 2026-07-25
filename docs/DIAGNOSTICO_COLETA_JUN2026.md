@@ -233,7 +233,15 @@ trocou um extremo errado por outro.
 8. **Cobertura instrumentada** — cada keyword loga `title=…/n price=…/n
    rating=…/n …`; campo crítico zerado vira WARNING e grava
    `logs/ml_card_sample.html`. Foi a ausência disso que deixou `avaliacao`
-   passar meses em 0% sem ninguém notar.
+   passar meses em 0% sem ninguém notar. Patrocinado é avaliado só no
+   **fim da run**: zero numa keyword de cauda longa é rotina, zero em todas as
+   keywords é a regressão de Mar→Jun/2026.
+
+9. **URL de patrocinado de loja oficial** — o candidato genérico
+   `a[href*="mercadolivre.com"]` também casa o link da vitrine (`/loja/<slug>`),
+   que no Poly vem depois do título. Em card patrocinado de loja oficial — a
+   combinação mais comum no topo da SERP — isso devolvia a **página da loja** no
+   lugar do produto. Âncoras de vitrine passam a ser ignoradas.
 
 ### Limite desta correção
 
@@ -251,8 +259,9 @@ entrega o DOM real caso ainda não saiam.
   (inviável: ~60 itens × 31 keywords × 2 turnos) ou na API oficial. Continua
   valendo o D4: `python main.py --platforms ml_api` com `ML_APP_ID`/
   `ML_APP_SECRET`.
-- **Pipeline parado**: nenhuma plataforma grava no Supabase desde **16/07/2026**
-  (última inserção 16/07 21:18 UTC). É operacional — agendador/host —, não
-  extração.
+- **Supabase sem gravação desde 16/07/2026** (última inserção 16/07 21:18 UTC,
+  todas as plataformas). **Não é bug**: é restrição de acesso conhecida, com
+  retorno previsto para **11/08/2026**. Até lá a validação da coleta sai do CSV
+  em `output/` e do log de cobertura, não do banco.
 
 *Adendo gerado em 25/07/2026.*
