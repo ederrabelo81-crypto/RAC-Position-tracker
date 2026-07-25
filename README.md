@@ -2,7 +2,7 @@
 
 Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ⚠️ Coleta OK / gravação bloqueada | **Última atualização:** 25 de Julho de 2026 (v4.5)
+**Status:** ⚠️ Coleta OK / Supabase bloqueado (histórico no Drive mitiga) | **Última atualização:** 25 de Julho de 2026 (v4.6)
 
 > 🚨 **Incidente aberto desde 16/07/2026 — leia antes de usar os dados.**
 > A coleta continua rodando normalmente (5.651 registros em 25/07), mas o
@@ -14,6 +14,12 @@ Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos ma
 > `python scripts/upload_csv.py <arquivo.csv>` (idempotente) assim que houver
 > espaço. Diagnóstico completo, contas e opções de saída:
 > **[`docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`](docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md)**.
+>
+> 🆕 **Mitigação implementada:** a coleta agora grava um **histórico frio em
+> Parquet no Google Drive**, independente do Supabase — um novo 402 não faz
+> mais perder dado. O banco passa a guardar só a **janela quente de 15 dias** e
+> `scripts/history_cli.py tier` migra o resto. Setup e operação:
+> **[`docs/HISTORICO_DRIVE.md`](docs/HISTORICO_DRIVE.md)**.
 
 ---
 
@@ -31,7 +37,9 @@ O projeto monitora em 7 marketplaces:
 - **Preços** — coleta própria (secundário) + PriceTrack (fonte de verdade)
 - **Análise competitiva via IA** (Claude API) com relatório executivo
 
-Dados → CSV → Supabase (`coletas` + `pricetrack_daily`) → dashboard Streamlit (19 páginas) → notificações Telegram (API direta).
+Dados → CSV → **histórico Parquet (Drive)** + Supabase (`coletas` +
+`pricetrack_daily`, janela quente de 15 dias) → dashboard Streamlit (19 páginas)
+→ notificações Telegram (API direta).
 
 ---
 
@@ -424,6 +432,9 @@ rac-position-tracker/
 │   ├── normalize_product.py      # normalização v1 + v2 (SKU-anchored)
 │   ├── session_grabber.py        # Captura manual de sessões (fallback)
 │   ├── supabase_client.py        # Upload (manutenção em supabase_maintenance.py)
+│   ├── history/                  # 🆕 Histórico frio em Parquet (Drive/disco)
+│   │   ├── backends.py           #    LocalBackend + GoogleDriveBackend
+│   │   └── store.py              #    Partições por dia, cache, união frio+quente
 │   └── n8n_notify.py             # Telegram (API direta)
 │
 ├── tests/                        # pytest (parser ML, de-para, normalização v2)
@@ -440,7 +451,7 @@ rac-position-tracker/
 ## 🧪 Testes & Diagnóstico
 
 ```bash
-# Suíte completa — 592 testes (validado em 25/07/2026)
+# Suíte completa — 638 testes (validado em 25/07/2026)
 pytest tests/ pricetrack_api/tests pricetrack_importer/tests -q
 
 pytest tests/ -q                          # parser ML, de-para, normalização v2
@@ -479,6 +490,53 @@ MAGALU_CDP_URL=http://localhost:9222   # se setada, ativa modo CDP (Chrome real)
 MAGALU_FORCE_CURL=true             # só curl_cffi (não funciona hoje; futuro)
 RAC_CDP_URL=http://localhost:9222  # CDP p/ refresh_sessions_cdp.py (fallback: MAGALU_CDP_URL)
 ```
+
+---
+
+## 🧊 Histórico frio — Parquet no Google Drive
+
+Arquitetura híbrida (Jul/2026): o Supabase guarda a **janela quente** e o
+histórico completo vive em Parquet no Drive.
+
+```
+coleta ──┬─► CSV local            (sempre)
+         ├─► Histórico Parquet    (sempre — Drive, independente do banco)
+         └─► Supabase             (janela quente de 15 dias)
+
+dashboard ── query_coletas() ──┬── Supabase: últimos 15 dias
+                               └── Histórico: todo o resto
+```
+
+A gravação do histórico acontece **antes** do Supabase e não depende dele: com
+o banco restrito por cota, o dia entra no histórico mesmo assim. A leitura é
+costurada — `query_coletas()` completa com o histórico os dias que o banco não
+devolveu, então nenhuma página do dashboard precisou mudar.
+
+**Por que Parquet** (benchmark medido, 5.651 linhas no formato de produção):
+
+| Formato | 1 dia | Relativo |
+|---------|-------|----------|
+| Postgres | 4.916 KB | 1× |
+| CSV | 1.750 KB | 2,8× menor |
+| **Parquet (zstd)** | **104 KB** | **47× menor** |
+
+Um ano de coleta ≈ **0,23 GB** — os 15 GB gratuitos do Drive comportam décadas.
+
+```bash
+# Setup (uma vez) — cria a pasta e imprime as linhas do .env
+python scripts/gdrive_setup.py --client-secrets client_secret.json
+python scripts/gdrive_setup.py --check          # testa gravar/reler/limpar
+
+# Operação
+python scripts/history_cli.py stats             # dias, volume e buracos na série
+python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv
+python scripts/history_cli.py tier              # Supabase → Drive (não apaga)
+python scripts/history_cli.py tier --confirm    # apaga o já verificado
+python scripts/history_cli.py export --start 2026-01-01 --end 2026-07-25 \
+    -o reports/historico.csv
+```
+
+Detalhes, credenciais e troubleshooting: **[`docs/HISTORICO_DRIVE.md`](docs/HISTORICO_DRIVE.md)**.
 
 ---
 
@@ -531,7 +589,8 @@ Utilitários: `cleanup_supabase.py`, `normalize_supabase.py`,
 |-----------|------------|
 | `docs/INDEX.md` | Navegação por tarefa |
 | `pricetrack_api/README.md` | Cliente tipado da API PriceTrack — arquitetura, uso, config, robustez 🆕 |
-| `docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md` | 🆕 Incidente de cota, agente no Chrome/n8n e onde guardar os dados — com as contas |
+| `docs/HISTORICO_DRIVE.md` | 🆕 Histórico frio em Parquet no Drive — setup, migração, relatórios |
+| `docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md` | Incidente de cota, agente no Chrome/n8n e onde guardar os dados — com as contas |
 | `docs/COLETA_LOCAL_AUTENTICADA.md` | Coleta local Magalu+Shopee+CB — Chrome comum + perfil dedicado, agendamento |
 | `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md` | ⚠️ Superado — caminho antigo via CDP + perfil copiado (referência histórica) |
 | `docs/PRICETRACK_INSIGHTS.md` | Pipeline PriceTrack + roadmap de insights 🆕 |
@@ -554,7 +613,13 @@ Dashboard usa o subset `requirements_app.txt`.
 
 ## ✅ Validação Operacional — 25/07/2026
 
-**Repositório validado nesta data:** árvore limpa, **592 testes passando**
+- ✅ **Histórico frio em Parquet (Drive) implementado** 🆕 — `utils/history/`,
+  `scripts/history_cli.py` e `scripts/gdrive_setup.py`. Escrita dupla e
+  independente do Supabase, leitura costurada no `query_coletas()`, migração
+  verificada antes de apagar (`tier --confirm`) e janela quente de 15 dias.
+  46 testes novos. Ver `docs/HISTORICO_DRIVE.md`.
+
+**Repositório validado nesta data:** árvore limpa, **638 testes passando**
 (`tests/` + `pricetrack_api/tests` + `pricetrack_importer/tests`), workflows
 agendados executando (`collect.yml` 2×/dia, `pricetrack_daily.yml`,
 `pricetrack_intraday.yml` de hora em hora).
@@ -631,4 +696,4 @@ agendados executando (`collect.yml` 2×/dia, `pricetrack_daily.yml`,
 
 **Stack:** Python · Playwright/rebrowser · curl_cffi · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · GitHub Actions
 
-**Versão:** 4.5 | **Última atualização:** 25 de Julho de 2026 | @ederrabelo
+**Versão:** 4.6 | **Última atualização:** 25 de Julho de 2026 | @ederrabelo

@@ -231,9 +231,12 @@ Drive/rac-tracker/
 ```
 
 - **Espaço:** as colunas são altamente repetitivas (plataforma, keyword, marca,
-  seller). Parquet com dicionário + zstd costuma comprimir 10–20× contra o
-  Postgres. Estimativa: **~1–2 MB/dia**, ou **~500 MB/ano** — contra os 15 GB
-  gratuitos do Drive. Deixa de existir "janela de retenção".
+  seller). **Medido** neste repositório com um dia sintético no formato de
+  produção (5.651 linhas, URLs únicas por linha — pior caso de compressão):
+  **104 KB em Parquet** contra 1.750 KB em CSV e ~4.916 KB no Postgres, ou seja
+  **47× menor que o banco**. No ritmo atual (~36 mil linhas/dia), um ano de
+  histórico ocupa **~0,23 GB** — contra os 15 GB gratuitos do Drive. Deixa de
+  existir "janela de retenção".
 - **Leitura:** DuckDB lê Parquet direto e o `app.py` é Streamlit — a troca fica
   contida na camada de acesso a dados, sem reescrever as 19 páginas.
 - **Escrita:** append de arquivo novo por dia. Sem concorrência, sem `VACUUM
@@ -306,6 +309,12 @@ O caminho híbrido que combina os dois é defensável e provavelmente o melhor
 custo-benefício: **Parquet no Drive como arquivo histórico completo** (barato,
 imutável, cresce para sempre) + **Supabase free como janela quente de ~20 dias**
 para o dashboard operacional. Cada camada faz o que faz bem.
+
+> ✅ **Decisão tomada (Jul/2026): o híbrido foi implementado.** O módulo
+> `utils/history/` grava o histórico em Parquet no Drive a cada coleta, de
+> forma independente do Supabase; a janela quente ficou em **15 dias**; e
+> `scripts/history_cli.py tier` migra o que envelhece. O passo a passo de setup
+> e operação está em [`HISTORICO_DRIVE.md`](HISTORICO_DRIVE.md).
 
 ### Sobre o "radical"
 

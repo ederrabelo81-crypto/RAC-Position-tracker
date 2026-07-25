@@ -221,6 +221,35 @@ def _map_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
+def coletas_db_columns() -> List[str]:
+    """Colunas da tabela `coletas` na ordem canônica do mapeamento.
+
+    Fonte única para quem precisa do schema sem falar com o banco — hoje o
+    histórico em Parquet (`utils/history`), que grava exatamente as mesmas
+    colunas para que o merge com o Supabase seja direto.
+
+    Returns:
+        Nomes das colunas de destino, na ordem de `_COLUMN_MAP`.
+    """
+    return list(_COLUMN_MAP.values())
+
+
+def map_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Converte um registro interno do bot para uma linha da tabela `coletas`.
+
+    Wrapper público de `_map_record`, para que o histórico frio grave linhas
+    idênticas às que vão ao Supabase (mesma normalização de produto, mesmos
+    tipos, mesma truncagem) — sem depender de um nome privado.
+
+    Args:
+        record: Registro no formato interno (chaves como "Produto / SKU").
+
+    Returns:
+        Linha no schema do banco (chaves snake_case).
+    """
+    return _map_record(record)
+
+
 def _is_ac_row(row: Dict[str, Any]) -> bool:
     """
     Retorna True se o registro mapeado deve ser mantido.

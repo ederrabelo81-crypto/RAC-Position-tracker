@@ -525,6 +525,18 @@ def main() -> None:
             f"Arquivo: {csv_path}"
         )
 
+        # --- Histórico frio (Parquet no Drive/disco) ---
+        # Gravado ANTES do Supabase e independente dele: quando o banco está
+        # restrito por cota (HTTP 402), o dia ainda entra no histórico. Foi
+        # essa independência que faltou no incidente de 16–25/07/2026.
+        # Desative com RAC_HISTORY=off no .env.
+        if os.getenv("RAC_HISTORY", "on").strip().lower() not in ("off", "0", "false"):
+            try:
+                from utils.history import write_records as _write_history
+                _write_history(all_records, run_id=RUN_ID)
+            except Exception as exc:
+                logger.error(f"Histórico frio falhou: {exc}")
+
         # --- Upload para Supabase (não bloqueia — CSV já está salvo) ---
         # Importa primeiro para que load_dotenv() do supabase_client carregue o .env,
         # depois verifica se as credenciais estão disponíveis.
