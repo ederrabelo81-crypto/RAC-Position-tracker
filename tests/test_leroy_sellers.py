@@ -461,3 +461,88 @@ class TestExtractSellerIdsDoProbe:
         assert extract_seller_ids("string-solta") == []
         assert extract_seller_ids(None) == []
         assert extract_seller_ids(42) == []
+
+
+def _pdp_app_router(seller_id: str, seller_name: str, split: bool = False) -> str:
+    """
+    PDP em App Router: sem `__NEXT_DATA__`, dados em `self.__next_f.push`.
+
+    Foi este shape que fez 100% das resoluções falharem em produção (jul/2026):
+    `pdp_fetch_attempts: 7 | resolved_via_pdp: 0`.
+    """
+    payload = (
+        '{"product":{"name":"Ar Condicionado Split","offers":[{"sellerId":"'
+        + seller_id + '","sellerName":"' + seller_name + '"}]}}'
+    )
+    if split:
+        # O streaming real fragmenta no meio do JSON, às vezes no meio da chave
+        corte = payload.index(seller_name) - 3
+        pushes = (
+            f"self.__next_f.push([1,{json.dumps(payload[:corte])}]);"
+            f"self.__next_f.push([1,{json.dumps(payload[corte:])}])"
+        )
+    else:
+        pushes = f"self.__next_f.push([1,{json.dumps(payload)}])"
+    return f"<html><body><div id='__next'></div><script>{pushes}</script></body></html>"
+
+
+class TestAppRouterPayload:
+    def test_resolve_ancorado_no_id(self):
+        html = _pdp_app_router(SELLER_ID, "Frio Total")
+        assert extract_seller_from_pdp(html, SELLER_ID) == "Frio Total"
+
+    def test_resolve_sem_ancora(self):
+        html = _pdp_app_router(SELLER_ID, "Frio Total")
+        assert extract_seller_from_pdp(html, None) == "Frio Total"
+
+    def test_chunks_fragmentados_sao_reconstituidos(self):
+        """A concatenação dos pushes remonta o JSON partido pelo streaming."""
+        html = _pdp_app_router(SELLER_ID, "Refri Center", split=True)
+        assert extract_seller_from_pdp(html, SELLER_ID) == "Refri Center"
+
+    def test_shell_sem_dados_continua_none(self):
+        shell = "<html><body><div id='__next'></div><script>self.__next_f=[]</script></body></html>"
+        assert extract_seller_from_pdp(shell, SELLER_ID) is None
+
+    def test_push_malformado_nao_quebra(self):
+        html = '<html><body><script>self.__next_f.push([1,"\\uD800 quebrado])</script></body></html>'
+        assert extract_seller_from_pdp(html, SELLER_ID) is None
+
+    def test_nao_devolve_a_propria_leroy(self):
+        """Payload que só traz a Leroy 1P não serve para um ID de marketplace."""
+        html = _pdp_app_router(SELLER_ID, "Leroy Merlin")
+        assert extract_seller_from_pdp(html, SELLER_ID) is None
+
+    def test_next_flight_text_vazio_sem_pushes(self):
+        from utils.leroy_sellers import next_flight_text
+        assert next_flight_text("<html><body>nada aqui</body></html>") == ""
+
+
+class TestQuarentenaLimpeza:
+    def test_clear_quarantine_libera_ids(self, tmp_path):
+        cache = LeroySellerCache(path=tmp_path / "c.json")
+        cache.mark_failed(SELLER_ID, "https://exemplo/p")
+        cache.mark_failed("outro_id")
+        assert cache.should_retry(SELLER_ID) is False
+
+        assert cache.clear_quarantine() == 2
+        assert cache.should_retry(SELLER_ID) is True
+        assert cache.quarantined == {}
+
+    def test_clear_quarantine_persiste(self, tmp_path):
+        path = tmp_path / "c.json"
+        cache = LeroySellerCache(path=path)
+        cache.mark_failed(SELLER_ID)
+        cache.save()
+
+        c2 = LeroySellerCache(path=path)
+        assert c2.should_retry(SELLER_ID) is False
+        c2.clear_quarantine()
+        c2.save()
+
+        assert LeroySellerCache(path=path).should_retry(SELLER_ID) is True
+
+    def test_clear_quarantine_vazia_e_noop(self, tmp_path):
+        cache = LeroySellerCache(path=tmp_path / "c.json")
+        assert cache.clear_quarantine() == 0
+        assert cache.save() is False

@@ -71,6 +71,18 @@ _RAW_JSON_NAME_RE = re.compile(
     r'"(?:sellerName|storeName|fantasyName|tradeName)"\s*:\s*"([^"]{2,60})"'
 )
 
+# Chunks do App Router: self.__next_f.push([1,"…json escapado…"])
+_FLIGHT_PUSH_RE = re.compile(
+    r'self\.__next_f\.push\(\[\d+\s*,\s*("(?:[^"\\]|\\.)*")\s*\]\)'
+)
+
+# Qualquer chave de nome, usada só na busca ancorada por proximidade ao ID —
+# ampla de propósito, mas segura porque a janela já está ancorada no seller.
+_ANY_NAME_RE = re.compile(
+    r'"(?:sellerName|seller_name|storeName|store_name|fantasyName|tradeName|name)"'
+    r'\s*:\s*"([^"]{2,60})"'
+)
+
 # Palavras que denunciam que o texto capturado não é um nome de loja
 # (marketing/atributo de produto colado no rótulo).
 _NAME_BLOCKLIST_RE = re.compile(
@@ -163,6 +175,73 @@ def _next_data_payloads(html: str) -> list:
     return payloads
 
 
+def next_flight_text(html: str) -> str:
+    """
+    Reconstrói o payload de streaming do Next.js App Router.
+
+    PDPs em App Router (React Server Components) **não têm** ``__NEXT_DATA__``:
+    os dados chegam em chunks ``self.__next_f.push([1,"…json escapado…"])``.
+    Esta função decodifica e concatena esses chunks num único texto, onde os
+    campos de seller podem então ser procurados.
+
+    Args:
+        html: HTML completo do PDP.
+
+    Returns:
+        Texto concatenado dos chunks, ou string vazia se não houver nenhum.
+    """
+    chunks: list[str] = []
+    for match in _FLIGHT_PUSH_RE.finditer(html):
+        try:
+            chunks.append(json.loads(match.group(1)))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return "".join(chunks)
+
+
+def _from_flight_text(text: str, seller_id: Optional[str]) -> Optional[str]:
+    """
+    Procura o nome do seller no payload do App Router.
+
+    Duas passadas, como no ``__NEXT_DATA__``: primeiro ancorada no ``seller_id``
+    (janela de texto ao redor da ocorrência do ID), depois genérica por chave
+    explícita de seller.
+
+    Args:
+        text: payload concatenado devolvido por `next_flight_text`.
+        seller_id: ObjectId usado como âncora.
+
+    Returns:
+        Nome do seller, ou None.
+    """
+    if not text:
+        return None
+
+    # Passada 1 — janela ao redor do ID, onde o nome tende a estar junto.
+    if seller_id:
+        idx = text.find(seller_id)
+        while idx != -1:
+            window = text[max(0, idx - 400): idx + 400]
+            for match in _ANY_NAME_RE.finditer(window):
+                name = clean_seller_name(match.group(1))
+                if name and not is_leroy_self(name):
+                    return name
+            idx = text.find(seller_id, idx + 1)
+
+    # Passada 2 — chave explícita de seller em qualquer lugar do payload.
+    for match in _RAW_JSON_NAME_RE.finditer(text):
+        name = clean_seller_name(match.group(1))
+        if name and not is_leroy_self(name):
+            return name
+
+    # Passada 3 — rótulo textual dentro do payload.
+    match = _PDP_LABEL_RE.search(text)
+    if match:
+        return clean_seller_name(match.group(1))
+
+    return None
+
+
 def _from_json_payloads(payloads: list, seller_id: Optional[str]) -> Optional[str]:
     """
     Procura o nome do seller nos JSONs do PDP, em duas passadas:
@@ -236,8 +315,12 @@ def extract_seller_from_pdp(html: str, seller_id: Optional[str] = None) -> Optio
     Ordem de tentativas (da mais confiável para a mais frágil):
       1. JSON embutido (``__NEXT_DATA__`` / JSON-LD) ancorado no ``seller_id``
       2. JSON embutido com chave explícita de seller (sem âncora de ID)
-      3. Rótulo textual do PDP — "Vendido e entregue por X"
-      4. Regex sobre o HTML bruto — ``"sellerName": "X"``
+      3. Payload de streaming do App Router (``self.__next_f.push``), ancorado
+         no ``seller_id`` por proximidade — PDPs em App Router não têm
+         ``__NEXT_DATA__``, então sem isto a camada 1-2 não vê nada
+      4. Rótulo textual do PDP — "Vendido e entregue por X" (exige HTML já
+         hidratado; o shell servido no `domcontentloaded` ainda não tem)
+      5. Regex sobre o HTML bruto — ``"sellerName": "X"``
 
     Args:
         html: HTML completo do PDP.
@@ -260,6 +343,14 @@ def extract_seller_from_pdp(html: str, seller_id: Optional[str] = None) -> Optio
         payloads = []
 
     name = _from_json_payloads(payloads, seller_id)
+    if name:
+        return name
+
+    try:
+        name = _from_flight_text(next_flight_text(html), seller_id)
+    except Exception as exc:
+        logger.debug(f"[LeroySellers] Falha ao ler payload do App Router: {exc}")
+        name = None
     if name:
         return name
 
@@ -423,6 +514,28 @@ class LeroySellerCache:
         if when.tzinfo is None:
             when = when.replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc) - when > timedelta(days=self.retry_days)
+
+    def clear_quarantine(self) -> int:
+        """
+        Esvazia a quarentena, liberando todos os IDs para nova tentativa.
+
+        Necessário depois de corrigir a extração: sem isso, IDs que falharam por
+        um motivo já resolvido continuariam bloqueados até o fim da janela de
+        ``retry_days``.
+
+        Returns:
+            Quantidade de IDs liberados.
+        """
+        n = len(self._unresolved)
+        if n:
+            self._unresolved = {}
+            self._dirty = True
+        return n
+
+    @property
+    def quarantined(self) -> Dict[str, Any]:
+        """Cópia das entradas em quarentena (leitura)."""
+        return dict(self._unresolved)
 
     def __len__(self) -> int:
         return len(self._sellers)
