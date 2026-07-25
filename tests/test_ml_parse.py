@@ -14,7 +14,7 @@ Rode: pytest tests/test_ml_parse.py
 import pytest
 from bs4 import BeautifulSoup
 
-from scrapers.mercado_livre import MLScraper, _BLOCK_SIGNALS_RE
+from scrapers.mercado_livre import MLScraper, _SerpCursor, _BLOCK_SIGNALS_RE
 
 
 def _item(html: str):
@@ -312,6 +312,282 @@ class TestSelectItems:
 # ---------------------------------------------------------------------------
 # Heurística de bloqueio — distingue bloqueio/desafio de mudança de DOM
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Regressões da coleta de 25/07/2026 (600 registros de ML analisados)
+# ---------------------------------------------------------------------------
+
+# Card 3P puro, no formato que o ML serve hoje: reviews só como par de nós de
+# texto ("4.8" + "(1.234)"), sem classe dedicada; seller comum, sem selo.
+CARD_POLY_ATUAL_3P = """
+<li class="ui-search-layout__item">
+  <div class="poly-card">
+    <a class="poly-component__title" href="https://www.mercadolivre.com.br/ar-tcl/p/MLB55">
+      Ar Condicionado TCL 12000 Btus
+    </a>
+    <span class="poly-component__seller">Por KARZEN ELETRO</span>
+    <div class="poly-reviews">
+      <span>4.7</span>
+      <span>(1.234)</span>
+    </div>
+    <div class="andes-money-amount">
+      <span class="andes-money-amount__fraction">2.499</span>
+    </div>
+  </div>
+</li>
+"""
+
+
+class TestReviewsEstrutural:
+    """Avaliação ficou 0% em 35.445 registros: as classes Poly mudaram de novo."""
+
+    def test_par_nota_e_contagem_sem_classe_conhecida(self):
+        rating, count = MLScraper._extract_reviews(_item(CARD_POLY_ATUAL_3P))
+        assert rating == 4.7
+        assert count == 1234
+
+    def test_nota_isolada_sem_contagem(self):
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <span>4,9</span>
+        </div></li>"""
+        rating, count = MLScraper._extract_reviews(_item(html))
+        assert rating == 4.9
+        assert count is None
+
+    @pytest.mark.parametrize("ruido", [
+        '<span class="andes-money-amount__fraction">2.799</span>',  # preço
+        "<span>12x R$ 233,25</span>",                               # parcela
+        "<span>Ar Condicionado 9.000 Btus</span>",                  # título
+        "<span>(2026)</span>",                                      # ano solto
+        "<span>8.5</span>",                                         # fora de 0..5
+    ])
+    def test_nao_confunde_ruido_do_card_com_avaliacao(self, ruido):
+        html = f'<li class="ui-search-layout__item"><div class="poly-card">{ruido}</div></li>'
+        rating, count = MLScraper._extract_reviews(_item(html))
+        assert rating is None
+        assert count is None
+
+    def test_seletor_dedicado_tem_prioridade(self):
+        # com a classe Poly presente, a camada estrutural não deve interferir
+        rating, count = MLScraper._extract_reviews(_item(CARD_ORGANIC_POLY))
+        assert (rating, count) == (4.8, 1234)
+
+
+class TestTipoSellerSemFalsoPositivo:
+    """86% dos registros vinham como "Loja Oficial", incluindo 3P evidentes."""
+
+    def test_seller_3p_comum_nao_vira_oficial(self):
+        item = _item(CARD_POLY_ATUAL_3P)
+        assert MLScraper._detect_tipo_seller(item, "KARZEN ELETRO") == "3P"
+
+    def test_texto_solto_no_card_nao_basta(self):
+        # a varredura antiga (item.find(string=...)) marcava o card inteiro
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <span class="poly-component__seller">Por Dox Comercio</span>
+          <p>Compre também na loja oficial da marca</p>
+        </div></li>"""
+        assert MLScraper._detect_tipo_seller(_item(html), "Dox Comercio") == "3P"
+
+    def test_cockade_fora_do_bloco_do_seller_nao_basta(self):
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <span class="poly-component__seller">Por Bagatoli</span>
+          <svg class="andes-cockade-icon"></svg>
+        </div></li>"""
+        assert MLScraper._detect_tipo_seller(_item(html), "Bagatoli") == "3P"
+
+    def test_href_de_vitrine_oficial_conta(self):
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <a href="https://www.mercadolivre.com.br/loja/midea">Midea</a>
+        </div></li>"""
+        assert MLScraper._detect_tipo_seller(_item(html), "Midea") == "Loja Oficial"
+
+    def test_loja_no_slug_do_produto_nao_conta(self):
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <a href="https://www.mercadolivre.com.br/ar-condicionado-loja/p/MLB9">x</a>
+        </div></li>"""
+        assert MLScraper._detect_tipo_seller(_item(html), "Joviki") == "3P"
+
+    def test_evidencia_nomeia_a_camada(self):
+        item = _item(CARD_LEGACY)
+        assert MLScraper._official_store_evidence(item, "Elgin") == "label-legado"
+
+
+class TestFulfillment:
+    """Fulfillment ficou em ~1%: o selo FULL é ícone, não nó de texto."""
+
+    def test_aria_label_do_icone(self):
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <svg aria-label="Enviado pelo Mercado Envios Full"></svg>
+        </div></li>"""
+        assert MLScraper._is_fulfillment(_item(html)) is True
+
+    def test_classe_de_fulfillment(self):
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <span class="poly-component__shipping-fulfillment"></span>
+        </div></li>"""
+        assert MLScraper._is_fulfillment(_item(html)) is True
+
+    def test_full_no_titulo_nao_e_fulfillment(self):
+        # "Full DC Inverter" é nome de tecnologia, não selo de logística
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <a class="poly-component__title" href="/p/MLB1">Ar Condicionado Full DC Inverter 18000</a>
+        </div></li>"""
+        assert MLScraper._is_fulfillment(_item(html)) is False
+
+    def test_card_sem_selo(self):
+        assert MLScraper._is_fulfillment(_item(CARD_POLY_ATUAL_3P)) is False
+
+
+class TestUrlDeAnuncio:
+    """URL de patrocinado vinha como link de tracking (expira, não deduplica)."""
+
+    def test_deriva_permalink_do_item_id(self):
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <a class="poly-component__title"
+             href="https://click1.mercadolivre.com.br/mclics/clicks/external/MLB/count?a=xyz&pdp_filters=item_id%3AMLB6968369576">
+            Ar Condicionado Consul
+          </a>
+        </div></li>"""
+        assert MLScraper._extract_url(_item(html)) == (
+            "https://produto.mercadolivre.com.br/MLB-6968369576"
+        )
+
+    def test_prefere_ancora_direta_ao_link_de_ad(self):
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <a class="ui-search-link" href="https://click1.mercadolivre.com.br/mclics/x?a=1">ad</a>
+          <a class="poly-component__title" href="https://www.mercadolivre.com.br/ar-lg/p/MLB77">pdp</a>
+        </div></li>"""
+        assert MLScraper._extract_url(_item(html)) == (
+            "https://www.mercadolivre.com.br/ar-lg/p/MLB77"
+        )
+
+    def test_ad_sem_item_id_preserva_o_link(self):
+        html = """
+        <li class="ui-search-layout__item"><div class="poly-card">
+          <a class="poly-component__title" href="https://click1.mercadolivre.com.br/mclics/x?a=1">ad</a>
+        </div></li>"""
+        assert MLScraper._extract_url(_item(html)) == (
+            "https://click1.mercadolivre.com.br/mclics/x?a=1"
+        )
+
+
+class TestPaginacao:
+    """`_Desde_` fixo em 48 repetia os itens 49..60 quando a SERP passou a 60."""
+
+    def test_primeira_pagina_sem_offset(self):
+        assert MLScraper._build_url("ar condicionado") == (
+            "https://lista.mercadolivre.com.br/ar-condicionado"
+        )
+
+    @pytest.mark.parametrize("vistos,esperado", [(48, 49), (60, 61), (107, 108)])
+    def test_offset_segue_os_itens_realmente_vistos(self, vistos, esperado):
+        assert MLScraper._build_url("ar condicionado", vistos).endswith(
+            f"_Desde_{esperado}"
+        )
+
+
+class TestPosicoesEntrePaginas:
+    """Posição Orgânica reiniciava em 1 na página 2 (dois produtos na mesma posição)."""
+
+    @staticmethod
+    def _pagina(n: int, inicio: int) -> str:
+        cards = "".join(
+            f"""<li class="ui-search-layout__item"><div class="poly-card">
+                  <a class="poly-component__title" href="/p/MLB{inicio+i}">Ar Midea {inicio+i}</a>
+                </div></li>"""
+            for i in range(n)
+        )
+        return f'<ol class="ui-search-layout">{cards}</ol>'
+
+    def _scraper(self):
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._last_screenshot_busca = None
+        return scraper
+
+    def test_posicoes_continuam_na_segunda_pagina(self):
+        scraper = self._scraper()
+        cursor = _SerpCursor()
+
+        p1 = scraper._parse_results(self._pagina(60, 1), "kw", {}, cursor=cursor)
+        assert cursor.items_seen == 60
+        assert [r["Posição Geral"] for r in p1][:3] == [1, 2, 3]
+        assert p1[-1]["Posição Geral"] == 60
+        assert p1[-1]["Posição Orgânica"] == 60
+
+        p2 = scraper._parse_results(self._pagina(60, 61), "kw", {}, cursor=cursor)
+        assert p2[0]["Posição Geral"] == 61
+        assert p2[0]["Posição Orgânica"] == 61
+
+        todas = [r["Posição Orgânica"] for r in p1 + p2]
+        assert len(todas) == len(set(todas)), "posição orgânica duplicada entre páginas"
+
+    def test_page_offset_ainda_funciona_sem_cursor(self):
+        # compatibilidade: chamadas antigas passam page_offset em vez de cursor
+        scraper = self._scraper()
+        recs = scraper._parse_results(self._pagina(2, 1), "kw", {}, page_offset=48)
+        assert [r["Posição Geral"] for r in recs] == [49, 50]
+
+
+class TestSellerNaoInventado:
+    """Seller ausente virava "Mercado Livre" — 13,5% do buy box era artefato."""
+
+    def test_card_sem_seller_fica_nulo(self):
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._last_screenshot_busca = None
+        recs = scraper._parse_results(
+            f'<ol class="ui-search-layout">{CARD_BARE}</ol>', "kw", {}
+        )
+        assert recs[0]["Seller / Vendedor"] is None
+        assert recs[0]["Buy Box Seller"] is None
+
+    def test_card_com_seller_preserva_o_nome(self):
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._last_screenshot_busca = None
+        recs = scraper._parse_results(
+            f'<ol class="ui-search-layout">{CARD_POLY_ATUAL_3P}</ol>', "kw", {}
+        )
+        assert recs[0]["Seller / Vendedor"] == "KARZEN ELETRO"
+        assert recs[0]["Buy Box Seller"] == "KARZEN ELETRO"
+
+
+class TestCobertura:
+    """Campo zerado precisa virar WARNING na própria coleta."""
+
+    def test_conta_campos_extraidos(self):
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._last_screenshot_busca = None
+        cursor = _SerpCursor()
+        scraper._parse_results(
+            f'<ol class="ui-search-layout">{CARD_POLY_ATUAL_3P}</ol>',
+            "kw", {}, cursor=cursor,
+        )
+        assert cursor.coverage["rating"] == 1
+        assert cursor.coverage["review_count"] == 1
+        assert cursor.coverage["seller"] == 1
+        assert "oficial" not in cursor.coverage
+
+    def test_dump_de_amostra_quando_campo_zera(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "logs").mkdir()
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._last_screenshot_busca = None
+        cursor = _SerpCursor()
+        scraper._parse_results(
+            f'<ol class="ui-search-layout">{CARD_BARE}</ol>', "kw", {}, cursor=cursor
+        )
+        scraper._log_coverage("kw", cursor, _item(CARD_BARE))
+        assert (tmp_path / "logs" / "ml_card_sample.html").exists()
+
 
 class TestBlockSignals:
     @pytest.mark.parametrize("html", [

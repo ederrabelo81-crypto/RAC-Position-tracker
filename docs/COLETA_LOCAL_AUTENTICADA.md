@@ -52,6 +52,21 @@ ligada. Depois **atacamos via CDP** (`connect_over_cdp`) usando o fork
 - Um único Chrome por execução, compartilhado por todos os scrapers (uma aba
   cada). O Chrome fica **aberto** entre execuções (perfil "quente").
 
+### "E se eu usar o Profile 1 do meu Chrome?"
+
+**Não use.** "Default", "Profile 1", "Profile 2" são subpastas *dentro* de um
+`--user-data-dir`; apontar a coleta para o seu Chrome pessoal reintroduz
+exatamente os dois problemas da seção anterior — o Chrome 136+ ignora a porta de
+debug no perfil padrão (item 1) e mover/copiar o diretório desloga as contas
+(item 2). `data/chrome_profile/` já é um user-data-dir próprio do projeto, e a
+coleta usa o perfil `Default` dele.
+
+Trocar de perfil também **não conserta campo vazio**: `avaliacao`,
+`tipo_seller` e `fulfillment` são lidos do HTML do card, iguais para visitante
+anônimo e para usuário logado. Perfil só decide se a página **carrega** (login
+gate/403) — quando ele é o problema, o sintoma é **0 registros**, não registros
+com colunas em branco.
+
 ---
 
 ## Setup (uma vez)
