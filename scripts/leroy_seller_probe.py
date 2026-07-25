@@ -49,6 +49,7 @@ from utils.leroy_sellers import (
     SELLER_LABEL_PATTERN,
     LeroySellerCache,
     extract_seller_from_pdp,
+    extract_seller_with_layer,
     is_leroy_self,
 )
 
@@ -137,17 +138,30 @@ def _diagnose_html(html: str, seller_id: Optional[str]) -> None:
     if titulo:
         print(f"  {'<title>':<38} {titulo.group(1).strip()!r}")
 
-    assinaturas = [
+    # Assinaturas fortes: só aparecem em página de bloqueio de verdade.
+    fortes = [
         s for s in (
-            "Access Denied", "Acesso negado", "Request unsuccessful",
-            "Reference #", "Incapsula", "px-captcha", "challenge-form",
-            "captcha", "Not Found", "404", "403", "Forbidden",
-            "unsupported browser", "habilite o javascript", "enable javascript",
+            "px-captcha", "challenge-form", "captcha-delivery",
+            "Request unsuccessful", "Reference #", "Incapsula",
+            "Access Denied", "Acesso negado", "unusual traffic",
         )
         if s.lower() in html.lower()
     ]
-    if assinaturas:
-        print(f"  {'assinaturas de bloqueio/erro':<38} {', '.join(assinaturas)}")
+    # Fracas: termos que aparecem em bundle JS de qualquer página saudável
+    # ("404", "403", "Forbidden"…). Um PDP legítimo de 339 KB os contém, e
+    # reportá-los cru fazia o diagnóstico gritar bloqueio numa página boa.
+    # Só valem quando a resposta é pequena o suficiente para não ser um PDP,
+    # ou quando estão no <title>.
+    escopo_fraco = html if len(html) < 50_000 else (titulo.group(1) if titulo else "")
+    fracas = [
+        s for s in ("Not Found", "404", "403", "Forbidden",
+                    "habilite o javascript", "enable javascript")
+        if s.lower() in escopo_fraco.lower()
+    ]
+    if fortes or fracas:
+        print(f"  {'assinaturas de bloqueio/erro':<38} {', '.join(fortes + fracas)}")
+    elif len(html) > 100_000:
+        print(f"  {'assinaturas de bloqueio/erro':<38} nenhuma (página parece íntegra)")
 
     if len(html) < 50_000:
         texto = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html,
@@ -210,14 +224,19 @@ def cmd_pdp(
 
     _diagnose_html(html, seller_id)
 
-    name = extract_seller_from_pdp(html, seller_id)
+    name, camada = extract_seller_with_layer(html, seller_id)
     if not name:
         logger.error(
             "Nenhuma estratégia extraiu o seller deste PDP. Use o diagnóstico "
             f"acima e o dump em {dump} para ajustar extract_seller_from_pdp."
         )
         return 1
-    logger.success(f"Seller: {name}")
+    logger.success(f"Seller: {name}  (camada: {camada})")
+    if camada in ("json", "flight"):
+        logger.info(
+            "Camada disponível no HTML servido — a espera de hidratação de até "
+            "10s por PDP pode ser reduzida via LEROY_PDP_HYDRATE_TIMEOUT."
+        )
     if not seller_id:
         logger.warning("Sem --seller-id: nada foi gravado no cache.")
         return 0
@@ -246,11 +265,11 @@ def cmd_html(path: str, seller_id: Optional[str]) -> int:
         logger.error(f"Não foi possível ler {path}: {exc}")
         return 1
     _diagnose_html(html, seller_id)
-    name = extract_seller_from_pdp(html, seller_id)
+    name, camada = extract_seller_with_layer(html, seller_id)
     if not name:
         logger.error("Nenhuma estratégia extraiu o seller deste HTML.")
         return 1
-    logger.success(f"Seller: {name}")
+    logger.success(f"Seller: {name}  (camada: {camada})")
     return 0
 
 

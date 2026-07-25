@@ -77,6 +77,11 @@ except ImportError:  # python-dotenv é opcional em alguns ambientes de CI
 _PDP_RESOLVE_ENABLED = os.environ.get("LEROY_PDP_RESOLVE", "1") not in ("0", "false", "False")
 _PDP_MAX_PER_RUN = int(os.environ.get("LEROY_PDP_MAX_PER_RUN", "40") or 40)
 _PDP_TIMEOUT = float(os.environ.get("LEROY_PDP_TIMEOUT", "12") or 12)
+# Intervalo entre PDPs consecutivos — protege contra o rate-limit que zerou as
+# resoluções na primeira execução real.
+_PDP_MIN_INTERVAL = float(os.environ.get("LEROY_PDP_MIN_INTERVAL", "1.5") or 1.5)
+_PDP_MAX_INTERVAL = float(os.environ.get("LEROY_PDP_MAX_INTERVAL", "3.5") or 3.5)
+
 # Tempo máximo esperando o bloco de seller hidratar no browser.
 _PDP_HYDRATE_TIMEOUT = float(os.environ.get("LEROY_PDP_HYDRATE_TIMEOUT", "10000") or 10000)
 
@@ -218,6 +223,7 @@ class LeroyMerlinScraper(BaseScraper):
             "resolved_via_scalar_fields": 0,
             "pdp_fetch_attempts": 0,
             "pdp_fetch_failures": 0,
+            "pdp_bloqueios": 0,          # página não chegou (bloqueio/rate-limit)
             "fallback_3p_unidentified": 0,
             "fallback_leroy_default": 0,
         }
@@ -478,10 +484,12 @@ class LeroyMerlinScraper(BaseScraper):
         strategies.append(self._fetch_pdp_browser)
 
         name: Optional[str] = None
+        pagina_chegou = False
         for fetch in strategies:
             html = fetch(product_url)
             if not html:
                 continue
+            pagina_chegou = True
             candidate = extract_seller_from_pdp(html, seller_id)
             # Produto marcado como 3P no Algolia não pode resolver para a
             # própria Leroy — sinal de PDP genérico/errado, melhor descartar.
@@ -491,7 +499,14 @@ class LeroyMerlinScraper(BaseScraper):
 
         if not name:
             self._seller_metrics["pdp_fetch_failures"] += 1
-            self._seller_cache.mark_failed(seller_id, product_url)
+            if not pagina_chegou:
+                self._seller_metrics["pdp_bloqueios"] += 1
+            # Página que não chegou é falha transitória (bloqueio/rate-limit) e
+            # não merece a quarentena cheia — comprovado em produção, onde a
+            # mesma URL devolveu 3 KB e, minutos depois, 339 KB.
+            self._seller_cache.mark_failed(
+                seller_id, product_url, transient=not pagina_chegou
+            )
             return None
 
         self._seller_cache.put(seller_id, name)
@@ -777,7 +792,10 @@ class LeroyMerlinScraper(BaseScraper):
             # voltam sem tocar a rede — dormir aí seria tempo morto acumulado
             # a cada página das 40 keywords do run.
             if self._seller_metrics["pdp_fetch_attempts"] > attempts_before:
-                self._random_delay(min_s=0.4, max_s=1.2)
+                # Ritmo importa: em produção 7 PDPs em ~4s levaram a bloqueio
+                # (resposta de 3 KB), e a mesma URL respondeu 339 KB quando
+                # requisitada sozinha. Espaçar é o que mantém o acesso.
+                self._random_delay(min_s=_PDP_MIN_INTERVAL, max_s=_PDP_MAX_INTERVAL)
 
         # Salva também quando nada resolveu: a quarentena dos IDs que falharam
         # é o que evita repetir os mesmos PDPs mortos na próxima coleta.

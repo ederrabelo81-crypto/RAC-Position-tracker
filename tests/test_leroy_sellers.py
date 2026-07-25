@@ -845,3 +845,102 @@ class TestChavesEmStringNaoContamAninhamento:
             "</script></body></html>"
         )
         assert extract_seller_from_pdp(html, SELLER_ID) == "Loja {Matriz}"
+
+
+class TestQuarentenaTransitoria:
+    """
+    Produção (jul/2026): um bloqueio momentâneo trancou 8 IDs por 7 dias e a
+    coleta seguinte registrou `pdp_fetch_attempts: 0` — sendo que a mesma URL
+    devolveu 339 KB minutos depois. Falha de acesso não é seller inexistente.
+    """
+
+    def test_transitoria_libera_na_proxima_tentativa(self, tmp_path):
+        cache = LeroySellerCache(path=tmp_path / "c.json", retry_days=7)
+        cache.mark_failed(SELLER_ID, "https://exemplo/p", transient=True)
+        assert cache.should_retry(SELLER_ID) is True
+
+    def test_definitiva_entra_na_quarentena_cheia(self, tmp_path):
+        """Página chegou e não tinha seller → não adianta insistir amanhã."""
+        cache = LeroySellerCache(path=tmp_path / "c.json", retry_days=7)
+        cache.mark_failed(SELLER_ID, "https://exemplo/p", transient=False)
+        assert cache.should_retry(SELLER_ID) is False
+
+    def test_transitoria_persistente_vira_definitiva(self, tmp_path):
+        """Sem teto, um ID morto queimaria orçamento de PDP em toda coleta."""
+        cache = LeroySellerCache(path=tmp_path / "c.json", retry_days=7)
+        for _ in range(LeroySellerCache.TRANSIENT_ATTEMPTS):
+            cache.mark_failed(SELLER_ID, transient=True)
+        assert cache.should_retry(SELLER_ID) is False
+
+    def test_definitiva_nao_volta_a_transitoria(self, tmp_path):
+        """Um bloqueio posterior não pode reabrir um ID já julgado definitivo."""
+        cache = LeroySellerCache(path=tmp_path / "c.json", retry_days=7)
+        cache.mark_failed(SELLER_ID, transient=False)
+        cache.mark_failed(SELLER_ID, transient=True)
+        assert cache.should_retry(SELLER_ID) is False
+
+    def test_transitoria_sobrevive_ao_disco(self, tmp_path):
+        path = tmp_path / "c.json"
+        cache = LeroySellerCache(path=path, retry_days=7)
+        cache.mark_failed(SELLER_ID, transient=True)
+        cache.save()
+        assert LeroySellerCache(path=path, retry_days=7).should_retry(SELLER_ID) is True
+
+
+class TestResolveViaPdpClassificaFalha:
+    def test_pagina_nao_chegou_e_transitoria(self, scraper, monkeypatch):
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
+
+        assert scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p") is None
+        assert scraper._seller_metrics["pdp_bloqueios"] == 1
+        assert scraper._seller_cache.should_retry(SELLER_ID) is True
+
+    def test_pagina_chegou_sem_seller_e_definitiva(self, scraper, monkeypatch):
+        pagina = "<html><body>" + "<p>x</p>" * 200 + "</body></html>"
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: pagina)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: pagina)
+
+        assert scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p") is None
+        assert scraper._seller_metrics["pdp_bloqueios"] == 0
+        assert scraper._seller_cache.should_retry(SELLER_ID) is False
+
+
+class TestCamadaDeResolucao:
+    """
+    Saber a camada decide se a espera de hidratação (até 10s por PDP) é
+    necessária: `json`/`flight` vêm no HTML servido, `texto` exige hidratação.
+    """
+
+    def test_json_ld(self):
+        from utils.leroy_sellers import extract_seller_with_layer
+
+        ld = {"offers": {"seller": {"name": "Central Ar"}}}
+        html = f'<html><script type="application/ld+json">{json.dumps(ld)}</script></html>'
+        assert extract_seller_with_layer(html, SELLER_ID) == ("Central Ar", "json")
+
+    def test_flight(self):
+        from utils.leroy_sellers import extract_seller_with_layer
+
+        payload = f'{{"offers":[{{"sellerId":"{SELLER_ID}","sellerName":"Frio Total"}}]}}'
+        html = (
+            "<html><body><script>"
+            f"self.__next_f.push([1,{json.dumps(payload)}])"
+            "</script></body></html>"
+        )
+        assert extract_seller_with_layer(html, SELLER_ID) == ("Frio Total", "flight")
+
+    def test_texto_exige_hidratacao(self):
+        from utils.leroy_sellers import extract_seller_with_layer
+
+        html = "<html><body><p>Vendido e entregue por Central Ar</p></body></html>"
+        assert extract_seller_with_layer(html, SELLER_ID) == ("Central Ar", "texto")
+
+    def test_nada_resolve(self):
+        from utils.leroy_sellers import extract_seller_with_layer
+
+        assert extract_seller_with_layer('<html><div id="__next"></div></html>', SELLER_ID) == (None, None)
+
+    def test_wrapper_mantem_a_assinatura_antiga(self):
+        html = "<html><body><p>Vendido e entregue por Central Ar</p></body></html>"
+        assert extract_seller_from_pdp(html, SELLER_ID) == "Central Ar"
