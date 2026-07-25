@@ -1,7 +1,8 @@
 {
   "_comment": "seller_id (ObjectId do Algolia) → nome do lojista, resolvido via PDP da Leroy Merlin. Gerado por scrapers/leroy_merlin.py; editável à mão e seguro para versionar.",
-  "updated_at": "2026-07-24T00:00:00+00:00",
+  "updated_at": "2026-07-25T00:59:19+00:00",
   "sellers": {
+    "5cdc59824614e530f62b5b4a": "Central Ar",
     "6353074400c2dc08ca5a2114": "Elgin"
   },
   "unresolved": {}

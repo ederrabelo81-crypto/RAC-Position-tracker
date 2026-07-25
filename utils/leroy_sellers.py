@@ -470,6 +470,59 @@ def _from_text(html: str) -> Optional[str]:
     return None
 
 
+def extract_seller_with_layer(
+    html: str,
+    seller_id: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Igual a `extract_seller_from_pdp`, mas informa **qual camada** resolveu.
+
+    Saber a camada é operacionalmente relevante: se o nome vem de
+    ``json`` ou ``flight`` (presentes no HTML servido), a espera de hidratação
+    de até 10s por PDP é dispensável; se vem de ``texto``, ela é obrigatória.
+
+    Returns:
+        Tupla ``(nome, camada)``. ``camada`` é um de ``"json"``, ``"flight"``,
+        ``"texto"``, ``"regex"``, ou None quando nada resolveu.
+    """
+    if not html:
+        return None, None
+
+    try:
+        payloads = _next_data_payloads(html)
+    except Exception as exc:  # HTML corrompido/truncado não deve derrubar a coleta
+        logger.debug(f"[LeroySellers] Falha ao ler JSON do PDP: {exc}")
+        payloads = []
+
+    name = _from_json_payloads(payloads, seller_id)
+    if name:
+        return name, "json"
+
+    try:
+        name = _from_flight_text(next_flight_text(html), seller_id)
+    except Exception as exc:
+        logger.debug(f"[LeroySellers] Falha ao ler payload do App Router: {exc}")
+        name = None
+    if name:
+        return name, "flight"
+
+    try:
+        name = _from_text(html)
+    except Exception as exc:
+        logger.debug(f"[LeroySellers] Falha ao ler texto do PDP: {exc}")
+        name = None
+    if name:
+        return name, "texto"
+
+    match = _SELLER_KEY_NAME_RE.search(html)
+    if match:
+        candidate = clean_seller_name(match.group(1))
+        if candidate and not is_leroy_self(candidate):
+            return candidate, "regex"
+
+    return None, None
+
+
 def extract_seller_from_pdp(html: str, seller_id: Optional[str] = None) -> Optional[str]:
     """
     Extrai o nome do seller a partir do HTML de um PDP da Leroy Merlin.
@@ -495,42 +548,8 @@ def extract_seller_from_pdp(html: str, seller_id: Optional[str] = None) -> Optio
         Produto 1P devolve "Leroy Merlin" (ou variação) — o caller decide se
         isso é aceitável para o ID consultado.
     """
-    if not html:
-        return None
-
-    try:
-        payloads = _next_data_payloads(html)
-    except Exception as exc:  # HTML corrompido/truncado não deve derrubar a coleta
-        logger.debug(f"[LeroySellers] Falha ao ler JSON do PDP: {exc}")
-        payloads = []
-
-    name = _from_json_payloads(payloads, seller_id)
-    if name:
-        return name
-
-    try:
-        name = _from_flight_text(next_flight_text(html), seller_id)
-    except Exception as exc:
-        logger.debug(f"[LeroySellers] Falha ao ler payload do App Router: {exc}")
-        name = None
-    if name:
-        return name
-
-    try:
-        name = _from_text(html)
-    except Exception as exc:
-        logger.debug(f"[LeroySellers] Falha ao ler texto do PDP: {exc}")
-        name = None
-    if name:
-        return name
-
-    match = _SELLER_KEY_NAME_RE.search(html)
-    if match:
-        candidate = clean_seller_name(match.group(1))
-        if candidate and not is_leroy_self(candidate):
-            return candidate
-
-    return None
+    name, _camada = extract_seller_with_layer(html, seller_id)
+    return name
 
 
 # ----------------------------------------------------------------------
@@ -644,8 +663,28 @@ class LeroySellerCache:
         self._unresolved.pop(seller_id, None)
         self._dirty = True
 
-    def mark_failed(self, seller_id: str, sample_url: Optional[str] = None) -> None:
-        """Coloca o ID em quarentena após uma tentativa de PDP sem sucesso."""
+    # Tentativas transitórias toleradas antes de tratar o ID como definitivo.
+    TRANSIENT_ATTEMPTS = 3
+
+    def mark_failed(
+        self,
+        seller_id: str,
+        sample_url: Optional[str] = None,
+        transient: bool = False,
+    ) -> None:
+        """
+        Registra uma tentativa de PDP sem sucesso.
+
+        Args:
+            seller_id: ObjectId do seller.
+            sample_url: PDP usado na tentativa.
+            transient: True quando a **página não chegou** (bloqueio, timeout,
+                rate-limit). Esses casos não merecem a quarentena cheia: em
+                produção (jul/2026) um bloqueio momentâneo trancou 8 IDs por 7
+                dias e a coleta seguinte nem tentou — sendo que a mesma URL
+                respondeu 339 KB minutos depois. Só vira definitivo após
+                ``TRANSIENT_ATTEMPTS`` falhas.
+        """
         if not seller_id:
             return
         entry = self._unresolved.get(seller_id) or {"attempts": 0}
@@ -653,6 +692,11 @@ class LeroySellerCache:
         entry["last_try"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if sample_url:
             entry["sample_url"] = sample_url
+        # Deixa de ser transitório quando insiste em falhar, ou quando uma
+        # tentativa definitiva (página chegou, sem seller) já foi registrada.
+        entry["transient"] = bool(transient) and not entry.get("definitive", False)
+        if not transient:
+            entry["definitive"] = True
         self._unresolved[seller_id] = entry
         self._dirty = True
 
@@ -662,9 +706,15 @@ class LeroySellerCache:
 
         False quando o ID já falhou dentro da janela de quarentena
         (``retry_days``) — evita repetir a mesma busca infrutífera a cada run.
+
+        Falhas **transitórias** (página não chegou) são liberadas de imediato,
+        até ``TRANSIENT_ATTEMPTS``: um rate-limit de dez segundos não deve
+        custar uma semana de seller não identificado.
         """
         entry = self._unresolved.get(seller_id)
         if not entry:
+            return True
+        if entry.get("transient") and int(entry.get("attempts", 0)) < self.TRANSIENT_ATTEMPTS:
             return True
         last_try = entry.get("last_try")
         if not last_try:
