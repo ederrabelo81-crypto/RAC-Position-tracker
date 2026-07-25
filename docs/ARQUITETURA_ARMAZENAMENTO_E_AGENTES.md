@@ -26,7 +26,7 @@
    ideia acerta numa lacuna real: **ninguém foi avisado** de 9 dias de falha.
 4. **Google Docs/Sheets: não.** **Google Drive guardando Parquet: sim, é
    viável** — mas antes disso existe a conta que decide tudo: **o plano free do
-   Supabase comporta no máximo ~30 dias de histórico. Para sempre.**
+   Supabase comporta no máximo ~24 dias de histórico. Para sempre.**
 
 ---
 
@@ -59,7 +59,7 @@ O workflow terminou **verde**. O `daily_status_check.py` — que detectaria isso
 | Última linha em `coletas` | **2026-07-16** |
 | Última linha em `pricetrack_daily` | **2026-07-16** |
 | Último import PriceTrack com `SUCCESS` | 2026-07-16 20:13 UTC |
-| Janela de histórico que sobrou | **26/06 → 16/07 (30 dias)** |
+| Janela de histórico que sobrou | **26/06 → 16/07 = 21 dias corridos** |
 
 Tabelas:
 
@@ -72,15 +72,17 @@ Tabelas:
 
 ### 1.3 A conta que decide o resto do documento
 
-**449 MB para 30 dias de dados.** Esse é o número que importa:
+**449 MB para 21 dias de dados.** Esse é o número que importa:
 
-> O plano free do Supabase (500 MB) comporta **~33 dias** do pipeline atual.
-> Não "33 dias até precisar de faxina" — **33 dias, permanentemente**. Toda
+> O plano free do Supabase (500 MB) comporta **~24 dias** do pipeline atual.
+> Não "24 dias até precisar de faxina" — **24 dias, permanentemente**. Toda
 > análise de tendência, sazonalidade, Black Friday vs. base, evolução de buy box
 > mês a mês é estruturalmente impossível neste plano.
 
-Ritmo observado (média dos últimos 9 dias com dados): **~26.000 linhas/dia** em
-`pricetrack_daily` + **~11.000 linhas/dia** em `coletas` ≈ **15–20 MB/dia**.
+Ritmo observado (396 MB das duas tabelas ÷ 21 dias): **~26.400 linhas/dia** em
+`pricetrack_daily` + **~9.600 linhas/dia** em `coletas` ≈ **19 MB/dia**. Descontando
+o que não cresce (`rac_monitoramento` legado + catálogo ≈ 41 MB), sobram ~459 MB
+de teto útil — daí os ~24 dias.
 
 ### 1.4 Dano colateral já ocorrido
 
@@ -213,7 +215,7 @@ O gargalo estrutural não é o browser nem a inteligência da extração. São d
 | Destino | Veredito | Por quê |
 |---------|----------|---------|
 | **Google Docs** | ❌ Não | É documento de texto. 5.651 linhas/dia × 27 colunas não é texto — é tabela. Sem query, sem tipo, sem join. |
-| **Google Sheets** | ❌ Não nesta escala | Limite de **10 milhões de células**. Com 27 colunas, isso é ~370 mil linhas ≈ **~1 mês de coleta** — o mesmo teto do Supabase free, com muito mais trabalho. E a API tem cota de escrita que 5,6 mil linhas/dia estressam. |
+| **Google Sheets** | ❌ Não nesta escala | Limite de **10 milhões de células**. Com 27 colunas, isso é ~370 mil linhas ≈ **~39 dias de `coletas`** (e não caberia o PriceTrack junto) — praticamente o mesmo teto do Supabase free, com muito mais trabalho. E a API tem cota de escrita que 5,6 mil linhas/dia estressam. |
 | **Drive como armazenamento de arquivos (Parquet)** | ✅ Viável | Ver 3.2. |
 | **Drive guardando os CSVs crus** | 🟡 Melhor que nada | Resolve *não perder o dado*; não resolve *consultar o dado*. Serve como backup imediato hoje. |
 
@@ -246,19 +248,19 @@ responsabilidade da escrita do arquivo. É um refactor de dias, não de horas.
 
 | Opção | Custo/mês | Janela de histórico | Esforço | Dashboard |
 |-------|-----------|---------------------|---------|-----------|
-| **Supabase Pro (8 GB)** | US$ 25 | ~17 meses no ritmo atual | **Zero código** | Intacto |
-| Continuar no free + emagrecer schema | US$ 0 | ~60–90 dias | Médio | Intacto |
+| **Supabase Pro (8 GB)** | US$ 25 | ~14 meses no ritmo atual | **Zero código** | Intacto |
+| Continuar no free + emagrecer schema | US$ 0 | ~40 dias (ver 3.4) | Médio | Intacto |
 | Postgres gerenciado alternativo (Neon/Turso) | US$ 0 no free | 0,5–5 GB conforme o serviço | Médio (migração SQL) | Quase intacto (é Postgres) |
 | **Drive + Parquet + DuckDB** | US$ 0 | Anos | Alto | Reescreve camada de leitura |
-| Google Sheets | US$ 0 | ~1 mês | Alto | Reescreve |
+| Google Sheets | US$ 0 | ~39 dias (só `coletas`) | Alto | Reescreve |
 | Google Docs | US$ 0 | — | — | Inviável |
 
 ### 3.4 "Emagrecer o schema" — o que dá para cortar sem perder análise
 
 Se a decisão for continuar no free, estes são os alvos, em ordem de retorno:
 
-1. **Intra-dia do PriceTrack** — de 26.000 linhas/dia, só ~9.000 são `Diário`
-   (a fonte de verdade de preço). Os outros ~17.000 (`Manhã`/`Tarde`) servem só
+1. **Intra-dia do PriceTrack** — de 26.400 linhas/dia, só ~9.200 são `Diário`
+   (a fonte de verdade de preço). Os outros ~17.250 (`Manhã`/`Tarde`) servem só
    aos turnos recentes do dashboard. Reduzir a retenção de intra-dia de 30 para
    **7 dias** corta ~65% do crescimento diário da maior tabela.
 2. **`rac_monitoramento`** — 33 MB de tabela legada. O README a marca como
@@ -269,8 +271,9 @@ Se a decisão for continuar no free, estes são os alvos, em ordem de retorno:
 4. **Índices** — parte dos 449 MB é índice, não dado. Vale um
    `pg_stat_user_indexes` atrás de índice nunca escaneado.
 
-Nenhuma dessas medidas muda a conclusão estrutural: **elas compram meses, não
-resolvem a necessidade de histórico longo.**
+Somadas, essas medidas derrubam o crescimento de 19 para ~12 MB/dia, o que leva
+o teto do plano free de ~24 para **~40 dias**. Ou seja: **elas compram semanas,
+não resolvem a necessidade de histórico longo.**
 
 ---
 
@@ -288,11 +291,11 @@ resolvem a necessidade de histórico longo.**
 
 ### Decisão de fundo (a pergunta real)
 
-**Se a análise precisa de mais de ~30 dias de histórico — e para RAC, com
+**Se a análise precisa de mais de ~24 dias de histórico — e para RAC, com
 sazonalidade de verão e datas duplas, precisa — o plano free não é uma opção
 técnica, é um teto.** As duas saídas coerentes:
 
-- **US$ 25/mês no Supabase Pro** — compra ~17 meses de histórico, zero linha de
+- **US$ 25/mês no Supabase Pro** — compra ~14 meses de histórico, zero linha de
   código alterada, mantém as RPCs e o dashboard como estão. É a opção
   recomendada se houver qualquer orçamento.
 - **Drive + Parquet + DuckDB** — custo zero e histórico ilimitado, ao preço de
@@ -301,7 +304,7 @@ técnica, é um teto.** As duas saídas coerentes:
 
 O caminho híbrido que combina os dois é defensável e provavelmente o melhor
 custo-benefício: **Parquet no Drive como arquivo histórico completo** (barato,
-imutável, cresce para sempre) + **Supabase free como janela quente de 30 dias**
+imutável, cresce para sempre) + **Supabase free como janela quente de ~20 dias**
 para o dashboard operacional. Cada camada faz o que faz bem.
 
 ### Sobre o "radical"

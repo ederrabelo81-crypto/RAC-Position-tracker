@@ -8,7 +8,7 @@ Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos ma
 > A coleta continua rodando normalmente (5.651 registros em 25/07), mas o
 > Supabase está **restrito por cota de armazenamento** (HTTP 402
 > `exceed_db_size_quota`) e **rejeita 100% das gravações**. O banco tem 449 MB
-> dos 500 MB do plano free e o histórico foi podado para uma janela de 30 dias
+> dos 500 MB do plano free e o histórico foi podado para **21 dias corridos**
 > (26/06 → 16/07). Os dias sem gravar existem como **artifact CSV do GitHub
 > Actions (retenção de 30 dias)** e podem ser reenviados com
 > `python scripts/upload_csv.py <arquivo.csv>` (idempotente) assim que houver
@@ -491,14 +491,14 @@ Medição de **25/07/2026** (org `Mydea`, plano **free**, limite 500 MB):
 | Medida | Valor |
 |--------|-------|
 | `pg_database_size` | **449 MB** |
-| Janela de histórico existente | **26/06 → 16/07 (30 dias)** |
-| Crescimento observado | ~26 mil linhas/dia (`pricetrack_daily`) + ~11 mil/dia (`coletas`) ≈ **15–20 MB/dia** |
+| Janela de histórico existente | **26/06 → 16/07 = 21 dias corridos** |
+| Crescimento observado | ~26,4 mil linhas/dia (`pricetrack_daily`) + ~9,6 mil/dia (`coletas`) ≈ **19 MB/dia** |
 | `pricetrack_daily` | 224 MB · 554.944 linhas |
 | `coletas` | 172 MB · 201.689 linhas |
 | `rac_monitoramento` (legado) | 33 MB · 38.509 linhas |
 
-> **449 MB para 30 dias** significa que o plano free comporta **~33 dias de
-> histórico — permanentemente**, não "33 dias até a próxima faxina". Análise de
+> **449 MB para 21 dias** significa que o plano free comporta **~24 dias de
+> histórico — permanentemente**, não "24 dias até a próxima faxina". Análise de
 > sazonalidade, comparação mês a mês e Black Friday vs. base são
 > estruturalmente inviáveis neste plano. As opções de saída (Supabase Pro,
 > Parquet no Drive + DuckDB, emagrecimento de schema) estão comparadas com
