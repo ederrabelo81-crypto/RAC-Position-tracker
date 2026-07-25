@@ -2,7 +2,18 @@
 
 Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ✅ Produção | **Última atualização:** 11 de Julho de 2026 (v4.4)
+**Status:** ⚠️ Coleta OK / gravação bloqueada | **Última atualização:** 25 de Julho de 2026 (v4.5)
+
+> 🚨 **Incidente aberto desde 16/07/2026 — leia antes de usar os dados.**
+> A coleta continua rodando normalmente (5.651 registros em 25/07), mas o
+> Supabase está **restrito por cota de armazenamento** (HTTP 402
+> `exceed_db_size_quota`) e **rejeita 100% das gravações**. O banco tem 449 MB
+> dos 500 MB do plano free e o histórico foi podado para uma janela de 30 dias
+> (26/06 → 16/07). Os dias sem gravar existem como **artifact CSV do GitHub
+> Actions (retenção de 30 dias)** e podem ser reenviados com
+> `python scripts/upload_csv.py <arquivo.csv>` (idempotente) assim que houver
+> espaço. Diagnóstico completo, contas e opções de saída:
+> **[`docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`](docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md)**.
 
 ---
 
@@ -429,6 +440,9 @@ rac-position-tracker/
 ## 🧪 Testes & Diagnóstico
 
 ```bash
+# Suíte completa — 592 testes (validado em 25/07/2026)
+pytest tests/ pricetrack_api/tests pricetrack_importer/tests -q
+
 pytest tests/ -q                          # parser ML, de-para, normalização v2
 
 # Antes de deployar mudança em scraper:
@@ -446,6 +460,8 @@ python scripts/smoke_test.py              # smoke geral
 |----------|---------|
 | Playwright não encontra browsers | `python -m playwright install chromium` |
 | Upload Supabase ignorado | `.env` com `SUPABASE_URL`/`SUPABASE_KEY` (**service_role**) |
+| `exceed_db_size_quota` / HTTP 402 no upload | Banco no teto da cota — libere espaço (`scripts/retention_cleanup.sql` + `VACUUM FULL`) ou troque de plano; depois reenvie os CSVs com `python scripts/upload_csv.py <arquivo.csv>`. Contexto: `docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md` |
+| Coleta "verde" mas sem dado novo no banco | O workflow não falha quando o upload é rejeitado — rode `python scripts/daily_status_check.py` e agende-o |
 | Turno invertido | `python scripts/fix_turno.py --confirm` |
 | Dealer/ML retorna 0 produtos | ver `logs/*_debug_*.html` + `--no-headless` |
 | ML sem avaliação/patrocinado no banco | rodar `python scripts/diagnose_ml.py` e conferir 🩺 Data Health (fix Jun/2026 — seletores Poly) |
@@ -468,6 +484,37 @@ RAC_CDP_URL=http://localhost:9222  # CDP p/ refresh_sessions_cdp.py (fallback: M
 
 ## 🛠️ Manutenção do Banco (Supabase)
 
+### ⚠️ Cota — o limite estrutural do plano free
+
+Medição de **25/07/2026** (org `Mydea`, plano **free**, limite 500 MB):
+
+| Medida | Valor |
+|--------|-------|
+| `pg_database_size` | **449 MB** |
+| Janela de histórico existente | **26/06 → 16/07 (30 dias)** |
+| Crescimento observado | ~26 mil linhas/dia (`pricetrack_daily`) + ~11 mil/dia (`coletas`) ≈ **15–20 MB/dia** |
+| `pricetrack_daily` | 224 MB · 554.944 linhas |
+| `coletas` | 172 MB · 201.689 linhas |
+| `rac_monitoramento` (legado) | 33 MB · 38.509 linhas |
+
+> **449 MB para 30 dias** significa que o plano free comporta **~33 dias de
+> histórico — permanentemente**, não "33 dias até a próxima faxina". Análise de
+> sazonalidade, comparação mês a mês e Black Friday vs. base são
+> estruturalmente inviáveis neste plano. As opções de saída (Supabase Pro,
+> Parquet no Drive + DuckDB, emagrecimento de schema) estão comparadas com
+> custo e esforço em
+> [`docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`](docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md).
+
+Quando a API devolve 402, `utils/supabase_client.py` faz **fail-fast** com
+`is_quota_restricted_error()` — aborta os lotes restantes, preserva o CSV local
+e a automação Admin é pulada (as etapas falhariam igual).
+
+⚠️ `docs/DB_RETENTION.md` descreve a política "Equilibrada" de 14/07 (todo o
+histórico `Diário` + 90 dias de `coletas`) — **essa não é mais a realidade do
+banco**: a poda emergencial levou o histórico anterior a 26/06.
+
+### Utilitários
+
 Funções em `utils/supabase_maintenance.py` (todas com `dry_run=True`):
 `fix_inverted_turno`, `delete_invalid` (não-AC), `normalize_brands`,
 `scan_fix_bad_prices` (bug ×10), `normalize_all_products`.
@@ -484,7 +531,8 @@ Utilitários: `cleanup_supabase.py`, `normalize_supabase.py`,
 |-----------|------------|
 | `docs/INDEX.md` | Navegação por tarefa |
 | `pricetrack_api/README.md` | Cliente tipado da API PriceTrack — arquitetura, uso, config, robustez 🆕 |
-| `docs/COLETA_LOCAL_AUTENTICADA.md` | Coleta local Magalu+Shopee+CB — Chrome comum + perfil dedicado, agendamento 🆕 |
+| `docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md` | 🆕 Incidente de cota, agente no Chrome/n8n e onde guardar os dados — com as contas |
+| `docs/COLETA_LOCAL_AUTENTICADA.md` | Coleta local Magalu+Shopee+CB — Chrome comum + perfil dedicado, agendamento |
 | `docs/AUTOMACAO_COLETAS_AUTENTICADAS.md` | ⚠️ Superado — caminho antigo via CDP + perfil copiado (referência histórica) |
 | `docs/PRICETRACK_INSIGHTS.md` | Pipeline PriceTrack + roadmap de insights 🆕 |
 | `docs/DIAGNOSTICO_COLETA_JUN2026.md` | Diagnóstico de cobertura por campo/plataforma |
@@ -504,9 +552,50 @@ Dashboard usa o subset `requirements_app.txt`.
 
 ---
 
+## ✅ Validação Operacional — 25/07/2026
+
+**Repositório validado nesta data:** árvore limpa, **592 testes passando**
+(`tests/` + `pricetrack_api/tests` + `pricetrack_importer/tests`), workflows
+agendados executando (`collect.yml` 2×/dia, `pricetrack_daily.yml`,
+`pricetrack_intraday.yml` de hora em hora).
+
+- 🚨 **Gravação bloqueada desde 16/07** — Supabase em `exceed_db_size_quota`
+  (HTTP 402). A coleta de 25/07 produziu 5.651 registros e **0 foram gravados**.
+  O workflow terminou **verde**: `scripts/daily_status_check.py` existe e
+  notifica no Telegram, mas **não está agendado em nenhum workflow** — por isso
+  9 dias de falha passaram despercebidos. Ver
+  `docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`.
+- ⚠️ **Casas Bahia em 0 na VM/GitHub** — circuit breaker do Akamai após 3
+  keywords bloqueadas (IP de datacenter). Caminho que funciona:
+  `RAC_LOCAL_CHROME=1` no notebook (IP residencial) ou proxy residencial BR.
+- ✅ **Mercado Livre — extração ancorada no DOM real do card** (fixture de
+  produção `tests/fixtures/ml_card_grid_20260725.html`): corrigidos campos
+  ocos, paginação sobreposta, Loja Oficial em 86%, vitrine da loja virando URL
+  do produto, e warm-up da home contra o gate transitório (2/3 das keywords
+  retornavam 0)
+- ✅ **Leroy Merlin — seller 3P resolvido via PDP** com cache persistente
+  (`data/leroy_sellers.json`): App Router + espera de hidratação, detecção de
+  challenge varrendo o HTML inteiro, quarentena transitória com 1 tentativa por
+  seller/run e ritmo entre PDPs. Diagnóstico: `scripts/leroy_seller_probe.py --scan`
+- ✅ **Shopee — parser realinhado ao formato `search_items` de Jul/2026**:
+  extração de `name`/`price`, tratamento de 0 vendas, posição contígua entre
+  páginas via `start_offset` acumulado, `shop_location` deixa de ser usado como
+  seller
+- ✅ **Guard de cota no upload** (`is_quota_restricted_error`) — fail-fast com
+  mensagem acionável no 402, sem tentar os lotes restantes; automação Admin
+  pulada no mesmo estado
+- ✅ **Política de retenção do banco** (`scripts/retention_cleanup.sql` +
+  `docs/DB_RETENTION.md`) — re-executável, com `VACUUM FULL` obrigatório
+- ✅ **Keywords rebalanceadas** — correção de viés de marca + queries
+  conversacionais (IA)
+- ✅ **Dashboard** — toggle de share neutro por marca nas páginas de share;
+  buy box/reputação/patrocinado passam a considerar todos os marketplaces
+
+---
+
 ## ✅ Validação Operacional — 12/07/2026
 
-- ✅ **Agendamento local Windows corrigido de vez** 🆕 — a Action das tarefas
+- ✅ **Agendamento local Windows corrigido de vez** — a Action das tarefas
   `RAC_Local_*` era `cmd.exe /c "..." >> "..."`; com o espaço no caminho do
   projeto o cmd.exe descartava as aspas e a tarefa morria **sem escrever log**
   (por isso Magalu/Shopee/Casas Bahia "não rodavam"). Agora a Action é o
@@ -542,4 +631,4 @@ Dashboard usa o subset `requirements_app.txt`.
 
 **Stack:** Python · Playwright/rebrowser · curl_cffi · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · GitHub Actions
 
-**Versão:** 4.4 | **Última atualização:** 11 de Julho de 2026 | @ederrabelo
+**Versão:** 4.5 | **Última atualização:** 25 de Julho de 2026 | @ederrabelo
