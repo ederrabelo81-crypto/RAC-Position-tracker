@@ -82,6 +82,10 @@ _PDP_TIMEOUT = float(os.environ.get("LEROY_PDP_TIMEOUT", "12") or 12)
 _PDP_MIN_INTERVAL = float(os.environ.get("LEROY_PDP_MIN_INTERVAL", "1.5") or 1.5)
 _PDP_MAX_INTERVAL = float(os.environ.get("LEROY_PDP_MAX_INTERVAL", "3.5") or 3.5)
 
+# Piso de tamanho para considerar a resposta um PDP de verdade. Em produção o
+# PDP mediu 339 KB e o challenge 3 KB — 20 KB fica folgadamente entre os dois.
+_PDP_MIN_BYTES = int(os.environ.get("LEROY_PDP_MIN_BYTES", "20000") or 20000)
+
 # Tempo máximo esperando o bloco de seller hidratar no browser.
 _PDP_HYDRATE_TIMEOUT = float(os.environ.get("LEROY_PDP_HYDRATE_TIMEOUT", "10000") or 10000)
 
@@ -209,6 +213,9 @@ class LeroyMerlinScraper(BaseScraper):
         self._pdp_session: Optional[requests.Session] = None
         self._pdp_budget = _PDP_MAX_PER_RUN
         self._pdp_requests_strikes = 0  # falhas seguidas do caminho leve (requests)
+        # IDs já tentados nesta execução — impede queimar as tentativas
+        # transitórias de um seller em várias páginas do mesmo run.
+        self._pdp_attempted_this_run: set[str] = set()
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -448,6 +455,26 @@ class LeroyMerlinScraper(BaseScraper):
             logger.debug(f"[{self.platform_name}] content() do PDP falhou: {exc}")
             return None
 
+    @staticmethod
+    def _looks_like_pdp(html: str) -> bool:
+        """
+        Indica se o HTML é plausivelmente um PDP, e não um challenge/erro.
+
+        Dois sinais, ambos calibrados na evidência de produção (jul/2026): o PDP
+        real mediu **339.544 bytes**, o bloqueio **3.126** — daí o piso de
+        tamanho — e nenhum marcador de challenge pode estar presente.
+
+        Args:
+            html: HTML recebido de qualquer um dos caminhos de fetch.
+
+        Returns:
+            True quando vale julgar uma falha de extração como definitiva.
+        """
+        if not html or len(html) < _PDP_MIN_BYTES:
+            return False
+        lowered = html[:20_000].lower()
+        return not any(m in lowered for m in _PDP_CHALLENGE_MARKERS)
+
     def _resolve_via_pdp(self, seller_id: str, product_url: Optional[str]) -> Optional[str]:
         """
         Abre o PDP de um produto do seller e extrai o nome do lojista.
@@ -468,9 +495,16 @@ class LeroyMerlinScraper(BaseScraper):
             return None
         if self._pdp_budget <= 0:
             return None
+        # Uma tentativa por seller **por execução**. O mesmo ID reaparece em
+        # várias páginas/keywords, e sem esta trava um run bloqueado gastaria as
+        # 3 tentativas transitórias de uma vez, jogando o seller na quarentena
+        # de 7 dias — exatamente o que a classificação transitória evita.
+        if seller_id in self._pdp_attempted_this_run:
+            return None
         if not self._seller_cache.should_retry(seller_id):
             return None
 
+        self._pdp_attempted_this_run.add(seller_id)
         self._pdp_budget -= 1
         self._seller_metrics["pdp_fetch_attempts"] += 1
 
@@ -489,7 +523,12 @@ class LeroyMerlinScraper(BaseScraper):
             html = fetch(product_url)
             if not html:
                 continue
-            pagina_chegou = True
+            # HTML não-vazio não significa PDP: o bloqueio observado em produção
+            # veio pelo browser com 3.126 bytes de challenge. Tratá-lo como
+            # "página chegou" faria a falha ser julgada definitiva e o seller
+            # ficaria 7 dias sem nova tentativa — o oposto do pretendido.
+            if self._looks_like_pdp(html):
+                pagina_chegou = True
             candidate = extract_seller_from_pdp(html, seller_id)
             # Produto marcado como 3P no Algolia não pode resolver para a
             # própria Leroy — sinal de PDP genérico/errado, melhor descartar.

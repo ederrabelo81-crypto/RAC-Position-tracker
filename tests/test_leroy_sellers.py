@@ -897,7 +897,9 @@ class TestResolveViaPdpClassificaFalha:
         assert scraper._seller_cache.should_retry(SELLER_ID) is True
 
     def test_pagina_chegou_sem_seller_e_definitiva(self, scraper, monkeypatch):
-        pagina = "<html><body>" + "<p>x</p>" * 200 + "</body></html>"
+        # Acima de `_PDP_MIN_BYTES`: uma resposta pequena hoje é tratada como
+        # bloqueio (transitória), não como página íntegra sem seller.
+        pagina = "<html><body>" + "<p>x</p>" * 3_000 + "</body></html>"
         monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: pagina)
         monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: pagina)
 
@@ -944,3 +946,100 @@ class TestCamadaDeResolucao:
     def test_wrapper_mantem_a_assinatura_antiga(self):
         html = "<html><body><p>Vendido e entregue por Central Ar</p></body></html>"
         assert extract_seller_from_pdp(html, SELLER_ID) == "Central Ar"
+
+
+class TestClassificacaoDeBloqueio:
+    """
+    Regressão dos dois P1 da 7ª rodada. O bloqueio observado em produção veio
+    **pelo browser**, com 3.126 bytes de HTML não-vazio: tratar isso como
+    "página chegou" julgava a falha definitiva e trancava o seller 7 dias —
+    justamente o que a classificação transitória deveria impedir.
+    """
+
+    @pytest.mark.parametrize("html,esperado", [
+        ("<html>" + "x" * 339_000 + "</html>", True),      # PDP real
+        ("<html>" + "y" * 3_000 + "</html>", False),       # challenge de 3 KB
+        ("<html><div id='px-captcha'></div>" + "z" * 50_000 + "</html>", False),
+        ("", False),
+    ])
+    def test_looks_like_pdp(self, html, esperado):
+        assert LeroyMerlinScraper._looks_like_pdp(html) is esperado
+
+    def test_challenge_pelo_browser_e_transitorio(self, scraper, monkeypatch):
+        """O caso de produção: 3 KB pelo browser não pode virar definitivo."""
+        challenge = "<html>" + "y" * 3_000 + "</html>"
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: challenge)
+
+        assert scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p") is None
+        assert scraper._seller_metrics["pdp_bloqueios"] == 1
+        assert scraper._seller_cache.should_retry(SELLER_ID) is True
+
+    def test_pdp_grande_sem_seller_e_definitivo(self, scraper, monkeypatch):
+        """Página íntegra e sem seller: insistir amanhã não muda nada."""
+        pdp = "<html><body>" + "<p>sem seller aqui</p>" * 3_000 + "</body></html>"
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: pdp)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: pdp)
+
+        assert scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p") is None
+        assert scraper._seller_metrics["pdp_bloqueios"] == 0
+        assert scraper._seller_cache.should_retry(SELLER_ID) is False
+
+
+class TestUmaTentativaPorRun:
+    """
+    O mesmo seller ID reaparece em várias páginas e keywords. Sem trava por
+    execução, um run bloqueado gastaria as 3 tentativas transitórias de uma vez
+    e a coleta seguinte já cairia na quarentena de 7 dias.
+    """
+
+    def test_segunda_chamada_no_mesmo_run_nao_tenta(self, scraper, monkeypatch):
+        chamadas = []
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: None)
+        monkeypatch.setattr(
+            scraper, "_fetch_pdp_browser",
+            lambda url: chamadas.append(url) or None,
+        )
+
+        scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p")
+        scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p")
+        scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p")
+
+        assert len(chamadas) == 1
+        assert scraper._seller_metrics["pdp_fetch_attempts"] == 1
+        # uma única tentativa transitória gravada → segue liberado
+        assert scraper._seller_cache.should_retry(SELLER_ID) is True
+
+    def test_nao_gasta_orcamento_repetindo_o_mesmo_id(self, scraper, monkeypatch):
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
+        orcamento_inicial = scraper._pdp_budget
+
+        for _ in range(5):
+            scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/p")
+
+        assert scraper._pdp_budget == orcamento_inicial - 1
+
+    def test_ids_diferentes_seguem_sendo_tentados(self, scraper, monkeypatch):
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
+
+        scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/a")
+        scraper._resolve_via_pdp("61940b77c220aa3ead390ee2", "https://exemplo/b")
+
+        assert scraper._seller_metrics["pdp_fetch_attempts"] == 2
+
+    def test_tres_runs_bloqueados_escalam_para_definitivo(self, scraper, tmp_path, monkeypatch):
+        """A escalada continua existindo — só não acontece dentro de um run."""
+        from utils.leroy_sellers import LeroySellerCache
+
+        path = tmp_path / "c.json"
+        for _ in range(LeroySellerCache.TRANSIENT_ATTEMPTS):
+            s = LeroyMerlinScraper()
+            s._seller_cache = LeroySellerCache(path=path)
+            monkeypatch.setattr(s, "_fetch_pdp_requests", lambda url: None)
+            monkeypatch.setattr(s, "_fetch_pdp_browser", lambda url: None)
+            s._resolve_via_pdp(SELLER_ID, "https://exemplo/p")
+            s._seller_cache.save()
+
+        assert LeroySellerCache(path=path).should_retry(SELLER_ID) is False
