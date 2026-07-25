@@ -37,6 +37,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
 from utils.leroy_sellers import (
+    SELLER_LABEL_PATTERN,
     LeroySellerCache,
     extract_seller_from_pdp,
     is_leroy_self,
@@ -415,8 +416,12 @@ class LeroyMerlinScraper(BaseScraper):
         # devolve HTML sem seller nenhum — era isso que fazia 100% das
         # resoluções falharem em produção (jul/2026). Espera o texto aparecer.
         try:
+            # Mesmo padrão que o parser e o probe usam (fonte única em
+            # utils.leroy_sellers): divergir aqui faz o diagnóstico dizer
+            # "hidratou" onde esta espera não reconhece, e gasta o timeout
+            # inteiro mais o fallback de rede em cada PDP.
             self._page.wait_for_function(
-                "() => /vendido (e entregue )?por/i.test(document.body.innerText)",
+                f"() => /{SELLER_LABEL_PATTERN}/i.test(document.body.innerText)",
                 timeout=_PDP_HYDRATE_TIMEOUT,
             )
         except Exception:

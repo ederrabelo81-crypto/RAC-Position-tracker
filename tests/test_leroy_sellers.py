@@ -678,3 +678,100 @@ class TestClearQuarantineCLI:
 
         cache = LeroySellerCache(path=tmp_path / "c.json")
         assert cmd_clear_quarantine(cache) == 0
+
+
+class TestAncoraRobusta:
+    """
+    Achados da 5ª rodada de revisão: a âncora do App Router precisa sobreviver a
+    chaves dentro de strings, aceitar o shape `{sellerId, name}` sem reabrir a
+    porta para o título do produto, e a passada genérica precisa cobrir as
+    mesmas chaves da ancorada.
+    """
+
+    @staticmethod
+    def _flight(payload: str) -> str:
+        return (
+            "<html><body><script>"
+            f"self.__next_f.push([1,{json.dumps(payload)}])"
+            "</script></body></html>"
+        )
+
+    def test_chave_dentro_de_string_nao_desbalanceia_o_recorte(self):
+        """
+        Nome de loja com `{`/`}` desbalancearia a contagem e expandiria o
+        recorte até a oferta seguinte, associando o seller errado.
+        """
+        payload = (
+            '{"offers":[{"sellerId":"61940b77c220aa3ead390ee2","sellerName":"Errado {Ltda}"},'
+            f'{{"sellerId":"{SELLER_ID}","sellerName":"Certo Ltda"}}]}}'
+        )
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Certo Ltda"
+
+    def test_enclosing_object_ignora_chaves_em_string(self):
+        from utils.leroy_sellers import _enclosing_object
+
+        texto = f'{{"a":"tem {{ chave"}},{{"sellerId":"{SELLER_ID}","sellerName":"Z"}}'
+        recorte = _enclosing_object(texto, texto.find(SELLER_ID))
+        assert recorte.startswith('{"sellerId"')
+        assert "tem { chave" not in recorte
+
+    def test_seller_id_com_name_puro_na_folha(self):
+        """Shape legítimo `{"sellerId": …, "name": "Loja X"}` volta a resolver."""
+        payload = f'{{"offers":[{{"sellerId":"{SELLER_ID}","name":"Loja Do Ar"}}]}}'
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Loja Do Ar"
+
+    def test_name_de_produto_continua_rejeitado(self):
+        """A liberação do `name` puro não pode reabrir o P1 do título."""
+        payload = (
+            '{"product":{"name":"Ar Condicionado Portatil Philco","brand":"Philco",'
+            f'"offers":[{{"sellerId":"{SELLER_ID}","sellerName":"Loja X"}}]}}}}'
+        )
+        assert extract_seller_from_pdp(self._flight(payload), SELLER_ID) == "Loja X"
+
+    def test_objeto_com_chave_de_produto_nao_libera_name(self):
+        from utils.leroy_sellers import _is_seller_leaf
+
+        assert _is_seller_leaf(f'{{"sellerId":"{SELLER_ID}","name":"Loja"}}', SELLER_ID)
+        assert not _is_seller_leaf(
+            f'{{"sellerId":"{SELLER_ID}","name":"X","description":"y"}}', SELLER_ID
+        )
+        assert not _is_seller_leaf('{"sellerId":"outro","name":"X"}', SELLER_ID)
+
+    @pytest.mark.parametrize("chave", ["seller_name", "store_name", "sellerName", "storeName"])
+    def test_passada_generica_cobre_as_mesmas_chaves(self, chave):
+        """Sem âncora de ID, snake_case precisa resolver igual ao camelCase."""
+        payload = '{"offers":[{"%s":"Snake Ltda"}]}' % chave
+        assert extract_seller_from_pdp(self._flight(payload), None) == "Snake Ltda"
+
+
+class TestRotuloCompartilhado:
+    def test_probe_e_coleta_usam_o_mesmo_padrao(self):
+        """
+        Divergência entre o regex do diagnóstico e o da espera de hidratação faz
+        o probe afirmar "hidratou" onde a coleta não reconhece — e gasta o
+        timeout inteiro mais o fallback em cada PDP.
+        """
+        from scripts.leroy_seller_probe import _SELLER_LABEL_RE
+        from scrapers.leroy_merlin import SELLER_LABEL_PATTERN as no_scraper
+        from utils.leroy_sellers import SELLER_LABEL_PATTERN
+
+        assert _SELLER_LABEL_RE.pattern == SELLER_LABEL_PATTERN
+        assert no_scraper == SELLER_LABEL_PATTERN
+
+    @pytest.mark.parametrize("texto", [
+        "Vendido e entregue por Loja X",
+        "VENDIDO POR Loja X",
+        "vendido  e  entregue  por Loja X",
+        "Vendido\ne entregue\npor Loja X",
+    ])
+    def test_padrao_tolera_variacoes(self, texto):
+        import re as _re
+        from utils.leroy_sellers import SELLER_LABEL_PATTERN
+
+        assert _re.search(SELLER_LABEL_PATTERN, texto, _re.IGNORECASE)
+
+    def test_padrao_nao_casa_defendido(self):
+        import re as _re
+        from utils.leroy_sellers import SELLER_LABEL_PATTERN
+
+        assert not _re.search(SELLER_LABEL_PATTERN, "produto defendido por garantia", _re.IGNORECASE)
