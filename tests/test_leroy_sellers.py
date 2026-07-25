@@ -1061,3 +1061,43 @@ class TestUmaTentativaPorRun:
             s._seller_cache.save()
 
         assert LeroySellerCache(path=path).should_retry(SELLER_ID) is False
+
+
+class TestQuarentenaLegada:
+    """
+    Produção (jul/2026): a coleta pré-correção gravou ~40 IDs sem as chaves
+    `transient`/`definitive`. Instalar a correção não os liberava — `should_retry`
+    caía na janela de 7 dias — e a coleta seguinte fez **zero** tentativas de
+    PDP. O upgrade precisa ser auto-recuperável, não depender de intervenção.
+    """
+
+    @staticmethod
+    def _cache_legado(path, attempts=1):
+        import json as _json
+        path.write_text(_json.dumps({
+            "sellers": {},
+            "unresolved": {
+                SELLER_ID: {
+                    "attempts": attempts,
+                    "last_try": "2026-07-25T01:31:00+00:00",
+                    "sample_url": "https://exemplo/p",
+                }
+            },
+        }), encoding="utf-8")
+        return LeroySellerCache(path=path, retry_days=7)
+
+    def test_entrada_sem_flags_recebe_beneficio_da_duvida(self, tmp_path):
+        cache = self._cache_legado(tmp_path / "c.json")
+        assert cache.should_retry(SELLER_ID) is True
+
+    def test_legado_com_muitas_tentativas_permanece_bloqueado(self, tmp_path):
+        """O teto de tentativas continua valendo — não é liberação irrestrita."""
+        cache = self._cache_legado(
+            tmp_path / "c.json", attempts=LeroySellerCache.TRANSIENT_ATTEMPTS
+        )
+        assert cache.should_retry(SELLER_ID) is False
+
+    def test_definitivo_explicito_nao_e_confundido_com_legado(self, tmp_path):
+        cache = LeroySellerCache(path=tmp_path / "c.json", retry_days=7)
+        cache.mark_failed(SELLER_ID, transient=False)
+        assert cache.should_retry(SELLER_ID) is False
