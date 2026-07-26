@@ -213,6 +213,11 @@ def _map_record(record: Dict[str, Any]) -> Dict[str, Any]:
     # preenche "Produto Normalizado" em _build_record; CSV imports caem aqui.
     if row.get("produto_normalizado") is None:
         base_name = record.get("Produto / SKU") or row.get("produto")
+        # `base_name` vem CRU do registro, sem passar pela limpeza de NaN do
+        # laço acima. Num CSV com a coluna vazia ele chega como float('nan'),
+        # que é TRUTHY — o `if` passava e o normalizador quebrava no .lower().
+        if not isinstance(base_name, str):
+            base_name = None
         if base_name:
             v2 = normalize_product_name_v2(base_name, row.get("marca"))
             if v2:
