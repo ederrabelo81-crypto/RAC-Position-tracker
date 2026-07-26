@@ -533,7 +533,20 @@ def main() -> None:
         if os.getenv("RAC_HISTORY", "on").strip().lower() not in ("off", "0", "false"):
             try:
                 from utils.history import write_records as _write_history
-                _write_history(all_records, run_id=RUN_ID)
+                _hist_keys = _write_history(all_records, run_id=RUN_ID)
+                # write_records absorve falha de backend e devolve [] — sem
+                # checar o retorno, uma queda do Drive passaria como sucesso e
+                # a garantia de durabilidade viraria ficção.
+                if not _hist_keys:
+                    logger.error(
+                        "Histórico frio NÃO gravou nenhuma partição — a coleta "
+                        f"deste run existe só no CSV ({csv_path}). Verifique o "
+                        "destino com: python scripts/history_cli.py stats"
+                    )
+                else:
+                    logger.success(
+                        f"Histórico frio: {len(_hist_keys)} partição(ões) gravada(s)."
+                    )
             except Exception as exc:
                 logger.error(f"Histórico frio falhou: {exc}")
 

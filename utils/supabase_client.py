@@ -250,6 +250,22 @@ def map_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return _map_record(record)
 
 
+def is_ac_row(row: Dict[str, Any]) -> bool:
+    """Diz se uma linha mapeada é elegível (produto de ar-condicionado).
+
+    Wrapper público de `_is_ac_row`, para que o histórico frio aplique
+    exatamente o mesmo corte que o upload aplica antes de gravar no banco —
+    sem isso, os dois lados da união divergiriam em conteúdo.
+
+    Args:
+        row: Linha já no schema do banco (saída de `map_record`).
+
+    Returns:
+        True se a linha deve ser mantida.
+    """
+    return _is_ac_row(row)
+
+
 def _is_ac_row(row: Dict[str, Any]) -> bool:
     """
     Retorna True se o registro mapeado deve ser mantido.

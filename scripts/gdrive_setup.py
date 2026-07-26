@@ -66,9 +66,15 @@ def _require_google_libs() -> None:
 
 
 def _ensure_folder(service, name: str) -> str:
-    """Id da pasta do histórico, criando-a na raiz do Drive se não existir."""
+    """Id da pasta do histórico, criando-a na raiz do Drive se não existir.
+
+    A busca é restrita a ``'root' in parents`` para casar com o local onde a
+    pasta é criada: sem isso, uma pasta de mesmo nome em qualquer outro ponto
+    do Drive seria escolhida e o histórico iria para o lugar errado.
+    """
     query = (
-        f"name = '{name}' and mimeType = '{_FOLDER_MIME}' and trashed = false"
+        f"name = '{name}' and mimeType = '{_FOLDER_MIME}' "
+        "and 'root' in parents and trashed = false"
     )
     found = service.files().list(
         q=query, fields="files(id, name)", pageSize=10,
@@ -133,6 +139,17 @@ def cmd_authorize(args: argparse.Namespace) -> int:
 
 def cmd_check(_args: argparse.Namespace) -> int:
     """Confere se o ambiente atual consegue mesmo gravar e ler no Drive."""
+    # As credenciais moram no .env, e nada mais neste script o carrega — sem
+    # isto o --check relataria "local" mesmo com o Drive corretamente
+    # configurado, que é justamente o passo que ele deveria validar.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_ROOT / ".env")
+    except ImportError:
+        logger.warning(
+            "python-dotenv ausente — lendo só as variáveis já exportadas no shell."
+        )
+
     from utils.history import get_store, resolve_backend_name
 
     logger.info(f"Backend resolvido: {resolve_backend_name()}")
