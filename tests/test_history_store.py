@@ -481,6 +481,54 @@ class TestFallbackLocalQuandoODriveFalha:
         assert len(local.read(DATASET_COLETAS)) == 1
 
 
+class TestConfiguracaoVemDoEnv:
+    """O .env precisa ser lido no import do módulo.
+
+    Regressão de 26/07/2026: só `gdrive_setup.py --check` carregava o .env, e
+    ele resolvia `drive:` enquanto `history_cli.py` e o próprio `main.py`
+    resolviam `local:` — a coleta gravava em disco achando que ia ao Drive.
+    Em `main.py` o histórico roda ANTES do import de supabase_client, que era
+    quem carregava o .env como efeito colateral.
+    """
+
+    def test_store_carrega_dotenv_no_import(self):
+        import utils.history.store as store_mod
+        fonte = Path(store_mod.__file__).read_text(encoding="utf-8")
+        assert "load_dotenv" in fonte, (
+            "utils/history/store.py precisa carregar o .env no import — sem "
+            "isso o backend cai para local em qualquer entrada que não passe "
+            "antes por utils.supabase_client."
+        )
+
+    def test_env_do_shell_tem_precedencia(self, monkeypatch, tmp_path):
+        """`load_dotenv` não pode sobrescrever override explícito do shell."""
+        monkeypatch.setenv("RAC_HISTORY_BACKEND", "local")
+        monkeypatch.setenv("RAC_HISTORY_DIR", str(tmp_path))
+        from utils.history import history_dir, resolve_backend_name
+        assert resolve_backend_name() == "local"
+        assert history_dir() == tmp_path
+
+
+class TestRemoveDataset:
+    """`--check` não pode deixar pasta órfã no Drive do usuário."""
+
+    def test_remove_diretorio_vazio(self, tmp_path):
+        backend = LocalBackend(tmp_path)
+        backend.put("_setup_check/data=2026-07-26__run-check.parquet", b"x")
+        backend.delete("_setup_check/data=2026-07-26__run-check.parquet")
+        backend.remove_dataset("_setup_check")
+        assert not (tmp_path / "_setup_check").exists()
+
+    def test_preserva_diretorio_com_conteudo(self, tmp_path):
+        backend = LocalBackend(tmp_path)
+        backend.put("coletas/data=2026-07-26__run-a.parquet", b"x")
+        backend.remove_dataset("coletas")
+        assert (tmp_path / "coletas").is_dir()
+
+    def test_dataset_inexistente_nao_falha(self, tmp_path):
+        LocalBackend(tmp_path).remove_dataset("nao_existe")
+
+
 class TestFiltroACNaEscrita:
     """O histórico aplica o mesmo corte do upload — senão os dois lados da
     união divergem em conteúdo."""

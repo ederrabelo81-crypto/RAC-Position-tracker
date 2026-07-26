@@ -47,6 +47,20 @@ from utils.history.backends import (
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Carrega o .env já no import do módulo — TODA a configuração do histórico
+# (GDRIVE_*, RAC_HISTORY_*) mora lá. Sem isto, qualquer entrada que não passe
+# antes por utils.supabase_client (que carrega o .env como efeito colateral)
+# resolve o backend como "local" e grava no disco achando que foi ao Drive:
+# era o caso do scripts/history_cli.py e — pior — do próprio main.py, onde a
+# gravação do histórico acontece ANTES do import do supabase_client.
+# `load_dotenv` não sobrescreve variáveis já exportadas no shell, então um
+# override explícito continua valendo.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_PROJECT_ROOT / ".env")
+except ImportError:  # pragma: no cover - python-dotenv é dependência declarada
+    pass
+
 DATASET_COLETAS = "coletas"
 DATASET_PRICETRACK = "pricetrack"
 

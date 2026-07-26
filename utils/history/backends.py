@@ -74,6 +74,15 @@ class HistoryBackend(ABC):
     def delete(self, key: str) -> None:
         """Remove ``key``. Não falha se a chave já não existe."""
 
+    def remove_dataset(self, dataset: str) -> None:
+        """Remove o contêiner do dataset (pasta/diretório), se vazio.
+
+        Só faz sentido para datasets efêmeros — hoje o marcador de teste do
+        ``gdrive_setup.py --check``, que senão deixaria uma pasta órfã no Drive
+        do usuário. Silencioso quando o backend não suporta ou não está vazio.
+        """
+        return None
+
     def fingerprint(self, key: str) -> Optional[str]:
         """Impressão digital do conteúdo de ``key``, ou ``None`` se desconhecida.
 
@@ -142,6 +151,12 @@ class LocalBackend(HistoryBackend):
     def exists(self, key: str) -> bool:
         """True se a chave já está no disco (usado pelo cache do Drive)."""
         return self._path(key).is_file()
+
+    def remove_dataset(self, dataset: str) -> None:
+        """Remove o diretório do dataset se estiver vazio."""
+        base = self.root / dataset
+        if base.is_dir() and not any(base.iterdir()):
+            base.rmdir()
 
     def fingerprint(self, key: str) -> Optional[str]:
         """MD5 do arquivo em disco — mesmo algoritmo que o Drive reporta."""
@@ -463,6 +478,23 @@ class GoogleDriveBackend(HistoryBackend):
             raise HistoryBackendError(f"Falha removendo {key} do Drive: {exc}") from exc
         self._file_ids.pop(key, None)
         self._fingerprints.pop(key, None)
+
+    def remove_dataset(self, dataset: str) -> None:
+        """Apaga a pasta do dataset no Drive, se ela não tiver mais arquivos."""
+        try:
+            if self.list(dataset):
+                return
+            folder_id = self._folder_id(dataset)
+            self._retry(
+                f"remoção da pasta '{dataset}'",
+                lambda: self.service.files().delete(
+                    fileId=folder_id, supportsAllDrives=True,
+                ).execute(),
+            )
+            self._folder_ids.pop(dataset, None)
+        except HistoryBackendError as exc:
+            # Pasta órfã é cosmético — não vale falhar a operação do chamador.
+            logger.warning(f"[Drive] não removi a pasta '{dataset}': {exc}")
 
     def fingerprint(self, key: str) -> Optional[str]:
         """MD5 da partição remota, memorizado pela listagem quando possível."""
