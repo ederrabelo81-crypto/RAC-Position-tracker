@@ -359,7 +359,7 @@ class HistoryStore:
         df = pd.concat(frames, ignore_index=True)
         if "data" in df.columns:
             df["data"] = pd.to_datetime(df["data"], errors="coerce").dt.date
-        return df
+        return _desnulificar(df)
 
     def drop_day(
         self,
@@ -406,6 +406,41 @@ def _as_date(value: Any) -> Optional[date]:
         return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
     except (ValueError, TypeError):
         return None
+
+
+#: Tipos "nullable" do pandas que carregam `pd.NA`.
+_DTYPES_NULLABLE = ("string", "boolean", "Int64", "Int32", "Float64")
+
+
+def _desnulificar(df: pd.DataFrame) -> pd.DataFrame:
+    """Devolve o DataFrame com os MESMOS tipos que o caminho do Supabase.
+
+    O Parquet preserva os tipos *nullable* usados na escrita (`string`,
+    `Int64`, `boolean`), e o ausente neles é ``pd.NA``. Já o PostgREST entrega
+    dicionários que viram colunas ``object`` com ``None``.
+
+    A diferença não é cosmética: ``bool(pd.NA)`` **levanta**
+    ``TypeError: boolean value of NA is ambiguous``, enquanto ``bool(None)`` é
+    só ``False``. Qualquer página que faça ``if valor:`` sobre uma coluna vinda
+    do frio quebrava — foi o que derrubou a Daily Price Vision em 26/07/2026.
+
+    Os castes numéricos que o dashboard aplica depois (`pd.to_numeric` +
+    `astype("Int64")`) continuam funcionando sobre ``object``, então o
+    resultado final é idêntico ao do banco.
+
+    Args:
+        df: DataFrame recém-lido do Parquet.
+
+    Returns:
+        O mesmo DataFrame com colunas nullable convertidas para ``object``,
+        e ``pd.NA`` trocado por ``None``.
+    """
+    if df.empty:
+        return df
+    for col in df.columns:
+        if str(df[col].dtype) in _DTYPES_NULLABLE:
+            df[col] = df[col].astype(object).where(df[col].notna(), None)
+    return df
 
 
 def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:

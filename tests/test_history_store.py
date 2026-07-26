@@ -482,6 +482,59 @@ class TestFallbackLocalQuandoODriveFalha:
         assert len(local.read(DATASET_COLETAS)) == 1
 
 
+class TestTiposIguaisAoSupabase:
+    """O frio tem de entregar os MESMOS tipos que o PostgREST.
+
+    Regressão de 26/07/2026: a Daily Price Vision quebrava com
+    ``TypeError: boolean value of NA is ambiguous``. O Parquet preserva os
+    tipos nullable da escrita (`string`, `Int64`, `boolean`), cujo ausente é
+    ``pd.NA`` — e ``bool(pd.NA)`` LEVANTA, enquanto ``bool(None)`` é ``False``.
+    Qualquer página com ``if valor:`` sobre coluna do frio caía.
+    """
+
+    @pytest.fixture
+    def com_nulos(self, store):
+        store.write_day(DATASET_COLETAS, date(2026, 7, 25), [{
+            "data": "2026-07-25", "plataforma": "Amazon",
+            "produto": "Split Midea 12000", "marca": None,
+            "posicao_geral": None, "qtd_sellers": None,
+            "patrocinado": None, "preco": None,
+        }])
+        return store.read(DATASET_COLETAS)
+
+    @pytest.mark.parametrize(
+        "coluna", ["marca", "posicao_geral", "qtd_sellers", "patrocinado"]
+    )
+    def test_ausente_nao_explode_em_contexto_booleano(self, com_nulos, coluna):
+        """É exatamente o `if sku_val and ...` do `_resolve_btu`."""
+        assert bool(com_nulos[coluna].iloc[0]) is False
+
+    @pytest.mark.parametrize(
+        "coluna", ["produto", "marca", "posicao_geral", "patrocinado"]
+    )
+    def test_nenhuma_coluna_fica_nullable(self, com_nulos, coluna):
+        assert str(com_nulos[coluna].dtype) == "object"
+
+    def test_ausente_e_none_e_nao_pd_na(self, com_nulos):
+        assert com_nulos["marca"].iloc[0] is None
+
+    def test_valor_bom_sobrevive(self, com_nulos):
+        assert com_nulos["produto"].iloc[0] == "Split Midea 12000"
+
+    def test_cast_numerico_do_dashboard_continua_valendo(self, com_nulos):
+        """O painel faz `to_numeric(...).astype("Int64")` depois de ler."""
+        import pandas as pd
+        série = pd.to_numeric(com_nulos["posicao_geral"], errors="coerce")
+        assert str(série.astype("Int64").dtype) == "Int64"
+
+    def test_numeros_de_verdade_continuam_numeros(self, store):
+        store.write_day(DATASET_COLETAS, date(2026, 7, 25), [_row("2026-07-25")])
+        df = store.read(DATASET_COLETAS)
+        assert int(df["posicao_geral"].iloc[0]) == 1
+        assert float(df["preco"].iloc[0]) == pytest.approx(1994.91)
+        assert bool(df["patrocinado"].iloc[0]) is False
+
+
 class TestConfiguracaoVemDoEnv:
     """O .env precisa ser lido no import do módulo.
 
