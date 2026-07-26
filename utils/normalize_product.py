@@ -419,6 +419,10 @@ def normalize_product_name(
     Returns:
         Normalized name string, or raw_name if normalization is not possible.
     """
+    # Guarda de tipo: um CSV com a coluna vazia entrega float('nan'), que é
+    # TRUTHY e passaria pelo `if not raw_name` abaixo para quebrar no .lower().
+    if not isinstance(raw_name, str):
+        return None
     if not raw_name:
         return raw_name
 
@@ -513,6 +517,11 @@ def normalize_product_name_v2(
     A parte descritiva (marca/linha/BTU/tipo/ciclo) é derivada do título; já
     `voltagem`/`sku` vêm do catálogo e só são anexados quando informados.
     """
+    # Guarda de tipo: um CSV com a coluna vazia entrega float('nan'), que é
+    # TRUTHY e passaria pelo `if not raw_name` abaixo para quebrar no .lower().
+    if not isinstance(raw_name, str):
+        return None
+
     if not raw_name:
         return None
 

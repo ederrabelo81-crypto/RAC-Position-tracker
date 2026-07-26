@@ -59,7 +59,14 @@ def _load_csv(csv_path: Path) -> list[dict]:
     }
     df.rename(columns=col_aliases, inplace=True)
 
-    records = df.where(pd.notna(df), None).to_dict(orient="records")
+    # `df.where(pd.notna(df), None)` NÃO substitui de forma confiável em
+    # colunas object do pandas 2.x: célula vazia continua saindo como
+    # float('nan'), que é TRUTHY e passa por checagens `if valor:` mundo
+    # afora. Converter célula a célula é o que garante None de verdade.
+    records = [
+        {k: (None if v is None or v != v else v) for k, v in row.items()}
+        for row in df.to_dict(orient="records")
+    ]
     return records
 
 
