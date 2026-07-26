@@ -191,12 +191,45 @@ RAC Position Tracker - Historico/
     └── data=2026-07-25__run-b1c2d3e4.parquet   ← coleta da noite
 ```
 
-Uma partição = um arquivo **imutável**. Isso é o que faz o cache local nunca
-invalidar, a leitura nunca precisar travar nada, e reprocessar um dia ser
+Uma partição = um arquivo **imutável**. Isso é o que faz o cache local quase
+nunca invalidar, a leitura nunca precisar travar nada, e reprocessar um dia ser
 "escrever um arquivo novo" em vez de "editar um existente".
 
 Duas coletas no mesmo dia geram duas partições (`run_id` diferente) e as duas
-são lidas. Reprocessar a **mesma** run sobrescreve — não duplica.
+são lidas. Reprocessar a **mesma** run sobrescreve — não duplica. Quando isso
+acontece, outros hosts detectam pelo `md5Checksum` que a Drive API devolve na
+listagem e rebaixam a partição; um cache válido nunca é rebaixado.
+
+### A migração substitui o que a coleta gravou
+
+Um mesmo dia pode ter partição de duas origens:
+
+| Origem | `run_id` | Tem colunas de resolução? |
+|--------|----------|---------------------------|
+| Coleta (`main.py`, `import-csv`) | uuid do run | ❌ Não — a automação Admin ainda não rodou |
+| Migração (`tier`) | `tierMMDD` | ✅ Sim — vem do Supabase já resolvido |
+
+Se as duas coexistissem, o dia seria lido **em dobro**. Por isso `tier`, depois
+de gravar e verificar a sua partição, **apaga as da coleta** naquele dia — a
+versão resolvida é a autoritativa.
+
+### Resolução e o filtro do dashboard
+
+`estado_match`, `familia_resolvida`, `sku_resolvido` e `voltagem_resolvida` são
+preenchidos pela automação Admin **depois** do upload. Uma partição gravada
+direto pela coleta não os tem.
+
+Quando o dashboard filtra por esses campos (e o padrão é `estado_match =
+MAPEADO`), partições sem eles **não aparecem** — *fail-closed*. É a paridade
+correta com o PostgREST: lá, uma linha com `estado_match` NULL também não
+casaria com `.in_("estado_match", ["MAPEADO"])`. O contrário misturaria
+REVISAR/NAO_AC nas visões curadas sem ninguém perceber.
+
+Consequência prática: a partição escrita pela coleta é a **rede de segurança de
+durabilidade**, não o caminho de leitura. O caminho normal é a coleta ir ao
+Supabase, a automação resolver, e a migração levar ao Drive a versão resolvida.
+Se o Supabase estiver fora, use `history_cli.py stats` para ver que o dia está
+salvo e `export` para lê-lo direto (o `export` não aplica filtro de resolução).
 
 ---
 
@@ -243,3 +276,8 @@ gravá-lo no lugar errado — e `history_cli.py stats` mostra onde ele está.
 - **Filtros do histórico são reproduzidos em pandas** (`_filter_history_coletas`
   em `app.py`). Ao mudar um predicado no lado do PostgREST, mude no outro —
   `tests/test_history_dashboard.py` cobre a paridade.
+- **Partições da coleta ficam fora das visões curadas** até a migração trazer a
+  versão resolvida (ver "Resolução e o filtro do dashboard").
+- **O gap-fill respeita o cap de linhas** de `query_coletas` (50 mil por
+  padrão): um intervalo histórico muito longo é truncado pelos dias mais
+  recentes, igual ao keyset do Supabase.

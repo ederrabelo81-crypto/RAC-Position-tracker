@@ -42,6 +42,8 @@ sys.path.insert(0, str(_ROOT))
 
 from utils.history import (  # noqa: E402
     DATASET_COLETAS,
+    HistoryBackendError,
+    HistoryStoreError,
     get_store,
     history_dir,
     hot_window_days,
@@ -257,12 +259,14 @@ def cmd_tier(args: argparse.Namespace) -> int:
     store = get_store()
     migrados = 0
     apagados = 0
+    falhas: List[str] = []
 
     for day in days:
         try:
             rows = _fetch_day(client, day)
         except Exception as exc:
             logger.error(f"{day}: falha lendo do Supabase: {exc}")
+            falhas.append(f"{day} (leitura)")
             continue
         if not rows:
             continue
@@ -271,18 +275,50 @@ def cmd_tier(args: argparse.Namespace) -> int:
             logger.info(f"[DRY-RUN] {day}: {len(rows):,} linhas migrariam.")
             continue
 
-        key = store.write_day(DATASET_COLETAS, day, rows, run_id=f"tier{day:%m%d}")
+        # Falha de escrita é isolada ao dia: uma indisponibilidade transitória
+        # do Drive não pode abortar a migração dos dias seguintes.
+        try:
+            key = store.write_day(DATASET_COLETAS, day, rows, run_id=f"tier{day:%m%d}")
+        except (HistoryStoreError, HistoryBackendError) as exc:
+            logger.error(f"{day}: gravação falhou ({exc}) — banco intacto.")
+            falhas.append(f"{day} (escrita)")
+            continue
         if not key:
             logger.error(f"{day}: gravação da partição falhou — banco intacto.")
+            falhas.append(f"{day} (escrita)")
             continue
 
         # Verificação antes de apagar: releia o que foi gravado.
-        conferido = store.read(DATASET_COLETAS, start=day, end=day)
+        try:
+            conferido = store.read(DATASET_COLETAS, start=day, end=day)
+        except (HistoryStoreError, HistoryBackendError) as exc:
+            logger.error(f"{day}: verificação falhou ({exc}) — banco intacto.")
+            falhas.append(f"{day} (verificação)")
+            continue
         if len(conferido) < len(rows):
             logger.error(
                 f"{day}: verificação falhou ({len(conferido)} de {len(rows)} "
                 f"linhas relidas) — NÃO vou apagar do Supabase."
             )
+            falhas.append(f"{day} (verificação)")
+            continue
+
+        # A partição da migração vem do banco JÁ resolvido (estado_match,
+        # família, SKU) e cobre todos os runs do dia — ela substitui as que a
+        # coleta gravou. Sem esta limpeza o dia seria lido em dobro.
+        try:
+            supersedidas = store.drop_day(DATASET_COLETAS, day, exceto=key)
+            if supersedidas:
+                logger.info(
+                    f"{day}: {supersedidas} partição(ões) da coleta substituída(s) "
+                    f"pela versão resolvida."
+                )
+        except (HistoryStoreError, HistoryBackendError) as exc:
+            logger.error(
+                f"{day}: falha limpando partições antigas ({exc}) — o dia pode "
+                f"ficar duplicado na leitura. NÃO vou apagar do Supabase."
+            )
+            falhas.append(f"{day} (limpeza)")
             continue
 
         migrados += 1
@@ -296,6 +332,7 @@ def cmd_tier(args: argparse.Namespace) -> int:
             logger.success(f"{day}: removido do Supabase (espaço liberado).")
         except Exception as exc:
             logger.error(f"{day}: falha apagando do Supabase: {exc}")
+            falhas.append(f"{day} (remoção)")
 
     logger.success(f"Migrados: {migrados} dia(s) · Apagados do banco: {apagados}")
     if migrados and not args.confirm and not args.dry_run:
@@ -303,6 +340,14 @@ def cmd_tier(args: argparse.Namespace) -> int:
             "Rode de novo com --confirm para apagar do Supabase os dias já "
             "verificados no histórico (é o que libera cota)."
         )
+    if falhas:
+        # Sai com código != 0 para que um cron/agendador não trate migração
+        # parcial como sucesso.
+        logger.error(
+            f"{len(falhas)} dia(s) com falha: {', '.join(falhas)} — "
+            f"esses dias continuam no Supabase."
+        )
+        return 1
     return 0
 
 

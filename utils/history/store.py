@@ -277,8 +277,11 @@ class HistoryStore:
     def _local_path(self, key: str) -> Path:
         """Caminho local da partição, baixando do backend remoto se preciso.
 
-        Partições são imutáveis, então um arquivo já em cache nunca é
-        re-baixado.
+        Partições são normalmente imutáveis, então o cache quase nunca é
+        re-baixado. A exceção é **reprocessar a mesma run**: o arquivo remoto
+        é sobrescrito e o cache de OUTRO host ficaria eternamente velho. Para
+        cobrir isso, o MD5 remoto (que a listagem já traz de graça) é comparado
+        com o do cache — divergiu, baixa de novo.
         """
         if isinstance(self.backend, LocalBackend):
             return self.backend.root / key
@@ -286,8 +289,14 @@ class HistoryStore:
             raise HistoryStoreError(
                 "Backend remoto sem cache local — defina RAC_HISTORY_DIR."
             )
-        if not self.cache.exists(key):
-            self.cache.put(key, self.backend.get(key))
+
+        if self.cache.exists(key):
+            remoto = self.backend.fingerprint(key)
+            if remoto is None or remoto == self.cache.fingerprint(key):
+                return self.cache.root / key
+            logger.info(f"[Histórico] cache de {key} desatualizado — rebaixando.")
+
+        self.cache.put(key, self.backend.get(key))
         return self.cache.root / key
 
     def read(
@@ -338,10 +347,29 @@ class HistoryStore:
             df["data"] = pd.to_datetime(df["data"], errors="coerce").dt.date
         return df
 
-    def drop_day(self, dataset: str, day: date) -> int:
-        """Remove todas as partições de um dia. Devolve quantas apagou."""
+    def drop_day(
+        self,
+        dataset: str,
+        day: date,
+        exceto: Optional[str] = None,
+    ) -> int:
+        """Remove as partições de um dia. Devolve quantas apagou.
+
+        Args:
+            dataset: Dataset alvo.
+            day: Dia a limpar.
+            exceto: Chave a preservar. Usado pela migração: a partição vinda do
+                Supabase já resolvido **substitui** as que a coleta gravou
+                naquele dia — sem isso as duas seriam lidas e o dia apareceria
+                em dobro.
+
+        Returns:
+            Quantidade de partições removidas.
+        """
         removed = 0
         for key in self.keys_in_range(dataset, day, day):
+            if exceto is not None and key == exceto:
+                continue
             self.backend.delete(key)
             if self.cache is not None:
                 self.cache.delete(key)

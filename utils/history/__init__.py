@@ -125,8 +125,19 @@ def write_records(
     if already_mapped:
         rows = [dict(r) for r in records]
     else:
-        from utils.supabase_client import map_record
-        rows = [map_record(r) for r in records]
+        from utils.supabase_client import is_ac_row, map_record
+
+        mapeadas = [map_record(r) for r in records]
+        # Mesmo corte que o upload aplica antes de gravar no banco. Sem ele, o
+        # frio guardaria linhas que o quente rejeita e os dois lados da união
+        # divergiriam em conteúdo (o CSV bruto segue com tudo).
+        rows = [r for r in mapeadas if is_ac_row(r)]
+        descartadas = len(mapeadas) - len(rows)
+        if descartadas:
+            logger.info(
+                f"[Histórico] filtro AC: {descartadas} registro(s) descartado(s) "
+                f"— mesma regra do upload ao Supabase."
+            )
 
     if run_id:
         for row in rows:
@@ -136,8 +147,8 @@ def write_records(
         logger.info("[Histórico] nada a gravar (0 registros).")
         return []
 
+    target = store or get_store()
     try:
-        target = store or get_store()
         keys = target.write_records(rows, dataset=dataset, run_id=run_id)
         logger.success(
             f"[Histórico] {len(rows)} linhas em {len(keys)} partição(ões) "
@@ -145,7 +156,25 @@ def write_records(
         )
         return keys
     except (HistoryStoreError, HistoryBackendError) as exc:
-        logger.error(f"[Histórico] falha ao gravar: {exc}")
+        logger.error(f"[Histórico] falha ao gravar em {target.backend.describe}: {exc}")
+
+    # Fallback local. As credenciais do Drive só são exercitadas na PRIMEIRA
+    # chamada de verdade, então uma falha de credencial/API aparece aqui — não
+    # na construção do store. Sem esta rede de segurança, o dia se perderia
+    # justamente no cenário que o histórico existe para cobrir.
+    if store is not None or isinstance(target.backend, LocalBackend):
+        return []
+    try:
+        local = get_store("local")
+        keys = local.write_records(rows, dataset=dataset, run_id=run_id)
+        logger.warning(
+            f"[Histórico] gravado em DISCO como fallback ({local.backend.describe}) "
+            f"— {len(rows)} linhas em {len(keys)} partição(ões). Sincronize com o "
+            f"Drive depois de corrigir a credencial."
+        )
+        return keys
+    except (HistoryStoreError, HistoryBackendError) as exc:
+        logger.error(f"[Histórico] fallback local também falhou: {exc}")
         return []
 
 
@@ -184,30 +213,45 @@ def read_coletas(
     if start > end:
         start, end = end, start
 
+    # `data` é a chave da precedência quente-sobre-frio. Se a projeção do
+    # chamador não a inclui, os dois lados voltariam sem ela, a desduplicação
+    # seria pulada em silêncio e os dias sobrepostos apareceriam duplicados.
+    # Então ela entra na consulta e sai do resultado no fim.
+    cols_efetivas: Optional[List[str]] = None
+    remover_data = False
+    if columns is not None:
+        cols_efetivas = list(columns)
+        if "data" not in cols_efetivas:
+            cols_efetivas.append("data")
+            remover_data = True
+
     target = store or get_store()
     try:
-        cold = target.read(DATASET_COLETAS, start=start, end=end, columns=columns)
+        cold = target.read(DATASET_COLETAS, start=start, end=end, columns=cols_efetivas)
     except (HistoryStoreError, HistoryBackendError) as exc:
         logger.error(f"[Histórico] leitura do frio falhou: {exc}")
         cold = pd.DataFrame()
 
     hot = pd.DataFrame()
     if include_hot and supabase_client is not None:
+        # Janela relativa a `end`, não a hoje: durante a transição um período
+        # antigo ainda pode estar no Supabase (a migração é manual/mensal), e
+        # ancorar em hoje deixaria esses dias invisíveis.
         hot_start = max(start, hot_window_start(end))
         if hot_start <= end:
-            hot = _read_hot(supabase_client, hot_start, end, columns)
+            hot = _read_hot(supabase_client, hot_start, end, cols_efetivas)
 
     if cold.empty:
-        return _finalize(hot)
+        return _finalize(hot, drop_data=remover_data)
     if hot.empty:
-        return _finalize(cold)
+        return _finalize(cold, drop_data=remover_data)
 
     # Precedência do quente: descarta do frio os dias que o Supabase devolveu.
     hot_days = set(hot["data"].dropna().unique()) if "data" in hot.columns else set()
     if hot_days and "data" in cold.columns:
         cold = cold[~cold["data"].isin(hot_days)]
 
-    return _finalize(pd.concat([cold, hot], ignore_index=True))
+    return _finalize(pd.concat([cold, hot], ignore_index=True), drop_data=remover_data)
 
 
 def _read_hot(
@@ -262,8 +306,14 @@ def _read_hot(
     return df
 
 
-def _finalize(df: pd.DataFrame) -> pd.DataFrame:
-    """Ordena e normaliza tipos numéricos do resultado unificado."""
+def _finalize(df: pd.DataFrame, drop_data: bool = False) -> pd.DataFrame:
+    """Ordena e normaliza tipos numéricos do resultado unificado.
+
+    Args:
+        df: Resultado da união.
+        drop_data: Remove a coluna ``data`` no fim — ela foi acrescentada só
+            para permitir a desduplicação e não fazia parte da projeção pedida.
+    """
     if df.empty:
         return df
     for col in ("posicao_organica", "posicao_patrocinada", "posicao_geral",
@@ -276,4 +326,6 @@ def _finalize(df: pd.DataFrame) -> pd.DataFrame:
     sort_cols = [c for c in ("data", "plataforma") if c in df.columns]
     if sort_cols:
         df = df.sort_values(sort_cols, kind="stable").reset_index(drop=True)
+    if drop_data and "data" in df.columns:
+        df = df.drop(columns=["data"])
     return df

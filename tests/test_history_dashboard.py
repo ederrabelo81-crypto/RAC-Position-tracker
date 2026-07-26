@@ -27,25 +27,29 @@ pytest.importorskip("pyarrow", reason="histórico em Parquet exige pyarrow")
 
 @pytest.fixture
 def linhas() -> pd.DataFrame:
-    """Amostra no schema de `coletas`, variada o bastante para os filtros."""
+    """Amostra no schema de `coletas`, variada o bastante para os filtros.
+
+    Inclui `estado_match` porque é o estado de uma partição vinda da migração
+    (`tier`), que lê do Supabase já resolvido — o caso normal de leitura.
+    """
     return pd.DataFrame([
         {
             "data": date(2026, 3, 10), "plataforma": "Mercado Livre",
             "tipo": "Marketplace", "marca": "Midea", "seller": "Loja Midea",
             "keyword": "ar condicionado", "produto": "Split Midea 12000 BTUs Inverter",
-            "posicao_geral": 1, "preco": 2199.90,
+            "posicao_geral": 1, "preco": 2199.90, "estado_match": "MAPEADO",
         },
         {
             "data": date(2026, 3, 10), "plataforma": "Amazon",
             "tipo": "Marketplace", "marca": "LG", "seller": "AmazonBR",
             "keyword": "split 9000", "produto": "Split LG 9000 BTUs Janela",
-            "posicao_geral": 12, "preco": 1899.00,
+            "posicao_geral": 12, "preco": 1899.00, "estado_match": "MAPEADO",
         },
         {
             "data": date(2026, 3, 11), "plataforma": "Magalu",
             "tipo": "Marketplace", "marca": "Gree", "seller": "Magalu",
             "keyword": "ar condicionado", "produto": "Split Gree 18.000 BTUs On/Off",
-            "posicao_geral": 3, "preco": 2799.00,
+            "posicao_geral": 3, "preco": 2799.00, "estado_match": "MAPEADO",
         },
     ])
 
@@ -96,10 +100,10 @@ class TestFiltroDoHistorico:
         out = app._filter_history_coletas(linhas, platforms=["Amazon", "Magalu"])
         assert len(out) == 2
 
-    def test_coluna_ausente_ignora_o_filtro(self, linhas):
-        """Partição antiga sem `estado_match` não pode sumir do relatório."""
+    def test_estado_match_filtra(self, linhas):
         out = app._filter_history_coletas(linhas, estados_match=["MAPEADO"])
         assert len(out) == 3
+        assert app._filter_history_coletas(linhas, estados_match=["REVISAR"]).empty
 
     def test_dataframe_vazio(self):
         assert app._filter_history_coletas(pd.DataFrame()).empty
@@ -108,6 +112,49 @@ class TestFiltroDoHistorico:
         antes = len(linhas)
         app._filter_history_coletas(linhas, platforms=["Amazon"])
         assert len(linhas) == antes
+
+
+class TestFiltrosDeResolucaoSaoFailClosed:
+    """Coluna de resolução ausente ⇒ nenhuma linha passa.
+
+    `estado_match`, `familia_resolvida`, `sku_resolvido` e
+    `voltagem_resolvida` são preenchidos pela automação Admin **depois** do
+    upload, então partições gravadas direto pela coleta não os têm. No
+    PostgREST uma linha com esses campos NULL não casaria com `.in_(...)` —
+    incluí-las aqui misturaria REVISAR/NAO_AC nas visões curadas.
+    """
+
+    @pytest.fixture
+    def sem_resolucao(self) -> pd.DataFrame:
+        """Como uma partição gravada por `main.py` no momento da coleta."""
+        return pd.DataFrame([{
+            "data": date(2026, 3, 10), "plataforma": "Mercado Livre",
+            "marca": "Midea", "produto": "Split Midea 12000", "posicao_geral": 1,
+        }])
+
+    def test_estado_match_ausente_nao_passa(self, sem_resolucao):
+        assert app._filter_history_coletas(
+            sem_resolucao, estados_match=["MAPEADO"]
+        ).empty
+
+    def test_familia_ausente_nao_passa(self, sem_resolucao):
+        assert app._filter_history_coletas(
+            sem_resolucao, familias_resolvidas=["MIDEA-12000-F"]
+        ).empty
+
+    def test_sem_filtro_de_resolucao_passa_normalmente(self, sem_resolucao):
+        """Sem filtro pedido, a partição não resolvida continua legível."""
+        out = app._filter_history_coletas(
+            sem_resolucao, platforms=["Mercado Livre"], estados_match=[]
+        )
+        assert len(out) == 1
+
+    def test_filtros_de_coleta_seguem_fail_open(self, sem_resolucao):
+        """Coluna de COLETA ausente é ignorada — só resolução é fail-closed."""
+        out = app._filter_history_coletas(
+            sem_resolucao, platform_types=["Marketplace"], estados_match=[]
+        )
+        assert len(out) == 1
 
 
 class TestGapFill:
@@ -121,6 +168,7 @@ class TestGapFill:
                 [{
                     "data": dia, "plataforma": "Mercado Livre", "marca": "Midea",
                     "produto": "Split Midea 12000", "posicao_geral": 1,
+                    "estado_match": "MAPEADO",
                 }],
                 dataset="coletas",
             )
@@ -139,6 +187,23 @@ class TestGapFill:
         store = self._store_com(tmp_path, [])
         monkeypatch.setattr("utils.history.get_store", lambda *a, **k: store)
         assert app._history_gap_fill(date(2026, 3, 1), date(2026, 3, 31), set()).empty
+
+    def test_respeita_o_limite(self, tmp_path, monkeypatch):
+        """Sem teto, um intervalo histórico longo estouraria o cap da página."""
+        store = self._store_com(tmp_path, [f"2026-03-{d:02d}" for d in range(1, 11)])
+        monkeypatch.setattr("utils.history.get_store", lambda *a, **k: store)
+
+        out = app._history_gap_fill(date(2026, 3, 1), date(2026, 3, 31), set(), limit=4)
+        assert len(out) == 4
+        # Mantém os dias mais recentes, como o keyset (data desc) do Supabase.
+        assert out["data"].max() == date(2026, 3, 10)
+
+    def test_limite_zero_nao_le_nada(self, tmp_path, monkeypatch):
+        store = self._store_com(tmp_path, ["2026-03-10"])
+        monkeypatch.setattr("utils.history.get_store", lambda *a, **k: store)
+        assert app._history_gap_fill(
+            date(2026, 3, 1), date(2026, 3, 31), set(), limit=0
+        ).empty
 
     def test_falha_do_backend_nao_derruba_a_pagina(self, monkeypatch):
         def _explode(*_a, **_k):

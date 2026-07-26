@@ -27,9 +27,11 @@ Em ambos os casos ``GDRIVE_FOLDER_ID`` aponta a pasta raiz do histórico.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -38,6 +40,11 @@ from loguru import logger
 
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 _FOLDER_MIME = "application/vnd.google-apps.folder"
+
+#: Tentativas por operação no Drive. Falha transitória (429, 5xx, rede) não
+#: pode virar buraco permanente no histórico — a coleta do dia não se repete.
+_DRIVE_MAX_ATTEMPTS = 3
+_DRIVE_BACKOFF_BASE = 2.0  # segundos; dobra a cada tentativa
 
 
 class HistoryBackendError(RuntimeError):
@@ -66,6 +73,19 @@ class HistoryBackend(ABC):
     @abstractmethod
     def delete(self, key: str) -> None:
         """Remove ``key``. Não falha se a chave já não existe."""
+
+    def fingerprint(self, key: str) -> Optional[str]:
+        """Impressão digital do conteúdo de ``key``, ou ``None`` se desconhecida.
+
+        Valida o cache local: uma partição reprocessada muda de impressão, e é
+        assim que outro host percebe que a cópia dele envelheceu. ``None``
+        significa "não sei" — aí o cache é considerado válido, porque baixar
+        tudo de novo a cada leitura seria pior.
+
+        Usa MD5 do conteúdo, não o tamanho: reprocessar um dia pode trocar
+        valores sem mudar o número de bytes, e o tamanho deixaria passar.
+        """
+        return None
 
     @property
     def describe(self) -> str:
@@ -122,6 +142,17 @@ class LocalBackend(HistoryBackend):
     def exists(self, key: str) -> bool:
         """True se a chave já está no disco (usado pelo cache do Drive)."""
         return self._path(key).is_file()
+
+    def fingerprint(self, key: str) -> Optional[str]:
+        """MD5 do arquivo em disco — mesmo algoritmo que o Drive reporta."""
+        path = self._path(key)
+        if not path.is_file():
+            return None
+        digest = hashlib.md5()
+        with path.open("rb") as fh:
+            for bloco in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(bloco)
+        return digest.hexdigest()
 
     @property
     def describe(self) -> str:
@@ -200,15 +231,55 @@ class GoogleDriveBackend(HistoryBackend):
         service: Injetável nos testes; em produção é construído sob demanda.
     """
 
-    def __init__(self, root_folder_id: str, service: Optional[object] = None) -> None:
+    def __init__(
+        self,
+        root_folder_id: str,
+        service: Optional[object] = None,
+        max_attempts: int = _DRIVE_MAX_ATTEMPTS,
+    ) -> None:
         if not root_folder_id:
             raise HistoryBackendError(
                 "GDRIVE_FOLDER_ID não definido — sem ele não há onde gravar."
             )
         self.root_folder_id = root_folder_id
         self._service = service
+        self._max_attempts = max(1, max_attempts)
         self._folder_ids: Dict[str, str] = {}
         self._file_ids: Dict[str, str] = {}
+        self._fingerprints: Dict[str, Optional[str]] = {}
+
+    def _retry(self, what: str, fn):
+        """Executa ``fn`` com retentativas limitadas e backoff exponencial.
+
+        Falha transitória do Drive (rede, 429, 5xx) não pode virar buraco
+        permanente no histórico — a coleta do dia não se repete.
+
+        Args:
+            what: Descrição da operação, para a mensagem de erro.
+            fn: Callable sem argumentos que faz a chamada à API.
+
+        Returns:
+            O retorno de ``fn``.
+
+        Raises:
+            HistoryBackendError: se todas as tentativas falharem.
+        """
+        ultimo: Optional[Exception] = None
+        for tentativa in range(1, self._max_attempts + 1):
+            try:
+                return fn()
+            except Exception as exc:
+                ultimo = exc
+                if tentativa == self._max_attempts:
+                    break
+                espera = _DRIVE_BACKOFF_BASE * (2 ** (tentativa - 1))
+                logger.warning(
+                    f"[Drive] {what} falhou (tentativa {tentativa}/"
+                    f"{self._max_attempts}): {exc} — nova tentativa em {espera:.0f}s"
+                )
+                time.sleep(espera)
+        raise HistoryBackendError(f"Falha em {what} após "
+                                  f"{self._max_attempts} tentativa(s): {ultimo}") from ultimo
 
     # -- infraestrutura ----------------------------------------------------
     @property
@@ -242,15 +313,18 @@ class GoogleDriveBackend(HistoryBackend):
         if found:
             folder_id = found[0]["id"]
         else:
-            created = self.service.files().create(
-                body={
-                    "name": dataset,
-                    "mimeType": _FOLDER_MIME,
-                    "parents": [self.root_folder_id],
-                },
-                fields="id",
-                supportsAllDrives=True,
-            ).execute()
+            created = self._retry(
+                f"criação da pasta '{dataset}'",
+                lambda: self.service.files().create(
+                    body={
+                        "name": dataset,
+                        "mimeType": _FOLDER_MIME,
+                        "parents": [self.root_folder_id],
+                    },
+                    fields="id",
+                    supportsAllDrives=True,
+                ).execute(),
+            )
             folder_id = created["id"]
             logger.info(f"[Drive] Pasta '{dataset}' criada ({folder_id}).")
 
@@ -262,14 +336,17 @@ class GoogleDriveBackend(HistoryBackend):
         items: List[dict] = []
         page_token = None
         while True:
-            resp = self.service.files().list(
-                q=query,
-                fields="nextPageToken, files(id, name, size)",
-                pageSize=1000,
-                pageToken=page_token,
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True,
-            ).execute()
+            resp = self._retry(
+                "listagem",
+                lambda tok=page_token: self.service.files().list(
+                    q=query,
+                    fields="nextPageToken, files(id, name, size, md5Checksum)",
+                    pageSize=1000,
+                    pageToken=tok,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                ).execute(),
+            )
             items.extend(resp.get("files", []))
             page_token = resp.get("nextPageToken")
             if not page_token:
@@ -293,35 +370,61 @@ class GoogleDriveBackend(HistoryBackend):
             mimetype="application/octet-stream",
             resumable=False,
         )
-        existing = self._resolve_file_id(key, missing_ok=True)
+        # A resolução do id também fala com a API e também pode falhar — fica
+        # DENTRO do try para que o chamador veja sempre HistoryBackendError, e
+        # nunca um HttpError cru vazando do googleapiclient.
         try:
+            existing = self._resolve_file_id(key, missing_ok=True)
             if existing:
-                self.service.files().update(
-                    fileId=existing, media_body=media, supportsAllDrives=True,
-                ).execute()
+                self._retry(
+                    f"atualização de {key}",
+                    lambda: self.service.files().update(
+                        fileId=existing, media_body=media, supportsAllDrives=True,
+                    ).execute(),
+                )
             else:
-                created = self.service.files().create(
-                    body={"name": name, "parents": [self._folder_id(dataset)]},
-                    media_body=media,
-                    fields="id",
-                    supportsAllDrives=True,
-                ).execute()
+                created = self._retry(
+                    f"criação de {key}",
+                    lambda: self.service.files().create(
+                        body={"name": name, "parents": [self._folder_id(dataset)]},
+                        media_body=media,
+                        fields="id",
+                        supportsAllDrives=True,
+                    ).execute(),
+                )
                 self._file_ids[key] = created["id"]
+        except HistoryBackendError:
+            raise
         except Exception as exc:  # a API levanta HttpError e derivados de socket
             raise HistoryBackendError(f"Falha gravando {key} no Drive: {exc}") from exc
+        # A impressão memorizada ficou obsoleta — a próxima listagem a renova.
+        self._fingerprints.pop(key, None)
 
     def get(self, key: str) -> bytes:
         from googleapiclient.http import MediaIoBaseDownload
 
-        file_id = self._resolve_file_id(key)
         buf = io.BytesIO()
         try:
-            downloader = MediaIoBaseDownload(
-                buf, self.service.files().get_media(fileId=file_id)
-            )
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
+            file_id = self._resolve_file_id(key)
+
+            def _baixar():
+                buf.seek(0)
+                buf.truncate(0)
+                downloader = MediaIoBaseDownload(
+                    buf,
+                    # supportsAllDrives também no download: sem ele a leitura
+                    # falha em Shared Drive, onde escrita/listagem funcionam.
+                    self.service.files().get_media(
+                        fileId=file_id, supportsAllDrives=True,
+                    ),
+                )
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+
+            self._retry(f"download de {key}", _baixar)
+        except HistoryBackendError:
+            raise
         except Exception as exc:
             raise HistoryBackendError(f"Falha lendo {key} do Drive: {exc}") from exc
         return buf.getvalue()
@@ -335,19 +438,35 @@ class GoogleDriveBackend(HistoryBackend):
         for item in self._list_files(query):
             key = f"{dataset}/{item['name']}"
             self._file_ids[key] = item["id"]
+            # `md5Checksum` vem de graça na listagem, que roda antes de toda
+            # leitura — é o que permite detectar partição reprocessada sem
+            # nenhuma chamada extra à API.
+            self._fingerprints[key] = item.get("md5Checksum")
             if key.endswith(".parquet"):
                 keys.append(key)
         return sorted(keys)
 
     def delete(self, key: str) -> None:
-        file_id = self._resolve_file_id(key, missing_ok=True)
-        if not file_id:
-            return
         try:
-            self.service.files().delete(fileId=file_id, supportsAllDrives=True).execute()
+            file_id = self._resolve_file_id(key, missing_ok=True)
+            if not file_id:
+                return
+            self._retry(
+                f"remoção de {key}",
+                lambda: self.service.files().delete(
+                    fileId=file_id, supportsAllDrives=True,
+                ).execute(),
+            )
+        except HistoryBackendError:
+            raise
         except Exception as exc:
             raise HistoryBackendError(f"Falha removendo {key} do Drive: {exc}") from exc
         self._file_ids.pop(key, None)
+        self._fingerprints.pop(key, None)
+
+    def fingerprint(self, key: str) -> Optional[str]:
+        """MD5 da partição remota, memorizado pela listagem quando possível."""
+        return self._fingerprints.get(key)
 
     def _resolve_file_id(self, key: str, missing_ok: bool = False) -> Optional[str]:
         """Id do arquivo, consultando a API só quando não está memorizado."""
