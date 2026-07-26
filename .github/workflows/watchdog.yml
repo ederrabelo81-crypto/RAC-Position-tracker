@@ -1,0 +1,97 @@
+name: Watchdog de Coleta
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Roda scripts/daily_status_check.py todo dia e alerta no Telegram.
+#
+# Por que este workflow existe
+# ----------------------------
+# Entre 16 e 25/07/2026 a coleta rodou normalmente, produziu ~5,6 mil registros
+# por dia e gravou ZERO — o Supabase estava restrito por cota (HTTP 402) e
+# recusava toda escrita. Os workflows terminavam VERDES, porque o upload
+# rejeitado não derruba o job. Ninguém percebeu por nove dias.
+#
+# O `daily_status_check.py` detectaria isso no primeiro dia, mas não estava
+# agendado em lugar nenhum. Este arquivo é a correção: o watchdog não olha se o
+# job terminou bem — olha se o DADO chegou.
+#
+# Horário: 23:30 UTC = 20:30 BRT, depois da coleta da noite (21:00 BRT roda em
+# 00:00 UTC do dia seguinte; a de abertura, 10:00 BRT, já passou). Assim o
+# relatório cobre o dia inteiro que está fechando.
+#
+# Exit codes do script (viram o status do job):
+#   0 — todas as plataformas críticas PASS
+#   1 — ao menos uma plataforma crítica WARN/FAIL
+#   2 — erro de configuração (Supabase indisponível/restrito por cota)
+#
+# Secrets necessários (Settings → Secrets and variables → Actions):
+#   SUPABASE_URL, SUPABASE_KEY — leitura da tabela `coletas`
+#   TELEGRAM_BOT_TOKEN, N8N_TELEGRAM_CHAT_ID — destino do alerta
+#
+# ⚠️ Enquanto o Supabase estiver restrito por cota, este workflow vai FALHAR
+# todo dia com exit 2. Isso é o comportamento correto — ele está sinalizando um
+# problema real e não resolvido. Para silenciar, resolva a cota (veja
+# scripts/retention_cleanup.sql), não desligue o watchdog.
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '30 23 * * *'   # 20:30 BRT — depois da coleta de abertura e antes da virada
+  workflow_dispatch:
+    inputs:
+      data:
+        description: 'Dia a verificar YYYY-MM-DD (vazio = hoje)'
+        required: false
+        default: ''
+      turno:
+        description: 'Turno específico (Abertura | Fechamento). Vazio = ambos.'
+        required: false
+        default: ''
+
+env:
+  PYTHON_VERSION: '3.11'
+  TZ: America/Sao_Paulo
+
+# Duas execuções simultâneas só duplicariam o alerta no Telegram.
+concurrency:
+  group: watchdog-coleta
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Validação diária das plataformas
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      # O watchdog só lê o banco e notifica — não precisa de Playwright nem
+      # dos scrapers, então instalar o requirements inteiro seria desperdício.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install supabase python-dotenv loguru requests pandas tenacity
+
+      - name: Run daily status check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          N8N_TELEGRAM_CHAT_ID: ${{ secrets.N8N_TELEGRAM_CHAT_ID }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.data }}" ]; then
+            ARGS="$ARGS --data ${{ github.event.inputs.data }}"
+          fi
+          if [ -n "${{ github.event.inputs.turno }}" ]; then
+            ARGS="$ARGS --turno ${{ github.event.inputs.turno }}"
+          fi
+          echo "Executando: python scripts/daily_status_check.py $ARGS"
+          python scripts/daily_status_check.py $ARGS
