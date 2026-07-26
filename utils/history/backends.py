@@ -315,8 +315,21 @@ class GoogleDriveBackend(HistoryBackend):
             )
         return self._service
 
-    def _folder_id(self, dataset: str) -> str:
-        """Id da subpasta do dataset, criando-a se necessário."""
+    def _folder_id(self, dataset: str, create: bool = True) -> Optional[str]:
+        """Id da subpasta do dataset.
+
+        Args:
+            dataset: Nome do dataset (subpasta dentro da raiz do histórico).
+            create: ``True`` cria a pasta quando ela não existe. Os caminhos de
+                **leitura** passam ``False`` — listar ou remover um dataset
+                inexistente não pode ter o efeito colateral de criá-lo. Em
+                ``remove_dataset`` isso chegava a ser contraditório: criava a
+                pasta só para então tentar apagá-la, e uma falha na remoção
+                deixava órfã justamente a pasta que o método existe para evitar.
+
+        Returns:
+            Id da pasta, ou ``None`` quando ela não existe e ``create`` é False.
+        """
         if dataset in self._folder_ids:
             return self._folder_ids[dataset]
 
@@ -327,6 +340,8 @@ class GoogleDriveBackend(HistoryBackend):
         found = self._list_files(query)
         if found:
             folder_id = found[0]["id"]
+        elif not create:
+            return None
         else:
             created = self._retry(
                 f"criação da pasta '{dataset}'",
@@ -445,8 +460,12 @@ class GoogleDriveBackend(HistoryBackend):
         return buf.getvalue()
 
     def list(self, dataset: str) -> List[str]:
+        # Listagem é leitura: dataset inexistente devolve vazio, não cria pasta.
+        folder_id = self._folder_id(dataset, create=False)
+        if folder_id is None:
+            return []
         query = (
-            f"'{self._folder_id(dataset)}' in parents and trashed = false "
+            f"'{folder_id}' in parents and trashed = false "
             f"and mimeType != '{_FOLDER_MIME}'"
         )
         keys = []
@@ -482,9 +501,9 @@ class GoogleDriveBackend(HistoryBackend):
     def remove_dataset(self, dataset: str) -> None:
         """Apaga a pasta do dataset no Drive, se ela não tiver mais arquivos."""
         try:
-            if self.list(dataset):
+            folder_id = self._folder_id(dataset, create=False)
+            if folder_id is None or self.list(dataset):
                 return
-            folder_id = self._folder_id(dataset)
             self._retry(
                 f"remoção da pasta '{dataset}'",
                 lambda: self.service.files().delete(
@@ -501,13 +520,23 @@ class GoogleDriveBackend(HistoryBackend):
         return self._fingerprints.get(key)
 
     def _resolve_file_id(self, key: str, missing_ok: bool = False) -> Optional[str]:
-        """Id do arquivo, consultando a API só quando não está memorizado."""
+        """Id do arquivo, consultando a API só quando não está memorizado.
+
+        Também é caminho de leitura: pasta inexistente significa arquivo
+        inexistente, sem criar nada.
+        """
         if key in self._file_ids:
             return self._file_ids[key]
 
         dataset, name = self._split(key)
+        folder_id = self._folder_id(dataset, create=False)
+        if folder_id is None:
+            if missing_ok:
+                return None
+            raise HistoryBackendError(f"Chave não encontrada no Drive: {key}")
+
         query = (
-            f"name = '{name}' and '{self._folder_id(dataset)}' in parents "
+            f"name = '{name}' and '{folder_id}' in parents "
             f"and trashed = false"
         )
         found = self._list_files(query)
