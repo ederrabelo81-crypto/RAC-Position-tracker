@@ -903,6 +903,7 @@ def _filter_history_coletas(
     familias_resolvidas: list[str] | None = None,
     skus_resolvidos: list[str] | None = None,
     estados_match: list[str] | None = None,
+    sem_depara: bool | None = None,
 ) -> pd.DataFrame:
     """Aplica em pandas os mesmos filtros que `query_coletas` manda ao PostgREST.
 
@@ -995,8 +996,12 @@ def _filter_history_coletas(
     # Com `_gf_historico_sem_depara()` ligado ela passa pelos filtros de
     # resolução em vez de ser descartada; desligado, o comportamento é
     # fail-closed (paridade estrita com o PostgREST).
+    # `sem_depara=None` lê o filtro global (uso do `query_coletas`, que não é
+    # cacheado). Chamador cacheado passa o valor EXPLÍCITO, para a flag entrar
+    # na chave de cache em vez de virar leitura stale de session_state.
+    _admite = _gf_historico_sem_depara() if sem_depara is None else sem_depara
     _sem_resolucao = "estado_match" not in out.columns
-    _passa_sem_depara = _sem_resolucao and _gf_historico_sem_depara()
+    _passa_sem_depara = _sem_resolucao and _admite
 
     def _isin_resolvido(col: str, values) -> None:
         nonlocal out
@@ -1101,13 +1106,13 @@ def _history_gap_fill(
     if df.empty:
         return df
 
-    sem_depara = "estado_match" not in df.columns
+    _nao_resolvida = "estado_match" not in df.columns
     df = _filter_history_coletas(df, **filtros)
     if df.empty:
         return df
     # Marca a procedência: permite ao painel avisar que parte dos números vem
     # do histórico frio, e quanto disso ainda não passou pelo de-para.
-    df["_origem"] = "historico_sem_depara" if sem_depara else "historico"
+    df["_origem"] = "historico_sem_depara" if _nao_resolvida else "historico"
     if "marca" in df.columns and _MARCA_TO_CANONICAL:
         df["marca"] = df["marca"].map(
             lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
@@ -1774,7 +1779,10 @@ def get_filter_options() -> dict:
     empty = {"platforms": [], "platform_types": [], "brands": [], "keywords": [], "sellers": []}
     client = _get_supabase()
     if client is None:
-        return empty
+        # Sem banco, as opções saem do histórico frio — senão os dropdowns da
+        # barra lateral ficam vazios e o usuário não consegue nem filtrar os
+        # dados que ESTÃO no Drive.
+        return _filter_options_do_historico() or empty
     # Caminho rápido: RPC server-side com DISTINCT (evita timeout em ~261k linhas)
     try:
         rpc = client.rpc("get_filter_options_fast", {"window_days": 30}).execute()
@@ -1835,8 +1843,58 @@ def get_filter_options() -> dict:
             "sellers":        sorted(df["seller"].dropna().unique().tolist()) if "seller" in df.columns else [],
         }
     except Exception as exc:
+        # Cota estourada (402) derruba até leitura — cai no histórico antes de
+        # desistir, para a barra lateral continuar utilizável.
+        do_frio = _filter_options_do_historico()
+        if do_frio:
+            return do_frio
         st.warning(f"Filter options query failed: {exc}")
         return empty
+
+
+def _filter_options_do_historico(dias: int = 120) -> dict:
+    """Opções dos dropdowns derivadas do histórico frio (Parquet).
+
+    Args:
+        dias: Janela a varrer. Maior que a do banco (30d) porque o histórico é
+            justamente onde ficam os períodos antigos.
+
+    Returns:
+        Dicionário no mesmo formato de `get_filter_options`, ou ``{}`` quando
+        não há histórico — o chamador decide o fallback.
+    """
+    try:
+        from utils.history import get_store
+        df = get_store().read(
+            "coletas",
+            start=date.today() - timedelta(days=dias),
+            end=date.today(),
+            columns=["plataforma", "tipo", "marca", "keyword", "seller"],
+        )
+    except Exception as exc:
+        from loguru import logger as _logger
+        _logger.warning(f"[Dashboard] opções de filtro do histórico falharam: {exc}")
+        return {}
+
+    if df.empty:
+        return {}
+
+    def _distintos(col: str) -> list:
+        if col not in df.columns:
+            return []
+        return sorted(df[col].dropna().astype(str).unique().tolist())
+
+    marcas = {
+        _MARCA_TO_CANONICAL.get(b, b) for b in _distintos("marca")
+    } if _MARCA_TO_CANONICAL else set(_distintos("marca"))
+
+    return {
+        "platforms": sorted({_normalize_platform(p) for p in _distintos("plataforma")}),
+        "platform_types": _distintos("tipo"),
+        "brands": sorted(marcas),
+        "keywords": _distintos("keyword"),
+        "sellers": _distintos("seller"),
+    }
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -2343,6 +2401,7 @@ def _overview_data(
     skus_resolvidos_tuple: tuple = (),
     sources_tuple: tuple = ("coletas", "pricetrack"),
     estados_tuple: tuple = (),
+    sem_depara_flag: bool = True,
 ) -> pd.DataFrame:
     """Cached Supabase query for overview / top-movers pages.
 
@@ -2356,11 +2415,35 @@ def _overview_data(
     session state internamente daria respostas stale quando o filtro global
     muda dentro da janela do TTL.
     """
-    client = _get_supabase()
-    if client is None:
-        return pd.DataFrame()
     if "coletas" not in sources_tuple:
         return pd.DataFrame()
+
+    # Esta função tem query própria e NÃO passa por `query_coletas`, então
+    # precisa da sua própria costura com o histórico frio — senão a Overview
+    # fica em branco com o Supabase fora, mesmo com o Drive cheio de dados.
+    # Listas EXPLÍCITAS (nunca None): `_filter_history_coletas` cai no
+    # session_state quando recebe None, e ler filtro global dentro de função
+    # cacheada devolveria resultado stale quando o usuário muda o filtro
+    # dentro da janela do TTL — o mesmo motivo que a docstring acima já
+    # registra para os parâmetros `*_tuple`.
+    _hist_kwargs = dict(
+        platforms=list(platforms_tuple),
+        brands=list(brands_tuple),
+        familias_resolvidas=list(familias_tuple),
+        skus_resolvidos=list(skus_resolvidos_tuple),
+        estados_match=list(estados_tuple),
+        sem_depara=sem_depara_flag,
+    )
+
+    def _do_frio(ja_presentes: set) -> pd.DataFrame:
+        return _history_gap_fill(
+            date.fromisoformat(start_str), date.fromisoformat(end_str),
+            ja_presentes, limit=limit, **_hist_kwargs
+        )
+
+    client = _get_supabase()
+    if client is None:
+        return _do_frio(set())
 
     def _build_q():
         # Composite keyset by (data desc, id desc) — see query_coletas for why
@@ -2413,7 +2496,7 @@ def _overview_data(
                 break
 
         if not all_data:
-            return pd.DataFrame()
+            return _do_frio(set())
 
         df = pd.DataFrame(all_data)
         df["data"] = pd.to_datetime(df["data"]).dt.date
@@ -2426,9 +2509,15 @@ def _overview_data(
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         if "marca" in df.columns and _MARCA_TO_CANONICAL:
             df["marca"] = df["marca"].map(lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x)
+        # Completa com o frio os dias que o banco não devolveu.
+        dias = set(df["data"].dropna().unique()) if "data" in df.columns else set()
+        df_frio = _do_frio(dias)
+        if not df_frio.empty:
+            df = pd.concat([df, df_frio], ignore_index=True)
         return df
     except Exception:
-        return pd.DataFrame()
+        # Banco restrito por cota recusa até leitura — o frio é o que sobra.
+        return _do_frio(set())
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -6665,6 +6754,7 @@ def page_overview() -> None:
             skus_resolvidos_tuple=_gf_skus_resolvidos_key(),
             sources_tuple=_gf_sources_key(),
             estados_tuple=_gf_estados_key(),
+            sem_depara_flag=_gf_historico_sem_depara(),
         )
         dfp = _price_data(
             str(start_date), str(end_date),
@@ -6695,6 +6785,7 @@ def page_overview() -> None:
                 skus_resolvidos_tuple=_gf_skus_resolvidos_key(),
                 sources_tuple=_gf_sources_key(),
                 estados_tuple=_gf_estados_key(),
+                sem_depara_flag=_gf_historico_sem_depara(),
             )
             dfp_cmp = _price_data(
                 str(cmp_start), str(cmp_end),
@@ -7651,12 +7742,15 @@ def page_email_digest() -> None:
             _gf_familias_key(), _gf_skus_resolvidos_key(),
             _gf_sources_key(), _gf_estados_key(),
         )
+        _sd_k = _gf_historico_sem_depara()
         df_cur   = _overview_data(str(window_start), str(window_end), (), (),
                                   familias_tuple=_fam_k, skus_resolvidos_tuple=_sku_k,
-                                  sources_tuple=_src_k, estados_tuple=_est_k)
+                                  sources_tuple=_src_k, estados_tuple=_est_k,
+                                  sem_depara_flag=_sd_k)
         df_prev  = _overview_data(str(prev_start), str(prev_end), (), (),
                                   familias_tuple=_fam_k, skus_resolvidos_tuple=_sku_k,
-                                  sources_tuple=_src_k, estados_tuple=_est_k)
+                                  sources_tuple=_src_k, estados_tuple=_est_k,
+                                  sem_depara_flag=_sd_k)
         dfp_cur  = _price_data(str(window_start), str(window_end), (), (),
                                familias_tuple=_fam_k, skus_resolvidos_tuple=_sku_k,
                                sources_tuple=_src_k)
