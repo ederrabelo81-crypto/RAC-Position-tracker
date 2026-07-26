@@ -428,12 +428,21 @@ def _desnulificar(df: pd.DataFrame) -> pd.DataFrame:
     `astype("Int64")`) continuam funcionando sobre ``object``, então o
     resultado final é idêntico ao do banco.
 
+    **`float64` fica como está, de propósito.** `preco` e `avaliacao` também
+    terminam em ``float64``/``np.nan`` no caminho quente — é o que
+    ``pd.to_numeric`` produz a partir do ``None`` do PostgREST. Convertê-las
+    aqui para ``object``/``None`` faria o frio DIVERGIR do quente e, no
+    ``concat`` dos dois, produziria uma coluna de tipo misto, quebrando média,
+    comparação e ordenação. O ``bool(np.nan) is True`` é uma armadilha real,
+    mas ela existe igual nos dois lados — não é assimetria introduzida aqui.
+
     Args:
         df: DataFrame recém-lido do Parquet.
 
     Returns:
-        O mesmo DataFrame com colunas nullable convertidas para ``object``,
-        e ``pd.NA`` trocado por ``None``.
+        O mesmo DataFrame com as colunas de tipo *nullable* convertidas para
+        ``object`` e ``pd.NA`` trocado por ``None``. Colunas ``float64``
+        seguem intactas.
     """
     if df.empty:
         return df

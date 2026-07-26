@@ -527,6 +527,27 @@ class TestTiposIguaisAoSupabase:
         série = pd.to_numeric(com_nulos["posicao_geral"], errors="coerce")
         assert str(série.astype("Int64").dtype) == "Int64"
 
+    def test_float_fica_float_igual_ao_quente(self, com_nulos):
+        """`preco`/`avaliacao` ficam em float64 DE PROPÓSITO.
+
+        O quente também termina assim: `pd.to_numeric` sobre o `None` do
+        PostgREST produz float64/np.nan. Converter o frio para object/None
+        faria os dois divergirem e, no `concat`, geraria coluna de tipo misto —
+        quebrando média, comparação e ordenação.
+        """
+        import numpy as np
+        import pandas as pd
+
+        assert str(com_nulos["preco"].dtype) == "float64"
+
+        quente = pd.DataFrame([{"preco": 1994.91}, {"preco": None}])
+        quente["preco"] = pd.to_numeric(quente["preco"], errors="coerce")
+        assert str(quente["preco"].dtype) == str(com_nulos["preco"].dtype)
+
+        juntos = pd.concat([quente["preco"], com_nulos["preco"]], ignore_index=True)
+        assert str(juntos.dtype) == "float64", "concat frio+quente virou tipo misto"
+        assert np.isnan(com_nulos["preco"].iloc[0])
+
     def test_numeros_de_verdade_continuam_numeros(self, store):
         store.write_day(DATASET_COLETAS, date(2026, 7, 25), [_row("2026-07-25")])
         df = store.read(DATASET_COLETAS)
