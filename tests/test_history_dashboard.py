@@ -264,6 +264,64 @@ class TestGapFill:
         out = app._history_gap_fill(date(2026, 3, 1), date(2026, 3, 31), set())
         assert set(out["_origem"]) == {"historico_sem_depara"}
 
+    def test_overview_le_do_historico_sem_supabase(self, tmp_path, monkeypatch):
+        """`_overview_data` tem query própria e não passa por `query_coletas`.
+
+        Regressão de 26/07/2026: a Overview ficava em branco com o Supabase
+        fora, mesmo com o Drive cheio — o banner dizia "exibindo 15.000 linhas
+        do histórico frio" e logo abaixo "Nenhum dado encontrado", porque quem
+        alimenta a página é esta função, não o `query_coletas`.
+        """
+        store = self._store_com(tmp_path, ["2026-03-10", "2026-03-11"])
+        monkeypatch.setattr("utils.history.get_store", lambda *a, **k: store)
+        monkeypatch.setattr(app, "_get_supabase", lambda: None)
+
+        df = app._overview_data(
+            "2026-03-01", "2026-03-31", (), (),
+            estados_tuple=("MAPEADO",), sem_depara_flag=True,
+        )
+        assert len(df) == 2
+
+    def test_overview_respeita_o_modo_estrito(self, tmp_path, monkeypatch):
+        from utils.history import HistoryStore, LocalBackend
+        store = HistoryStore(LocalBackend(tmp_path / "h"))
+        store.write_records(
+            [{"data": "2026-03-10", "plataforma": "Mercado Livre",
+              "marca": "Midea", "produto": "Split Midea 12000"}],
+            dataset="coletas",
+        )
+        monkeypatch.setattr("utils.history.get_store", lambda *a, **k: store)
+        monkeypatch.setattr(app, "_get_supabase", lambda: None)
+
+        assert app._overview_data(
+            "2026-03-01", "2026-03-31", (), (),
+            estados_tuple=("MAPEADO",), sem_depara_flag=False,
+        ).empty
+
+    def test_opcoes_de_filtro_saem_do_historico(self, tmp_path, monkeypatch):
+        """Sem isso os dropdowns da barra lateral ficam vazios e o usuário não
+        consegue filtrar os dados que ESTÃO no Drive."""
+        from utils.history import HistoryStore, LocalBackend
+        store = HistoryStore(LocalBackend(tmp_path / "h"))
+        store.write_records(
+            [{"data": date.today().isoformat(), "plataforma": "Amazon",
+              "tipo": "Marketplace", "marca": "Midea", "keyword": "ar condicionado",
+              "seller": "Loja X", "produto": "Split Midea 12000"}],
+            dataset="coletas",
+        )
+        monkeypatch.setattr("utils.history.get_store", lambda *a, **k: store)
+
+        opts = app._filter_options_do_historico()
+        assert opts["platforms"] == ["Amazon"]
+        assert "Midea" in opts["brands"]
+        assert opts["keywords"] == ["ar condicionado"]
+
+    def test_opcoes_sem_historico_devolve_vazio(self, tmp_path, monkeypatch):
+        from utils.history import HistoryStore, LocalBackend
+        store = HistoryStore(LocalBackend(tmp_path / "vazio"))
+        monkeypatch.setattr("utils.history.get_store", lambda *a, **k: store)
+        assert app._filter_options_do_historico() == {}
+
     def test_falha_do_backend_nao_derruba_a_pagina(self, monkeypatch):
         def _explode(*_a, **_k):
             raise RuntimeError("Drive fora do ar")
