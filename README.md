@@ -536,7 +536,21 @@ python scripts/history_cli.py export --start 2026-01-01 --end 2026-07-25 \
     -o reports/historico.csv
 ```
 
+**No dashboard:** `query_coletas()` completa com o histórico os dias que o
+Supabase não devolveu. Partições ainda sem de-para (gravadas pela coleta ou
+importadas de CSV) aparecem pelo interruptor **Filtros Globais → "Incluir
+histórico do Drive sem de-para"**, ligado por padrão — sem ele o filtro
+`estado_match = MAPEADO` esconderia todo o histórico recuperado.
+
 Detalhes, credenciais e troubleshooting: **[`docs/HISTORICO_DRIVE.md`](docs/HISTORICO_DRIVE.md)**.
+
+## 🐕 Watchdog — `.github/workflows/watchdog.yml`
+
+Roda `scripts/daily_status_check.py` às 20:30 BRT e alerta no Telegram. Existe
+porque entre 16 e 25/07/2026 a coleta rodou, os workflows ficaram **verdes** e
+nada foi gravado — o watchdog não olha se o job terminou bem, olha se o **dado
+chegou**. Secrets: `SUPABASE_URL`, `SUPABASE_KEY`, `TELEGRAM_BOT_TOKEN`,
+`N8N_TELEGRAM_CHAT_ID`.
 
 ---
 

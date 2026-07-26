@@ -219,17 +219,32 @@ versão resolvida é a autoritativa.
 preenchidos pela automação Admin **depois** do upload. Uma partição gravada
 direto pela coleta não os tem.
 
-Quando o dashboard filtra por esses campos (e o padrão é `estado_match =
-MAPEADO`), partições sem eles **não aparecem** — *fail-closed*. É a paridade
-correta com o PostgREST: lá, uma linha com `estado_match` NULL também não
-casaria com `.in_("estado_match", ["MAPEADO"])`. O contrário misturaria
-REVISAR/NAO_AC nas visões curadas sem ninguém perceber.
+O filtro padrão do dashboard é `estado_match = MAPEADO`. Uma partição sem essa
+coluna seria escondida por inteiro — foi o que fez as 97 mil linhas recuperadas
+do Drive aparecerem como **zero** no painel em 26/07/2026.
 
-Consequência prática: a partição escrita pela coleta é a **rede de segurança de
-durabilidade**, não o caminho de leitura. O caminho normal é a coleta ir ao
-Supabase, a automação resolver, e a migração levar ao Drive a versão resolvida.
-Se o Supabase estiver fora, use `history_cli.py stats` para ver que o dia está
-salvo e `export` para lê-lo direto (o `export` não aplica filtro de resolução).
+A distinção que resolve isso: essas linhas estão **não classificadas**, não
+*rejeitadas*. Tratá-las como REVISAR/NAO_AC apaga o histórico recuperado;
+tratá-las como MAPEADO infla as métricas curadas. Por isso elas entram por uma
+porta própria:
+
+> **Filtros Globais → “Incluir histórico do Drive sem de-para”** (ligado por
+> padrão)
+
+| Interruptor | Comportamento |
+|-------------|---------------|
+| **Ligado** (padrão) | Partições sem colunas de resolução passam pelos filtros de resolução. Os demais filtros (plataforma, marca, BTU…) continuam valendo normalmente. |
+| **Desligado** | Paridade estrita com o PostgREST: coluna ausente ⇒ nenhuma linha passa, como um `NULL` que não casa com `.in_(...)`. |
+
+Partições **com** as colunas (as que vieram da migração `tier`) são filtradas
+de verdade nos dois modos — o interruptor não as afeta.
+
+O `query_coletas` marca cada linha do frio em `_origem`
+(`historico` ou `historico_sem_depara`), para que as páginas possam sinalizar a
+procedência dos números.
+
+Fora do painel, o `export` do CLI não aplica filtro de resolução — é o caminho
+direto para ler qualquer período, resolvido ou não.
 
 ---
 
@@ -276,8 +291,12 @@ gravá-lo no lugar errado — e `history_cli.py stats` mostra onde ele está.
 - **Filtros do histórico são reproduzidos em pandas** (`_filter_history_coletas`
   em `app.py`). Ao mudar um predicado no lado do PostgREST, mude no outro —
   `tests/test_history_dashboard.py` cobre a paridade.
-- **Partições da coleta ficam fora das visões curadas** até a migração trazer a
-  versão resolvida (ver "Resolução e o filtro do dashboard").
+- **Partições da coleta não têm de-para** até a migração trazer a versão
+  resolvida. Elas aparecem no painel pelo interruptor "Incluir histórico do
+  Drive sem de-para", mas não participam dos filtros de família/SKU — para
+  isso, é preciso que a automação Admin as resolva no Supabase e a migração
+  `tier` as traga de volta. Enquanto o banco estiver restrito por cota, esse
+  ciclo não roda.
 - **O gap-fill respeita o cap de linhas** de `query_coletas` (50 mil por
   padrão): um intervalo histórico muito longo é truncado pelos dias mais
   recentes, igual ao keyset do Supabase.

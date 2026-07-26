@@ -114,42 +114,82 @@ class TestFiltroDoHistorico:
         assert len(linhas) == antes
 
 
-class TestFiltrosDeResolucaoSaoFailClosed:
-    """Coluna de resolução ausente ⇒ nenhuma linha passa.
+class TestHistoricoSemDepara:
+    """Partição sem as colunas de resolução: não classificada ≠ rejeitada.
 
     `estado_match`, `familia_resolvida`, `sku_resolvido` e
-    `voltagem_resolvida` são preenchidos pela automação Admin **depois** do
-    upload, então partições gravadas direto pela coleta não os têm. No
-    PostgREST uma linha com esses campos NULL não casaria com `.in_(...)` —
-    incluí-las aqui misturaria REVISAR/NAO_AC nas visões curadas.
+    `voltagem_resolvida` são preenchidos pela automação Admin **no Supabase**,
+    depois do upload. Partições gravadas pela coleta ou importadas de CSV não
+    os têm, e o filtro padrão (`estado_match = MAPEADO`) as esconderia por
+    inteiro — foi o que fez 97 mil linhas recuperadas do Drive sumirem do
+    painel em 26/07/2026.
+
+    O interruptor `gf_historico_sem_depara` decide: ligado (padrão) elas
+    aparecem; desligado, vale a paridade estrita com o PostgREST.
     """
 
     @pytest.fixture
     def sem_resolucao(self) -> pd.DataFrame:
-        """Como uma partição gravada por `main.py` no momento da coleta."""
+        """Como uma partição gravada por `main.py` ou vinda de `import-csv`."""
         return pd.DataFrame([{
             "data": date(2026, 3, 10), "plataforma": "Mercado Livre",
             "marca": "Midea", "produto": "Split Midea 12000", "posicao_geral": 1,
         }])
 
-    def test_estado_match_ausente_nao_passa(self, sem_resolucao):
+    @pytest.fixture
+    def desligado(self, monkeypatch):
+        """Força o modo estrito (fail-closed)."""
+        monkeypatch.setattr(app, "_gf_historico_sem_depara", lambda: False)
+
+    @pytest.fixture
+    def ligado(self, monkeypatch):
+        monkeypatch.setattr(app, "_gf_historico_sem_depara", lambda: True)
+
+    # -- padrão: aparece -----------------------------------------------------
+    def test_estado_match_ausente_passa_por_padrao(self, sem_resolucao, ligado):
+        out = app._filter_history_coletas(sem_resolucao, estados_match=["MAPEADO"])
+        assert len(out) == 1
+
+    def test_familia_ausente_passa_por_padrao(self, sem_resolucao, ligado):
+        out = app._filter_history_coletas(
+            sem_resolucao, familias_resolvidas=["MIDEA-12000-F"]
+        )
+        assert len(out) == 1
+
+    def test_filtros_de_coleta_continuam_valendo(self, sem_resolucao, ligado):
+        """Admitir a linha não é ignorar os demais filtros."""
+        assert app._filter_history_coletas(
+            sem_resolucao, platforms=["Amazon"], estados_match=["MAPEADO"]
+        ).empty
+        assert len(app._filter_history_coletas(
+            sem_resolucao, platforms=["Mercado Livre"], estados_match=["MAPEADO"]
+        )) == 1
+
+    # -- modo estrito: some --------------------------------------------------
+    def test_estado_match_ausente_nao_passa_no_estrito(self, sem_resolucao, desligado):
         assert app._filter_history_coletas(
             sem_resolucao, estados_match=["MAPEADO"]
         ).empty
 
-    def test_familia_ausente_nao_passa(self, sem_resolucao):
+    def test_familia_ausente_nao_passa_no_estrito(self, sem_resolucao, desligado):
         assert app._filter_history_coletas(
             sem_resolucao, familias_resolvidas=["MIDEA-12000-F"]
         ).empty
 
-    def test_sem_filtro_de_resolucao_passa_normalmente(self, sem_resolucao):
+    # -- partição resolvida não é afetada pelo interruptor -------------------
+    def test_particao_resolvida_respeita_o_filtro(self, linhas, ligado):
+        """Onde a coluna existe, o filtro vale de verdade nos dois modos."""
+        assert app._filter_history_coletas(linhas, estados_match=["REVISAR"]).empty
+        assert len(app._filter_history_coletas(linhas, estados_match=["MAPEADO"])) == 3
+
+    def test_sem_filtro_de_resolucao_passa_normalmente(self, sem_resolucao, desligado):
         """Sem filtro pedido, a partição não resolvida continua legível."""
         out = app._filter_history_coletas(
             sem_resolucao, platforms=["Mercado Livre"], estados_match=[]
         )
         assert len(out) == 1
 
-    def test_filtros_de_coleta_seguem_fail_open(self, sem_resolucao):
+    def test_filtros_de_coleta_seguem_fail_open(self, sem_resolucao, desligado):
         """Coluna de COLETA ausente é ignorada — só resolução é fail-closed."""
         out = app._filter_history_coletas(
             sem_resolucao, platform_types=["Marketplace"], estados_match=[]
@@ -204,6 +244,25 @@ class TestGapFill:
         assert app._history_gap_fill(
             date(2026, 3, 1), date(2026, 3, 31), set(), limit=0
         ).empty
+
+    def test_marca_a_procedencia(self, tmp_path, monkeypatch):
+        """A coluna `_origem` deixa o painel avisar de onde vieram os números."""
+        store = self._store_com(tmp_path, ["2026-03-10"])
+        monkeypatch.setattr("utils.history.get_store", lambda *a, **k: store)
+        out = app._history_gap_fill(date(2026, 3, 1), date(2026, 3, 31), set())
+        assert set(out["_origem"]) == {"historico"}
+
+    def test_procedencia_distingue_sem_depara(self, tmp_path, monkeypatch):
+        from utils.history import HistoryStore, LocalBackend
+        store = HistoryStore(LocalBackend(tmp_path / "h"))
+        store.write_records(
+            [{"data": "2026-03-10", "plataforma": "Mercado Livre",
+              "marca": "Midea", "produto": "Split Midea 12000"}],
+            dataset="coletas",
+        )
+        monkeypatch.setattr("utils.history.get_store", lambda *a, **k: store)
+        out = app._history_gap_fill(date(2026, 3, 1), date(2026, 3, 31), set())
+        assert set(out["_origem"]) == {"historico_sem_depara"}
 
     def test_falha_do_backend_nao_derruba_a_pagina(self, monkeypatch):
         def _explode(*_a, **_k):

@@ -646,6 +646,26 @@ def _gf_estados() -> list:
     return list(st.session_state.get("gf_estados", ["MAPEADO"]))
 
 
+def _gf_historico_sem_depara() -> bool:
+    """Se o histórico frio ainda não resolvido deve aparecer no painel.
+
+    `estado_match`, `familia_resolvida` e `sku_resolvido` são preenchidos pela
+    automação Admin **no Supabase**, depois do upload. Uma partição gravada
+    direto pela coleta ou importada de CSV não os tem — e o filtro padrão
+    (`estado_match = MAPEADO`) a esconderia por inteiro.
+
+    A distinção que importa: essas linhas estão **não classificadas**, não
+    *rejeitadas*. Tratá-las como REVISAR/NAO_AC faria todo o histórico
+    recuperado sumir do painel; tratá-las como MAPEADO inflaria as métricas
+    curadas. Por isso elas entram por uma porta própria, ligada por padrão e
+    sinalizada na interface.
+
+    Returns:
+        True quando o histórico sem de-para deve ser incluído (padrão).
+    """
+    return bool(st.session_state.get("gf_historico_sem_depara", True))
+
+
 def _gf_familias() -> list:
     return list(st.session_state.get("gf_familias", []))
 
@@ -970,12 +990,21 @@ def _filter_history_coletas(
     # É a paridade correta com o PostgREST — lá, uma linha com estado_match
     # NULL também não casa com `.in_("estado_match", ["MAPEADO"])`. Incluir
     # essas linhas misturaria REVISAR/NAO_AC nas visões históricas.
+    # Partição SEM as colunas de resolução = linha não classificada (a
+    # automação Admin ainda não a tocou), diferente de linha rejeitada.
+    # Com `_gf_historico_sem_depara()` ligado ela passa pelos filtros de
+    # resolução em vez de ser descartada; desligado, o comportamento é
+    # fail-closed (paridade estrita com o PostgREST).
+    _sem_resolucao = "estado_match" not in out.columns
+    _passa_sem_depara = _sem_resolucao and _gf_historico_sem_depara()
+
     def _isin_resolvido(col: str, values) -> None:
         nonlocal out
         if not values:
             return
         if col not in out.columns:
-            out = out.iloc[0:0]
+            if not _passa_sem_depara:
+                out = out.iloc[0:0]
             return
         out = out[out[col].isin(list(values))]
 
@@ -1007,10 +1036,11 @@ def _filter_history_coletas(
         tem_fam = "familia_resolvida" in out.columns
         tem_sku = "sku_resolvido" in out.columns
         if not tem_fam and not tem_sku:
-            # Nenhuma das colunas do catálogo existe: fail-closed, igual aos
-            # demais filtros de resolução (no PostgREST o `or_` também não
-            # casaria com colunas nulas).
-            out = out.iloc[0:0]
+            # Nenhuma coluna do catálogo existe. Fail-closed por padrão (igual
+            # aos demais filtros de resolução), salvo quando o histórico sem
+            # de-para foi explicitamente admitido.
+            if not _passa_sem_depara:
+                out = out.iloc[0:0]
         else:
             cat = get_catalogo()
             skus_btu = (cat[cat["capacidade_btu"].isin(gf_btu_cat)]["sku"].tolist()
@@ -1071,9 +1101,13 @@ def _history_gap_fill(
     if df.empty:
         return df
 
+    sem_depara = "estado_match" not in df.columns
     df = _filter_history_coletas(df, **filtros)
     if df.empty:
         return df
+    # Marca a procedência: permite ao painel avisar que parte dos números vem
+    # do histórico frio, e quanto disso ainda não passou pelo de-para.
+    df["_origem"] = "historico_sem_depara" if sem_depara else "historico"
     if "marca" in df.columns and _MARCA_TO_CANONICAL:
         df["marca"] = df["marca"].map(
             lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
@@ -1917,6 +1951,19 @@ def _render_global_filters() -> None:
         # Inicializa uma vez (ambas) via session_state em vez de `default=`,
         # para nunca colidir com o valor setado por preset/teste — assim o
         # Streamlit não emite o aviso "default + session_state".
+        st.checkbox(
+            "Incluir histórico do Drive sem de-para",
+            key="gf_historico_sem_depara",
+            value=st.session_state.get("gf_historico_sem_depara", True),
+            help=(
+                "Partições do histórico frio gravadas pela coleta ou importadas "
+                "de CSV ainda não passaram pela automação Admin, então não têm "
+                "estado_match/família/SKU. Ligado (padrão), elas aparecem no "
+                "painel e são contadas no aviso de procedência. Desligado, o "
+                "painel exige resolução — como o Supabase faria — e essas "
+                "linhas somem."
+            ),
+        )
         st.session_state.setdefault("gf_sources", list(_DATA_SOURCES))
         st.multiselect(
             "Fonte de Dados", _DATA_SOURCES,
