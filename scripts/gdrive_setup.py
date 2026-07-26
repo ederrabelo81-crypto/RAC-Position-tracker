@@ -139,17 +139,7 @@ def cmd_authorize(args: argparse.Namespace) -> int:
 
 def cmd_check(_args: argparse.Namespace) -> int:
     """Confere se o ambiente atual consegue mesmo gravar e ler no Drive."""
-    # As credenciais moram no .env, e nada mais neste script o carrega — sem
-    # isto o --check relataria "local" mesmo com o Drive corretamente
-    # configurado, que é justamente o passo que ele deveria validar.
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(_ROOT / ".env")
-    except ImportError:
-        logger.warning(
-            "python-dotenv ausente — lendo só as variáveis já exportadas no shell."
-        )
-
+    # O .env é carregado no import de utils.history.store — aqui basta importar.
     from utils.history import get_store, resolve_backend_name
 
     logger.info(f"Backend resolvido: {resolve_backend_name()}")
@@ -172,6 +162,8 @@ def cmd_check(_args: argparse.Namespace) -> int:
             logger.error("Gravou mas não conseguiu reler — verifique permissões.")
             return 1
         store.drop_day("_setup_check", date.today())
+        # Sem isto sobra uma pasta vazia '_setup_check' no Drive do usuário.
+        store.backend.remove_dataset("_setup_check")
         logger.success("Drive OK: gravou, releu e limpou o marcador de teste. ✓")
         return 0
     except Exception as exc:

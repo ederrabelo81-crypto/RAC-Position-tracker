@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.history import (  # noqa: E402
     DATASET_COLETAS,
+    GoogleDriveBackend,
     HistoryBackend,
     HistoryBackendError,
     HistoryStore,
@@ -479,6 +480,142 @@ class TestFallbackLocalQuandoODriveFalha:
         assert keys, "o fallback local deveria ter gravado a partição"
         local = HistoryStore(LocalBackend(tmp_path / "hist"))
         assert len(local.read(DATASET_COLETAS)) == 1
+
+
+class TestConfiguracaoVemDoEnv:
+    """O .env precisa ser lido no import do módulo.
+
+    Regressão de 26/07/2026: só `gdrive_setup.py --check` carregava o .env, e
+    ele resolvia `drive:` enquanto `history_cli.py` e o próprio `main.py`
+    resolviam `local:` — a coleta gravava em disco achando que ia ao Drive.
+    Em `main.py` o histórico roda ANTES do import de supabase_client, que era
+    quem carregava o .env como efeito colateral.
+    """
+
+    def test_store_chama_load_dotenv_no_import(self, monkeypatch):
+        """Verificação em tempo de execução, não busca de texto no fonte.
+
+        Espionar `dotenv.load_dotenv` e reimportar o módulo prova que a chamada
+        acontece de fato — uma menção em comentário ou um import morto não
+        passariam aqui.
+        """
+        import importlib
+        import dotenv
+        import utils.history.store as store_mod
+
+        chamadas = []
+        monkeypatch.setattr(
+            dotenv, "load_dotenv", lambda *a, **k: chamadas.append(a) or True
+        )
+        try:
+            importlib.reload(store_mod)
+            assert chamadas, (
+                "utils/history/store.py precisa CHAMAR load_dotenv no import — "
+                "sem isso o backend cai para local em qualquer entrada que não "
+                "passe antes por utils.supabase_client."
+            )
+            # E tem de apontar para o .env da raiz do projeto, não do cwd.
+            alvo = Path(chamadas[0][0])
+            assert alvo.name == ".env"
+            assert alvo.parent == Path(store_mod.__file__).resolve().parents[2]
+        finally:
+            # Restaura o módulo com o load_dotenv verdadeiro, para não deixar
+            # o estado alterado para os testes seguintes.
+            monkeypatch.undo()
+            importlib.reload(store_mod)
+
+    def test_env_do_shell_tem_precedencia(self, monkeypatch, tmp_path):
+        """`load_dotenv` não pode sobrescrever override explícito do shell."""
+        monkeypatch.setenv("RAC_HISTORY_BACKEND", "local")
+        monkeypatch.setenv("RAC_HISTORY_DIR", str(tmp_path))
+        from utils.history import history_dir, resolve_backend_name
+        assert resolve_backend_name() == "local"
+        assert history_dir() == tmp_path
+
+
+class TestRemoveDataset:
+    """`--check` não pode deixar pasta órfã no Drive do usuário."""
+
+    def test_remove_diretorio_vazio(self, tmp_path):
+        backend = LocalBackend(tmp_path)
+        backend.put("_setup_check/data=2026-07-26__run-check.parquet", b"x")
+        backend.delete("_setup_check/data=2026-07-26__run-check.parquet")
+        backend.remove_dataset("_setup_check")
+        assert not (tmp_path / "_setup_check").exists()
+
+    def test_preserva_diretorio_com_conteudo(self, tmp_path):
+        backend = LocalBackend(tmp_path)
+        backend.put("coletas/data=2026-07-26__run-a.parquet", b"x")
+        backend.remove_dataset("coletas")
+        assert (tmp_path / "coletas").is_dir()
+        # A partição tem de sobreviver — só o diretório vazio pode sumir.
+        assert (tmp_path / "coletas" / "data=2026-07-26__run-a.parquet").is_file()
+        assert backend.list("coletas") == ["coletas/data=2026-07-26__run-a.parquet"]
+
+    def test_dataset_inexistente_nao_falha(self, tmp_path):
+        LocalBackend(tmp_path).remove_dataset("nao_existe")
+
+
+class TestDriveNaoCriaPastaEmLeitura:
+    """Caminhos de leitura no Drive não podem ter efeito colateral de criação.
+
+    Em `remove_dataset` isso chegava a se contradizer: `list()` criava a pasta
+    do dataset inexistente e só então ela era apagada — e uma falha na remoção
+    deixaria órfã exatamente a pasta que o método existe para eliminar.
+    """
+
+    @staticmethod
+    def _servico_falso(criacoes):
+        """Duplo mínimo da Drive API: nenhuma pasta existe, e criar é anotado."""
+        class _Exec:
+            def __init__(self, resultado):
+                self._resultado = resultado
+
+            def execute(self):
+                return self._resultado
+
+        class _Files:
+            def list(self, **_kwargs):
+                return _Exec({"files": []})       # nada existe no Drive
+
+            def create(self, **kwargs):
+                criacoes.append(kwargs.get("body", {}).get("name"))
+                return _Exec({"id": "id-criado"})
+
+            def delete(self, **_kwargs):
+                return _Exec({})
+
+        class _Servico:
+            def files(self):
+                return _Files()
+
+        return _Servico()
+
+    def test_list_nao_cria(self):
+        criacoes = []
+        backend = GoogleDriveBackend("raiz", service=self._servico_falso(criacoes))
+        assert backend.list("coletas") == []
+        assert criacoes == [], f"criou pasta durante leitura: {criacoes}"
+
+    def test_remove_dataset_nao_cria(self):
+        criacoes = []
+        backend = GoogleDriveBackend("raiz", service=self._servico_falso(criacoes))
+        backend.remove_dataset("_setup_check")
+        assert criacoes == [], f"criou pasta para depois apagar: {criacoes}"
+
+    def test_get_de_chave_inexistente_nao_cria(self):
+        criacoes = []
+        backend = GoogleDriveBackend("raiz", service=self._servico_falso(criacoes))
+        with pytest.raises(HistoryBackendError):
+            backend.get("coletas/data=2026-07-26__run-x.parquet")
+        assert criacoes == []
+
+    def test_put_ainda_cria_a_pasta(self):
+        """A escrita continua criando o que precisa — só a leitura é passiva."""
+        criacoes = []
+        backend = GoogleDriveBackend("raiz", service=self._servico_falso(criacoes))
+        backend.put("coletas/data=2026-07-26__run-x.parquet", b"conteudo")
+        assert "coletas" in criacoes
 
 
 class TestFiltroACNaEscrita:
