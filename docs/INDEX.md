@@ -58,6 +58,13 @@
 2. Dashboard page 🩺 Data Health (field × platform matrix)
 3. ML live check: `python scripts/diagnose_ml.py`
 
+### "I need to read collection data with Supabase offline (quota / downtime)"
+1. Load `docs/HISTORICO_DRIVE.md` (cold history in Parquet on Google Drive)
+2. For a Cowork/agent session that must produce the report sections from the
+   Drive instead of the database: `docs/PROMPT_COWORK_DRIVE.md` (ready-to-paste
+   prompt + Supabase→Drive filter equivalences)
+3. CLI: `python scripts/history_cli.py stats` / `export --cold-only`
+
 ### "I need to orchestrate or automate collection with n8n"
 1. Load `docs/n8n_orchestration.md`
 2. Key file: `n8n/rac_coleta_monitor.json` (workflow: notifications + CSV ingestion)
@@ -98,6 +105,8 @@ docs/QUICK_REFERENCE.md                    ← Fast lookups
 docs/COLETA_LOCAL_AUTENTICADA.md           ← Shopee/Magalu/CB no notebook (Chrome real logado) ⭐
 docs/AUTOMACAO_COLETAS_AUTENTICADAS.md     ← Legado: automation via CDP + sessions
 docs/PRICETRACK_INSIGHTS.md                ← PriceTrack pipeline + insight roadmap
+docs/HISTORICO_DRIVE.md                    ← Cold history in Parquet (Google Drive)
+docs/PROMPT_COWORK_DRIVE.md                ← Cowork prompt: read the Drive instead of Supabase
 docs/DIAGNOSTICO_COLETA_JUN2026.md         ← Field coverage diagnosis (buy box, ML fix)
 docs/cdp_magalu_collection.md              ← Chrome CDP setup (Windows + Task Scheduler)
 docs/n8n_orchestration.md                  ← n8n workflow: scheduling + CSV ingestion
