@@ -124,12 +124,33 @@ jobs:
       - name: Check cold history destination
         env:
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
         run: |
+          # A pasta sozinha já faz `resolve_backend_name()` responder "drive",
+          # mas sem credencial o backend falha na primeira escrita e o histórico
+          # cai no disco do runner. Por isso os dois lados são checados aqui.
+          FALTANDO=""
           if [ -z "$GDRIVE_FOLDER_ID" ]; then
-            echo "::warning title=Histórico frio sem Drive::GDRIVE_FOLDER_ID não \
-          está cadastrado nos secrets. O Parquet será gravado no disco efêmero do \
-          runner e perdido no fim do job (o CSV segue como artifact). Configure os \
-          secrets GDRIVE_* — ver docs/HISTORICO_DRIVE.md."
+            FALTANDO="GDRIVE_FOLDER_ID"
+          fi
+
+          # Conta de serviço (Workspace + Shared Drive) dispensa o trio OAuth.
+          if [ -z "$GDRIVE_SERVICE_ACCOUNT_JSON" ]; then
+            for VAR in GDRIVE_CLIENT_ID GDRIVE_CLIENT_SECRET GDRIVE_REFRESH_TOKEN; do
+              if [ -z "${!VAR}" ]; then
+                FALTANDO="${FALTANDO:+$FALTANDO, }$VAR"
+              fi
+            done
+          fi
+
+          if [ -n "$FALTANDO" ]; then
+            echo "::warning title=Histórico frio sem Drive::Secrets ausentes: \
+          $FALTANDO. O Parquet será gravado no disco efêmero do runner e perdido \
+          no fim do job (CSV e Parquet seguem como artifact). Ver \
+          docs/HISTORICO_DRIVE.md."
           else
             echo "Histórico frio → Google Drive (pasta ${GDRIVE_FOLDER_ID:0:6}…)"
           fi

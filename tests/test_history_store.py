@@ -125,6 +125,39 @@ class TestWriteRead:
         assert len(df) == 1
         assert df.iloc[0]["data"] == date(2026, 7, 24)
 
+    def test_particao_ilegivel_vira_leitura_parcial_reportada(self, store):
+        """Ler o que dá é certo; devolver isso como se fosse tudo, não.
+
+        `read()` engole a partição ruim de propósito (um arquivo corrompido não
+        pode derrubar o relatório inteiro), então quem chama precisa de outro
+        caminho para saber que o recorte veio incompleto — sem ele, um download
+        recusado pelo Drive é indistinguível de um período sem coleta.
+        """
+        store.write_records(
+            [_row("2026-07-24"), _row("2026-07-25")], dataset=DATASET_COLETAS
+        )
+        alvo = [k for k in store.keys_in_range(DATASET_COLETAS) if "07-25" in k][0]
+        store.backend.put(alvo, b"isto nao e um parquet")
+
+        df = store.read(DATASET_COLETAS)
+
+        assert len(df) == 1, "o dia legível deve continuar chegando"
+        assert len(store.last_read_errors) == 1
+        assert store.last_read_errors[0][0] == alvo
+
+    def test_leitura_seguinte_limpa_os_erros(self, store):
+        """O atributo reflete a última leitura, não um acumulado da sessão."""
+        store.write_records([_row("2026-07-25")], dataset=DATASET_COLETAS)
+        alvo = store.keys_in_range(DATASET_COLETAS)[0]
+        store.backend.put(alvo, b"corrompido")
+        store.read(DATASET_COLETAS)
+        assert store.last_read_errors
+
+        store.backend.delete(alvo)
+        store.write_records([_row("2026-07-26")], dataset=DATASET_COLETAS)
+        assert len(store.read(DATASET_COLETAS)) == 1
+        assert store.last_read_errors == []
+
     def test_vazio_nao_grava(self, store):
         assert store.write_day(DATASET_COLETAS, date(2026, 7, 25), []) is None
         assert store.days(DATASET_COLETAS) == []

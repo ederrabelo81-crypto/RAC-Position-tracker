@@ -33,7 +33,7 @@ import os
 import re
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 from loguru import logger
@@ -180,6 +180,13 @@ class HistoryStore:
     ) -> None:
         self.backend = backend
         self.cache = cache
+        # Partições que a última `read()` não conseguiu ler, como
+        # ``[(chave, motivo)]``. Uma leitura parcial devolve DataFrame igual ao
+        # de um período realmente vazio: sem isto, quem chama não tem como
+        # distinguir "não há dado" de "o Drive recusou metade dos arquivos".
+        # Reatribuído (não mutado) a cada `read`, e cada chamador constrói o seu
+        # próprio store via `get_store()` — não há estado compartilhado.
+        self.last_read_errors: List[Tuple[str, str]] = []
 
     # -- escrita -----------------------------------------------------------
     def write_day(
@@ -332,7 +339,13 @@ class HistoryStore:
             DataFrame com as linhas do período; vazio se não há partição.
             A coluna ``data`` volta como ``datetime.date``, igual ao que o
             dashboard recebe do Supabase.
+
+        Note:
+            Partições ilegíveis não interrompem a leitura — elas ficam em
+            `self.last_read_errors` para quem precisa avisar que o resultado
+            está incompleto. Consulte o atributo logo após a chamada.
         """
+        self.last_read_errors = []
         keys = self.keys_in_range(dataset, start, end)
         if not keys:
             return pd.DataFrame()
@@ -348,10 +361,13 @@ class HistoryStore:
                 frames.append(table.to_pandas())
             except HistoryBackendError as exc:
                 # Uma partição ilegível não pode derrubar o relatório inteiro —
-                # o dia entra faltando e o log diz qual.
+                # o dia entra faltando, o log diz qual e o chamador consegue
+                # avisar que o recorte está incompleto.
                 logger.error(f"[Histórico] partição ilegível {key}: {exc}")
+                self.last_read_errors.append((key, str(exc)))
             except Exception as exc:  # pyarrow levanta ArrowInvalid e afins
                 logger.error(f"[Histórico] falha lendo {key}: {exc}")
+                self.last_read_errors.append((key, str(exc)))
 
         if not frames:
             return pd.DataFrame()

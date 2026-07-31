@@ -460,6 +460,45 @@ def _exportar_credenciais_historico() -> None:
             os.environ[chave] = valor
 
 
+def _history_store():
+    """`utils.history.get_store()` com os secrets já publicados no ambiente.
+
+    Todo acesso do dashboard ao histórico passa por aqui. `get_store()` decide
+    Drive-ou-disco lendo `GDRIVE_FOLDER_ID` do ambiente **na hora da chamada**,
+    e constrói um store novo a cada vez — então quem chamar sem a exportação
+    feita antes recebe silenciosamente o backend local, mesmo com a credencial
+    presente em `st.secrets`. Era o caso dos dropdowns da barra lateral, que
+    leem o histórico antes de qualquer query rodar.
+
+    Returns:
+        `HistoryStore` resolvido para o backend correto.
+    """
+    from utils.history import get_store
+    _exportar_credenciais_historico()
+    return get_store()
+
+
+def _avisar_particoes_ilegiveis(store) -> None:
+    """Avisa quando a leitura veio incompleta por partição ilegível.
+
+    `HistoryStore.read()` não levanta em partição corrompida ou em download
+    recusado pelo Drive: registra e segue, para que um arquivo ruim não derrube
+    o relatório inteiro. O efeito colateral é que o resultado parcial chega
+    indistinguível de um período sem dado — daí o aviso.
+    """
+    erros = getattr(store, "last_read_errors", None)
+    if not erros:
+        return
+    chaves = ", ".join(k for k, _ in erros[:3])
+    resto = f" (+{len(erros) - 3})" if len(erros) > 3 else ""
+    _avisar_uma_vez(
+        "historico_particoes_ilegiveis",
+        f"{len(erros)} partição(ões) do histórico não puderam ser lidas — os "
+        f"números abaixo estão incompletos. Primeiro motivo: {erros[0][1]}. "
+        f"Partições: {chaves}{resto}",
+    )
+
+
 def _avisar_uma_vez(chave: str, mensagem: str) -> None:
     """Emite `st.warning` uma vez por sessão para a mesma chave.
 
@@ -1138,9 +1177,9 @@ def _history_gap_fill(
     if limit is not None and limit <= 0:
         return pd.DataFrame()
     try:
-        from utils.history import get_store
-        _exportar_credenciais_historico()
-        df = get_store().read("coletas", start=start_date, end=end_date)
+        store = _history_store()
+        df = store.read("coletas", start=start_date, end=end_date)
+        _avisar_particoes_ilegiveis(store)
     except Exception as exc:
         # app.py não usa loguru no escopo global — import local para não
         # engolir a causa em silêncio.
@@ -1921,8 +1960,7 @@ def _filter_options_do_historico(dias: int = 120) -> dict:
         não há histórico — o chamador decide o fallback.
     """
     try:
-        from utils.history import get_store
-        df = get_store().read(
+        df = _history_store().read(
             "coletas",
             start=date.today() - timedelta(days=dias),
             end=date.today(),
