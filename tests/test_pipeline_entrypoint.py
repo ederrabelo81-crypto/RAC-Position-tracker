@@ -141,3 +141,19 @@ def test_historico_e_gravado_antes_do_upload_ao_supabase():
     assert pos_historico < pos_supabase, (
         "o histórico frio precisa ser gravado ANTES do upload ao Supabase"
     )
+
+
+def test_csv_e_espelhado_no_drive_antes_do_supabase():
+    """O espelho do CSV cru segue a mesma regra de durabilidade do Parquet.
+
+    Com o banco restrito por cota (HTTP 402, 31/07/2026), o CSV é a única cópia
+    crua do dia — e ele precisa sair da máquina que coletou antes de o pipeline
+    depender de um serviço que pode recusar a gravação.
+    """
+    fonte = (REPO_ROOT / "main.py").read_text(encoding="utf-8")
+    pos_espelho = fonte.find("from utils.history.csv_mirror import mirror_csv_to_drive")
+    pos_supabase = fonte.find("from utils.supabase_client import upload_to_supabase")
+    assert pos_espelho != -1, "espelho do CSV no Drive sumiu de main.py"
+    assert pos_espelho < pos_supabase, (
+        "o CSV precisa ser espelhado no Drive ANTES do upload ao Supabase"
+    )

@@ -20,7 +20,10 @@
 #
 # O run_local_scheduled.bat faz `git pull` e SO ENTAO roda a coleta (via
 # local_scheduled_collect.bat) - o notebook sempre coleta com o codigo mais
-# novo, sem depender de sync_windows.bat manual. O gatilho de logon cobre o
+# novo, sem depender de sync_windows.bat manual. O estagio B tambem chama
+# scripts\ensure_deps.bat, que instala o requirements.txt quando ele muda ou
+# quando algum pacote critico nao importa: antes disso o codigo era atualizado
+# mas a venv nao, e libs novas (ex.: as do Google Drive) simplesmente faltavam. O gatilho de logon cobre o
 # notebook desligado/deslogado no horario: ao logar, a tarefa dispara e o
 # local_scheduled_collect.bat decide (janela de turno + marcador diario) se
 # ainda cabe coletar - sem duplicar e sem gravar turno errado.
@@ -198,6 +201,8 @@ Write-Host "Diagnostico: PowerShell -ExecutionPolicy Bypass -File scripts\check_
 Write-Host ""
 Write-Host "IMPORTANTE:" -ForegroundColor Yellow
 Write-Host "  1. Faca login na Shopee 1x: python scripts\setup_local_profile.py" -ForegroundColor Yellow
+Write-Host "  1b. Drive (destino do historico e dos CSVs) - sem isto o dado fica" -ForegroundColor Yellow
+Write-Host "      so nesta maquina: python scripts\gdrive_setup.py --check" -ForegroundColor Yellow
 Write-Host "  2. O notebook precisa estar LIGADO e com voce logado no Windows" -ForegroundColor Yellow
 Write-Host "     nos horarios (o Chrome abre na sua sessao de UI). Se estiver" -ForegroundColor Yellow
 Write-Host "     desligado, a coleta roda no proximo LOGON dentro da janela" -ForegroundColor Yellow

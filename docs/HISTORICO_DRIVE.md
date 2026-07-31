@@ -16,7 +16,8 @@
    coleta ──────────┤  main.py                             │
    (5.6 mil/dia)    │    1. CSV local        (sempre)      │
                     │    2. Histórico frio   (sempre)  ────┼──► Google Drive
-                    │    3. Supabase         (se der)  ────┼──►   Parquet/dia
+                    │    3. Espelho do CSV   (sempre)  ────┼──►   Parquet/dia
+                    │    4. Supabase         (se der)  ────┼──►   + CSV cru
                     └──────────────────────────────────────┘         │
                                                                      │
    dashboard ◄── query_coletas() ──┬── Supabase: janela QUENTE (15d)  │
@@ -114,7 +115,30 @@ Nada a fazer: `main.py` grava o histórico a cada coleta. Desligue com
 
 ```
 [Histórico] coletas/data=2026-07-25__run-36abc8e6.parquet — 5651 linhas, 104 KB → drive:1AbC...
+[Drive] CSV espelhado: csv_coletas/rac_monitoramento_20260725_1013.csv (1.7 MB) — cópia crua fora da máquina que coletou.
 ```
+
+> 🔎 **Leia o sufixo do log do histórico.** `→ drive:<id>` é o esperado;
+> `→ local:C:\...\data\history` significa que este host **não** tem credencial
+> do Drive e o dia inteiro ficou numa máquina só. O espelho do CSV avisa no
+> mesmo run (`CSV NÃO espelhado — o histórico deste host está em modo local`).
+
+### Por que o CSV cru também vai ao Drive
+
+O Parquet é o formato de leitura do dashboard, mas não abre no Excel e não volta
+pelo `scripts/upload_csv.py`. Sem o espelho, o CSV da coleta ficava só em
+`output/` da máquina que coletou — e quando o Supabase está restrito por cota
+(HTTP 402, como em 31/07/2026), essa é a **única cópia crua do dia**.
+
+`RAC_DRIVE_CSV=off` desliga o espelho. Backfill de CSVs antigos que ficaram no
+disco:
+
+```bash
+python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv --mirror
+```
+
+O `--mirror` grava a partição Parquet **e** sobe o CSV cru. Reimportar o mesmo
+arquivo é idempotente nos dois destinos.
 
 ### Ver o que já existe
 
@@ -226,11 +250,19 @@ do **Supabase** (é lá que a automação Admin aplica normalização e de-para)
 
 ```
 RAC Position Tracker - Historico/
-└── coletas/
-    ├── data=2026-07-17__run-553da7ef.parquet
-    ├── data=2026-07-25__run-36abc8e6.parquet   ← coleta da manhã
-    └── data=2026-07-25__run-b1c2d3e4.parquet   ← coleta da noite
+├── coletas/
+│   ├── data=2026-07-17__run-553da7ef.parquet
+│   ├── data=2026-07-25__run-36abc8e6.parquet   ← coleta da manhã
+│   └── data=2026-07-25__run-b1c2d3e4.parquet   ← coleta da noite
+└── csv_coletas/
+    ├── rac_monitoramento_20260725_1013.csv     ← cru, abre no Excel
+    └── rac_monitoramento_20260725_2107.csv
 ```
+
+`coletas/` é o que o dashboard lê; `csv_coletas/` é a cópia humana/reprocessável
+(mesmo arquivo que sai em `output/`). Nomes de CSV colidem só se duas coletas
+começarem no mesmo minuto — nesse caso o arquivo é sobrescrito, e a partição
+Parquet daquele run continua intacta.
 
 Uma partição = um arquivo **imutável**. Isso é o que faz o cache local quase
 nunca invalidar, a leitura nunca precisar travar nada, e reprocessar um dia ser
@@ -297,6 +329,7 @@ direto para ler qualquer período, resolvido ou não.
 | `RAC_HISTORY_BACKEND` | `auto` | `auto` usa Drive se houver `GDRIVE_FOLDER_ID`, senão disco |
 | `RAC_HISTORY_DIR` | `data/history` | Destino local e cache das partições do Drive |
 | `RAC_HOT_WINDOW_DAYS` | `15` | Dias mantidos no Supabase antes de migrar |
+| `RAC_DRIVE_CSV` | `on` | `off` desliga o espelho do CSV cru em `csv_coletas/` |
 | `GDRIVE_FOLDER_ID` | — | Pasta raiz do histórico |
 | `GDRIVE_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` | — | OAuth de usuário |
 | `GDRIVE_SERVICE_ACCOUNT_JSON` | — | Alternativa (Workspace + Shared Drive) |
@@ -313,6 +346,8 @@ gravá-lo no lugar errado — e `history_cli.py stats` mostra onde ele está.
 |---------|----------------|------|
 | `pyarrow não instalado` | Dependência nova | `pip install pyarrow` |
 | Histórico foi para o disco em vez do Drive | Credencial ausente/inválida | `python scripts/gdrive_setup.py --check` |
+| PC coletor grava `→ local:C:\...` e o CSV não é espelhado | `.env` daquela máquina sem `GDRIVE_*` (o repo estava em dia, a máquina não) | `scripts\sync_windows.bat` → o passo 6 diagnostica e ensina o setup |
+| Libs do Drive ausentes só no notebook | A coleta agendada fazia `git pull` mas nunca `pip install` | Corrigido: `local_scheduled_collect.bat` chama `scripts\ensure_deps.bat` a cada run |
 | `storageQuotaExceeded` no upload | Conta de serviço no "Meu Drive" | Use OAuth de usuário (ver Setup) |
 | `O Google não devolveu refresh_token` | App já autorizado antes | Revogue em https://myaccount.google.com/permissions e repita |
 | `tier` retorna código 2 | Supabase restrito (402) recusa até leitura | Libere espaço pelo SQL Editor (`scripts/retention_cleanup.sql`) e repita |

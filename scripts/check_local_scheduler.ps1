@@ -133,7 +133,8 @@ Write-Sect "Scripts e ambiente"
 
 foreach ($rel in @("scripts\run_local_scheduled.bat",
                    "scripts\local_scheduled_collect.bat",
-                   "scripts\collect_local_authenticated.bat")) {
+                   "scripts\collect_local_authenticated.bat",
+                   "scripts\ensure_deps.bat")) {
     $p = Join-Path $BaseDir $rel
     if (Test-Path $p) { Write-Ok "$rel presente" }
     else { Write-Bad "$rel AUSENTE - rode scripts\sync_windows.bat (ou git pull)" }
@@ -150,7 +151,37 @@ if ($pyExe) {
     if ($LASTEXITCODE -eq 0) {
         Write-Ok "rebrowser-playwright instalado (obrigatorio p/ passar no Akamai)"
     } else {
-        Write-Bad "rebrowser-playwright NAO importavel na venv - pip install -r requirements.txt && python -m rebrowser_playwright install chromium"
+        Write-Bad "rebrowser-playwright NAO importavel na venv - rode scripts\ensure_deps.bat --force"
+    }
+
+    # Dependencias que faltam em SILENCIO: sem as libs do Google o historico
+    # cai no disco local e o CSV nao e espelhado - a coleta "da certo" e o dado
+    # fica preso na maquina. A coleta agendada agora roda ensure_deps.bat, mas
+    # este check pega o PC que ainda nao pegou o commit que a chama.
+    $pkgs = [ordered]@{
+        "pyarrow"                  = "historico em Parquet"
+        "googleapiclient"          = "upload no Google Drive"
+        "google_auth_oauthlib"     = "OAuth do Drive"
+        "curl_cffi"                = "Casas Bahia / Shopee"
+        "openpyxl"                 = "import do PriceTrack (.xlsx)"
+    }
+    $faltando = @()
+    foreach ($mod in $pkgs.Keys) {
+        & $pyExe -c "import $mod" 2>$null
+        if ($LASTEXITCODE -ne 0) { $faltando += "$mod ($($pkgs[$mod]))" }
+    }
+    if ($faltando.Count -gt 0) {
+        Write-Bad "Pacote(s) do requirements.txt AUSENTE(s): $($faltando -join '; ') - rode scripts\ensure_deps.bat --force"
+    } else {
+        Write-Ok "Dependencias criticas do requirements.txt presentes"
+    }
+
+    $stamp = Join-Path $BaseDir "logs\deps_state.txt"
+    if (Test-Path $stamp) {
+        $age = (Get-Date) - (Get-Item $stamp).LastWriteTime
+        Write-Info ("Ultima instalacao de dependencias: ha {0:N1} dia(s)" -f $age.TotalDays)
+    } else {
+        Write-Info "Sem logs\deps_state.txt - as dependencias serao verificadas na proxima coleta agendada"
     }
 } else {
     Write-Bad "Nenhuma venv (.venv/venv) - rode scripts\sync_windows.bat"
@@ -163,8 +194,47 @@ if (Test-Path $envFile) {
         if ($envText -match "(?m)^\s*$key\s*=\s*\S") { Write-Ok ".env tem $key" }
         else { Write-Warn ".env sem $key (upload/alerta pode nao funcionar)" }
     }
+    # Sem GDRIVE_FOLDER_ID o backend do historico e resolvido como 'local'
+    foreach ($key in @("GDRIVE_FOLDER_ID", "GDRIVE_CLIENT_ID", "GDRIVE_CLIENT_SECRET", "GDRIVE_REFRESH_TOKEN")) {
+        if ($envText -match "(?m)^\s*$key\s*=\s*\S") { Write-Ok ".env tem $key" }
+        else { Write-Bad ".env sem $key - o historico/CSV NAO vai para o Drive (rode: python scripts\gdrive_setup.py --client-secrets <json>)" }
+    }
 } else {
     Write-Bad ".env nao encontrado em $BaseDir"
+}
+
+# --- 2b. Destino do historico (Drive x disco) ----------------------------------
+Write-Sect "Destino dos dados coletados"
+
+if ($pyExe) {
+    Push-Location $BaseDir
+    # Le a mesma resolucao que main.py usa (RAC_HISTORY_BACKEND + GDRIVE_*),
+    # sem tocar na rede: e leitura de configuracao, nao teste de upload.
+    $destino = & $pyExe -c "from utils.history import resolve_backend_name, csv_mirror_enabled; import os; print(resolve_backend_name()); print('on' if csv_mirror_enabled() else 'off'); print(os.getenv('RAC_HISTORY','on'))" 2>$null
+    Pop-Location
+
+    if ($LASTEXITCODE -ne 0 -or -not $destino) {
+        Write-Bad "Nao consegui resolver o destino do historico (imports falhando?) - rode scripts\ensure_deps.bat --force"
+    } else {
+        $backend  = ($destino | Select-Object -First 1).Trim()
+        $csvEspelho = ($destino | Select-Object -Skip 1 -First 1).Trim()
+        $histOn   = ($destino | Select-Object -Skip 2 -First 1).Trim()
+
+        if ($histOn -match "^(off|0|false)$") {
+            Write-Bad "RAC_HISTORY=$histOn no .env - a coleta NAO grava historico nenhum"
+        }
+        if ($backend -eq "drive") {
+            Write-Ok "Historico -> Google Drive (Parquet por dia)"
+        } else {
+            Write-Bad "Historico -> DISCO LOCAL (data\history): o dado sai da coleta e nao sai da maquina. Configure: python scripts\gdrive_setup.py --client-secrets <json>"
+        }
+        if ($csvEspelho -eq "on") {
+            Write-Ok "CSV da coleta -> espelhado no Drive (csv_coletas/)"
+        } else {
+            Write-Warn "RAC_DRIVE_CSV=off - o CSV cru fica so em output\ nesta maquina"
+        }
+        Write-Info "Teste de ida e volta no Drive (grava/le/apaga): python scripts\gdrive_setup.py --check"
+    }
 }
 
 $profileDir = Join-Path $BaseDir "data\chrome_profile"
@@ -248,9 +318,10 @@ if ($script:ErrCount -eq 0 -and $script:WarnCount -eq 0) {
     Write-Host " Resultado: $($script:ErrCount) erro(s), $($script:WarnCount) aviso(s)." -ForegroundColor $(if ($script:ErrCount -gt 0) { "Red" } else { "Yellow" })
     Write-Host ""
     Write-Host " Correcao padrao (resolve a maioria dos erros acima):" -ForegroundColor Yellow
-    Write-Host "   1. git pull --ff-only origin main   (ou scripts\sync_windows.bat)" -ForegroundColor Gray
-    Write-Host "   2. PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1" -ForegroundColor Gray
-    Write-Host "   3. Teste: Start-ScheduledTask -TaskName 'RAC_Local_Manha'" -ForegroundColor Gray
+    Write-Host "   1. scripts\sync_windows.bat   (git pull + dependencias + check do Drive)" -ForegroundColor Gray
+    Write-Host "   2. Drive ainda nao configurado? python scripts\gdrive_setup.py --client-secrets <json>" -ForegroundColor Gray
+    Write-Host "   3. PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1" -ForegroundColor Gray
+    Write-Host "   4. Teste: Start-ScheduledTask -TaskName 'RAC_Local_Manha'" -ForegroundColor Gray
     Write-Host "      e confira: Get-Content logs\scheduler.log -Tail 30" -ForegroundColor Gray
 }
 Write-Host "==========================================================="

@@ -89,6 +89,20 @@ if not "%~4"=="" set "PRIORITY=%PRIORITY% %~4"
 goto :collect
 
 :collect
+:: Dependencias antes da coleta: o estagio A ja fez `git pull`, entao o codigo
+:: e novo mas a venv pode ser antiga. Sem isto o notebook rodava codigo que
+:: importa libs que ele nao tem - foi assim que o historico deixou de ir ao
+:: Drive (google-api-python-client ausente -> backend cai para local). Sai em
+:: ~1s quando nada mudou; nao aborta a coleta se a instalacao falhar (coletar
+:: com a venv antiga e melhor que nao coletar).
+if exist "%~dp0ensure_deps.bat" (
+    echo [%DATE% %TIME%] [%SLOT%] verificando dependencias Python
+    call "%~dp0ensure_deps.bat"
+    if errorlevel 1 echo [%DATE% %TIME%] [%SLOT%] AVISO: ensure_deps falhou - seguindo com a venv atual
+) else (
+    echo [%DATE% %TIME%] [%SLOT%] AVISO: ensure_deps.bat ausente - rode scripts\sync_windows.bat
+)
+
 echo [%DATE% %TIME%] [%SLOT%] coleta local: %PAGES% pagina(s), prioridade "%PRIORITY%"
 call "%~dp0collect_local_authenticated.bat" %PAGES% %PRIORITY%
 set "RC=%ERRORLEVEL%"
