@@ -425,6 +425,54 @@ def _resolve_secret(name: str) -> str:
     return os.getenv(name, "").strip()
 
 
+# Credenciais lidas por `utils.history` — que resolve tudo por os.environ, sem
+# conhecer st.secrets.
+_HISTORY_ENV_KEYS = (
+    "GDRIVE_FOLDER_ID",
+    "GDRIVE_CLIENT_ID",
+    "GDRIVE_CLIENT_SECRET",
+    "GDRIVE_REFRESH_TOKEN",
+    "GDRIVE_SERVICE_ACCOUNT_JSON",
+    "RAC_HISTORY_BACKEND",
+    "RAC_HISTORY_DIR",
+    "RAC_HOT_WINDOW_DAYS",
+)
+
+
+def _exportar_credenciais_historico() -> None:
+    """Publica em os.environ os secrets que `utils.history` espera ler de lá.
+
+    `utils/history/store.py` e `backends.py` resolvem backend e credencial por
+    `os.getenv` — eles rodam também na coleta, onde não existe Streamlit. No
+    Cloud os secrets costumam aparecer no ambiente, mas isso é um detalhe da
+    plataforma: sem esta ponte, um `secrets.toml` bastaria para o dashboard
+    achar o Supabase e mesmo assim silenciosamente ignorar o Drive.
+
+    Note:
+        Nunca sobrescreve uma variável já presente no ambiente — a intenção
+        explícita do host vence.
+    """
+    for chave in _HISTORY_ENV_KEYS:
+        if os.getenv(chave, "").strip():
+            continue
+        valor = _resolve_secret(chave)
+        if valor:
+            os.environ[chave] = valor
+
+
+def _avisar_uma_vez(chave: str, mensagem: str) -> None:
+    """Emite `st.warning` uma vez por sessão para a mesma chave.
+
+    `query_coletas` roda em toda interação e em várias páginas; sem o
+    de-duplicador o mesmo aviso empilharia a cada rerun.
+    """
+    vistos = st.session_state.setdefault("_avisos_emitidos", set())
+    if chave in vistos:
+        return
+    vistos.add(chave)
+    st.warning(mensagem, icon="⚠️")
+
+
 # TODO(segurança, fora do escopo do módulo Price Evolution): a validação
 # read-only de 2026-06-16 apontou RLS DESABILITADO em todas as tabelas do
 # schema public (a anon key lê/escreve tudo: coletas, pricetrack_daily, etc).
@@ -1091,12 +1139,21 @@ def _history_gap_fill(
         return pd.DataFrame()
     try:
         from utils.history import get_store
+        _exportar_credenciais_historico()
         df = get_store().read("coletas", start=start_date, end=end_date)
     except Exception as exc:
         # app.py não usa loguru no escopo global — import local para não
         # engolir a causa em silêncio.
         from loguru import logger as _logger
         _logger.warning(f"[Dashboard] histórico frio indisponível: {exc}")
+        # No Streamlit Cloud ninguém lê o log do servidor: sem este aviso, uma
+        # dependência faltando no requirements_app.txt aparece como "o período
+        # simplesmente não tem dado" — indistinguível de um recorte vazio.
+        _avisar_uma_vez(
+            "historico_frio_indisponivel",
+            f"Histórico frio (Parquet no Drive) indisponível — o painel está "
+            f"mostrando apenas o que o Supabase devolveu. Causa: {exc}",
+        )
         return pd.DataFrame()
 
     if df.empty:

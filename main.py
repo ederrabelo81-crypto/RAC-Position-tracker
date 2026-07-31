@@ -555,7 +555,11 @@ def main() -> None:
         # depois verifica se as credenciais estão disponíveis.
         try:
             from utils.supabase_client import upload_to_supabase, log_auditoria_run
-            import os
+            # NÃO reimportar `os` aqui: um `import os` local torna o nome local em
+            # TODO o corpo de main(), e o bloco do histórico acima (que roda antes)
+            # passa a levantar UnboundLocalError. Foi o que derrubou as 12 coletas
+            # agendadas entre 26 e 31/07/2026 — sempre depois do CSV, sempre antes
+            # do histórico e do upload. O módulo já importa `os` no topo.
             _supabase_url = os.getenv("SUPABASE_URL", "").strip()
             _supabase_key = os.getenv("SUPABASE_KEY", "").strip()
             if not _supabase_url or not _supabase_key:

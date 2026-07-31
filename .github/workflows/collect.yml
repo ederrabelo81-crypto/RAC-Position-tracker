@@ -120,11 +120,33 @@ jobs:
       - name: Install xvfb (virtual display for Magalu)
         run: sudo apt-get install -y xvfb
 
+      # ── 7b. Destino do histórico frio ─────────────────────────────────────
+      - name: Check cold history destination
+        env:
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          if [ -z "$GDRIVE_FOLDER_ID" ]; then
+            echo "::warning title=Histórico frio sem Drive::GDRIVE_FOLDER_ID não \
+          está cadastrado nos secrets. O Parquet será gravado no disco efêmero do \
+          runner e perdido no fim do job (o CSV segue como artifact). Configure os \
+          secrets GDRIVE_* — ver docs/HISTORICO_DRIVE.md."
+          else
+            echo "Histórico frio → Google Drive (pasta ${GDRIVE_FOLDER_ID:0:6}…)"
+          fi
+
       # ── 8. Coleta Python ───────────────────────────────────────────────────
       - name: Run Python collector (xvfb + MAGALU_HEADLESS=false)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # Histórico frio no Drive. O runner é efêmero: sem estas credenciais o
+          # Parquet é gravado no disco do runner e some junto com a máquina — a
+          # coleta "funciona" e o histórico não chega a lugar nenhum. Cadastre os
+          # quatro valores como secrets do repositório (ver docs/HISTORICO_DRIVE.md).
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           MAGALU_HEADLESS: 'false'
           CI: 'true'
         run: |
@@ -147,7 +169,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rac-coleta-${{ steps.params.outputs.turno }}-${{ github.run_id }}
-          path: output/*.csv
+          path: |
+            output/*.csv
+            data/history/**/*.parquet
           retention-days: 30
           if-no-files-found: warn
 

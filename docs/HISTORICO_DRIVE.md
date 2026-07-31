@@ -276,6 +276,9 @@ gravá-lo no lugar errado — e `history_cli.py stats` mostra onde ele está.
 | `O Google não devolveu refresh_token` | App já autorizado antes | Revogue em https://myaccount.google.com/permissions e repita |
 | `tier` retorna código 2 | Supabase restrito (402) recusa até leitura | Libere espaço pelo SQL Editor (`scripts/retention_cleanup.sql`) e repita |
 | Dashboard mostra "exibindo N linhas do histórico frio" | Supabase fora do ar | Esperado — é a degradação funcionando |
+| Dashboard avisa "Histórico frio indisponível" | Deploy sem `pyarrow`/libs do Google | Use `requirements_app.txt` (já traz as quatro) e faça reboot do app |
+| Drive parou de receber partições e o CSV continua saindo | Coleta morre entre o CSV e o histórico | Ver o fim do log do run: `UnboundLocalError` em `main()` foi essa falha em 26–31/07/2026 (`tests/test_pipeline_entrypoint.py` cobre a regressão) |
+| GitHub Actions roda "com sucesso" e nada chega ao Drive | Secrets `GDRIVE_*` não cadastrados no repositório | O workflow emite `::warning` no início do job; cadastre os quatro secrets |
 
 ---
 

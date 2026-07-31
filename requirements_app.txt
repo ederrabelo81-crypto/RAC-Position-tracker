@@ -12,3 +12,12 @@ supabase>=2.3.0
 python-dotenv==1.0.1
 loguru==0.7.2
 anthropic>=0.40.0
+
+# Histórico frio (Parquet no Google Drive). O dashboard costura a janela quente
+# do Supabase com o histórico — sem estas libs, `_history_gap_fill` falha no
+# import, cai no except e o painel exibe só o que o banco devolveu, sem erro
+# visível. Ver docs/HISTORICO_DRIVE.md.
+pyarrow>=15.0.0
+google-api-python-client>=2.100.0
+google-auth>=2.30.0
+google-auth-oauthlib>=1.2.0
