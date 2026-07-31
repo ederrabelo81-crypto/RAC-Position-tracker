@@ -128,6 +128,27 @@ def _wait_cdp(port: int, seconds: int = 15) -> bool:
 
 _ML_EMAIL_FIELD = "input[name='user_id'], input#user_id, input[type='email']"
 
+# Candidatos ao link de login da home, do mais explícito ao mais genérico —
+# testados UM A UM (não em união com `.first`, que entrega quem vier primeiro
+# no DOM, podendo ser um card promocional apontando para a rota velha).
+# Todos excluem `/msl/`: é justamente o caminho que virou 404 em 31/07/2026.
+_ML_LOGIN_LINK_SELECTORS = (
+    "a[data-link-id='login']",
+    "a[href*='/lgz/']:not([href*='/msl/'])",
+    "a:has-text('Entre'):not([href*='/msl/'])",
+    "a:has-text('Entrar'):not([href*='/msl/'])",
+    "a[href*='login']:not([href*='/msl/'])",
+)
+
+
+def _tem_campo_email(page) -> bool:
+    """True se o formulário de login (campo de e-mail/usuário) está visível."""
+    try:
+        page.locator(_ML_EMAIL_FIELD).first.wait_for(state="visible", timeout=8_000)
+        return True
+    except Exception:
+        return False
+
 
 def _abrir_login_ml(page) -> bool:
     """
@@ -135,35 +156,29 @@ def _abrir_login_ml(page) -> bool:
 
     Nada de rota fixa: o ML muda o caminho do fluxo (`/jms/mlb/lgz/msl/login`
     virou 404 em 31/07/2026). Tenta a rota de conta (que redireciona para o
-    login atual quando anônimo) e, se não der, clica no "Entre" da home.
+    login atual quando anônimo) e, se não der, percorre os candidatos a link
+    "Entre" da home até um deles revelar o formulário.
 
     Returns:
         True se o campo de e-mail está visível na página.
     """
-    def tem_campo() -> bool:
-        try:
-            page.locator(_ML_EMAIL_FIELD).first.wait_for(state="visible", timeout=8_000)
-            return True
-        except Exception:
-            return False
-
     try:
         page.goto(_ML_ACCOUNT_URL, wait_until="domcontentloaded", timeout=45_000)
     except Exception:
         pass
-    if tem_campo():
+    if _tem_campo_email(page):
         return True
 
-    try:
-        page.goto(_ML_HOME, wait_until="domcontentloaded", timeout=45_000)
-        page.locator(
-            "a[href*='/lgz/'], a[href*='login'], "
-            "a:has-text('Entre'), a:has-text('Entrar')"
-        ).first.click(timeout=8_000)
-        page.wait_for_load_state("domcontentloaded")
-    except Exception:
-        return False
-    return tem_campo()
+    for seletor in _ML_LOGIN_LINK_SELECTORS:
+        try:
+            page.goto(_ML_HOME, wait_until="domcontentloaded", timeout=45_000)
+            page.locator(seletor).first.click(timeout=6_000)
+            page.wait_for_load_state("domcontentloaded")
+        except Exception:
+            continue
+        if _tem_campo_email(page):
+            return True
+    return False
 
 
 def _ml_auto_login(port: int) -> bool:
