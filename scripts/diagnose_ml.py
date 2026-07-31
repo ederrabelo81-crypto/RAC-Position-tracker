@@ -91,13 +91,35 @@ BLOCK_PATTERNS = {
 }
 
 
+def has_serp_cards(html: str) -> bool:
+    """True se o HTML tem card de produto — evidência de SERP utilizável."""
+    return any(
+        marcador in html
+        for marcador in (
+            "ui-search-layout__item", "ui-search-result__wrapper", "poly-card",
+            "ui-search-layout--grid__item", "ui-search-results",
+        )
+    )
+
+
 def detect_block(html: str, url: str) -> str | None:
+    """
+    Classifica a página: gate/captcha, ou None se ela é utilizável.
+
+    Mesma ordem do scraper (`MLScraper._gate_reason`): URL de gate primeiro,
+    depois EVIDÊNCIA (tem card?) e só então as strings. A SERP normal carrega
+    o CTA "acesse sua conta" no header e o script de device fingerprint — casar
+    essas strings numa SERP cheia é falso positivo, e foi o que zerou a coleta
+    de 31/07/2026.
+    """
     lower_html = html.lower()
     lower_url  = url.lower()
     if "account-verification" in lower_url or "webdevice" in lower_url:
         return "login_gate (URL)"
+    if has_serp_cards(html):
+        return None
     if "para continuar, acesse sua conta" in lower_html:
-        return "login_gate (page content)"
+        return "login_gate (page content, sem cards)"
     if "captcha" in lower_html:
         return "captcha"
     if "unusual traffic" in lower_html:

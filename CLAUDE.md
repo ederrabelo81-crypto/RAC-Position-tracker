@@ -748,7 +748,7 @@ python utils/supabase_client.py                   # Run cleanup functions
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Mercado Livre | ✅ | Buy box + Loja Oficial; browser (default) ou `MLAPIScraper` (API oficial, requer `ML_APP_ID`/`ML_APP_SECRET`) |
+| Mercado Livre | ✅ | Buy box + Loja Oficial; browser (default) ou `MLAPIScraper` (API oficial, requer `ML_APP_ID`/`ML_APP_SECRET` — usado **automaticamente** como fallback quando a keyword leva login gate). Gate: detecção é **evidência primeiro** (card na página vence a string); persistiu → HTML em `logs/ml_gate_*.html` e roteiro no log. Antídoto: `python scripts/setup_local_profile.py --site mercadolivre` |
 | Amazon | ✅ | Buy box via "Vendido por"; `Qtd Sellers` de "X ofertas"; 1P vs 3P |
 | Leroy Merlin | ✅ | Algolia API; 1P vs 3P marketplace. Seller 3P vem como **ObjectId opaco** — resolvido via PDP ("Vendido e entregue por") com cache persistente em `data/leroy_sellers.json` (1 PDP por seller novo, não por produto). Diagnóstico: `python scripts/leroy_seller_probe.py --scan "<keyword>"` |
 | Google Shopping | ⚠️ | reCAPTCHA em headless; `Qtd Sellers` = nº de lojas comparando |
