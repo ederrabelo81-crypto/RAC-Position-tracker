@@ -44,27 +44,75 @@ def _top_level_import_names(tree: ast.Module) -> Set[str]:
 def _shadowing_imports(source: str) -> List[Tuple[str, str, int]]:
     """Imports dentro de funções que resombreiam um import de módulo.
 
+    A varredura desce por classes e funções aninhadas, e atribui cada import à
+    função **mais interna** que o contém — que é a única cujo escopo ele
+    resombreia. Reportar pelo escopo de fora apontaria a linha certa com o nome
+    errado.
+
     Args:
         source: Código-fonte do arquivo.
 
     Returns:
-        Tuplas ``(função, nome, linha)`` — vazia quando não há sombreamento.
+        Tuplas ``(função, nome, linha)``, uma por ocorrência — vazia quando não
+        há sombreamento.
     """
     tree = ast.parse(source)
     do_topo = _top_level_import_names(tree)
-
     achados: List[Tuple[str, str, int]] = []
-    for func in ast.walk(tree):
-        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for node in ast.walk(func):
-            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+
+    def visitar(no: ast.AST, funcao_atual: str) -> None:
+        for filho in ast.iter_child_nodes(no):
+            if isinstance(filho, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visitar(filho, filho.name)
                 continue
-            for alias in node.names:
-                nome = (alias.asname or alias.name).split(".")[0]
-                if nome in do_topo:
-                    achados.append((func.name, nome, node.lineno))
+            if funcao_atual and isinstance(filho, (ast.Import, ast.ImportFrom)):
+                for alias in filho.names:
+                    nome = (alias.asname or alias.name).split(".")[0]
+                    if nome in do_topo:
+                        achados.append((funcao_atual, nome, filho.lineno))
+            visitar(filho, funcao_atual)
+
+    visitar(tree, "")
     return achados
+
+
+def test_detector_aponta_a_funcao_mais_interna():
+    """Import em função aninhada é reportado uma vez, com o nome de dentro."""
+    fonte = (
+        "import os\n"
+        "\n"
+        "def externa():\n"
+        "    def interna():\n"
+        "        import os\n"
+        "        return os\n"
+        "    return interna\n"
+    )
+    assert _shadowing_imports(fonte) == [("interna", "os", 5)]
+
+
+def test_detector_desce_em_metodos_de_classe():
+    """Método de classe também tem escopo próprio — precisa ser varrido."""
+    fonte = (
+        "import json\n"
+        "\n"
+        "class C:\n"
+        "    def metodo(self):\n"
+        "        import json\n"
+        "        return json\n"
+    )
+    assert _shadowing_imports(fonte) == [("metodo", "json", 5)]
+
+
+def test_detector_ignora_import_local_de_nome_novo():
+    """Só resombreamento importa: import local de nome inédito é legítimo."""
+    fonte = (
+        "import os\n"
+        "\n"
+        "def f():\n"
+        "    from utils.history import get_store\n"
+        "    return get_store, os\n"
+    )
+    assert _shadowing_imports(fonte) == []
 
 
 @pytest.mark.parametrize("arquivo", ENTRYPOINTS)
