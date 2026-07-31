@@ -229,3 +229,39 @@ def test_csv_ilegivel_nao_aborta_o_resgate_dos_demais(tmp_path, monkeypatch):
     assert totais["falhas"] == 1
     assert totais["particoes"] == 1  # o CSV bom foi gravado mesmo assim
     assert totais["linhas"] == 1
+
+
+def test_duplicata_grava_na_ordem_cronologica_nao_alfabetica(tmp_path, monkeypatch):
+    """CSVs homônimos caem na mesma partição — tem de vencer o run mais novo.
+
+    Ordenar pelo caminho inteiro punha `artifact-10` antes de `artifact-9`, e o
+    artifact ANTIGO gravava por último, ficando no histórico.
+    """
+    import scripts.upload_csv as upload_csv
+    from scripts import recover_from_artifacts as rfa
+
+    nome = "rac_monitoramento_20260731_1402.csv"
+    velho = tmp_path / "artifact-9" / nome     # run mais antigo, id menor
+    novo = tmp_path / "artifact-10" / nome     # run mais recente, id maior
+    for caminho, marca in ((velho, "velho"), (novo, "novo")):
+        caminho.parent.mkdir(parents=True)
+        caminho.write_text(marca)
+
+    gravados: list[str] = []
+    monkeypatch.setattr(
+        upload_csv, "_load_csv", lambda p: [{"marca": p.read_text()}]
+    )
+    monkeypatch.setattr(rfa, "get_store", lambda: object())
+    monkeypatch.setattr(
+        rfa, "write_records",
+        lambda registros, run_id, store: gravados.append(
+            registros[0]["marca"]
+        ) or ["chave"],
+    )
+
+    # `main` monta a lista por `created_at` crescente: o mais novo vem por último.
+    rfa._carregar([velho, novo], dry_run=False, para_supabase=False)
+
+    assert gravados[-1] == "novo", (
+        f"o último a gravar deveria ser o artifact mais recente, foi {gravados}"
+    )

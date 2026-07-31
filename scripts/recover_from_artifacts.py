@@ -258,8 +258,15 @@ def _carregar(
 ) -> Dict[str, int]:
     """Carrega os CSVs no histórico frio (e opcionalmente no Supabase).
 
+    A ordem da carga importa: CSVs de mesmo nome derivam o mesmo ``run_id`` e
+    caem na mesma partição, então quem grava por último prevalece. Ordenar pelo
+    nome do arquivo mantém o log legível dia a dia (o nome carrega data e hora)
+    — e, como ``sorted`` é estável, empates preservam a ordem de ``csvs``, que
+    ``main`` monta por ``created_at`` crescente. Ordenar pelo caminho inteiro
+    quebraria isso: ``artifact-10`` viria antes de ``artifact-9``.
+
     Args:
-        csvs: Arquivos extraídos.
+        csvs: Arquivos extraídos, em ordem cronológica de artifact.
         dry_run: Só conta as linhas, não grava.
         para_supabase: Também repõe as linhas no banco.
 
@@ -272,7 +279,7 @@ def _carregar(
     store = None if dry_run else get_store()
     totais = {"linhas": 0, "particoes": 0, "falhas": 0}
 
-    for csv in sorted(csvs):
+    for csv in sorted(csvs, key=lambda p: p.name):
         # Um CSV torto (zip truncado, coluna faltando) não pode abortar o
         # resgate: os artifacts já foram baixados e os dias seguintes ficariam
         # sem carga nenhuma, com a janela de retenção correndo.
@@ -414,8 +421,8 @@ def main() -> int:
             if anterior is not None:
                 logger.warning(
                     f"{novo.name}: mesmo nome de CSV em {anterior} e "
-                    f"{art.get('name')} — mesma partição, o segundo prevalece. "
-                    "Confira se são a mesma coleta."
+                    f"{art.get('name')} — mesma partição, prevalece o artifact "
+                    "mais recente. Confira se são a mesma coleta."
                 )
             vistos[novo.name] = str(art.get("name"))
         logger.info(f"{art['name']}: {len(baixados)} CSV(s) extraído(s).")
