@@ -195,3 +195,21 @@ descartada por engano.
 sessão está **ANÔNIMA** ou **AUTENTICADA** — antes disso, nem dava para saber.
 **Files:** `scrapers/mercado_livre.py` `_inject_saved_session()`,
 `_log_session_state()`, `scripts/setup_local_profile.py --site mercadolivre`
+
+## 17. ML `/gz/account-verification`: insistir com o MESMO device id
+
+**Wrong:** Ao ver `lista.mercadolivre.com.br/...` redirecionar para
+`www.mercadolivre.com.br/gz/account-verification?go=...`, recarregar a SERP
+keyword após keyword com os mesmos cookies.
+**Why:** `_d2id` é o id de DISPOSITIVO do ML. Uma vez marcado, TODA navegação
+para `/lista` cai na verificação — a home continua abrindo normalmente, o que
+faz parecer "site ok, scraper quebrado". Em 31/07 foram 40 keywords × 3
+tentativas contra o mesmo cookie queimado.
+**Right:** `_reset_anonymous_identity()` — sessão anônima não tem nada a
+preservar: limpa os cookies do domínio ML (com filtro de `domain`, senão
+apagaria a sessão da Shopee no Chrome compartilhado), reaquece a home e segue
+com device id novo. Uma vez por run, e NUNCA quando logado (deslogaria o
+usuário). Antídoto definitivo: logar o perfil
+(`setup_local_profile.py --site mercadolivre [--auto]`) ou API oficial.
+**Files:** `scrapers/mercado_livre.py` `_reset_anonymous_identity()`,
+`_try_solve_verification()`
