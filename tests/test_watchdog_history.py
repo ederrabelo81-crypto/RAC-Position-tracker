@@ -132,3 +132,29 @@ def test_dia_vizinho_nao_conta(frio):
 
     assert _check_history(DIA)["status"] == "FAIL"
     assert _check_history("2026-07-30")["rows"] == 500
+
+
+def test_check_que_nao_roda_reprova_em_vez_de_sumir(monkeypatch, capsys):
+    """pyarrow ausente/credencial podre não pode devolver watchdog verde.
+
+    Antes a exceção só virava `logger.warning` e `hist` ficava `None`: com o
+    Supabase saudável, o job terminava verde tendo pulado a verificação do
+    backup inteira — a mesma cegueira do incidente, por outro caminho.
+    """
+    import scripts.daily_status_check as dsc
+
+    monkeypatch.setattr(
+        dsc, "_check_history",
+        lambda _: (_ for _ in ()).throw(ImportError("No module named 'pyarrow'")),
+    )
+    monkeypatch.setattr(dsc, "_fetch_counts", lambda *a, **k: {})
+    monkeypatch.setattr(
+        dsc, "_build_report",
+        lambda *a, **k: ([], {"pass": 1, "warn": 0, "fail": 0, "critical_fail": 0}),
+    )
+    monkeypatch.setattr(sys, "argv", ["daily_status_check.py", "--no-notify"])
+
+    codigo = dsc.main()
+
+    assert codigo != 0, "check indisponível não pode terminar verde"
+    assert "HISTÓRICO FRIO: ❌ FAIL" in capsys.readouterr().out

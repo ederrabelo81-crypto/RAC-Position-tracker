@@ -55,7 +55,7 @@ import io
 import os
 import sys
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -66,6 +66,7 @@ _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from utils.history import get_store, write_records  # noqa: E402
+from utils.text import BRT  # noqa: E402
 
 _API = "https://api.github.com"
 _DEFAULT_REPO = "ederrabelo81-crypto/RAC-Position-tracker"
@@ -134,12 +135,28 @@ def _list_artifacts(repo: str, token: str) -> List[Dict[str, Any]]:
 
 
 def _artifact_day(artifact: Dict[str, Any]) -> Optional[date]:
-    """Dia do artifact, pelo ``created_at`` (UTC) do run que o produziu."""
-    raw = artifact.get("created_at") or ""
+    """Dia **BRT** da coleta, convertido do ``created_at`` (UTC) do run.
+
+    A conversão não é cosmética. O turno Fechamento dispara às ``0 0 * * *``
+    (00:00 UTC = 21:00 BRT), então o artifact da coleta de 31/07 nasce com
+    ``created_at`` já em 01/08. Cortar pela data UTC faria
+    ``--end 2026-07-31`` descartar em silêncio justamente o Fechamento do
+    último dia do intervalo — e é o dia do incidente que se quer resgatar.
+
+    Args:
+        artifact: Artifact como a API devolve (usa ``created_at``).
+
+    Returns:
+        A data BRT do run, ou ``None`` se ``created_at`` vier ilegível.
+    """
+    raw = str(artifact.get("created_at") or "")
     try:
-        return datetime.strptime(raw[:10], "%Y-%m-%d").date()
+        momento = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if momento.tzinfo is None:
+        momento = momento.replace(tzinfo=timezone.utc)
+    return momento.astimezone(BRT).date()
 
 
 def _selecionar(
@@ -181,13 +198,18 @@ def _selecionar(
 def _baixar_csvs(art: Dict[str, Any], token: str, destino: Path) -> List[Path]:
     """Baixa o zip do artifact e extrai os CSVs para ``destino``.
 
+    Cada artifact ganha o próprio subdiretório. Dois runs que começam no mesmo
+    minuto geram CSVs de nome idêntico (``..._YYYYMMDD_HHMM.csv``); num destino
+    compartilhado o segundo sobrescreveria o primeiro **antes** da carga, e a
+    coleta mais antiga sumiria sem nenhum aviso.
+
     Args:
         art: Artifact da API (precisa de ``archive_download_url``).
         token: Token do GitHub.
-        destino: Diretório onde os CSVs são gravados (criado se preciso).
+        destino: Diretório raiz dos CSVs extraídos (criado se preciso).
 
     Returns:
-        Caminhos dos CSVs extraídos.
+        Caminhos dos CSVs extraídos, dentro de ``destino/<artifact>/``.
 
     Raises:
         RecoveryError: se o download falhar ou o zip vier corrompido.
@@ -202,17 +224,22 @@ def _baixar_csvs(art: Dict[str, Any], token: str, destino: Path) -> List[Path]:
             f"{art.get('name')}: download devolveu HTTP {resp.status_code}."
         )
 
-    destino.mkdir(parents=True, exist_ok=True)
+    # `id` é único por artifact; o nome (`rac-coleta-<turno>-<run_id>`) serve de
+    # reserva e também é único por run.
+    sub = str(art.get("id") or art.get("name") or "sem-id")
+    pasta = destino / f"artifact-{sub}"
+    pasta.mkdir(parents=True, exist_ok=True)
     extraidos: List[Path] = []
     try:
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
             for nome in zf.namelist():
                 if not nome.lower().endswith(".csv"):
                     continue  # o artifact também carrega os .parquet do runner
-                # `Path(nome).name` descarta o diretório de dentro do zip: o
-                # nome do CSV já é único (carrega data e hora da coleta) e é
-                # dele que sai o run_id determinístico da partição.
-                alvo = destino / Path(nome).name
+                # `Path(nome).name` descarta o diretório de dentro do zip, mas
+                # preserva o nome do CSV: é dele que sai o run_id determinístico
+                # da partição, e ele precisa bater com o de `history_cli
+                # import-csv` para reimportar o mesmo dia ser idempotente.
+                alvo = pasta / Path(nome).name
                 alvo.write_bytes(zf.read(nome))
                 extraidos.append(alvo)
     except zipfile.BadZipFile as exc:
@@ -246,7 +273,16 @@ def _carregar(
     totais = {"linhas": 0, "particoes": 0, "falhas": 0}
 
     for csv in sorted(csvs):
-        registros = _load_csv(csv)
+        # Um CSV torto (zip truncado, coluna faltando) não pode abortar o
+        # resgate: os artifacts já foram baixados e os dias seguintes ficariam
+        # sem carga nenhuma, com a janela de retenção correndo.
+        try:
+            registros = _load_csv(csv)
+        except Exception as exc:
+            logger.error(f"{csv.name}: falha ao ler o CSV ({exc}) — pulado.")
+            totais["falhas"] += 1
+            continue
+
         if not registros:
             logger.warning(f"{csv.name}: 0 registros — pulado.")
             continue
@@ -260,7 +296,13 @@ def _carregar(
             totais["linhas"] += len(registros)
             continue
 
-        keys = write_records(registros, run_id=run_id, store=store)
+        try:
+            keys = write_records(registros, run_id=run_id, store=store)
+        except Exception as exc:
+            logger.error(f"{csv.name}: falha ao gravar no histórico ({exc}).")
+            totais["falhas"] += 1
+            continue
+
         if not keys:
             logger.error(f"{csv.name}: nenhuma partição gravada.")
             totais["falhas"] += 1
@@ -341,8 +383,9 @@ def main() -> int:
 
     logger.info(f"{len(elegiveis)} artifact(s) elegível(is):")
     for art in elegiveis:
+        dia = _artifact_day(art)
         logger.info(
-            f"  {art['name']} — {art.get('created_at', '?')[:10]}, "
+            f"  {art['name']} — {dia.isoformat() if dia else '?'} (BRT), "
             f"{art.get('size_in_bytes', 0) / 1024:.0f} KB, "
             f"expira em {art.get('expires_at', '?')[:10]}"
         )
@@ -351,6 +394,7 @@ def main() -> int:
 
     destino = Path(args.dest) if args.dest else _ROOT / "output" / "recuperados"
     csvs: List[Path] = []
+    vistos: Dict[str, str] = {}  # nome do CSV → artifact que o trouxe
     for art in elegiveis:
         try:
             baixados = _baixar_csvs(art, token, destino)
@@ -361,6 +405,19 @@ def main() -> int:
         if not baixados:
             logger.warning(f"{art.get('name')}: nenhum CSV dentro do zip.")
             continue
+        for novo in baixados:
+            # O run_id sai do nome do CSV: dois artifacts com o mesmo nome caem
+            # na mesma partição e o último grava por cima. Os arquivos estão
+            # preservados em disco (um subdiretório por artifact), mas o
+            # conflito precisa aparecer no log em vez de sumir na carga.
+            anterior = vistos.get(novo.name)
+            if anterior is not None:
+                logger.warning(
+                    f"{novo.name}: mesmo nome de CSV em {anterior} e "
+                    f"{art.get('name')} — mesma partição, o segundo prevalece. "
+                    "Confira se são a mesma coleta."
+                )
+            vistos[novo.name] = str(art.get("name"))
         logger.info(f"{art['name']}: {len(baixados)} CSV(s) extraído(s).")
         csvs.extend(baixados)
 

@@ -30,16 +30,28 @@ from scripts.recover_from_artifacts import (  # noqa: E402
 )
 
 
-def _art(nome: str, criado: str, expirado: bool = False) -> dict:
-    """Artifact no formato que a API do GitHub devolve."""
-    return {
+def _art(
+    nome: str,
+    criado: str,
+    expirado: bool = False,
+    hora: str = "15:23:21",
+    art_id: int | None = None,
+) -> dict:
+    """Artifact no formato que a API do GitHub devolve.
+
+    ``hora`` é UTC, como a API entrega — os testes de fuso dependem disso.
+    """
+    art = {
         "name": nome,
-        "created_at": f"{criado}T15:23:21Z",
+        "created_at": f"{criado}T{hora}Z",
         "expires_at": "2026-08-30T15:23:21Z",
         "expired": expirado,
         "size_in_bytes": 194011,
         "archive_download_url": f"https://api.github.com/artifacts/{nome}/zip",
     }
+    if art_id is not None:
+        art["id"] = art_id
+    return art
 
 
 def test_ignora_artifacts_de_log():
@@ -130,7 +142,90 @@ def test_extrai_so_os_csvs_e_achata_o_caminho(tmp_path, monkeypatch):
         lambda *a, **k: _Resp(),
     )
 
-    extraidos = _baixar_csvs(_art("rac-coleta-X", "2026-07-31"), "tok", tmp_path)
+    extraidos = _baixar_csvs(
+        _art("rac-coleta-X", "2026-07-31", art_id=77), "tok", tmp_path
+    )
 
     assert [p.name for p in extraidos] == ["rac_monitoramento_20260731_1402.csv"]
-    assert (tmp_path / "rac_monitoramento_20260731_1402.csv").exists()
+    assert (
+        tmp_path / "artifact-77" / "rac_monitoramento_20260731_1402.csv"
+    ).exists()
+
+
+def test_fechamento_da_meia_noite_utc_conta_como_o_dia_brt_anterior():
+    """O caso que o `--end` perdia: Fechamento é `0 0 * * *` = 21:00 BRT.
+
+    O artifact da coleta de 31/07 nasce com `created_at` em 01/08 UTC. Cortar
+    pela data UTC descartaria em silêncio o último Fechamento do intervalo.
+    """
+    fechamento_31 = _art("rac-coleta-Fechamento", "2026-08-01", hora="00:04:11")
+
+    assert _artifact_day(fechamento_31) == date(2026, 7, 31)
+
+    escolhidos = _selecionar(
+        [fechamento_31], date(2026, 7, 16), date(2026, 7, 31)
+    )
+    assert [a["name"] for a in escolhidos] == ["rac-coleta-Fechamento"]
+
+
+def test_artifacts_com_csv_de_mesmo_nome_nao_se_sobrescrevem(tmp_path, monkeypatch):
+    """Dois runs no mesmo minuto geram CSVs homônimos — nenhum pode sumir."""
+    def _zip_com(conteudo: str) -> bytes:
+        buf = BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(
+                "output/rac_monitoramento_20260731_1402.csv", conteudo
+            )
+        return buf.getvalue()
+
+    respostas = {
+        "https://api.github.com/artifacts/rac-coleta-A/zip": _zip_com("A\n"),
+        "https://api.github.com/artifacts/rac-coleta-B/zip": _zip_com("B\n"),
+    }
+
+    class _Resp:
+        def __init__(self, url):
+            self.status_code = 200
+            self.content = respostas[url]
+
+    monkeypatch.setattr(
+        "scripts.recover_from_artifacts.requests.get",
+        lambda url, *a, **k: _Resp(url),
+    )
+
+    a = _baixar_csvs(_art("rac-coleta-A", "2026-07-31", art_id=1), "tok", tmp_path)
+    b = _baixar_csvs(_art("rac-coleta-B", "2026-07-31", art_id=2), "tok", tmp_path)
+
+    assert a[0] != b[0]
+    assert a[0].read_text() == "A\n"
+    assert b[0].read_text() == "B\n"
+    # O nome do CSV é preservado: é dele que sai o run_id da partição.
+    assert a[0].name == b[0].name == "rac_monitoramento_20260731_1402.csv"
+
+
+def test_csv_ilegivel_nao_aborta_o_resgate_dos_demais(tmp_path, monkeypatch):
+    """Um CSV torto conta como falha e o resgate segue nos dias seguintes."""
+    import scripts.upload_csv as upload_csv
+    from scripts import recover_from_artifacts as rfa
+
+    bom = tmp_path / "rac_monitoramento_20260731_1402.csv"
+    ruim = tmp_path / "rac_monitoramento_20260730_1000.csv"
+    bom.write_text("ok\n")
+    ruim.write_text("torto\n")
+
+    def _fake_load(path):
+        if path.name.startswith("rac_monitoramento_20260730"):
+            raise ValueError("coluna Data ausente")
+        return [{"Data": "2026-07-31"}]
+
+    monkeypatch.setattr(upload_csv, "_load_csv", _fake_load)
+    monkeypatch.setattr(rfa, "get_store", lambda: object())
+    monkeypatch.setattr(
+        rfa, "write_records", lambda registros, run_id, store: ["chave"]
+    )
+
+    totais = rfa._carregar([bom, ruim], dry_run=False, para_supabase=False)
+
+    assert totais["falhas"] == 1
+    assert totais["particoes"] == 1  # o CSV bom foi gravado mesmo assim
+    assert totais["linhas"] == 1

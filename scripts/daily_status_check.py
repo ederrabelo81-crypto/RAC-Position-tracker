@@ -915,6 +915,15 @@ def _format_telegram_sem_supabase(
                 "<i>O dia está no histórico frio — o dashboard fica cego, "
                 "mas o dado não se perdeu.</i>"
             )
+        elif hist["status"] == "WARN":
+            # WARN é partição gravada porém degradada (anêmica, parcialmente
+            # ilegível). Anunciar isso como perda total seria mentira: o dado
+            # provavelmente ainda dá para recuperar, e é o detalhe acima que diz
+            # o quanto.
+            lines.append(
+                "<i>O dia chegou ao histórico frio, mas degradado — veja o "
+                "detalhe acima antes de contar com ele.</i>"
+            )
         else:
             lines.append(
                 "<b>⚠️ Sem banco e sem histórico: o dia de hoje não está em "
@@ -992,8 +1001,20 @@ def main() -> int:
     hist: Optional[Dict] = None
     try:
         hist = _check_history(data_str)
-    except Exception as exc:  # pyarrow/credencial/rede — nada aqui é fatal
+    except Exception as exc:
+        # pyarrow ausente, credencial podre, erro inesperado de leitura: daqui
+        # não dá para distinguir "o backup está bem, só não consegui olhar" de
+        # "o backup está vazio". Engolir isso devolvia watchdog verde com o frio
+        # sem verificação nenhuma — que é o buraco que este check existe para
+        # fechar. Um check que não roda conta como falha.
         logger.warning(f"[daily_status] Check do histórico frio indisponível: {exc}")
+        hist = {
+            "status": "FAIL",
+            "backend": "indisponível",
+            "partitions": 0,
+            "rows": 0,
+            "detail": f"não foi possível verificar o histórico frio: {exc}",
+        }
 
     try:
         counts = _fetch_counts(data_str, args.turno)
