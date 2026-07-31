@@ -684,6 +684,15 @@ N8N_TELEGRAM_CHAT_ID=123456789
 
 # Optional N8N webhook
 N8N_WEBHOOK_URL=http://localhost:5678/webhook/coleta
+
+# Mercado Livre — API oficial (fallback automático quando a SERP leva gate)
+ML_APP_ID=...
+ML_APP_SECRET=...
+
+# Mercado Livre — login do perfil Chrome dedicado com `setup_local_profile.py
+# --site mercadolivre --auto` (opcional; o login manual não precisa disto)
+ML_EMAIL=...
+ML_PASSWORD=...
 ```
 
 ### GitHub Actions (Manual Backup)

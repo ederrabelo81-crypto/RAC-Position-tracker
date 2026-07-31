@@ -26,6 +26,15 @@
 Sintoma no log: `Desafio/login gate na tentativa 1/3 … 2/3 …` seguido de
 `Login gate persistente` e `0 produtos coletados`, keyword após keyword.
 
+O motivo aparece no log. Se for
+`URL de gate (https://www.mercadolivre.com.br/gz/account-verification?go=…)`,
+é **verificação de dispositivo**: o `_d2id` do perfil está marcado e toda ida a
+`/lista` cai no desafio — a home continua abrindo normalmente, o que dá a falsa
+impressão de scraper quebrado. A coleta já reage sozinha (descarta os cookies do
+ML uma vez por run para pegar device id novo, e tenta o CTA da tela de
+verificação), mas se voltar em série, o conserto é logar o perfil (passo 2) ou
+o fallback de API (passo 4).
+
 Ordem de conserto (da mais barata para a mais cara):
 
 1. **Confira a evidência.** Todo gate persistente agora salva a página em
@@ -37,6 +46,8 @@ Ordem de conserto (da mais barata para a mais cara):
    a sua conta, confirme a verificação no app/e-mail, ENTER. O login fica salvo
    no perfil e vale para as próximas coletas. Conferir depois:
    `python scripts\setup_local_profile.py --site mercadolivre --check`.
+   Atalho opcional: com `ML_EMAIL`/`ML_PASSWORD` no `.env`, o `--auto` preenche
+   o formulário (2FA e verificação de dispositivo você conclui na janela).
 3. **Sem Chrome local** (VM/GitHub Actions): capture a sessão e o scraper a
    injeta sozinho no contexto —
    `python utils\session_grabber.py --site mercadolivre` (ou

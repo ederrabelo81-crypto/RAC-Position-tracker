@@ -947,6 +947,78 @@ class TestCookiesDaSessaoSalva:
         assert MLScraper._sanitize_cookies([{"value": "1", "url": "https://x"}]) == []
 
 
+class _FakeContext:
+    """Contexto mínimo: cookies fixos + registro das limpezas pedidas."""
+
+    def __init__(self, cookies=None, aceita_dominio=True):
+        self._cookies = cookies or []
+        self.limpezas = []
+        self.aceita_dominio = aceita_dominio
+
+    def cookies(self, urls=None):
+        return list(self._cookies)
+
+    def clear_cookies(self, **kwargs):
+        if not self.aceita_dominio and kwargs:
+            raise TypeError("clear_cookies() got an unexpected keyword argument")
+        self.limpezas.append(kwargs)
+
+
+def _scraper_com_contexto(cookies=None, aceita_dominio=True):
+    scraper = MLScraper.__new__(MLScraper)
+    scraper._context = _FakeContext(cookies, aceita_dominio)
+    scraper._identity_reset = False
+    scraper._rewarm_home = lambda: None
+    return scraper
+
+
+class TestResetDeIdentidadeAnonima:
+    """
+    31/07 (2ª rodada): `/lista` redirecionava para `/gz/account-verification`
+    em TODA keyword — device id (`_d2id`) marcado. Anônimo, cookie novo é
+    identidade nova; logado, limpar seria deslogar o usuário.
+    """
+
+    def test_anonimo_limpa_cookies_do_ml(self):
+        scraper = _scraper_com_contexto([{"name": "_d2id", "value": "x"}])
+        assert scraper._reset_anonymous_identity() is True
+        dominios = [k.get("domain") for k in scraper._context.limpezas]
+        assert ".mercadolivre.com.br" in dominios
+
+    def test_roda_uma_vez_por_run(self):
+        scraper = _scraper_com_contexto([{"name": "_d2id", "value": "x"}])
+        scraper._reset_anonymous_identity()
+        assert scraper._reset_anonymous_identity() is False
+
+    def test_sessao_logada_nunca_e_limpa(self):
+        scraper = _scraper_com_contexto([{"name": "c_user_id", "value": "42"}])
+        assert scraper._reset_anonymous_identity() is False
+        assert scraper._context.limpezas == []
+
+    def test_playwright_sem_filtro_de_dominio_nao_limpa_geral(self):
+        # limpar tudo apagaria a sessão da Shopee no Chrome compartilhado
+        scraper = _scraper_com_contexto(
+            [{"name": "_d2id", "value": "x"}], aceita_dominio=False
+        )
+        assert scraper._reset_anonymous_identity() is False
+        assert scraper._context.limpezas == []
+
+
+class TestVerificacaoDeDispositivo:
+    def test_pagina_normal_nao_tenta_resolver(self):
+        scraper = _scraper_na_pagina(f"<html>{_CARD_SERP}</html>")
+        assert scraper._try_solve_verification() is False
+
+    def test_url_de_account_verification_e_gate(self):
+        scraper = _scraper_na_pagina(
+            "<html>Para continuar, acesse sua conta</html>",
+            url="https://www.mercadolivre.com.br/gz/account-verification"
+                "?go=https%3A%2F%2Flista.mercadolivre.com.br%2Far-condicionado",
+        )
+        assert scraper._is_login_gate() is True
+        assert "URL de gate" in scraper._last_gate_reason
+
+
 class TestFallbackDeAPI:
     """Gate na keyword inteira devolvia 0 registros; agora cai para a API."""
 

@@ -30,6 +30,10 @@ USO:
     python scripts/setup_local_profile.py --check              # só relata status
     python scripts/setup_local_profile.py --no-login           # só abre o Chrome
 
+    # atalho: preenche o formulário do ML com ML_EMAIL/ML_PASSWORD do .env
+    # (2FA e verificação de dispositivo você conclui na janela do Chrome)
+    python scripts/setup_local_profile.py --site mercadolivre --auto
+
 Depois de logar, rode a coleta:
     RAC_LOCAL_CHROME=1 python main.py --platforms ml magalu shopee casasbahia --pages 1
     (no Windows: scripts\\collect_local_authenticated.bat)
@@ -46,6 +50,14 @@ os.environ.setdefault("REBROWSER_PATCHES_RUNTIME_FIX_MODE", "addBinding")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
+
+# --auto lê ML_EMAIL/ML_PASSWORD do .env (nunca do repositório).
+try:  # dotenv é opcional — sem ele, --auto só funciona com env já exportada
+    from dotenv import load_dotenv
+
+    load_dotenv(_REPO_ROOT / ".env")
+except Exception:
+    pass
 
 from scrapers.local_browser import (  # noqa: E402
     cdp_endpoint_if_up,
@@ -107,6 +119,86 @@ def _wait_cdp(port: int, seconds: int = 15) -> bool:
             return True
         time.sleep(0.5)
     return cdp_endpoint_if_up(port) is not None
+
+
+def _ml_auto_login(port: int) -> bool:
+    """
+    Preenche e-mail/senha do ML a partir do `.env` (ML_EMAIL / ML_PASSWORD).
+
+    É um ATALHO, não o caminho padrão: quem digita é o CDP, e a tela de login do
+    ML é justamente a mais vigiada do site. Se a conta tiver 2FA ou o ML pedir
+    verificação de dispositivo, o script para e VOCÊ termina na janela do Chrome
+    que já está aberta — o resultado (cookies no perfil) é o mesmo.
+
+    Returns:
+        True se chegou a enviar as credenciais; False se faltou dado ou o DOM
+        não bateu (aí é login manual).
+    """
+    email = os.getenv("ML_EMAIL", "").strip()
+    senha = os.getenv("ML_PASSWORD", "").strip()
+    if not email or not senha:
+        print(
+            "\n  [--auto] ML_EMAIL / ML_PASSWORD não estão no .env — "
+            "seguindo com login manual na janela do Chrome."
+        )
+        return False
+
+    endpoint = cdp_endpoint_if_up(port)
+    sync_playwright, _ = _import_sync_playwright()
+    if endpoint is None or sync_playwright is None:
+        print("  [--auto] Chrome/Playwright indisponível — login manual.")
+        return False
+
+    pw = None
+    browser = None
+    try:
+        pw = sync_playwright().start()
+        browser = pw.chromium.connect_over_cdp(endpoint, timeout=15_000)
+        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = ctx.new_page()
+        page.goto(_ML_LOGIN_URL, wait_until="domcontentloaded", timeout=45_000)
+
+        campo_email = page.locator(
+            "input[name='user_id'], input#user_id, input[type='email']"
+        ).first
+        campo_email.click(timeout=10_000)
+        campo_email.type(email, delay=110)
+        page.locator("button[type='submit']").first.click(timeout=10_000)
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(2.5)
+
+        campo_senha = page.locator(
+            "input[name='password'], input#password, input[type='password']"
+        ).first
+        campo_senha.click(timeout=15_000)
+        campo_senha.type(senha, delay=110)
+        page.locator("button[type='submit']").first.click(timeout=10_000)
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(3.0)
+
+        print(f"  [--auto] Credenciais enviadas. Página atual: {page.url[:90]}")
+        print(
+            "  [--auto] Se o ML pediu código/2FA ou verificação de dispositivo, "
+            "conclua na janela do Chrome antes de dar ENTER."
+        )
+        return True
+    except Exception as exc:
+        print(
+            f"  [--auto] Não consegui preencher o formulário ({exc}). "
+            "Faça o login manualmente na janela do Chrome."
+        )
+        return False
+    finally:
+        try:
+            if browser is not None:
+                browser.close()   # em CDP, close() apenas DESCONECTA
+        except Exception:
+            pass
+        try:
+            if pw is not None:
+                pw.stop()
+        except Exception:
+            pass
 
 
 def _report_login(port: int, site: str) -> bool:
@@ -189,6 +281,13 @@ def main() -> int:
         "--no-login", action="store_true",
         help="Só abre o Chrome comum no perfil (aquecer), sem esperar login.",
     )
+    parser.add_argument(
+        "--auto", action="store_true",
+        help=(
+            "Mercado Livre: preenche e-mail/senha do .env (ML_EMAIL/ML_PASSWORD).\n"
+            "Atalho — 2FA/verificação de dispositivo você conclui na janela."
+        ),
+    )
     args = parser.parse_args()
 
     sites = ["shopee", "mercadolivre"] if args.site == "ambos" else [args.site]
@@ -254,6 +353,10 @@ def main() -> int:
         if i > 0:
             # abre o próximo site na MESMA janela (perfil já quente)
             spawn_chrome(port, profile_dir, start_url=cfg["start_url"])
+
+        if args.auto and site == "mercadolivre":
+            _wait_cdp(port, seconds=15)
+            _ml_auto_login(port)
 
         print("\n" + "─" * 66)
         print(f"  INSTRUÇÕES — {cfg['label']}:")

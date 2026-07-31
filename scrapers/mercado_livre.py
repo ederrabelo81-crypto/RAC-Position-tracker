@@ -336,6 +336,7 @@ class MLScraper(BaseScraper):
     _last_gate_reason: Optional[str] = None
     _gate_failures: int = 0
     _gate_hint_shown: bool = False
+    _identity_reset: bool = False
     _api_scraper: Any = None
 
     def __init__(self, headless: bool = True) -> None:
@@ -361,6 +362,7 @@ class MLScraper(BaseScraper):
         self._last_gate_reason = None
         self._gate_failures = 0
         self._gate_hint_shown = False
+        self._identity_reset = False
         # Fallback pela API oficial: None = ainda não tentado, False = indisponível.
         self._api_scraper = None
 
@@ -1337,6 +1339,103 @@ class MLScraper(BaseScraper):
         self._wait_for_network_idle()
         return self._has_serp_cards(page.content())
 
+    def _try_solve_verification(self) -> bool:
+        """
+        Tenta atravessar a tela `/gz/account-verification` clicando no CTA dela.
+
+        Essa tela é um interstício com um botão ("Continuar"/"Verificar") e o
+        destino no `?go=`. Numa sessão logada ela costuma resolver no clique;
+        anônima, normalmente cai no login — daí o False, e o chamador escala.
+
+        Returns:
+            True se saiu da URL de gate (a navegação seguiu para o `go=`).
+        """
+        page = self._page
+        if not _GATE_URL_RE.search(page.url or ""):
+            return False
+
+        for sel in (
+            "button[type='submit']",
+            "button.andes-button--loud",
+            "a.andes-button--loud",
+            "[data-testid='action-primary']",
+        ):
+            try:
+                page.locator(sel).first.click(timeout=3_000)
+                page.wait_for_load_state("domcontentloaded")
+                self._wait_for_network_idle()
+            except Exception:
+                continue
+            if not _GATE_URL_RE.search(page.url or ""):
+                logger.info(
+                    f"[{self.platform_name}] Verificação de dispositivo "
+                    f"atravessada pelo CTA ({sel})."
+                )
+                return True
+        return False
+
+    def _reset_anonymous_identity(self) -> bool:
+        """
+        Descarta a identidade anônima queimada (cookies do ML) e reaquece.
+
+        O `_d2id` do ML é um id de DISPOSITIVO: uma vez marcado, toda navegação
+        para `/lista` cai em `/gz/account-verification`, keyword após keyword.
+        Sendo a sessão anônima, não há o que preservar — cookie novo é uma
+        identidade nova. Numa sessão LOGADA isto deslogaria o usuário, então
+        nunca roda nesse caso. Uma vez por run.
+
+        Returns:
+            True se os cookies foram limpos (e a home, reaquecida).
+        """
+        if self._identity_reset or self._context is None or self._is_logged_in():
+            return False
+        self._identity_reset = True
+
+        limpou = False
+        for domain in (".mercadolivre.com.br", "mercadolivre.com.br",
+                       ".mercadolibre.com", "lista.mercadolivre.com.br"):
+            try:
+                self._context.clear_cookies(domain=domain)
+                limpou = True
+            except TypeError:
+                # Playwright antigo: clear_cookies sem filtro apagaria a sessão
+                # dos OUTROS scrapers no Chrome compartilhado — melhor não.
+                logger.debug(
+                    f"[{self.platform_name}] clear_cookies sem filtro de domínio "
+                    "nesta versão do Playwright — pulei o reset de identidade."
+                )
+                return False
+            except Exception:
+                continue
+
+        if not limpou:
+            return False
+
+        logger.warning(
+            f"[{self.platform_name}] Identidade anônima queimada (device "
+            "verification em série): cookies do ML descartados, reaquecendo a "
+            "home com device id novo."
+        )
+        self._rewarm_home()
+        return True
+
+    def _gate_page_summary(self) -> str:
+        """Título + primeiro texto visível da página de gate (vai para o log)."""
+        try:
+            titulo = (self._page.title() or "").strip()
+        except Exception:
+            titulo = ""
+        texto = ""
+        try:
+            for sel in ("h1", "h2", "[class*='title']"):
+                el = self._page.locator(sel).first
+                texto = (el.text_content(timeout=1_500) or "").strip()
+                if texto:
+                    break
+        except Exception:
+            pass
+        return f"título={titulo!r} texto={texto[:90]!r}"
+
     def _dump_gate_evidence(self, keyword: str, page_num: int) -> str:
         """
         Grava o HTML do gate e devolve o caminho — evidência do próximo incidente.
@@ -1421,6 +1520,15 @@ class MLScraper(BaseScraper):
                 self._gate_failures = 0
                 return True
 
+            # A tela de verificação de dispositivo é um interstício com CTA —
+            # atravessá-la leva de volta ao `?go=` (a própria SERP).
+            try:
+                if self._try_solve_verification() and not self._is_login_gate():
+                    self._gate_failures = 0
+                    return True
+            except Exception:
+                pass
+
             if attempt <= _GATE_RETRIES:
                 logger.warning(
                     f"[{self.platform_name}] Desafio/login gate na tentativa "
@@ -1435,8 +1543,15 @@ class MLScraper(BaseScraper):
         logger.error(
             f"[{self.platform_name}] Login gate persistente após "
             f"{_GATE_RETRIES + 1} tentativas (keyword='{keyword}', pág. {page}). "
-            f"Motivo: {self._last_gate_reason}. HTML em {evidencia}."
+            f"Motivo: {self._last_gate_reason} [{self._gate_page_summary()}]. "
+            f"HTML em {evidencia}."
         )
+        # Identidade anônima marcada: joga o device id fora antes da próxima
+        # keyword em vez de repetir 40x o mesmo desafio com o mesmo cookie.
+        try:
+            self._reset_anonymous_identity()
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] Reset de identidade falhou: {exc}")
         if self._gate_failures >= _GATE_STREAK_ALERT:
             self._log_gate_recovery_hint()
         return False
