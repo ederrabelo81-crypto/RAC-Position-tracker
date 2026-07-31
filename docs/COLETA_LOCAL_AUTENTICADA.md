@@ -42,10 +42,15 @@ Ordem de conserto (da mais barata para a mais cara):
    produto, não é bloqueio** — é regressão de detecção; reporte com o arquivo em
    mãos. Se for a tela de login/verificação, siga para o passo 2.
 2. **Logue o perfil dedicado** (resolve o device-verification):
-   `python scripts\setup_local_profile.py --site mercadolivre` — faça login com
-   a sua conta, confirme a verificação no app/e-mail, ENTER. O login fica salvo
-   no perfil e vale para as próximas coletas. Conferir depois:
-   `python scripts\setup_local_profile.py --site mercadolivre --check`.
+   `python scripts\setup_local_profile.py --site mercadolivre` — abre a **home**
+   do ML; clique em **"Entre"** (canto superior direito), faça login com a sua
+   conta, confirme a verificação no app/e-mail e volte ao terminal para dar
+   ENTER. O login fica salvo no perfil e vale para as próximas coletas.
+   Conferir depois: `python scripts\setup_local_profile.py --site mercadolivre --check`.
+   > O script **não** usa URL de login fixa de propósito: o ML troca o caminho
+   > do fluxo (`/jms/mlb/lgz/msl/login` virou 404 em 31/07/2026) e uma rota
+   > morta travava o setup. Alternativa manual: `myaccount.mercadolivre.com.br`
+   > redireciona para o login vigente.
    Atalho opcional: com `ML_EMAIL`/`ML_PASSWORD` no `.env`, o `--auto` preenche
    o formulário (2FA e verificação de dispositivo você conclui na janela).
 3. **Sem Chrome local** (VM/GitHub Actions): capture a sessão e o scraper a
@@ -128,6 +133,18 @@ aqui), volte ao terminal e pressione ENTER. Ele confirma se a sessão ficou
 logada. **Deixe esse Chrome aberto** — a coleta reaproveita ele.
 
 Conferir o login depois: `python scripts\setup_local_profile.py --check`
+
+### Extensões abrindo abas sozinhas
+
+O perfil dedicado costuma estar **sincronizado com a sua conta Google**, então
+ele herda as suas extensões — e ao abrir, várias disparam aba de
+boas-vindas/atualização de uma vez, por cima da janela de login. Por isso o
+Chrome do projeto agora sobe com `--disable-extensions` (o antibot não lê a
+linha de comando, só o fingerprint da página — nada muda para a coleta).
+
+A flag só vale para um Chrome **novo**: se já houver um aberto nesse perfil,
+feche-o e rode o setup de novo. Para manter as extensões:
+`$env:RAC_CHROME_KEEP_EXTENSIONS="1"`.
 
 ---
 

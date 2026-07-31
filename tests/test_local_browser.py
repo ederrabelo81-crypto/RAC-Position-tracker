@@ -69,6 +69,37 @@ class TestKeepChromeOpen:
         assert lb._keep_chrome_open() is False
 
 
+class TestChromeArgs:
+    """
+    31/07: o perfil dedicado está sincronizado com a conta Google do usuário e
+    herdou as extensões dele — ao abrir, várias dispararam aba de boas-vindas
+    por cima da janela de login. Extensão não serve para nada na coleta.
+    """
+
+    def test_sobe_sem_extensoes_por_padrao(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("RAC_CHROME_KEEP_EXTENSIONS", raising=False)
+        assert "--disable-extensions" in lb._chrome_args(9222, tmp_path)
+
+    @pytest.mark.parametrize("val", ["1", "true", "sim", "on"])
+    def test_env_mantem_as_extensoes(self, monkeypatch, tmp_path, val):
+        monkeypatch.setenv("RAC_CHROME_KEEP_EXTENSIONS", val)
+        assert "--disable-extensions" not in lb._chrome_args(9222, tmp_path)
+
+    def test_url_inicial_fica_por_ultimo(self, monkeypatch, tmp_path):
+        # o Chrome trata o último argumento posicional como URL a abrir —
+        # uma flag depois dele viraria "página" e a URL não abriria
+        monkeypatch.delenv("RAC_CHROME_KEEP_EXTENSIONS", raising=False)
+        args = lb._chrome_args(9222, tmp_path, "https://www.mercadolivre.com.br/")
+        assert args[-1] == "https://www.mercadolivre.com.br/"
+
+    def test_nunca_liga_flag_de_automacao(self, monkeypatch, tmp_path):
+        # o Chrome tem que parecer um browser comum (ver COMMON_MISTAKES #10)
+        monkeypatch.delenv("RAC_CHROME_KEEP_EXTENSIONS", raising=False)
+        args = " ".join(lb._chrome_args(9222, tmp_path))
+        assert "enable-automation" not in args
+        assert "AutomationControlled" not in args
+
+
 class TestChromeExeOverride:
     def test_env_override_when_exists(self, monkeypatch, tmp_path):
         fake = tmp_path / "chrome.exe"
