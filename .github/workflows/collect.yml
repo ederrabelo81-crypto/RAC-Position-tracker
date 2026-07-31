@@ -224,3 +224,34 @@ jobs:
             logs/dealer_debug_*.html
           retention-days: 7
           if-no-files-found: ignore
+
+      # ── 11. Alerta de falha ────────────────────────────────────────────────
+      # Doze coletas agendadas morreram entre 26 e 31/07/2026 e o único sinal
+      # foi o X vermelho na aba Actions, que ninguém abre todo dia. O watchdog
+      # das 20:30 BRT olha se o DADO chegou; este passo avisa que o JOB caiu —
+      # são falhas diferentes e a segunda precede a primeira em várias horas.
+      #
+      # Envio direto pela Bot API: um passo de notificação não pode depender do
+      # ambiente Python que acabou de falhar. Sem os secrets, não faz nada.
+      - name: Notify collection failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.N8N_TELEGRAM_CHAT_ID }}
+          TURNO: ${{ steps.params.outputs.turno }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+            echo "::warning title=Alerta não enviado::TELEGRAM_BOT_TOKEN ou \
+          N8N_TELEGRAM_CHAT_ID ausente — a falha desta coleta não foi notificada."
+            exit 0
+          fi
+          TEXT="🔴 <b>Coleta RAC FALHOU</b> — turno ${TURNO}
+          O job terminou em erro. Histórico e Supabase provavelmente NÃO receberam o dia.
+          Log: ${RUN_URL}"
+          curl -sS -m 30 -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            -d "parse_mode=HTML" \
+            --data-urlencode "text=${TEXT}" \
+            -o /dev/null || echo "::warning title=Alerta não enviado::curl falhou."

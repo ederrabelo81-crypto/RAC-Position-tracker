@@ -126,10 +126,33 @@ python scripts/history_cli.py stats --detail   # linhas por dia e plataforma
 `stats` aponta **dias sem partição** dentro do intervalo — é o que diz quais
 CSVs reimportar.
 
+### Verificação diária (automática)
+
+O watchdog (`.github/workflows/watchdog.yml`, 20:30 BRT) checa o frio junto com
+o Supabase e alerta no Telegram:
+
+```bash
+python scripts/daily_status_check.py --no-notify   # roda a checagem à mão
+```
+
+O check **relê** o Parquet do dia em vez de só listar o arquivo — partição
+corrompida ou credencial revogada aparecem como FAIL agora, não no dia do
+resgate. Ele roda **antes** do Supabase e não depende dele: a redundância
+precisa ser verificável justamente quando o banco está fora.
+
+| Status | Significa |
+|--------|-----------|
+| ✅ PASS | o dia está no Drive e volta a sair de lá |
+| ⚠️ WARN | está gravado, mas em disco local (some com a máquina) ou com menos de 100 linhas |
+| ❌ FAIL | não há partição do dia, ela não abre, ou o Drive foi pedido e o store caiu para o disco |
+
+> `FAIL` no frio conta como falha crítica: o job do watchdog termina vermelho.
+> Foi a ausência exata desse alarme que deixou a pasta `coletas/` vazia por
+> cinco dias em 26–31/07/2026.
+
 ### Recuperar dias perdidos (CSV → histórico)
 
-Caminho para os 9 dias que o Supabase recusou. Baixe os artifacts do GitHub
-Actions (retenção de 30 dias) e:
+Com os CSVs já em mãos:
 
 ```bash
 python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv
@@ -138,6 +161,24 @@ python scripts/history_cli.py import-csv arquivo.csv --dry-run   # só confere
 
 O `run_id` é derivado do nome do arquivo, então **reimportar o mesmo CSV é
 idempotente** — a partição é reescrita, não duplicada.
+
+### Resgate direto dos artifacts do Actions
+
+Quando a gravação falhou mas a coleta rodou, o CSV está no artifact do job.
+`recover_from_artifacts.py` faz o caminho inteiro — lista, baixa, extrai e
+carrega no histórico — sem ninguém abrir 24 zips à mão:
+
+```bash
+export GITHUB_TOKEN=...        # fine-grained com leitura de Actions
+
+python scripts/recover_from_artifacts.py --list                        # o que dá pra resgatar
+python scripts/recover_from_artifacts.py --start 2026-07-16 --dry-run  # baixa e conta
+python scripts/recover_from_artifacts.py --start 2026-07-16            # grava no frio
+python scripts/recover_from_artifacts.py --start 2026-07-16 --supabase # e repõe no banco
+```
+
+> ⏳ **Artifact expira em 30 dias.** Passado o prazo o dia não é mais
+> recuperável por este caminho — o `--list` marca os que já se foram.
 
 ### Migração: Supabase → Drive
 
@@ -279,6 +320,8 @@ gravá-lo no lugar errado — e `history_cli.py stats` mostra onde ele está.
 | Dashboard avisa "Histórico frio indisponível" | Deploy sem `pyarrow`/libs do Google | Use `requirements_app.txt` (já traz as quatro) e faça reboot do app |
 | Drive parou de receber partições e o CSV continua saindo | Coleta morre entre o CSV e o histórico | Ver o fim do log do run: `UnboundLocalError` em `main()` foi essa falha em 26–31/07/2026 (`tests/test_pipeline_entrypoint.py` cobre a regressão) |
 | GitHub Actions roda "com sucesso" e nada chega ao Drive | Secrets `GDRIVE_*` não cadastrados no repositório | O workflow emite `::warning` no início do job; cadastre os quatro secrets |
+| Coleta falhou e ninguém avisou | Alerta do Telegram sem secrets no repositório | `collect.yml` avisa por `::warning` quando `TELEGRAM_BOT_TOKEN`/`N8N_TELEGRAM_CHAT_ID` faltam |
+| Dias perdidos e os CSVs ficaram só no runner | Job morreu antes de gravar | `python scripts/recover_from_artifacts.py --list` (prazo: 30 dias do run) |
 
 ---
 
