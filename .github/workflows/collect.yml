@@ -7,18 +7,27 @@ name: RAC Price Collection
 #   13:00 UTC = 10:00 BRT  → turno Abertura  (2 páginas, alta+media)
 #   00:00 UTC = 21:00 BRT  → turno Fechamento (1 página, alta)
 #
-# Plataformas: magalu, google_shopping, amazon, leroy, dealers, casasbahia
-# ML excluído: IPs de datacenter GitHub são bloqueados pelo Mercado Livre.
-# Casas Bahia (VTEX IS + warm-up Akamai) destrava de datacenter e expõe buy box.
-# Shopee fica fora do CI: exige sessão SPC_*/csrftoken capturada (não há no runner).
+# Plataformas: google_shopping, amazon, leroy — as que coletam de um IP de
+# datacenter. A divisão com a coleta local é o desenho, não uma limitação
+# temporária:
 #
-# Magalu usa MAGALU_HEADLESS=false + xvfb (display virtual) para bypassar
-# o sensor.js do Akamai. O perfil Chrome é cacheado entre runs para
-# acumular histórico/cookies e aumentar a confiança do Akamai.
+#   Aqui (runner)          → google_shopping, amazon, leroy
+#   Notebook, IP residencial → ml, magalu, shopee, casasbahia
+#     via scripts/collect_local_authenticated.bat (Chrome real e logado)
+#
+# ML, Magalu e Casas Bahia bloqueiam IP de datacenter antes mesmo do
+# fingerprint (Akamai/anti-bot). Rodá-los aqui rendia 0 registros e consumia
+# o tempo do run. Shopee exige sessão SPC_*/csrftoken capturada, que não
+# existe no runner. Dealers estão fora do foco desde Mai/2026
+# (ACTIVE_PLATFORMS["dealers"]=False).
+#
+# Destravar Magalu/Casas Bahia por aqui depende de proxy residencial BR — sem
+# isso, mover para o local é o caminho certo, não um contorno.
 #
 # Variáveis obrigatórias (Settings → Secrets and variables → Actions):
 #   SUPABASE_URL   —  URL do projeto Supabase
 #   SUPABASE_KEY   —  chave de serviço (service_role)
+#   GDRIVE_*       —  histórico frio no Drive (4 valores; ver docs/HISTORICO_DRIVE.md)
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -28,9 +37,9 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: 'Plataformas separadas por espaço'
+        description: 'Plataformas separadas por espaço (ml/magalu/shopee/casasbahia só destravam com IP residencial)'
         required: false
-        default: 'magalu google_shopping amazon leroy dealers casasbahia'
+        default: 'google_shopping amazon leroy'
       pages:
         description: 'Páginas por keyword (1–5)'
         required: false
@@ -71,7 +80,15 @@ jobs:
               PAGES="1"
               PRIORITY="alta"
             fi
-            PLATFORMS="magalu google_shopping amazon leroy dealers casasbahia"
+            # Só o que coleta de um IP de datacenter. Fora daqui, e por quê:
+            #   ml, magalu, shopee, casasbahia → exigem IP residencial e sessão
+            #     logada; rodam no notebook por scripts/collect_local_authenticated.bat.
+            #     Aqui davam circuit breaker do Akamai e 0 registros, gastando o
+            #     tempo do run para não trazer nada.
+            #   dealers → ACTIVE_PLATFORMS["dealers"]=False desde Mai/2026 (foco
+            #     em buy box de marketplace). Passar o nome explicitamente
+            #     ignorava esse desligamento.
+            PLATFORMS="google_shopping amazon leroy"
           else
             TURNO="Manual"
             PLATFORMS="${{ github.event.inputs.platforms }}"
