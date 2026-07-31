@@ -69,6 +69,21 @@ _DEFAULT_CDP_PORT = 9222
 
 # Args do Chrome COMUM (sem NADA de automação). --remote-allow-origins=* é
 # obrigatório para o connect_over_cdp funcionar no Chrome 111+.
+def _keep_extensions() -> bool:
+    """Se True, sobe o Chrome COM as extensões do perfil (padrão: sem elas).
+
+    O perfil dedicado costuma estar sincronizado com a conta Google do usuário,
+    então ele herda as extensões dele. Ao abrir, várias disparam aba de
+    boas-vindas/atualização de uma vez (visto em 31/07/2026: uma enxurrada de
+    abas por cima do login). Extensão não serve para nada na coleta — e o
+    antibot não lê a linha de comando do Chrome, só o fingerprint da página.
+    Ligue com ``RAC_CHROME_KEEP_EXTENSIONS=1`` se precisar de alguma.
+    """
+    return os.getenv("RAC_CHROME_KEEP_EXTENSIONS", "").strip().lower() in (
+        "1", "true", "yes", "sim", "on"
+    )
+
+
 def _chrome_args(port: int, profile_dir: Path, start_url: Optional[str] = None) -> list:
     # Obs: NÃO passar --restore-last-session — é um switch por PRESENÇA (o Chrome
     # o lê via HasSwitch, ignorando "=false"), então incluí-lo ATIVA a
@@ -82,6 +97,8 @@ def _chrome_args(port: int, profile_dir: Path, start_url: Optional[str] = None) 
         "--disable-session-crashed-bubble",
         "--homepage=about:blank",
     ]
+    if not _keep_extensions():
+        args.append("--disable-extensions")
     if start_url:
         args.append(start_url)
     return args

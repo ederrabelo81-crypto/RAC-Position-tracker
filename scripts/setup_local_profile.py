@@ -70,12 +70,15 @@ from scrapers.local_browser import (  # noqa: E402
 
 _SHOPEE_HOME = "https://shopee.com.br/"
 
-# URL que o botão "Entre" da home do ML usa. Se ela mudar, abra a home e clique
-# em "Entre" — o login fica salvo no perfil do mesmo jeito.
-_ML_LOGIN_URL = (
-    "https://www.mercadolivre.com.br/jms/mlb/lgz/msl/login"
-    "?platform_id=ML&go=https%3A%2F%2Fwww.mercadolivre.com.br%2F"
-)
+# Abrimos a HOME, não uma rota de login hardcoded: o ML troca o caminho do
+# fluxo de login (`/jms/mlb/lgz/msl/login` virou 404 "Parece que esta página no
+# existe" em 31/07/2026) e uma URL morta trava o setup inteiro. A home sempre
+# existe e o botão "Entre" leva ao fluxo VIGENTE.
+_ML_HOME = "https://www.mercadolivre.com.br/"
+
+# Rota de conta: quando anônimo, o ML redireciona para o login atual. É o
+# caminho que o `--auto` usa antes de cair no clique do "Entre" na home.
+_ML_ACCOUNT_URL = "https://myaccount.mercadolivre.com.br/"
 
 # Sites suportados. `login_cookies` = any-of que indica sessão autenticada.
 SITES = {
@@ -95,17 +98,19 @@ SITES = {
     },
     "mercadolivre": {
         "label":         "Mercado Livre",
-        "start_url":     _ML_LOGIN_URL,
+        "start_url":     _ML_HOME,
         "cookie_url":    "https://www.mercadolivre.com.br",
         "login_cookies": ("orguseridp", "MELI_SESSION", "c_user_id"),
         # O ML coleta anônimo na maioria dos dias; logar é o antídoto quando o
         # device-verification (o "login gate") começa a pegar todas as keywords.
         "obrigatorio":   False,
         "instrucoes": [
-            "Faça LOGIN no Mercado Livre com a SUA conta (e-mail/telefone + senha).",
+            "Abriu a HOME do Mercado Livre: clique em 'Entre' (canto superior direito)",
+            "e faça login com a SUA conta (e-mail/telefone + senha).",
             "Se pedir verificação de dispositivo, confirme no app ou no e-mail —",
             "é justamente esse desafio que derruba a coleta quando não está logado.",
-            "Se a página de login não abrir, vá em mercadolivre.com.br e clique 'Entre'.",
+            "Depois de logar, abra lista.mercadolivre.com.br/ar-condicionado na mão:",
+            "se os produtos aparecerem ali, a coleta também vai passar.",
         ],
     },
 }
@@ -119,6 +124,61 @@ def _wait_cdp(port: int, seconds: int = 15) -> bool:
             return True
         time.sleep(0.5)
     return cdp_endpoint_if_up(port) is not None
+
+
+_ML_EMAIL_FIELD = "input[name='user_id'], input#user_id, input[type='email']"
+
+# Candidatos ao link de login da home, do mais explícito ao mais genérico —
+# testados UM A UM (não em união com `.first`, que entrega quem vier primeiro
+# no DOM, podendo ser um card promocional apontando para a rota velha).
+# Todos excluem `/msl/`: é justamente o caminho que virou 404 em 31/07/2026.
+_ML_LOGIN_LINK_SELECTORS = (
+    "a[data-link-id='login']",
+    "a[href*='/lgz/']:not([href*='/msl/'])",
+    "a:has-text('Entre'):not([href*='/msl/'])",
+    "a:has-text('Entrar'):not([href*='/msl/'])",
+    "a[href*='login']:not([href*='/msl/'])",
+)
+
+
+def _tem_campo_email(page) -> bool:
+    """True se o formulário de login (campo de e-mail/usuário) está visível."""
+    try:
+        page.locator(_ML_EMAIL_FIELD).first.wait_for(state="visible", timeout=8_000)
+        return True
+    except Exception:
+        return False
+
+
+def _abrir_login_ml(page) -> bool:
+    """
+    Leva a página até o formulário de login VIGENTE do Mercado Livre.
+
+    Nada de rota fixa: o ML muda o caminho do fluxo (`/jms/mlb/lgz/msl/login`
+    virou 404 em 31/07/2026). Tenta a rota de conta (que redireciona para o
+    login atual quando anônimo) e, se não der, percorre os candidatos a link
+    "Entre" da home até um deles revelar o formulário.
+
+    Returns:
+        True se o campo de e-mail está visível na página.
+    """
+    try:
+        page.goto(_ML_ACCOUNT_URL, wait_until="domcontentloaded", timeout=45_000)
+    except Exception:
+        pass
+    if _tem_campo_email(page):
+        return True
+
+    for seletor in _ML_LOGIN_LINK_SELECTORS:
+        try:
+            page.goto(_ML_HOME, wait_until="domcontentloaded", timeout=45_000)
+            page.locator(seletor).first.click(timeout=6_000)
+            page.wait_for_load_state("domcontentloaded")
+        except Exception:
+            continue
+        if _tem_campo_email(page):
+            return True
+    return False
 
 
 def _ml_auto_login(port: int) -> bool:
@@ -156,7 +216,12 @@ def _ml_auto_login(port: int) -> bool:
         browser = pw.chromium.connect_over_cdp(endpoint, timeout=15_000)
         ctx = browser.contexts[0] if browser.contexts else browser.new_context()
         page = ctx.new_page()
-        page.goto(_ML_LOGIN_URL, wait_until="domcontentloaded", timeout=45_000)
+        if not _abrir_login_ml(page):
+            print(
+                "  [--auto] Não achei o formulário de login. Clique em 'Entre' "
+                "na janela do Chrome e faça manualmente."
+            )
+            return False
 
         campo_email = page.locator(
             "input[name='user_id'], input#user_id, input[type='email']"
@@ -332,7 +397,12 @@ def main() -> int:
     # abre nele). NENHUM cliente CDP conectado agora → login humano/Google passa.
     primeiro = SITES[sites[0]]
     if cdp_endpoint_if_up(port) is not None:
-        print(f"\n  Chrome já está aberto neste perfil — abrindo {primeiro['label']} nele.")
+        print(
+            f"\n  Chrome já está aberto neste perfil — abrindo {primeiro['label']} nele."
+            "\n  (Extensões abrindo abas sozinhas? Feche ESTE Chrome e rode de novo:"
+            "\n   um Chrome novo sobe com --disable-extensions. Para mantê-las,"
+            "\n   exporte RAC_CHROME_KEEP_EXTENSIONS=1.)"
+        )
     spawn_chrome(port, profile_dir, start_url=primeiro["start_url"])
 
     if args.no_login:
