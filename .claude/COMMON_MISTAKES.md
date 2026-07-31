@@ -163,3 +163,35 @@ clássico de bot detection. Resultado: `_is_login_gate()` disparava em quase
 **Right:** `USER_AGENTS` só com UAs Chrome/Edge (Chromium-family), consistente
 com o engine que `_launch()` de fato sempre lança.
 **Files:** `config.py` `USER_AGENTS`, `scrapers/base.py` `_launch()`
+
+## 15. Detectar bloqueio por STRING no HTML sem olhar se a página tem produto
+
+**Wrong:** `return "Para continuar, acesse sua conta" in page.content()` (ou
+qualquer `in html`) como veredito de gate/bloqueio.
+**Why:** `page.content()` é o DOM inteiro — header, modais ocultos, JSON de
+estado e `<script src="/gz/webdevice/...">` (device fingerprint que o ML carrega
+em TODA SERP). A SERP normal casa essas strings. Em 31/07/2026 a coleta do ML
+deu **0 produto em 100% das keywords** com Chrome real, perfil dedicado e IP
+residencial: a página vinha cheia de cards e era descartada como "login gate",
+3 tentativas por keyword, 40 keywords.
+**Right:** **evidência antes de string.** 1) URL de gate → é gate; 2) tem card
+de produto no HTML (`_SERP_CARD_RE`) → NÃO é gate, ignore qualquer frase; 3) sem
+card + frase de login/captcha → gate. E todo gate persistente grava
+`logs/ml_gate_<kw>_p<N>.html` — sem evidência salva não dá para distinguir
+bloqueio real de falso positivo do detector.
+**Files:** `scrapers/mercado_livre.py` `_gate_reason()`, `_has_serp_cards()`,
+`_dump_gate_evidence()`; `scripts/diagnose_ml.py` `detect_block()`
+
+## 16. Instruir o usuário a capturar uma sessão que o scraper não lê
+
+**Wrong:** o log do gate mandava rodar `session_grabber.py --site mercadolivre`,
+mas nenhum ponto do `MLScraper` abria `utils/sessions/mercadolivre.json`.
+**Why:** remédio que não é consumido por ninguém vira tempo perdido e esconde
+a causa real — o usuário faz o passo, nada muda, e a hipótese "sessão" é
+descartada por engano.
+**Right:** `_inject_saved_session()` aplica os cookies salvos no contexto
+(fora do modo Chrome local, onde quem guarda o login é o perfil), com
+`_sanitize_cookies()` normalizando `sameSite` do CDP. O log de início diz se a
+sessão está **ANÔNIMA** ou **AUTENTICADA** — antes disso, nem dava para saber.
+**Files:** `scrapers/mercado_livre.py` `_inject_saved_session()`,
+`_log_session_state()`, `scripts/setup_local_profile.py --site mercadolivre`

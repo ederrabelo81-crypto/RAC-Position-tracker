@@ -17,6 +17,21 @@ Estratégia de extração:
   - Fulfillment (FULL): classe + atributo acessível + nó de texto exato
   - Preço: fragmentos `.andes-money-amount__fraction` + `.andes-money-amount__cents`
 
+Login gate / device-verification (Jul/2026):
+  - Detecção é EVIDÊNCIA primeiro (`_gate_reason`): URL de gate manda; senão,
+    card de produto na página vence qualquer string ("Para continuar, acesse
+    sua conta" e `/gz/webdevice` aparecem na SERP normal). O detector antigo,
+    puramente textual, zerou a coleta de 31/07 inteira.
+  - As tentativas ESCALAM: goto direto → re-aquece a home → entra pela caixa de
+    busca da home (navegação in-site com Referer).
+  - Gate persistente grava `logs/ml_gate_<kw>_p<N>.html` e, na 3ª keyword
+    seguida, imprime o roteiro de conserto.
+  - Antídotos, em ordem: login no perfil dedicado
+    (`scripts/setup_local_profile.py --site mercadolivre`), sessão capturada
+    (`utils/session_grabber.py --site mercadolivre`, injetada por
+    `_inject_saved_session`) e fallback automático pela API oficial
+    (`MLAPIScraper`, desligável com `RAC_ML_API_FALLBACK=0`).
+
 Notas de manutenção:
   - Se o ML alterar sua estrutura CSS, ajuste os seletores em _SELECTORS abaixo.
   - Todos os seletores estão centralizados neste dict para facilitar atualização.
@@ -29,8 +44,10 @@ Notas de manutenção:
     avaliação seguiu 0% em 35 mil registros até o fix estrutural de Jul/2026.
 """
 
+import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 
@@ -213,6 +230,42 @@ _BLOCK_SIGNALS_RE = re.compile(
     re.I,
 )
 
+# Marcadores de que a SERP REALMENTE renderizou. Testado por regex no HTML cru
+# (não BeautifulSoup) porque isto roda a cada checagem de gate — até 6x por
+# página — e a pergunta é só "tem card na tela?", não "quais são os cards".
+# Espelha `item_container_candidates` + o wrapper da lista de resultados.
+_SERP_CARD_RE = re.compile(
+    r"ui-search-layout__item|ui-search-result__wrapper|poly-card"
+    r"|ui-search-layout--grid__item|ui-search-results",
+    re.I,
+)
+
+# URLs em que o ML TIROU o visitante da SERP — gate inequívoco, vale mesmo que
+# a página ainda tenha resquício de card no DOM.
+_GATE_URL_RE = re.compile(
+    r"account-verification|/gz/webdevice|/lgz/|(?://|\.)login\.mercadoli[bv]re\.",
+    re.I,
+)
+
+# Frases do gate de login / verificação de dispositivo. Só são consultadas
+# quando a página NÃO tem card nenhum (ver `_gate_reason`): a SERP normal
+# carrega o CTA de login no header e o script de device fingerprint
+# (`/gz/webdevice`), então casar essas strings numa SERP cheia é falso positivo.
+_GATE_TEXT_RE = re.compile(
+    r"Para continuar, acesse sua conta"
+    r"|Para continuar, ingresa a tu cuenta"
+    r"|account-verification|/gz/webdevice",
+    re.I,
+)
+
+# Cookies que indicam sessão LOGADA no ML (any-of). Só informativo: serve para
+# o log dizer se a coleta está anônima (gate mais provável) ou autenticada.
+_ML_LOGIN_COOKIES = ("orguseridp", "MELI_SESSION", "c_user_id")
+
+# Depois de N keywords gateadas seguidas, o log imprime o roteiro de conserto
+# (login no perfil, sessão capturada, fallback de API) uma única vez.
+_GATE_STREAK_ALERT = 3
+
 
 # ---------------------------------------------------------------------------
 # Estado acumulado entre as páginas de UMA keyword
@@ -280,6 +333,10 @@ class MLScraper(BaseScraper):
     _run_sponsored: int = 0
     _run_review_counts: int = 0
     _warmed: bool = False
+    _last_gate_reason: Optional[str] = None
+    _gate_failures: int = 0
+    _gate_hint_shown: bool = False
+    _api_scraper: Any = None
 
     def __init__(self, headless: bool = True) -> None:
         # ML detecta Chromium headless como bot e exibe login gate.
@@ -299,6 +356,13 @@ class MLScraper(BaseScraper):
         self._run_items = 0
         self._run_sponsored = 0
         self._run_review_counts = 0
+        # Estado do gate: motivo da última checagem, keywords perdidas na run e
+        # se o roteiro de conserto já foi impresso (uma vez por run).
+        self._last_gate_reason = None
+        self._gate_failures = 0
+        self._gate_hint_shown = False
+        # Fallback pela API oficial: None = ainda não tentado, False = indisponível.
+        self._api_scraper = None
 
     def _launch(self) -> None:
         """Preferência: Chrome real local (perfil dedicado) via CDP; senão, launch próprio."""
@@ -315,15 +379,131 @@ class MLScraper(BaseScraper):
                         f"[{self.platform_name}] Chrome real local (perfil "
                         "compartilhado) — fingerprint nativo, sem login gate"
                     )
+                    self._log_session_state()
                     return
             logger.warning(
                 f"[{self.platform_name}] RAC_LOCAL_CHROME ligado mas o Chrome local "
                 "não abriu — caindo para launch próprio (Playwright)"
             )
         super()._launch()
+        # Fora do Chrome local o contexto nasce limpo — é aqui que a sessão
+        # capturada (`python utils/session_grabber.py --site mercadolivre`)
+        # entra. Sem isto, a instrução que o próprio log dava ao usuário no
+        # gate persistente era inócua: ninguém lia o arquivo salvo.
+        self._inject_saved_session()
+        self._log_session_state()
+
+    # ------------------------------------------------------------------
+    # Sessão autenticada (cookies)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sanitize_cookies(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Converte cookies do session_grabber/CDP para o formato do Playwright.
+
+        Descarta o que `add_cookies` rejeita (chaves extras do CDP) e normaliza
+        `sameSite` — o CDP exporta "no_restriction"/"unspecified", o Playwright
+        só aceita "Strict"/"Lax"/"None".
+        """
+        same_site_map = {
+            "no_restriction": "None", "none": "None",
+            "lax": "Lax", "unspecified": "Lax",
+            "strict": "Strict",
+        }
+        out: List[Dict[str, Any]] = []
+        for c in raw or []:
+            name, value = c.get("name"), c.get("value")
+            if not name or value is None:
+                continue
+            cookie: Dict[str, Any] = {"name": name, "value": value}
+            if c.get("domain"):
+                cookie["domain"] = c["domain"]
+                cookie["path"] = c.get("path") or "/"
+            elif c.get("url"):
+                cookie["url"] = c["url"]
+            else:
+                continue
+            for key in ("httpOnly", "secure"):
+                if isinstance(c.get(key), bool):
+                    cookie[key] = c[key]
+            expires = c.get("expires", c.get("expirationDate"))
+            if isinstance(expires, (int, float)) and expires > 0:
+                cookie["expires"] = float(expires)
+            mapped = same_site_map.get(str(c.get("sameSite", "")).lower())
+            if mapped:
+                cookie["sameSite"] = mapped
+            out.append(cookie)
+        return out
+
+    def _inject_saved_session(self) -> int:
+        """
+        Injeta no contexto os cookies salvos de `utils/sessions/mercadolivre.json`.
+
+        Returns:
+            Nº de cookies injetados (0 se não houver sessão válida/salva).
+        """
+        if self._context is None:
+            return 0
+        try:
+            from utils.session_grabber import load_session_meta
+
+            meta = load_session_meta("mercadolivre") or {}
+            cookies = self._sanitize_cookies(meta.get("cookies") or [])
+            if not cookies:
+                return 0
+            self._context.add_cookies(cookies)
+            logger.info(
+                f"[{self.platform_name}] Sessão capturada aplicada: "
+                f"{len(cookies)} cookies (salva em {meta.get('saved_at', '?')})"
+            )
+            return len(cookies)
+        except Exception as exc:
+            logger.warning(
+                f"[{self.platform_name}] Não consegui aplicar a sessão salva "
+                f"({exc}) — seguindo anônimo."
+            )
+            return 0
+
+    def _ml_cookies(self) -> List[Dict[str, Any]]:
+        """Cookies do domínio do ML no contexto atual (lista vazia se falhar)."""
+        if self._context is None:
+            return []
+        try:
+            return self._context.cookies(
+                ["https://www.mercadolivre.com.br", "https://lista.mercadolivre.com.br"]
+            )
+        except Exception:
+            return []
+
+    def _is_logged_in(self) -> bool:
+        """True quando há cookie de sessão autenticada do ML no contexto."""
+        names = {c.get("name") for c in self._ml_cookies()}
+        return any(n in names for n in _ML_LOGIN_COOKIES)
+
+    def _log_session_state(self) -> None:
+        """Diz no log se a coleta começa autenticada — o gate depende disso."""
+        cookies = self._ml_cookies()
+        if self._is_logged_in():
+            logger.info(
+                f"[{self.platform_name}] Sessão AUTENTICADA no ML "
+                f"({len(cookies)} cookies) — login gate improvável."
+            )
+        else:
+            logger.info(
+                f"[{self.platform_name}] Sessão ANÔNIMA ({len(cookies)} cookies). "
+                "Funciona na maioria dos dias; se o gate persistir, logue no "
+                "perfil: python scripts/setup_local_profile.py --site mercadolivre"
+            )
 
     def _close(self) -> None:
         self._log_run_summary()
+        if self._api_scraper:
+            try:
+                self._api_scraper._close()
+            except Exception:
+                pass
+            self._api_scraper = None
         # Modo browser local: fecha SÓ a aba dedicada — o Chrome é
         # compartilhado e fechado no fim da coleta (close_local_browser).
         if self._local_active:
@@ -338,24 +518,60 @@ class MLScraper(BaseScraper):
             return
         super()._close()
 
+    @staticmethod
+    def _has_serp_cards(html: str) -> bool:
+        """True se o HTML tem card de produto — a evidência de SERP utilizável."""
+        return bool(html) and bool(_SERP_CARD_RE.search(html))
+
+    def _gate_reason(self) -> Optional[str]:
+        """
+        Motivo do gate na página atual, ou None se ela é utilizável.
+
+        Ordem deliberada — **evidência antes de string**:
+
+          1. URL de gate  → o ML tirou o visitante da SERP. É gate, ponto.
+          2. Tem card?    → NÃO é gate, mesmo que a frase de login apareça no
+                            HTML. A SERP normal carrega o CTA "acesse sua conta"
+                            no header e o script de device fingerprint
+                            (`/gz/webdevice`); a checagem antiga casava esses
+                            trechos e jogava fora SERPs cheias — foi assim que
+                            a coleta de 31/07 devolveu 0 produto em 100% das
+                            keywords com o Chrome real, perfil dedicado e IP
+                            residencial (log do incidente).
+          3. Sem card + frase de login/captcha → gate de verdade.
+
+        Robusto a uso offline/testes: sem página Playwright associada (parser
+        chamado com HTML avulso), retorna None em vez de estourar.
+        """
+        page = getattr(self, "_page", None)
+        if page is None:
+            return None
+        try:
+            url = page.url or ""
+            if _GATE_URL_RE.search(url):
+                return f"URL de gate ({url[:90]})"
+            content = page.content()
+        except Exception:
+            return None
+
+        if self._has_serp_cards(content):
+            return None
+        if _GATE_TEXT_RE.search(content):
+            return "login/verificação de dispositivo (nenhum card na página)"
+        if _BLOCK_SIGNALS_RE.search(content):
+            return "captcha/bloqueio antibot (nenhum card na página)"
+        return None
+
     def _login_gate_signal(self) -> bool:
         """
         Sinal cru de login/device-verification na página atual.
 
-        Robusto a uso offline/testes: se não houver página Playwright associada
-        (parser chamado com HTML avulso), retorna False em vez de estourar.
+        Wrapper booleano de `_gate_reason` — o motivo fica em
+        `self._last_gate_reason` para o log do incidente.
         """
-        page = getattr(self, "_page", None)
-        if page is None:
-            return False
-        try:
-            url = page.url
-            if "account-verification" in url or "webdevice" in url:
-                return True
-            content = page.content()
-            return "Para continuar, acesse sua conta" in content
-        except Exception:
-            return False
+        reason = self._gate_reason()
+        self._last_gate_reason = reason
+        return reason is not None
 
     def _is_login_gate(self, confirm: bool = False) -> bool:
         """
@@ -1086,6 +1302,80 @@ class MLScraper(BaseScraper):
     # Carregamento da SERP com insistência no desafio
     # ------------------------------------------------------------------
 
+    def _rewarm_home(self) -> None:
+        """Refaz o aquecimento da home (cookies novos) antes de reincidir na SERP."""
+        self._warmed = False
+        self._warm_session()
+
+    def _goto_serp_via_home(self, keyword: str) -> bool:
+        """
+        Chega à SERP pela CAIXA DE BUSCA da home, como um usuário de verdade.
+
+        Um `goto` direto em `/lista` é uma navegação sem Referer, sem o estado
+        de sessão que a home acabou de montar — é o formato que o antibot do ML
+        mais penaliza. Digitar na busca produz navegação in-site com Referer e
+        sensor já rodando.
+
+        Returns:
+            True se terminou numa SERP com cards; False para o chamador cair no
+            `goto` direto.
+        """
+        page = self._page
+        page.goto(_ML_HOME, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
+        self._wait_for_network_idle()
+        self._dismiss_cep_popup()
+
+        box = page.locator(
+            "input[name='as_word'], input#cb1-edit, "
+            "input.nav-search-input, input[type='text'][role='combobox']"
+        ).first
+        box.click(timeout=5_000)
+        box.fill("")
+        box.type(keyword, delay=90)
+        page.keyboard.press("Enter")
+        page.wait_for_load_state("domcontentloaded")
+        self._wait_for_network_idle()
+        return self._has_serp_cards(page.content())
+
+    def _dump_gate_evidence(self, keyword: str, page_num: int) -> str:
+        """
+        Grava o HTML do gate e devolve o caminho — evidência do próximo incidente.
+
+        Sem isto, "login gate" no log é indistinguível de falso positivo do
+        detector: foi exatamente a dúvida que travou o diagnóstico de 31/07.
+        """
+        slug = re.sub(r"[^a-z0-9]+", "-", keyword.lower()).strip("-")[:40] or "kw"
+        path = f"logs/ml_gate_{slug}_p{page_num}.html"
+        try:
+            html = self._page.content()
+            Path("logs").mkdir(exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(html)
+            return path
+        except Exception:
+            return "(não gravado)"
+
+    def _log_gate_recovery_hint(self) -> None:
+        """Roteiro de conserto, uma vez por run, quando o gate vira regra."""
+        if self._gate_hint_shown:
+            return
+        self._gate_hint_shown = True
+        modo = "Chrome local (CDP)" if self._local_active else "Playwright próprio"
+        logado = "SIM" if self._is_logged_in() else "NÃO"
+        logger.error(
+            f"[{self.platform_name}] Gate em {self._gate_failures} keywords "
+            f"seguidas (modo: {modo} | sessão logada: {logado}). Ordem de "
+            "conserto:\n"
+            "  1) Logue o perfil dedicado (resolve o device-verification):\n"
+            "     python scripts/setup_local_profile.py --site mercadolivre\n"
+            "  2) Confira o HTML salvo em logs/ml_gate_*.html — se ele tiver "
+            "cards de produto, o problema é de detecção, não de bloqueio.\n"
+            "  3) Sem Chrome local (VM/Actions), capture uma sessão:\n"
+            "     python utils/session_grabber.py --site mercadolivre\n"
+            "  4) Garanta o fallback de API (roda sozinho quando configurado):\n"
+            "     ML_APP_ID/ML_APP_SECRET no .env + python scripts/ml_oauth_setup.py"
+        )
+
     def _goto_serp(self, url: str, keyword: str, page: int) -> bool:
         """
         Navega para a SERP e insiste enquanto o ML devolver desafio/login gate.
@@ -1094,12 +1384,33 @@ class MLScraper(BaseScraper):
         'ar condicionado 12000 btus' falhou duas vezes e rendeu 60 itens na
         terceira. Antes, o primeiro sinal encerrava a keyword com 0 produtos.
 
+        As tentativas ESCALAM em vez de repetir o mesmo `goto` (que, repetido,
+        só reforça o padrão que o antibot já recusou):
+          1ª  `goto` direto na SERP;
+          2ª  re-aquece a home (cookies novos) e repete o `goto`;
+          3ª  entra pela caixa de busca da home — navegação in-site com Referer
+              (só na página 1: as demais dependem do offset `_Desde_`).
+
         Returns:
             True se a página carregou utilizável; False se o gate persistiu.
         """
+        first_page = "_Desde_" not in url
+
         for attempt in range(1, _GATE_RETRIES + 2):
-            self._page.goto(url, wait_until="domcontentloaded")
-            self._wait_for_network_idle()
+            landed = False
+            try:
+                if attempt == 2:
+                    self._rewarm_home()
+                elif attempt >= 3 and first_page:
+                    landed = self._goto_serp_via_home(keyword)
+            except Exception as exc:
+                logger.debug(
+                    f"[{self.platform_name}] Escalada da tentativa {attempt} "
+                    f"falhou ({exc}) — usando goto direto."
+                )
+            if not landed:
+                self._page.goto(url, wait_until="domcontentloaded")
+                self._wait_for_network_idle()
 
             if not self._is_login_gate(confirm=True):
                 if attempt > 1:
@@ -1107,23 +1418,110 @@ class MLScraper(BaseScraper):
                         f"[{self.platform_name}] Desafio superado na tentativa "
                         f"{attempt} (keyword='{keyword}', pág. {page})"
                     )
+                self._gate_failures = 0
                 return True
 
             if attempt <= _GATE_RETRIES:
                 logger.warning(
                     f"[{self.platform_name}] Desafio/login gate na tentativa "
                     f"{attempt}/{_GATE_RETRIES + 1} (keyword='{keyword}', "
-                    f"pág. {page}) — recarregando."
+                    f"pág. {page}) — motivo: {self._last_gate_reason} — "
+                    "escalando."
                 )
                 self._random_delay()
 
+        self._gate_failures += 1
+        evidencia = self._dump_gate_evidence(keyword, page)
         logger.error(
             f"[{self.platform_name}] Login gate persistente após "
             f"{_GATE_RETRIES + 1} tentativas (keyword='{keyword}', pág. {page}). "
-            "Se isso atingir a maioria das keywords, capture uma sessão: "
-            "python utils/session_grabber.py --site mercadolivre"
+            f"Motivo: {self._last_gate_reason}. HTML em {evidencia}."
         )
+        if self._gate_failures >= _GATE_STREAK_ALERT:
+            self._log_gate_recovery_hint()
         return False
+
+    # ------------------------------------------------------------------
+    # Fallback pela API oficial (OAuth) — dado algum em vez de dado nenhum
+    # ------------------------------------------------------------------
+
+    def _api_fallback_enabled(self) -> bool:
+        """Fallback ligado por padrão; `RAC_ML_API_FALLBACK=0` desliga."""
+        return os.getenv("RAC_ML_API_FALLBACK", "1").strip().lower() not in (
+            "0", "false", "no", "nao", "off"
+        )
+
+    def _get_api_scraper(self) -> Any:
+        """
+        Instância (preguiçosa) do scraper de API, ou None se indisponível.
+
+        `False` marca "já tentei e não dá" — não repetimos a checagem a cada
+        keyword gateada.
+        """
+        if self._api_scraper is False:
+            return None
+        if self._api_scraper is not None:
+            return self._api_scraper
+
+        if not self._api_fallback_enabled():
+            self._api_scraper = False
+            return None
+        if not (os.getenv("ML_APP_ID", "").strip()
+                and os.getenv("ML_APP_SECRET", "").strip()):
+            logger.warning(
+                f"[{self.platform_name}] Sem fallback de API "
+                "(ML_APP_ID/ML_APP_SECRET ausentes no .env) — a keyword gateada "
+                "fica sem dado. Configure para blindar as próximas coletas."
+            )
+            self._api_scraper = False
+            return None
+
+        try:
+            from scrapers.mercado_livre_api import MLAPIScraper
+
+            api = MLAPIScraper()
+            api._launch()
+            self._api_scraper = api
+            logger.info(
+                f"[{self.platform_name}] Fallback pela API oficial ativado "
+                "(posição patrocinada não existe na API — virão como orgânicos)."
+            )
+            return api
+        except Exception as exc:
+            logger.warning(
+                f"[{self.platform_name}] Fallback de API indisponível: {exc}"
+            )
+            self._api_scraper = False
+            return None
+
+    def _api_fallback_search(
+        self,
+        keyword: str,
+        keyword_category_map: dict,
+        page_limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Coleta a keyword pela API oficial quando o browser levou gate."""
+        api = self._get_api_scraper()
+        if api is None:
+            return []
+        try:
+            records = api.search(
+                keyword=keyword,
+                keyword_category_map=keyword_category_map,
+                page_limit=page_limit,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[{self.platform_name}] Fallback de API falhou em "
+                f"'{keyword}': {exc}"
+            )
+            return []
+        if records:
+            logger.success(
+                f"[{self.platform_name}] Fallback de API salvou '{keyword}': "
+                f"{len(records)} registros."
+            )
+        return records
 
     # ------------------------------------------------------------------
     # Método público — ponto de entrada
@@ -1152,6 +1550,7 @@ class MLScraper(BaseScraper):
         all_records: List[Dict[str, Any]] = []
         cursor = _SerpCursor()
         sample_card: Optional[Tag] = None
+        gated = False
 
         self._warm_session()
 
@@ -1162,6 +1561,7 @@ class MLScraper(BaseScraper):
             try:
                 # --- Carrega a SERP, insistindo se vier desafio/login gate ---
                 if not self._goto_serp(url, keyword, page):
+                    gated = True
                     break
 
                 # --- Trata popup de seleção de CEP (confirmado em produção) ---
@@ -1212,5 +1612,13 @@ class MLScraper(BaseScraper):
                 raise  # propaga para o @retry
 
         self._log_coverage(keyword, cursor, sample_card)
+
+        # Gate levou a keyword inteira: em vez de devolver nada, tenta a API
+        # oficial (OAuth), que não passa pelo antibot da SERP.
+        if gated and not all_records:
+            all_records = self._api_fallback_search(
+                keyword, keyword_category_map, page_limit
+            )
+
         self._log_search_result(keyword, len(all_records))
         return all_records

@@ -764,12 +764,29 @@ class _FakePage:
         pass
 
 
+_SERP_URL = "https://lista.mercadolivre.com.br/kw"
+
+
 def _scraper_com_pagina(sinais):
     scraper = MLScraper.__new__(MLScraper)
     scraper._page = _FakePage(sinais)
     scraper._wait_for_network_idle = lambda: None
     scraper._random_delay = lambda *a, **k: None
+    scraper._dismiss_cep_popup = lambda: None
+    scraper._human_scroll = lambda **k: None
+    scraper._local_active = False
+    scraper._gate_failures = 0
+    scraper._gate_hint_shown = False
+    scraper._warmed = False
+    # a evidência do gate tem teste próprio (TestEvidenciaDoGate) — aqui só
+    # não queremos escrever arquivo em logs/ a cada teste
+    scraper._dump_gate_evidence = lambda *a, **k: "(teste)"
     return scraper
+
+
+def _serp_gotos(scraper):
+    """Só as navegações para a SERP — a escalada também visita a home."""
+    return [u for u in scraper._page.gotos if u.startswith(_SERP_URL)]
 
 
 class TestLoginGateTransitorio:
@@ -792,18 +809,186 @@ class TestLoginGateTransitorio:
         # falha nas duas primeiras tentativas, carrega na terceira — exatamente
         # o que aconteceu com 'ar condicionado 12000 btus'
         scraper = _scraper_com_pagina([True, True, True, True, False, False])
-        assert scraper._goto_serp("https://lista.mercadolivre.com.br/kw", "kw", 1) is True
-        assert len(scraper._page.gotos) == 3
+        assert scraper._goto_serp(_SERP_URL, "kw", 1) is True
+        assert len(_serp_gotos(scraper)) == 3
 
     def test_serp_desiste_apos_o_limite(self):
         scraper = _scraper_com_pagina([True])
-        assert scraper._goto_serp("https://lista.mercadolivre.com.br/kw", "kw", 1) is False
-        assert len(scraper._page.gotos) == 3  # 1 + _GATE_RETRIES
+        assert scraper._goto_serp(_SERP_URL, "kw", 1) is False
+        assert len(_serp_gotos(scraper)) == 3  # 1 + _GATE_RETRIES
 
     def test_pagina_limpa_nao_gasta_tentativa(self):
         scraper = _scraper_com_pagina([False])
-        assert scraper._goto_serp("https://lista.mercadolivre.com.br/kw", "kw", 1) is True
-        assert len(scraper._page.gotos) == 1
+        assert scraper._goto_serp(_SERP_URL, "kw", 1) is True
+        assert len(_serp_gotos(scraper)) == 1
+
+    def test_escalada_reaquece_a_home_na_segunda_tentativa(self):
+        # repetir o MESMO goto só reforça o padrão que o antibot recusou:
+        # a 2ª tentativa passa pela home antes de reincidir na SERP
+        scraper = _scraper_com_pagina([True, True, False, False])
+        assert scraper._goto_serp(_SERP_URL, "kw", 1) is True
+        assert "https://www.mercadolivre.com.br/" in scraper._page.gotos
+
+    def test_gate_persistente_conta_falha_para_o_roteiro(self):
+        scraper = _scraper_com_pagina([True])
+        scraper._goto_serp(_SERP_URL, "kw", 1)
+        assert scraper._gate_failures == 1
+
+    def test_serp_carregada_zera_o_contador_de_falhas(self):
+        scraper = _scraper_com_pagina([False])
+        scraper._gate_failures = 2
+        scraper._goto_serp(_SERP_URL, "kw", 1)
+        assert scraper._gate_failures == 0
+
+
+class _PaginaFixa:
+    """Página que devolve sempre a mesma URL e o mesmo HTML."""
+
+    def __init__(self, html, url="https://lista.mercadolivre.com.br/kw"):
+        self.html = html
+        self.url = url
+
+    def content(self):
+        return self.html
+
+    def goto(self, *_a, **_k):
+        pass
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+
+def _scraper_na_pagina(html, url="https://lista.mercadolivre.com.br/kw"):
+    scraper = MLScraper.__new__(MLScraper)
+    scraper._page = _PaginaFixa(html, url)
+    return scraper
+
+
+_CARD_SERP = '<li class="ui-search-layout__item"><h2>Ar condicionado</h2></li>'
+
+
+class TestGateEvidenciaAntesDeString:
+    """
+    31/07: 100% das keywords viraram 0 produto com Chrome real + IP residencial.
+
+    A causa era o detector: a SERP carrega o CTA de login no header e o script
+    de device fingerprint, e o `in content` marcava gate numa página cheia de
+    produtos. Agora card na página vence qualquer string.
+    """
+
+    def test_card_na_pagina_vence_a_frase_de_login(self):
+        html = f"<html><a>Para continuar, acesse sua conta</a>{_CARD_SERP}</html>"
+        scraper = _scraper_na_pagina(html)
+        assert scraper._gate_reason() is None
+        assert scraper._is_login_gate() is False
+
+    def test_card_na_pagina_vence_o_script_de_webdevice(self):
+        html = f'<html><script src="/gz/webdevice/x.js"></script>{_CARD_SERP}</html>'
+        assert _scraper_na_pagina(html)._is_login_gate() is False
+
+    def test_sem_card_a_frase_de_login_e_gate(self):
+        scraper = _scraper_na_pagina("<html>Para continuar, acesse sua conta</html>")
+        assert scraper._is_login_gate() is True
+        assert "nenhum card" in scraper._last_gate_reason
+
+    def test_url_de_gate_vence_ate_com_card(self):
+        # o ML tirou o visitante da SERP: resquício de card no DOM não importa
+        scraper = _scraper_na_pagina(
+            f"<html>{_CARD_SERP}</html>",
+            url="https://www.mercadolivre.com.br/gz/webdevice/account-verification",
+        )
+        assert scraper._is_login_gate() is True
+        assert "URL de gate" in scraper._last_gate_reason
+
+    def test_pagina_sem_card_e_sem_sinal_nao_e_gate(self):
+        # DOM mudou / SERP vazia é outro problema — quem reporta é o parser
+        assert _scraper_na_pagina("<html><body>nada aqui</body></html>")._is_login_gate() is False
+
+    @pytest.mark.parametrize("marcador", [
+        "ui-search-layout__item", "poly-card", "ui-search-result__wrapper",
+        "ui-search-layout--grid__item", "ui-search-results",
+    ])
+    def test_marcadores_de_serp_reconhecidos(self, marcador):
+        assert MLScraper._has_serp_cards(f'<div class="{marcador}"></div>') is True
+
+
+class TestEvidenciaDoGate:
+    """Sem HTML salvo, 'login gate' no log é indistinguível de falso positivo."""
+
+    def test_grava_html_do_gate(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        scraper = _scraper_na_pagina("<html>Para continuar, acesse sua conta</html>")
+        path = scraper._dump_gate_evidence("ar condicionado 12000 btus", 1)
+        assert path == "logs/ml_gate_ar-condicionado-12000-btus_p1.html"
+        assert "acesse sua conta" in (tmp_path / path).read_text(encoding="utf-8")
+
+
+class TestCookiesDaSessaoSalva:
+    """A instrução 'capture uma sessão' era inócua: ninguém lia o arquivo."""
+
+    def test_normaliza_samesite_e_descarta_chaves_do_cdp(self):
+        out = MLScraper._sanitize_cookies([{
+            "name": "MELI_SESSION", "value": "abc",
+            "domain": ".mercadolivre.com.br", "path": "/",
+            "sameSite": "no_restriction", "secure": True,
+            "expirationDate": 1893456000.0,
+            "priority": "Medium", "sourceScheme": "Secure",  # só do CDP
+        }])
+        assert out == [{
+            "name": "MELI_SESSION", "value": "abc",
+            "domain": ".mercadolivre.com.br", "path": "/",
+            "secure": True, "expires": 1893456000.0, "sameSite": "None",
+        }]
+
+    def test_cookie_sem_dominio_nem_url_e_descartado(self):
+        assert MLScraper._sanitize_cookies([{"name": "x", "value": "1"}]) == []
+
+    def test_cookie_sem_nome_e_descartado(self):
+        assert MLScraper._sanitize_cookies([{"value": "1", "url": "https://x"}]) == []
+
+
+class TestFallbackDeAPI:
+    """Gate na keyword inteira devolvia 0 registros; agora cai para a API."""
+
+    def _scraper_gateado(self):
+        scraper = _scraper_com_pagina([True])
+        scraper._log_coverage = lambda *a, **k: None
+        scraper._log_search_result = lambda *a, **k: None
+        return scraper
+
+    def test_gate_aciona_o_fallback(self):
+        scraper = self._scraper_gateado()
+        scraper._api_fallback_search = lambda *a, **k: [{"Produto / SKU": "x"}]
+        assert scraper.search("kw", {}, page_limit=1) == [{"Produto / SKU": "x"}]
+
+    def test_sem_gate_nao_aciona_o_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)   # o parser dumpa logs/ml_debug_*.html
+        scraper = _scraper_com_pagina([False])
+        scraper._log_coverage = lambda *a, **k: None
+        scraper._log_search_result = lambda *a, **k: None
+        scraper._dismiss_cep_popup = lambda: None
+        scraper._human_scroll = lambda **k: None
+        scraper.capture_screenshot = lambda **k: None
+        scraper._get_soup = lambda: BeautifulSoup("<html></html>", "html.parser")
+        chamou = []
+        scraper._api_fallback_search = lambda *a, **k: chamou.append(1) or []
+        scraper.search("kw", {}, page_limit=1)
+        assert chamou == []
+
+    def test_fallback_desligado_por_env(self, monkeypatch):
+        monkeypatch.setenv("RAC_ML_API_FALLBACK", "0")
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._api_scraper = None
+        assert scraper._get_api_scraper() is None
+
+    def test_sem_credenciais_nao_tenta_de_novo(self, monkeypatch):
+        monkeypatch.delenv("ML_APP_ID", raising=False)
+        monkeypatch.delenv("ML_APP_SECRET", raising=False)
+        monkeypatch.setenv("RAC_ML_API_FALLBACK", "1")
+        scraper = MLScraper.__new__(MLScraper)
+        scraper._api_scraper = None
+        assert scraper._get_api_scraper() is None
+        assert scraper._api_scraper is False   # não re-checa a cada keyword
 
 
 class TestWarmUp:

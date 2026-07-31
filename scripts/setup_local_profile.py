@@ -17,15 +17,18 @@ O que precisa (e o que NÃO precisa) de login
 --------------------------------------------
   * **Shopee** — PRECISA de login (a API v4 responde 403 sem conta). Pode ser
     via Google (funciona neste Chrome comum) ou e-mail/telefone.
-  * **Mercado Livre**, **Casas Bahia** e **Magalu** — NÃO precisam de conta
-    nenhuma. Só dependem de IP residencial + Chrome real, que este modo já
-    entrega (o "login gate" do ML é acionado por browser automatizado, não
-    por falta de conta).
+  * **Mercado Livre** — não precisa no dia a dia, MAS logar é o antídoto do
+    "login gate"/device-verification quando ele começa a pegar keyword atrás de
+    keyword (incidente de 31/07/2026). Sessão logada não recebe o desafio.
+  * **Casas Bahia** e **Magalu** — não precisam de conta. Dependem só de IP
+    residencial + Chrome real, que este modo já entrega.
 
 USO:
-    python scripts/setup_local_profile.py            # abre a Shopee p/ login
-    python scripts/setup_local_profile.py --check     # só relata status do login
-    python scripts/setup_local_profile.py --no-login  # só abre o Chrome (aquecer)
+    python scripts/setup_local_profile.py                      # Shopee (padrão)
+    python scripts/setup_local_profile.py --site mercadolivre  # login no ML
+    python scripts/setup_local_profile.py --site ambos         # Shopee + ML
+    python scripts/setup_local_profile.py --check              # só relata status
+    python scripts/setup_local_profile.py --no-login           # só abre o Chrome
 
 Depois de logar, rode a coleta:
     RAC_LOCAL_CHROME=1 python main.py --platforms ml magalu shopee casasbahia --pages 1
@@ -55,9 +58,45 @@ from scrapers.local_browser import (  # noqa: E402
 
 _SHOPEE_HOME = "https://shopee.com.br/"
 
-# Cookies que indicam sessão LOGADA na Shopee (any-of). csrftoken/SPC_SI saem
-# até para visitante anônimo — sem estes a API de busca retorna 403.
-_SHOPEE_LOGIN_COOKIES = ("SPC_EC", "SPC_ST", "SPC_U")
+# URL que o botão "Entre" da home do ML usa. Se ela mudar, abra a home e clique
+# em "Entre" — o login fica salvo no perfil do mesmo jeito.
+_ML_LOGIN_URL = (
+    "https://www.mercadolivre.com.br/jms/mlb/lgz/msl/login"
+    "?platform_id=ML&go=https%3A%2F%2Fwww.mercadolivre.com.br%2F"
+)
+
+# Sites suportados. `login_cookies` = any-of que indica sessão autenticada.
+SITES = {
+    "shopee": {
+        "label":         "Shopee",
+        "start_url":     _SHOPEE_HOME,
+        "cookie_url":    "https://shopee.com.br",
+        # csrftoken/SPC_SI saem até para visitante anônimo — sem ESTES a API
+        # de busca responde 403.
+        "login_cookies": ("SPC_EC", "SPC_ST", "SPC_U"),
+        "obrigatorio":   True,
+        "instrucoes": [
+            "Na janela do Chrome que abriu, faça LOGIN na Shopee.",
+            "Pode ser 'Continuar com o Google' (funciona neste Chrome comum)",
+            "ou e-mail/telefone + senha.",
+        ],
+    },
+    "mercadolivre": {
+        "label":         "Mercado Livre",
+        "start_url":     _ML_LOGIN_URL,
+        "cookie_url":    "https://www.mercadolivre.com.br",
+        "login_cookies": ("orguseridp", "MELI_SESSION", "c_user_id"),
+        # O ML coleta anônimo na maioria dos dias; logar é o antídoto quando o
+        # device-verification (o "login gate") começa a pegar todas as keywords.
+        "obrigatorio":   False,
+        "instrucoes": [
+            "Faça LOGIN no Mercado Livre com a SUA conta (e-mail/telefone + senha).",
+            "Se pedir verificação de dispositivo, confirme no app ou no e-mail —",
+            "é justamente esse desafio que derruba a coleta quando não está logado.",
+            "Se a página de login não abrir, vá em mercadolivre.com.br e clique 'Entre'.",
+        ],
+    },
+}
 
 
 def _wait_cdp(port: int, seconds: int = 15) -> bool:
@@ -70,8 +109,9 @@ def _wait_cdp(port: int, seconds: int = 15) -> bool:
     return cdp_endpoint_if_up(port) is not None
 
 
-def _report_shopee_login(port: int) -> bool:
-    """Conecta via CDP (breve) e relata se a Shopee está logada. True se logada."""
+def _report_login(port: int, site: str) -> bool:
+    """Conecta via CDP (breve) e relata se o site está logado. True se logado."""
+    cfg = SITES[site]
     endpoint = cdp_endpoint_if_up(port)
     if endpoint is None:
         print("  [aviso] Chrome não está aberto na porta — não dá pra checar.")
@@ -88,18 +128,24 @@ def _report_shopee_login(port: int) -> bool:
         pw = sync_playwright().start()
         browser = pw.chromium.connect_over_cdp(endpoint, timeout=15_000)
         ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-        cookies = ctx.cookies("https://shopee.com.br")
+        cookies = ctx.cookies(cfg["cookie_url"])
         names = {c.get("name") for c in cookies}
-        logged = any(n in names for n in _SHOPEE_LOGIN_COOKIES)
-        print(f"\n  Cookies Shopee no perfil: {len(cookies)}")
+        login_cookies = cfg["login_cookies"]
+        logged = any(n in names for n in login_cookies)
+        print(f"\n  Cookies {cfg['label']} no perfil: {len(cookies)}")
         if logged:
-            present = [n for n in _SHOPEE_LOGIN_COOKIES if n in names]
-            print(f"  ✅ Shopee LOGADA (cookies de login: {present})")
+            present = [n for n in login_cookies if n in names]
+            print(f"  ✅ {cfg['label']} LOGADA (cookies de login: {present})")
+        elif cfg["obrigatorio"]:
+            print(
+                f"  ❌ {cfg['label']} ANÔNIMA — nenhum cookie de login "
+                f"({'/'.join(login_cookies)}). Faça login na aba e rode de novo "
+                "(ou use --check)."
+            )
         else:
             print(
-                "  ❌ Shopee ANÔNIMA — nenhum cookie de login "
-                f"({'/'.join(_SHOPEE_LOGIN_COOKIES)}). Faça login na aba da Shopee "
-                "e rode de novo (ou use --check)."
+                f"  ⚠️  {cfg['label']} ANÔNIMA — funciona na maioria dos dias, "
+                "mas é logado que o login gate para de pegar as keywords."
             )
         return logged
     except Exception as exc:
@@ -120,18 +166,32 @@ def _report_shopee_login(port: int) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Setup único do perfil Chrome dedicado e logado (Shopee).",
+        description=(
+            "Setup do perfil Chrome dedicado e logado "
+            "(Shopee obrigatório; Mercado Livre contra o login gate)."
+        ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
+        "--site", choices=("shopee", "mercadolivre", "ambos"), default="shopee",
+        help=(
+            "Onde logar neste perfil:\n"
+            "  shopee        (padrão) — obrigatório para a API v4\n"
+            "  mercadolivre  — antídoto do login gate / device-verification\n"
+            "  ambos         — um login de cada vez, na mesma janela"
+        ),
+    )
+    parser.add_argument(
         "--check", action="store_true",
-        help="Só relata o status de login da Shopee (abre o Chrome se preciso).",
+        help="Só relata o status de login do(s) site(s) (abre o Chrome se preciso).",
     )
     parser.add_argument(
         "--no-login", action="store_true",
         help="Só abre o Chrome comum no perfil (aquecer), sem esperar login.",
     )
     args = parser.parse_args()
+
+    sites = ["shopee", "mercadolivre"] if args.site == "ambos" else [args.site]
 
     port = _resolve_port()
     profile_dir = _resolve_profile_dir()
@@ -163,16 +223,18 @@ def main() -> int:
     # --check: só relata (abre o Chrome se ainda não estiver aberto).
     if args.check:
         if cdp_endpoint_if_up(port) is None:
-            spawn_chrome(port, profile_dir, start_url=_SHOPEE_HOME)
+            spawn_chrome(port, profile_dir, start_url=SITES[sites[0]]["start_url"])
             _wait_cdp(port, seconds=15)
         # Exit code reflete o login — automação pode confiar no status.
-        return 0 if _report_shopee_login(port) else 1
+        status = [_report_login(port, s) for s in sites]
+        return 0 if all(status) else 1
 
-    # Abre o Chrome comum já na Shopee (se já houver um aberto no perfil, a URL
+    # Abre o Chrome comum já no site (se já houver um aberto no perfil, a URL
     # abre nele). NENHUM cliente CDP conectado agora → login humano/Google passa.
+    primeiro = SITES[sites[0]]
     if cdp_endpoint_if_up(port) is not None:
-        print("\n  Chrome já está aberto neste perfil — abrindo a Shopee nele.")
-    spawn_chrome(port, profile_dir, start_url=_SHOPEE_HOME)
+        print(f"\n  Chrome já está aberto neste perfil — abrindo {primeiro['label']} nele.")
+    spawn_chrome(port, profile_dir, start_url=primeiro["start_url"])
 
     if args.no_login:
         # Confirma que o Chrome subiu de fato (porta de debug acessível) antes
@@ -186,20 +248,27 @@ def main() -> int:
         )
         return 1
 
-    print("\n" + "─" * 66)
-    print("  INSTRUÇÕES (só a Shopee precisa de login):")
-    print("   1. Na janela do Chrome que abriu, faça LOGIN na Shopee.")
-    print("      • Pode ser 'Continuar com o Google' (funciona neste Chrome comum)")
-    print("        ou e-mail/telefone + senha.")
-    print("   2. Mercado Livre, Casas Bahia e Magalu NÃO precisam de login — pode ignorar.")
-    print("   3. Deixe o Chrome ABERTO e volte aqui.")
-    print("─" * 66)
-    try:
-        input("\n  → Pressione ENTER depois de logar na Shopee: ")
-    except KeyboardInterrupt:
-        print("\n  Cancelado (o que você já logou fica salvo no perfil).")
+    status = []
+    for i, site in enumerate(sites):
+        cfg = SITES[site]
+        if i > 0:
+            # abre o próximo site na MESMA janela (perfil já quente)
+            spawn_chrome(port, profile_dir, start_url=cfg["start_url"])
 
-    logged = _report_shopee_login(port)
+        print("\n" + "─" * 66)
+        print(f"  INSTRUÇÕES — {cfg['label']}:")
+        for linha in cfg["instrucoes"]:
+            print(f"   • {linha}")
+        print("   • Deixe o Chrome ABERTO e volte aqui.")
+        print("─" * 66)
+        try:
+            input(f"\n  → Pressione ENTER depois de logar em {cfg['label']}: ")
+        except KeyboardInterrupt:
+            print("\n  Cancelado (o que você já logou fica salvo no perfil).")
+
+        status.append(_report_login(port, site))
+
+    logged = all(status)
     print(
         "\n  Pronto. O login fica salvo no perfil dedicado. Rode a coleta com:\n"
         "\n    scripts\\collect_local_authenticated.bat 1     (jeito recomendado)\n"

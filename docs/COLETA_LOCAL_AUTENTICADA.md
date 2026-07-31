@@ -14,12 +14,38 @@
 | Plataforma | Login? | Observação |
 |------------|--------|------------|
 | **Shopee** | ✅ **Sim** | A API v4 responde 403 sem conta. Pode ser via **Google** (funciona neste modo) ou e-mail/telefone. |
-| **Mercado Livre** | ❌ Não | O login gate é acionado por browser automatizado (Playwright do zero), não por falta de conta — o Chrome real resolve sem precisar logar. |
+| **Mercado Livre** | 🟡 Recomendado | Coleta anônimo na maioria dos dias. **Logue quando o gate voltar**: sessão autenticada não recebe device-verification. `python scripts\setup_local_profile.py --site mercadolivre` |
 | **Casas Bahia** | ❌ Não | Só precisa de IP residencial + Chrome real. |
 | **Magalu** | ❌ Não | Idem. |
 
-> Só a Shopee exige login. Mercado Livre, Casas Bahia e Magalu **não**
-> precisam de conta.
+> Só a Shopee **exige** login. No Mercado Livre o login é a apólice de seguro
+> contra o gate; Casas Bahia e Magalu não precisam de conta.
+
+### Mercado Livre: o que fazer quando o gate volta
+
+Sintoma no log: `Desafio/login gate na tentativa 1/3 … 2/3 …` seguido de
+`Login gate persistente` e `0 produtos coletados`, keyword após keyword.
+
+Ordem de conserto (da mais barata para a mais cara):
+
+1. **Confira a evidência.** Todo gate persistente agora salva a página em
+   `logs/ml_gate_<keyword>_p<N>.html`. Abra o arquivo: **se ele tiver cards de
+   produto, não é bloqueio** — é regressão de detecção; reporte com o arquivo em
+   mãos. Se for a tela de login/verificação, siga para o passo 2.
+2. **Logue o perfil dedicado** (resolve o device-verification):
+   `python scripts\setup_local_profile.py --site mercadolivre` — faça login com
+   a sua conta, confirme a verificação no app/e-mail, ENTER. O login fica salvo
+   no perfil e vale para as próximas coletas. Conferir depois:
+   `python scripts\setup_local_profile.py --site mercadolivre --check`.
+3. **Sem Chrome local** (VM/GitHub Actions): capture a sessão e o scraper a
+   injeta sozinho no contexto —
+   `python utils\session_grabber.py --site mercadolivre` (ou
+   `python scripts\refresh_sessions_cdp.py --sites mercadolivre` para exportar a
+   sessão do Chrome já logado). Validade: 24h.
+4. **Fallback pela API oficial** — com `ML_APP_ID`/`ML_APP_SECRET` no `.env` e
+   `python scripts\ml_oauth_setup.py` rodado uma vez, a keyword que levar gate
+   é recoletada automaticamente pela API REST (`RAC_ML_API_FALLBACK=0`
+   desliga). A API não expõe posição patrocinada: os itens vêm como orgânicos.
 
 ---
 
@@ -80,6 +106,10 @@ python -m rebrowser_playwright install chromium
 
 # 2. Abre a Shopee num Chrome comum p/ você logar 1x (Google OU e-mail/telefone)
 python scripts\setup_local_profile.py
+
+# 2b. (recomendado) Loga também o Mercado Livre — blinda contra o login gate
+python scripts\setup_local_profile.py --site mercadolivre
+#    ou os dois de uma vez: python scripts\setup_local_profile.py --site ambos
 ```
 
 O script abre a Shopee. Faça login (pode ser "Continuar com o Google" — funciona
