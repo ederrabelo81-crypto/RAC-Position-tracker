@@ -101,7 +101,9 @@ def mirror_csv_to_drive(
         )
         return None
 
-    size_mb = path.stat().st_size / (1024 * 1024)
+    # size_mb vem do try acima — try/except não isola escopo em Python. Chamar
+    # stat() de novo aqui reintroduziria a corrida que aquele try existe para
+    # fechar, agora fora de qualquer proteção.
     if size_mb > _MAX_MB:
         logger.error(
             f"[Drive] {path.name} tem {size_mb:.1f} MB (teto: {_MAX_MB} MB) — "

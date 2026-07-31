@@ -140,6 +140,38 @@ def test_arquivo_que_desaparece_entre_o_teste_e_o_stat(csv_file, drive_env, monk
     assert drive_env == []
 
 
+def test_nenhum_stat_depois_do_gate_do_backend(csv_file, drive_env, monkeypatch):
+    """O tamanho é lido UMA vez, dentro do try — nunca depois dele.
+
+    Este caso existe porque a primeira correção da corrida deixou um segundo
+    `path.stat()` para trás, fora de qualquer proteção. O teste da corrida
+    passava mesmo assim (o mock quebrava já na primeira chamada, dentro do try)
+    enquanto a chamada desprotegida seguia lá.
+
+    Aqui o `stat()` só passa a falhar **depois** do gate `resolve_backend_name()`
+    — que é onde a chamada residual ficava. Não conta chamadas (o próprio
+    `is_file()` faz stat por dentro, detalhe do CPython): afirma só que nada
+    volta ao disco depois de decidido o destino.
+    """
+    real_stat = Path.stat
+    passou_do_gate = {"sim": False}
+
+    def _resolve():
+        passou_do_gate["sim"] = True
+        return "drive"
+
+    def _stat_proibido_depois(self, **kw):
+        if passou_do_gate["sim"]:
+            raise OSError("stat fora do try: a corrida TOCTOU voltou")
+        return real_stat(self, **kw)
+
+    monkeypatch.setattr("utils.history.csv_mirror.resolve_backend_name", _resolve)
+    monkeypatch.setattr(Path, "stat", _stat_proibido_depois)
+
+    assert mirror_csv_to_drive(csv_file) == f"{DATASET_CSV}/{csv_file.name}"
+    assert passou_do_gate["sim"], "o gate do backend nem foi consultado"
+
+
 def test_arquivo_gigante_e_recusado(tmp_path, drive_env, monkeypatch):
     """Teto de tamanho: arquivo errado não vira upload de 500 MB no Drive."""
     monkeypatch.setattr("utils.history.csv_mirror._MAX_MB", 0.0001)
