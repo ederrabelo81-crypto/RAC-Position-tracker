@@ -194,10 +194,23 @@ if (Test-Path $envFile) {
         if ($envText -match "(?m)^\s*$key\s*=\s*\S") { Write-Ok ".env tem $key" }
         else { Write-Warn ".env sem $key (upload/alerta pode nao funcionar)" }
     }
-    # Sem GDRIVE_FOLDER_ID o backend do historico e resolvido como 'local'
-    foreach ($key in @("GDRIVE_FOLDER_ID", "GDRIVE_CLIENT_ID", "GDRIVE_CLIENT_SECRET", "GDRIVE_REFRESH_TOKEN")) {
-        if ($envText -match "(?m)^\s*$key\s*=\s*\S") { Write-Ok ".env tem $key" }
-        else { Write-Bad ".env sem $key - o historico/CSV NAO vai para o Drive (rode: python scripts\gdrive_setup.py --client-secrets <json>)" }
+    # Sem GDRIVE_FOLDER_ID o backend do historico e resolvido como 'local'.
+    # As credenciais tem DUAS formas validas (utils/history/backends.py):
+    # conta de servico (Workspace + Shared Drive) OU o trio OAuth (conta
+    # pessoal). Exigir o trio sempre marcaria um Shared Drive correto como erro.
+    $hasFolder = $envText -match "(?m)^\s*GDRIVE_FOLDER_ID\s*=\s*\S"
+    $hasSvcAcct = $envText -match "(?m)^\s*GDRIVE_SERVICE_ACCOUNT_JSON\s*=\s*\S"
+    $hasOAuth = ($envText -match "(?m)^\s*GDRIVE_CLIENT_ID\s*=\s*\S") -and
+                ($envText -match "(?m)^\s*GDRIVE_CLIENT_SECRET\s*=\s*\S") -and
+                ($envText -match "(?m)^\s*GDRIVE_REFRESH_TOKEN\s*=\s*\S")
+    if (-not $hasFolder) {
+        Write-Bad ".env sem GDRIVE_FOLDER_ID - o historico/CSV NAO vai para o Drive (rode: python scripts\gdrive_setup.py --client-secrets <json>)"
+    } elseif ($hasSvcAcct) {
+        Write-Ok ".env tem GDRIVE_FOLDER_ID + conta de servico (Shared Drive)"
+    } elseif ($hasOAuth) {
+        Write-Ok ".env tem GDRIVE_FOLDER_ID + as 3 credenciais OAuth"
+    } else {
+        Write-Bad ".env tem GDRIVE_FOLDER_ID mas nao as credenciais - defina GDRIVE_SERVICE_ACCOUNT_JSON ou o trio GDRIVE_CLIENT_ID/_SECRET/_REFRESH_TOKEN (python scripts\gdrive_setup.py --client-secrets <json>)"
     }
 } else {
     Write-Bad ".env nao encontrado em $BaseDir"
@@ -208,30 +221,44 @@ Write-Sect "Destino dos dados coletados"
 
 if ($pyExe) {
     Push-Location $BaseDir
-    # Le a mesma resolucao que main.py usa (RAC_HISTORY_BACKEND + GDRIVE_*),
-    # sem tocar na rede: e leitura de configuracao, nao teste de upload.
-    $destino = & $pyExe -c "from utils.history import resolve_backend_name, csv_mirror_enabled; import os; print(resolve_backend_name()); print('on' if csv_mirror_enabled() else 'off'); print(os.getenv('RAC_HISTORY','on'))" 2>$null
+    # Pergunta o backend EFETIVO, nao so o nome resolvido pela politica:
+    # com RAC_HISTORY_BACKEND=drive e GDRIVE_FOLDER_ID ausente,
+    # resolve_backend_name() responde 'drive' mas get_store() nao consegue
+    # construir o GoogleDriveBackend, cai no LocalBackend e a coleta grava em
+    # disco. `describe` e a mesma string que aparece no log da coleta
+    # (drive:<id> / local:<caminho>), entao o diagnostico e o log concordam.
+    # get_store() nao toca na rede (o cliente da Drive API e lazy) nem cria
+    # pastas - segue read-only. O stderr descartado engole o log de fallback.
+    $destino = & $pyExe -c "from utils.history import resolve_backend_name, csv_mirror_enabled, get_store; import os; print(resolve_backend_name()); print(get_store().backend.describe); print('on' if csv_mirror_enabled() else 'off'); print(os.getenv('RAC_HISTORY','on'))" 2>$null
     Pop-Location
 
     if ($LASTEXITCODE -ne 0 -or -not $destino) {
         Write-Bad "Nao consegui resolver o destino do historico (imports falhando?) - rode scripts\ensure_deps.bat --force"
     } else {
-        $backend  = ($destino | Select-Object -First 1).Trim()
-        $csvEspelho = ($destino | Select-Object -Skip 1 -First 1).Trim()
-        $histOn   = ($destino | Select-Object -Skip 2 -First 1).Trim()
+        $politica   = ($destino | Select-Object -First 1).Trim()
+        $efetivo    = ($destino | Select-Object -Skip 1 -First 1).Trim()
+        $csvEspelho = ($destino | Select-Object -Skip 2 -First 1).Trim()
+        $histOn     = ($destino | Select-Object -Skip 3 -First 1).Trim()
+        $noDrive    = $efetivo -like "drive*"
 
         if ($histOn -match "^(off|0|false)$") {
             Write-Bad "RAC_HISTORY=$histOn no .env - a coleta NAO grava historico nenhum"
         }
-        if ($backend -eq "drive") {
-            Write-Ok "Historico -> Google Drive (Parquet por dia)"
+        if ($noDrive) {
+            Write-Ok "Historico -> Google Drive (Parquet por dia) [$efetivo]"
+        } elseif ($politica -eq "drive") {
+            Write-Bad "RAC_HISTORY_BACKEND=drive mas o store cai em DISCO LOCAL [$efetivo] - credencial ou lib do Drive faltando. Rode: python scripts\gdrive_setup.py --check"
         } else {
-            Write-Bad "Historico -> DISCO LOCAL (data\history): o dado sai da coleta e nao sai da maquina. Configure: python scripts\gdrive_setup.py --client-secrets <json>"
+            Write-Bad "Historico -> DISCO LOCAL [$efetivo]: o dado sai da coleta e nao sai da maquina. Configure: python scripts\gdrive_setup.py --client-secrets <json>"
         }
-        if ($csvEspelho -eq "on") {
+        if ($csvEspelho -ne "on") {
+            Write-Warn "RAC_DRIVE_CSV=off - o CSV cru fica so em output\ nesta maquina"
+        } elseif ($noDrive) {
             Write-Ok "CSV da coleta -> espelhado no Drive (csv_coletas/)"
         } else {
-            Write-Warn "RAC_DRIVE_CSV=off - o CSV cru fica so em output\ nesta maquina"
+            # mirror_csv_to_drive() pula quando o backend nao e o Drive: dizer
+            # [OK] aqui seria afirmar um espelho que nao acontece.
+            Write-Bad "CSV da coleta NAO sera espelhado - o historico esta em modo local (conserte o Drive acima)"
         }
         Write-Info "Teste de ida e volta no Drive (grava/le/apaga): python scripts\gdrive_setup.py --check"
     }

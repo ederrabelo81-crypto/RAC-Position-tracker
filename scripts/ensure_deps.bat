@@ -12,12 +12,17 @@
 :: Quando instala (qualquer uma basta):
 ::   1. o requirements.txt mudou desde a ultima instalacao (hash SHA256), ou
 ::   2. algum pacote critico nao importa na venv (drift real, nao teorico), ou
-::   3. --force foi passado.
+::   3. o hash nao pode ser calculado (sem PowerShell) - instala por precaucao, ou
+::   4. --force foi passado.
 :: Fora isso sai em ~1s, entao pode ficar no caminho da coleta agendada.
+::
+:: O stamp (logs\deps_state.txt) e gravado SO quando tudo verificou: imports
+:: passando, browsers instalados e hash real em maos. Stamp otimista e pior que
+:: stamp ausente - ele faz a proxima execucao pular justamente o conserto.
 ::
 :: Uso:
 ::   scripts\ensure_deps.bat            (chamado pela coleta agendada)
-::   scripts\ensure_deps.bat --force    (reinstala tudo - usado no sync_windows)
+::   scripts\ensure_deps.bat --force    (sync manual: reinstala com --upgrade)
 ::
 :: Exit: 0 = venv em dia; 1 = instalacao falhou (o chamador decide se segue).
 :: -----------------------------------------------------------------------------
@@ -58,7 +63,6 @@ set "STAMP=logs\deps_state.txt"
 :: Hash via PowerShell: o cmd.exe nao tem como calcular SHA256 sozinho.
 set "REQ_HASH="
 for /f %%H in ('powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 requirements.txt).Hash" 2^>nul') do set "REQ_HASH=%%H"
-if not defined REQ_HASH set "REQ_HASH=sem-hash"
 
 set "OLD_HASH="
 if exist "%STAMP%" set /p OLD_HASH=<"%STAMP%"
@@ -74,6 +78,13 @@ if defined PROBE_FAIL (
     echo [deps] pacote critico ausente na venv - instalando requirements.txt
     goto :install
 )
+:: Sem hash nao ha como saber se o requirements.txt mudou. Instalar e o lado
+:: seguro do erro - e o stamp NAO e gravado (ver :install), senao um valor
+:: sentinela viraria "hash igual" e congelaria as dependencias para sempre.
+if not defined REQ_HASH (
+    echo [deps] AVISO: nao consegui o hash do requirements.txt - instalando por precaucao
+    goto :install
+)
 if /i "%REQ_HASH%"=="%OLD_HASH%" (
     echo [deps] requirements.txt sem mudanca e imports OK - nada a fazer
     exit /b 0
@@ -85,7 +96,19 @@ goto :install
 
 :install
 "%PYEXE%" -m pip install --upgrade pip --quiet --disable-pip-version-check
-"%PYEXE%" -m pip install -r requirements.txt --disable-pip-version-check
+
+:: --upgrade SO no --force (sync manual, com alguem olhando a saida). No
+:: caminho agendado o objetivo e "convergir para o requirements.txt", nao
+:: "pegar a ultima versao de tudo": os pisos sao >= e um `--upgrade` diario
+:: subiria playwright/pandas major sem ninguem pedir, do jeito mais caro de
+:: descobrir (coleta noturna quebrada). O pip ja atualiza sozinho o pacote
+:: cujo piso subiu no requirements.txt - que e o caso que este script existe
+:: para cobrir.
+if defined FORCE (
+    "%PYEXE%" -m pip install --upgrade -r requirements.txt --disable-pip-version-check
+) else (
+    "%PYEXE%" -m pip install -r requirements.txt --disable-pip-version-check
+)
 if errorlevel 1 (
     echo [deps] ERRO: pip install -r requirements.txt falhou
     exit /b 1
@@ -95,10 +118,17 @@ if errorlevel 1 (
 :: driver proprio (fork do Playwright) - sem este install o modo CDP do
 :: Magalu/Casas Bahia sobe sem chromium e falha no launch.
 echo [deps] Verificando browsers do Playwright...
+set "BROWSER_FAIL="
 "%PYEXE%" -m playwright install chromium
-if errorlevel 1 echo [deps] AVISO: playwright install chromium falhou
+if errorlevel 1 (
+    set "BROWSER_FAIL=1"
+    echo [deps] AVISO: playwright install chromium falhou
+)
 "%PYEXE%" -m rebrowser_playwright install chromium
-if errorlevel 1 echo [deps] AVISO: rebrowser_playwright install chromium falhou
+if errorlevel 1 (
+    set "BROWSER_FAIL=1"
+    echo [deps] AVISO: rebrowser_playwright install chromium falhou
+)
 
 :: Grava o hash SO com os imports passando: um stamp otimista faria a proxima
 :: execucao pular a instalacao justamente com a venv quebrada.
@@ -107,6 +137,23 @@ if errorlevel 1 (
     echo [deps] ERRO: apos instalar, pacotes criticos ainda nao importam.
     "%PYEXE%" -c "%PROBE%"
     exit /b 1
+)
+
+:: Chromium ausente derruba a coleta no launch, entao browser que nao instalou
+:: tambem barra o stamp: com ele gravado, a proxima execucao veria "hash igual
+:: + imports OK" e nunca tentaria baixar o browser de novo.
+if defined BROWSER_FAIL (
+    echo [deps] ERRO: browsers do Playwright nao instalaram - stamp NAO gravado,
+    echo [deps]       a proxima execucao tenta de novo. Manualmente:
+    echo [deps]       "%PYEXE%" -m playwright install chromium
+    exit /b 1
+)
+:: Sem hash nao ha o que gravar: um sentinela ("sem-hash") casaria com ele
+:: mesmo na proxima execucao e congelaria as dependencias.
+if not defined REQ_HASH (
+    echo [deps] Dependencias instaladas, mas sem hash para o stamp - a proxima
+    echo [deps]       execucao vai instalar de novo por precaucao.
+    exit /b 0
 )
 
 > "%STAMP%" echo %REQ_HASH%

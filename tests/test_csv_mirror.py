@@ -129,6 +129,17 @@ def test_csv_inexistente(tmp_path, drive_env):
     assert drive_env == []
 
 
+def test_arquivo_que_desaparece_entre_o_teste_e_o_stat(csv_file, drive_env, monkeypatch):
+    """Corrida is_file()/stat(): OSError vazando quebraria o "nunca levanta"."""
+    monkeypatch.setattr(Path, "is_file", lambda self: True)
+    monkeypatch.setattr(
+        Path, "stat", lambda self, **kw: (_ for _ in ()).throw(OSError("sumiu"))
+    )
+
+    assert mirror_csv_to_drive(csv_file) is None
+    assert drive_env == []
+
+
 def test_arquivo_gigante_e_recusado(tmp_path, drive_env, monkeypatch):
     """Teto de tamanho: arquivo errado não vira upload de 500 MB no Drive."""
     monkeypatch.setattr("utils.history.csv_mirror._MAX_MB", 0.0001)

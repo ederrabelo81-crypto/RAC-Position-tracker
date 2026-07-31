@@ -141,7 +141,16 @@ if %ERRORLEVEL% neq 0 (
     echo       ERRO: o teste do Drive falhou ^(veja as mensagens acima^).
     goto :drive_help
 )
-echo       Drive OK — historico e CSVs vao para o Drive.
+echo       Drive OK — historico vai para o Drive.
+:: O espelho do CSV e um interruptor separado: dizer "e os CSVs tambem" com
+:: RAC_DRIVE_CSV=off seria relatar algo que a coleta nao faz. findstr aceita
+:: varios /c: como OU logico - cobre as formas que csv_mirror_enabled() nega.
+findstr /i /r /c:"^ *RAC_DRIVE_CSV *= *off" /c:"^ *RAC_DRIVE_CSV *= *0" /c:"^ *RAC_DRIVE_CSV *= *false" /c:"^ *RAC_DRIVE_CSV *= *no" ".env" >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    echo       CSV cru: NAO espelhado ^(RAC_DRIVE_CSV desligado no .env^) — fica so em output\.
+) else (
+    echo       CSV cru: espelhado no Drive em csv_coletas\.
+)
 goto :fim
 
 :drive_help

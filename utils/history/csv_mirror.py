@@ -79,8 +79,16 @@ def mirror_csv_to_drive(
         logger.debug("[Drive] Espelho do CSV desligado (RAC_DRIVE_CSV=off).")
         return None
 
-    if not path.is_file():
-        logger.warning(f"[Drive] CSV inexistente, nada a espelhar: {path}")
+    # is_file() + stat() no mesmo try: entre as duas chamadas o arquivo pode
+    # sumir (limpeza de output/, antivírus), e um OSError vazando daqui
+    # quebraria o contrato de "nunca levanta" justo no fim da coleta.
+    try:
+        if not path.is_file():
+            logger.warning(f"[Drive] CSV inexistente, nada a espelhar: {path}")
+            return None
+        size_mb = path.stat().st_size / (1024 * 1024)
+    except OSError as exc:
+        logger.warning(f"[Drive] CSV ilegível, espelho cancelado ({path}): {exc}")
         return None
 
     # Backend local = sem credencial do Drive neste host. Avisar é o ponto:

@@ -231,10 +231,14 @@ rodou"):
   nova do `requirements.txt` só chegava se alguém rodasse o `sync_windows.bat` à
   mão. Foi assim que o notebook ficou sem `google-api-python-client` e o
   histórico passou a gravar em `data\history` em vez do Drive, sem erro nenhum
-  no log. O script instala quando o `requirements.txt` muda (hash SHA256) **ou**
-  quando um pacote crítico não importa; fora isso sai em ~1s. Falha na
-  instalação **não** aborta a coleta (coletar com a venv antiga é melhor que não
-  coletar).
+  no log. O script instala quando o `requirements.txt` muda (hash SHA256), quando
+  um pacote crítico não importa, ou quando o hash não pôde ser calculado; fora
+  isso sai em ~1s. O stamp (`logs\deps_state.txt`) só é gravado com **imports
+  passando e browsers instalados** — stamp otimista faria a execução seguinte
+  pular justamente o conserto. `--upgrade` fica reservado ao `--force` (sync
+  manual): no caminho agendado o objetivo é convergir para o `requirements.txt`,
+  não puxar a última versão de tudo numa coleta noturna. Falha na instalação
+  **não** aborta a coleta (coletar com a venv antiga é melhor que não coletar).
 - Coleta agendada com exit ≠ 0 dispara **alerta no Telegram**
   (`notify_scheduler_failure` em `utils/n8n_notify.py`).
 
