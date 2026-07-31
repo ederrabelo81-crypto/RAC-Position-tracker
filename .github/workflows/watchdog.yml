@@ -14,6 +14,12 @@ name: Watchdog de Coleta
 # agendado em lugar nenhum. Este arquivo é a correção: o watchdog não olha se o
 # job terminou bem — olha se o DADO chegou.
 #
+# Segunda rodada (31/07/2026): o histórico no Drive, montado em 26/07 como
+# redundância, passou cinco dias sem escrever um único arquivo. O watchdog não
+# viu porque só sabia perguntar ao Supabase — e, com o banco restrito, morria
+# no exit 2 antes de perguntar qualquer coisa. Agora ele checa o frio PRIMEIRO
+# e alerta mesmo sem banco.
+#
 # Horário: 23:30 UTC = 20:30 BRT, depois da coleta da noite (21:00 BRT roda em
 # 00:00 UTC do dia seguinte; a de abertura, 10:00 BRT, já passou). Assim o
 # relatório cobre o dia inteiro que está fechando.
@@ -72,12 +78,16 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      # O watchdog só lê o banco e notifica — não precisa de Playwright nem
-      # dos scrapers, então instalar o requirements inteiro seria desperdício.
+      # O watchdog lê o banco e o histórico frio, e notifica — não precisa de
+      # Playwright nem dos scrapers, então instalar o requirements inteiro
+      # seria desperdício. pyarrow + libs do Google entram porque sem elas o
+      # check do frio se degrada para "indisponível" e o watchdog volta a ser
+      # cego justamente para o backup.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install supabase python-dotenv loguru requests pandas tenacity
+          pip install supabase python-dotenv loguru requests pandas tenacity \
+                      pyarrow google-api-python-client google-auth
 
       - name: Run daily status check
         env:
@@ -85,6 +95,14 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           N8N_TELEGRAM_CHAT_ID: ${{ secrets.N8N_TELEGRAM_CHAT_ID }}
+          # Leitura do histórico frio. Sem estes secrets o check reporta
+          # "Drive configurado mas indisponível" — que é a verdade, e é
+          # exatamente o que o alerta deve dizer.
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
         run: |
           ARGS=""
           if [ -n "${{ github.event.inputs.data }}" ]; then

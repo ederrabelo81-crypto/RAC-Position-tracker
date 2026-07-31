@@ -3,6 +3,10 @@ scripts/daily_status_check.py — Validação diária do status de cada platafor
 
 Consulta o Supabase pelos registros do dia (ou turno específico) e gera um
 relatório PASS/WARN/FAIL por plataforma comparado aos thresholds mínimos.
+Verifica também o **histórico frio** (Parquet no Drive): se o dia não chegou
+lá — ou chegou e não volta a sair — o relatório sai vermelho. Esse check roda
+antes do Supabase e não depende dele: a redundância precisa ser verificável
+justamente quando o banco está fora.
 Também monitora o % de preenchimento dos campos de insight (buy_box_seller,
 tipo_seller, qtd_sellers, reputacao_seller, avaliacao) por plataforma e emite
 WARN quando a cobertura de um campo cai >50% vs a média dos últimos 7 dias —
@@ -24,9 +28,10 @@ Uso:
     python scripts/daily_status_check.py --data 2026-05-14
 
 Exit code:
-    0 — todas as plataformas críticas PASS
-    1 — pelo menos uma plataforma crítica WARN/FAIL
-    2 — erro de configuração (Supabase indisponível, etc)
+    0 — todas as plataformas críticas PASS e o dia no histórico frio
+    1 — pelo menos uma plataforma crítica WARN/FAIL, ou histórico frio FAIL
+    2 — erro de configuração (Supabase indisponível, etc) — o alerta do
+        Telegram ainda sai, com o status do histórico frio
 """
 
 import argparse
@@ -458,6 +463,139 @@ def _pricetrack_telegram_lines(pt_check: Dict) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# Histórico frio — o dia chegou ao Drive?
+# ---------------------------------------------------------------------------
+# Por que este check existe
+# -------------------------
+# O histórico no Drive foi montado em 26/07/2026 como redundância do Supabase e
+# **nunca escreveu um único arquivo**: a coleta morria de UnboundLocalError na
+# linha anterior à gravação. A pasta `coletas/` ficou lá, criada e vazia, por
+# cinco dias, enquanto 12 coletas terminavam vermelhas sem que nada olhasse.
+#
+# O `daily_status_check` não pegava porque só sabia perguntar ao Supabase — e
+# um backup que ninguém verifica não é backup, é intenção. Aqui a pergunta é a
+# única que importa: **o dia de hoje está legível no destino frio?** Legível,
+# não "existe": a leitura baixa e abre o Parquet, então corrupção e credencial
+# revogada aparecem como FAIL em vez de virarem surpresa no dia do resgate.
+
+#: Abaixo disto a partição existe mas está anêmica demais para ser o dia todo.
+_HISTORY_MIN_ROWS = 100
+
+
+def _check_history(data_str: str) -> Dict:
+    """Valida que a coleta do dia chegou — e volta a sair — do histórico frio.
+
+    Args:
+        data_str: Dia a verificar (``YYYY-MM-DD``).
+
+    Returns:
+        Dict ``{status, backend, partitions, rows, detail}`` com status ∈
+        {"PASS", "WARN", "FAIL"}.
+
+    Note:
+        Deliberadamente **não** consulta o Supabase. Este é o check da
+        redundância: ele precisa continuar respondendo justamente nos dias em
+        que o banco está fora — que são os dias em que o frio é tudo o que há.
+    """
+    from utils.history import (  # import tardio: pyarrow é pesado
+        DATASET_COLETAS,
+        GoogleDriveBackend,
+        HistoryBackendError,
+        HistoryStoreError,
+        get_store,
+        resolve_backend_name,
+    )
+
+    day = datetime.strptime(data_str, "%Y-%m-%d").date()
+    esperado = resolve_backend_name()
+    store = get_store()
+    destino = store.backend.describe
+    no_drive = isinstance(store.backend, GoogleDriveBackend)
+
+    # `get_store()` cai para o disco quando o Drive não inicializa — de propósito,
+    # para não perder o dia. Só que em silêncio isso vira exatamente o buraco que
+    # este check existe para fechar: tudo "verde" com o backup em disco efêmero.
+    if esperado == "drive" and not no_drive:
+        return {
+            "status": "FAIL", "backend": destino, "partitions": 0, "rows": 0,
+            "detail": "Drive configurado mas indisponível — histórico caindo em "
+                      f"{destino}. Verifique GDRIVE_* (docs/HISTORICO_DRIVE.md).",
+        }
+
+    try:
+        keys = store.keys_in_range(DATASET_COLETAS, day, day)
+    except (HistoryBackendError, HistoryStoreError) as exc:
+        return {
+            "status": "FAIL", "backend": destino, "partitions": 0, "rows": 0,
+            "detail": f"falha ao listar o histórico em {destino}: {exc}",
+        }
+
+    if not keys:
+        return {
+            "status": "FAIL", "backend": destino, "partitions": 0, "rows": 0,
+            "detail": f"nenhuma partição de {data_str} em {destino} — a coleta "
+                      "não gravou o histórico (só o CSV, se tanto).",
+        }
+
+    try:
+        df = store.read(DATASET_COLETAS, start=day, end=day, columns=["plataforma"])
+    except (HistoryBackendError, HistoryStoreError) as exc:
+        return {
+            "status": "FAIL", "backend": destino, "partitions": len(keys), "rows": 0,
+            "detail": f"{len(keys)} partição(ões) gravada(s) mas ilegível(is) "
+                      f"em {destino}: {exc}",
+        }
+
+    ilegiveis = list(store.last_read_errors)
+    linhas = len(df)
+
+    if linhas == 0:
+        return {
+            "status": "FAIL", "backend": destino, "partitions": len(keys), "rows": 0,
+            "detail": f"{len(keys)} partição(ões) em {destino}, 0 linhas legíveis "
+                      f"({len(ilegiveis)} ilegível(is)).",
+        }
+
+    detalhe = f"{linhas:,} linhas em {len(keys)} partição(ões) → {destino}".replace(",", ".")
+
+    if ilegiveis:
+        return {
+            "status": "WARN", "backend": destino, "partitions": len(keys),
+            "rows": linhas,
+            "detail": f"{detalhe} — {len(ilegiveis)} partição(ões) ilegível(is): "
+                      + ", ".join(k for k, _ in ilegiveis[:3]),
+        }
+    if linhas < _HISTORY_MIN_ROWS:
+        return {
+            "status": "WARN", "backend": destino, "partitions": len(keys),
+            "rows": linhas,
+            "detail": f"{detalhe} — abaixo do mínimo de {_HISTORY_MIN_ROWS}.",
+        }
+    if not no_drive:
+        # Backend local pedido explicitamente: grava, lê, mas some com a máquina.
+        return {
+            "status": "WARN", "backend": destino, "partitions": len(keys),
+            "rows": linhas,
+            "detail": f"{detalhe} — em disco, sem cópia fora da máquina.",
+        }
+    return {
+        "status": "PASS", "backend": destino, "partitions": len(keys),
+        "rows": linhas, "detail": detalhe,
+    }
+
+
+def _history_telegram_lines(hist: Dict) -> List[str]:
+    """Bloco do status do histórico frio para o Telegram."""
+    import html as _html
+    icon = _STATUS_ICON.get(hist["status"], "?")
+    return [
+        "<b>🧊 Histórico frio (redundância)</b>",
+        f"  {icon} {_html.escape(hist['detail'])}",
+        "",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Avaliação PASS/WARN/FAIL
 # ---------------------------------------------------------------------------
 
@@ -750,6 +888,46 @@ def _format_telegram(
     return "\n".join(lines)
 
 
+def _format_telegram_sem_supabase(
+    data_str: str, erro: str, hist: Optional[Dict]
+) -> str:
+    """Alerta para quando o Supabase não responde.
+
+    Antes, esse caminho terminava em ``return 2`` sem mandar nada: o único dia
+    em que o alerta mais importa (banco fora) era o único dia em que ele não
+    saía. A mensagem carrega o status do frio justamente porque é ele que
+    decide se o dia foi perdido ou só ficou invisível no dashboard.
+    """
+    import html as _html
+    esc = _html.escape
+
+    lines = [
+        f"🔴 <b>Status Coleta {esc(data_str)}</b>",
+        "",
+        "<b>❌ Supabase indisponível</b>",
+        f"  <code>{esc(erro[:300])}</code>",
+        "",
+    ]
+    if hist:
+        lines.extend(_history_telegram_lines(hist))
+        if hist["status"] == "PASS":
+            lines.append(
+                "<i>O dia está no histórico frio — o dashboard fica cego, "
+                "mas o dado não se perdeu.</i>"
+            )
+        else:
+            lines.append(
+                "<b>⚠️ Sem banco e sem histórico: o dia de hoje não está em "
+                "lugar nenhum além do CSV.</b>"
+            )
+    else:
+        lines.append(
+            "<i>Histórico frio não pôde ser verificado — rode: "
+            "<code>python scripts/history_cli.py stats</code></i>"
+        )
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Notificação Telegram (reusa infraestrutura do n8n_notify)
 # ---------------------------------------------------------------------------
@@ -807,13 +985,39 @@ def main() -> int:
     logger.info(f"[daily_status] Validando coleta de {data_str} "
                 f"(turno={args.turno or 'todos'})")
 
+    # Histórico frio PRIMEIRO e fora de qualquer dependência do Supabase. Ele é
+    # a redundância: precisa ser verificado (e alertado) exatamente nos dias em
+    # que o banco não responde — antes, um Supabase fora abortava o script no
+    # `return 2` e ninguém descobria que o frio também estava vazio.
+    hist: Optional[Dict] = None
+    try:
+        hist = _check_history(data_str)
+    except Exception as exc:  # pyarrow/credencial/rede — nada aqui é fatal
+        logger.warning(f"[daily_status] Check do histórico frio indisponível: {exc}")
+
     try:
         counts = _fetch_counts(data_str, args.turno)
     except RuntimeError as exc:
         logger.error(f"[daily_status] {exc}")
+        # Sem o banco não há tabela de plataformas para montar — mas o alerta
+        # sai assim mesmo, carregando o que se sabe do frio.
+        if hist:
+            icon = _STATUS_ICON.get(hist["status"], "?")
+            print(f"\nHISTÓRICO FRIO: {icon} {hist['status']} — {hist['detail']}\n")
+        if not args.no_notify:
+            _send_telegram(_format_telegram_sem_supabase(data_str, str(exc), hist))
         return 2
 
     rows, summary = _build_report(data_str, args.turno, counts)
+
+    if hist:
+        if hist["status"] == "WARN":
+            summary["warn"] += 1
+        elif hist["status"] == "FAIL":
+            summary["fail"] += 1
+            # Frio vazio é perda de dado permanente, não degradação — pesa como
+            # falha crítica para o job do watchdog terminar vermelho.
+            summary["critical_fail"] += 1
 
     # Cobertura dos campos de insight — best-effort: bancos sem a migration
     # 003 ou falhas de consulta não derrubam o relatório de contagens.
@@ -843,6 +1047,10 @@ def main() -> int:
 
     _print_terminal(data_str, args.turno, rows, summary)
     _print_coverage(cov_today, cov_base, cov_warnings)
+    if hist:
+        icon = _STATUS_ICON.get(hist["status"], "?")
+        print(f"HISTÓRICO FRIO: {icon} {hist['status']} — {hist['detail']}")
+        print("=" * 78 + "\n")
     if pt_check:
         icon = _STATUS_ICON.get(pt_check["status"], "?")
         print(f"PRICETRACK IMPORT (D-1): {icon} {pt_check['status']} — "
@@ -856,6 +1064,8 @@ def main() -> int:
             )
             if cov_today else []
         )
+        if hist:
+            coverage_lines = coverage_lines + _history_telegram_lines(hist)
         if pt_check:
             coverage_lines = coverage_lines + _pricetrack_telegram_lines(pt_check)
         msg = _format_telegram(data_str, args.turno, rows, summary,
