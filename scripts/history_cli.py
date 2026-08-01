@@ -13,7 +13,9 @@ Exemplos
     # Onde está o histórico e o que ele já tem
     python scripts/history_cli.py stats
 
-    # Recupera os dias que o Supabase recusou (CSVs baixados dos artifacts)
+    # Recupera os dias que o Supabase recusou (CSVs baixados dos artifacts).
+    # O curinga funciona em qualquer shell: quem expande é o próprio CLI,
+    # porque PowerShell/cmd entregam o padrão literal ao Python.
     python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv
 
     # Migração: grava no histórico tudo com mais de 15 dias (sem apagar ainda)
@@ -124,13 +126,20 @@ def cmd_import_csv(args: argparse.Namespace) -> int:
     dos artifacts do GitHub Actions entram no histórico sem passar pelo banco.
     """
     from scripts.upload_csv import _load_csv  # reaproveita aliases de coluna
+    from utils.cli_args import expand_paths
 
     store = get_store()
     total = 0
     falhas = 0
 
-    for raw in args.csv_files:
-        path = Path(raw)
+    # PowerShell/cmd não expandem curingas — sem isto, `import-csv
+    # output\rac_*.csv` no PC coletor morria com "Arquivo não encontrado".
+    arquivos, sem_match = expand_paths(args.csv_files)
+    for padrao in sem_match:
+        logger.error(f"Nenhum arquivo casou com o padrão: {padrao}")
+        falhas += 1
+
+    for path in arquivos:
         if not path.exists():
             logger.error(f"Arquivo não encontrado: {path}")
             falhas += 1

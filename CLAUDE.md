@@ -787,7 +787,7 @@ fica instável (re-capturar sessão com `session_grabber.py --site shopee`).
 | Dealer returns 0 products | Check `logs/dealer_debug_<name>_p1.html` |
 | Wrong turno (Abertura/Fechamento) | Run `python scripts/fix_turno.py --confirm` |
 | VM Oracle OOM | Verify swap: `free -h`, `sudo swapon --show` |
-| Log diz `[Histórico] … → local:C:\...` | `.env` daquele host sem `GDRIVE_*` — `python scripts/gdrive_setup.py --client-secrets <json>` |
+| Log diz `[Histórico] … → local:C:\...` | `.env` daquele host sem `GDRIVE_*` — `python scripts/gdrive_setup.py --client-secrets CAMINHO.json` (caminho real do JSON do OAuth) |
 | Notebook sem lib nova do `requirements.txt` | `scripts\ensure_deps.bat --force` (a coleta agendada já roda isso a cada run) |
 | Telegram notification fails | Test token: `curl https://api.telegram.org/bot<TOKEN>/getMe` |
 

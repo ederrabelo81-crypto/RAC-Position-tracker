@@ -27,7 +27,7 @@ if not exist logs mkdir logs
 
 echo.
 echo ========================================
-echo   RAC — Sync Windows
+echo   RAC - Sync Windows
 echo   %DATE% %TIME%
 echo   %BASE_DIR%
 echo ========================================
@@ -42,9 +42,9 @@ if %ERRORLEVEL% neq 0 (
     echo       AVISO: git pull falhou ^(sem internet?^). Continuando com codigo local.
     echo [%DATE% %TIME%] WARN: git pull falhou (exit=%ERRORLEVEL%) >> "%LOG%"
 ) else (
-    echo       OK — commit atual: & git rev-parse --short HEAD
+    echo       OK - commit atual: & git rev-parse --short HEAD
     for /f "tokens=*" %%i in ('git rev-parse --short HEAD') do (
-        echo [%DATE% %TIME%] git pull OK — commit: %%i >> "%LOG%"
+        echo [%DATE% %TIME%] git pull OK - commit: %%i >> "%LOG%"
     )
 )
 
@@ -54,7 +54,7 @@ echo [2/6] Verificando ambiente virtual Python (.venv)...
 if exist ".venv\Scripts\activate.bat" (
     echo       .venv ja existe.
 ) else if exist "venv\Scripts\activate.bat" (
-    echo       venv ^(nome antigo^) encontrada — usando ela.
+    echo       venv ^(nome antigo^) encontrada - usando ela.
 ) else (
     echo       Criando novo ambiente virtual...
     python -m venv .venv >> "%LOG%" 2>&1
@@ -81,58 +81,34 @@ if %ERRORLEVEL% neq 0 (
     echo [%DATE% %TIME%] ensure_deps --force OK >> "%LOG%"
 )
 
-:: ── 4. Dependências Node.js (magalu_shopee) ──────────────────────────────────
+:: ── 4. Verificação dos imports ───────────────────────────────────────────────
 echo.
-echo [4/6] Instalando/atualizando dependencias Node.js (magalu_shopee)...
-if not exist "magalu_shopee\package.json" (
-    echo       AVISO: magalu_shopee\package.json nao encontrado. Pulando Node.js.
-) else (
-    cd /d "%BASE_DIR%\magalu_shopee"
-    npm install --silent >> "%LOG%" 2>&1
-    if !ERRORLEVEL! neq 0 (
-        echo       AVISO: npm install falhou. Veja %LOG%
-        echo [%DATE% %TIME%] WARN: npm install com erros >> "%LOG%"
-    ) else (
-        echo       Node.js OK.
-        echo [%DATE% %TIME%] npm install OK >> "%LOG%"
-    )
-    cd /d "%BASE_DIR%"
-)
-
-:: ── 5. Verificação final ─────────────────────────────────────────────────────
-echo.
-echo [5/6] Verificacao final...
+echo [4/6] Verificando imports Python...
 
 set "PYEXE=python"
 if exist "venv\Scripts\python.exe" set "PYEXE=venv\Scripts\python.exe"
 if exist ".venv\Scripts\python.exe" set "PYEXE=.venv\Scripts\python.exe"
 
-"%PYEXE%" -c "import playwright, pandas, supabase; print('Python: imports OK')" 2>>"%LOG%"
-if %ERRORLEVEL% neq 0 (
-    echo       ERRO: imports Python falharam. Veja %LOG%
-) else (
-    echo       Python imports OK.
-)
+"%PYEXE%" -c "import playwright, pandas, supabase; print('      Python: imports OK')" 2>>"%LOG%"
+if %ERRORLEVEL% neq 0 echo       ERRO: imports Python falharam. Veja %LOG%
 
-if exist "magalu_shopee\node_modules\.bin\ts-node" (
-    echo       Node.js ts-node OK.
-) else (
-    echo       AVISO: ts-node nao encontrado em magalu_shopee\node_modules.
-)
-
-:: ── 6. Google Drive (destino do historico e dos CSVs) ────────────────────────
+:: ── 5. Google Drive (destino do historico e dos CSVs) ────────────────────────
 :: O que faltava neste PC: sem GDRIVE_* no .env, o historico e gravado em
-:: data\history e o CSV fica so em output\ — se a maquina sumir, o dia some
+:: data\history e o CSV fica so em output\ - se a maquina sumir, o dia some
 :: com ela (e com o Supabase restrito por cota nao ha outra copia).
+::
+:: Vem ANTES do Node de proposito: e a verificacao que motiva rodar este
+:: script, e o passo do Node (fallback da Shopee) nao pode atrasa-la nem
+:: esconde-la quando falha.
 echo.
-echo [6/6] Verificando o destino do historico (Google Drive)...
+echo [5/6] Verificando o destino do historico (Google Drive)...
 if not exist ".env" (
     echo       ERRO: .env nao existe. Copie o .env.example e preencha.
     goto :drive_help
 )
 findstr /r /c:"^ *GDRIVE_FOLDER_ID *= *[^ ]" ".env" >nul 2>&1
 if %ERRORLEVEL% neq 0 (
-    echo       AVISO: .env sem GDRIVE_FOLDER_ID — o historico esta indo para o disco local.
+    echo       AVISO: .env sem GDRIVE_FOLDER_ID - o historico esta indo para o disco local.
     goto :drive_help
 )
 echo       GDRIVE_FOLDER_ID presente. Testando ida e volta no Drive...
@@ -141,28 +117,60 @@ if %ERRORLEVEL% neq 0 (
     echo       ERRO: o teste do Drive falhou ^(veja as mensagens acima^).
     goto :drive_help
 )
-echo       Drive OK — historico vai para o Drive.
+echo       Drive OK - historico vai para o Drive.
 :: O espelho do CSV e um interruptor separado: dizer "e os CSVs tambem" com
 :: RAC_DRIVE_CSV=off seria relatar algo que a coleta nao faz. findstr aceita
 :: varios /c: como OU logico - cobre as formas que csv_mirror_enabled() nega.
 findstr /i /r /c:"^ *RAC_DRIVE_CSV *= *off" /c:"^ *RAC_DRIVE_CSV *= *0" /c:"^ *RAC_DRIVE_CSV *= *false" /c:"^ *RAC_DRIVE_CSV *= *no" ".env" >nul 2>&1
 if %ERRORLEVEL% equ 0 (
-    echo       CSV cru: NAO espelhado ^(RAC_DRIVE_CSV desligado no .env^) — fica so em output\.
+    echo       CSV cru: NAO espelhado ^(RAC_DRIVE_CSV desligado no .env^) - fica so em output\.
 ) else (
     echo       CSV cru: espelhado no Drive em csv_coletas\.
 )
-goto :fim
+goto :node
 
 :drive_help
 echo.
 echo       Como configurar ^(uma vez, ~3 min^):
-echo         1. python scripts\gdrive_setup.py --client-secrets client_secret.json
-echo         2. cole no .env as 5 linhas que ele imprime ^(GDRIVE_* + RAC_HISTORY_BACKEND^)
-echo         3. python scripts\gdrive_setup.py --check
+echo         1. Baixe o JSON do "ID do cliente OAuth" ^(tipo: App para computador^)
+echo            em https://console.cloud.google.com/ ^(ative a Google Drive API^).
+echo         2. python scripts\gdrive_setup.py --client-secrets "CAMINHO\DO\ARQUIVO.json"
+echo            ^(caminho real do arquivo baixado, entre aspas: a pasta do seu
+echo            usuario pode ter espaco no nome^)
+echo         3. Cole no .env as 5 linhas que ele imprime ^(GDRIVE_* + RAC_HISTORY_BACKEND^)
+echo         4. python scripts\gdrive_setup.py --check
 echo       Passo a passo: docs\HISTORICO_DRIVE.md
 echo [%DATE% %TIME%] WARN: Drive nao configurado/validado >> "%LOG%"
 
-:fim
+:node
+:: ── 6. Dependências Node.js (magalu_shopee) ──────────────────────────────────
+:: `call npm`: npm no Windows e npm.cmd, e chamar um .cmd de dentro de um .bat
+:: SEM `call` transfere o controle de vez - quando o npm termina, este script
+:: termina com ele. Era por isso que o sync morria aqui e os passos seguintes
+:: (inclusive a verificacao do Drive) nunca rodavam, sem erro nenhum na tela.
+echo.
+echo [6/6] Instalando/atualizando dependencias Node.js (magalu_shopee)...
+if not exist "magalu_shopee\package.json" (
+    echo       AVISO: magalu_shopee\package.json nao encontrado. Pulando Node.js.
+) else (
+    cd /d "%BASE_DIR%\magalu_shopee"
+    call npm install --silent >> "%LOG%" 2>&1
+    if !ERRORLEVEL! neq 0 (
+        echo       AVISO: npm install falhou - veja o fim de %LOG%.
+        echo              Nao bloqueia a coleta: o Node aqui e so o fallback da Shopee.
+        echo [%DATE% %TIME%] WARN: npm install com erros >> "%LOG%"
+    ) else (
+        echo       Node.js OK.
+        echo [%DATE% %TIME%] npm install OK >> "%LOG%"
+    )
+    cd /d "%BASE_DIR%"
+)
+if exist "magalu_shopee\node_modules\.bin\ts-node" (
+    echo       Node.js ts-node OK.
+) else (
+    echo       AVISO: ts-node nao encontrado em magalu_shopee\node_modules.
+)
+
 echo.
 echo ========================================
 echo   Sync concluido! %DATE% %TIME%

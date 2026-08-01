@@ -24,6 +24,7 @@ from loguru import logger
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
 
+from utils.cli_args import expand_paths
 from utils.supabase_client import upload_to_supabase, log_auditoria_run
 
 
@@ -119,8 +120,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    paths = [Path(f) for f in args.csv_files]
-    results: dict[str, bool] = {}
+    # Curinga vindo do PowerShell/cmd chega literal (só o bash expande antes).
+    paths, sem_match = expand_paths(args.csv_files)
+    # Lista de pares, não dict por nome: um curinga pode casar arquivos
+    # homônimos em diretórios diferentes, e aí um resultado sobrescreveria o
+    # outro — uma falha sumiria do resumo e do código de saída.
+    results: list[tuple[str, bool]] = []
+    for padrao in sem_match:
+        logger.error(f"Nenhum arquivo casou com o padrão: {padrao}")
+        results.append((padrao, False))
 
     for csv_path in paths:
         if args.no_run_id:
@@ -132,17 +140,17 @@ def main() -> None:
             logger.info(f"run_id derivado do arquivo: {run_id}")
 
         ok = upload_csv(csv_path, run_id=run_id, dry_run=args.dry_run)
-        results[csv_path.name] = ok
+        results.append((str(csv_path), ok))
 
     # Resumo final (útil quando há múltiplos arquivos)
     if len(paths) > 1:
-        ok_count = sum(results.values())
+        ok_count = sum(1 for _, ok in results if ok)
         logger.info(f"\nResumo: {ok_count}/{len(paths)} arquivos enviados com sucesso.")
-        for name, ok in results.items():
+        for rotulo, ok in results:
             status = "✓" if ok else "✗"
-            logger.info(f"  {status} {name}")
+            logger.info(f"  {status} {rotulo}")
 
-    if not all(results.values()):
+    if not all(ok for _, ok in results):
         sys.exit(1)
 
 
