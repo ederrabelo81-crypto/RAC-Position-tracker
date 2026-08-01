@@ -749,6 +749,12 @@ python scripts/admin_auto.py --full               # varre o histórico inteiro
 # Database maintenance
 python scripts/fix_turno.py --confirm             # Fix inverted turno
 python utils/supabase_client.py                   # Run cleanup functions
+
+# PC coletor Windows — catch-up de repo + dependências + Drive (um comando)
+scripts\sync_windows.bat
+scripts\ensure_deps.bat --force                   # só as dependências (venv)
+python scripts/gdrive_setup.py --check            # histórico/CSV vão ao Drive?
+python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv --mirror
 ```
 
 ### Platform Status (foco buy box/seller — Mai 2026)
@@ -781,6 +787,8 @@ fica instável (re-capturar sessão com `session_grabber.py --site shopee`).
 | Dealer returns 0 products | Check `logs/dealer_debug_<name>_p1.html` |
 | Wrong turno (Abertura/Fechamento) | Run `python scripts/fix_turno.py --confirm` |
 | VM Oracle OOM | Verify swap: `free -h`, `sudo swapon --show` |
+| Log diz `[Histórico] … → local:C:\...` | `.env` daquele host sem `GDRIVE_*` — `python scripts/gdrive_setup.py --client-secrets <json>` |
+| Notebook sem lib nova do `requirements.txt` | `scripts\ensure_deps.bat --force` (a coleta agendada já roda isso a cada run) |
 | Telegram notification fails | Test token: `curl https://api.telegram.org/bot<TOKEN>/getMe` |
 
 ### CSV Output Columns

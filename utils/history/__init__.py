@@ -37,6 +37,11 @@ from utils.history.backends import (
     HistoryBackendError,
     LocalBackend,
 )
+from utils.history.csv_mirror import (
+    DATASET_CSV,
+    csv_mirror_enabled,
+    mirror_csv_to_drive,
+)
 from utils.history.store import (
     DATASET_COLETAS,
     DATASET_PRICETRACK,
@@ -53,6 +58,7 @@ from utils.history.store import (
 
 __all__ = [
     "DATASET_COLETAS",
+    "DATASET_CSV",
     "DATASET_PRICETRACK",
     "DEFAULT_HOT_WINDOW_DAYS",
     "GoogleDriveBackend",
@@ -61,10 +67,12 @@ __all__ = [
     "HistoryStore",
     "HistoryStoreError",
     "LocalBackend",
+    "csv_mirror_enabled",
     "get_store",
     "history_dir",
     "hot_window_days",
     "hot_window_start",
+    "mirror_csv_to_drive",
     "parse_key",
     "partition_key",
     "read_coletas",

@@ -116,17 +116,28 @@ com colunas em branco.
 ```powershell
 cd "C:\Users\Eder Rabelo\Downloads\rac-position-tracker"
 
-# 1. Dependências — o fork rebrowser é OBRIGATÓRIO para a coleta passar no Akamai
-pip install -r requirements.txt
-python -m rebrowser_playwright install chromium
+# 1. Repo + dependências + browsers + check do Drive, num comando só
+scripts\sync_windows.bat
+#    (equivale a: git pull, pip install -r requirements.txt,
+#     playwright/rebrowser install chromium e gdrive_setup.py --check)
 
-# 2. Abre a Shopee num Chrome comum p/ você logar 1x (Google OU e-mail/telefone)
+# 2. Google Drive — destino do histórico e do CSV. SEM isto o dado da coleta
+#    fica só nesta máquina (o log mostra "→ local:C:\..."). Uma vez só:
+python scripts\gdrive_setup.py --client-secrets client_secret.json
+#    cole no .env as 5 linhas impressas e confirme:
+python scripts\gdrive_setup.py --check
+
+# 3. Abre a Shopee num Chrome comum p/ você logar 1x (Google OU e-mail/telefone)
 python scripts\setup_local_profile.py
 
-# 2b. (recomendado) Loga também o Mercado Livre — blinda contra o login gate
+# 3b. (recomendado) Loga também o Mercado Livre — blinda contra o login gate
 python scripts\setup_local_profile.py --site mercadolivre
 #    ou os dois de uma vez: python scripts\setup_local_profile.py --site ambos
 ```
+
+> O fork `rebrowser-playwright` é **obrigatório** para passar no Akamai
+> (Magalu/Casas Bahia) — o `sync_windows.bat` já o instala junto com o resto do
+> `requirements.txt`. Detalhes do Drive: [`HISTORICO_DRIVE.md`](HISTORICO_DRIVE.md).
 
 O script abre a Shopee. Faça login (pode ser "Continuar com o Google" — funciona
 aqui), volte ao terminal e pressione ENTER. Ele confirma se a sessão ficou
@@ -215,8 +226,39 @@ rodou"):
   roda no próximo logon **dentro da janela** — sem duplicar (marcador) e sem
   gravar turno errado (`get_turno()` marca Abertura até 12h). Se a coleta
   falhar, o marcador não é gravado e o próximo logon na janela tenta de novo.
+- O estágio B chama **`scripts\ensure_deps.bat`** antes de coletar. O estágio A
+  atualizava o **código** (`git pull`) mas nunca as **dependências** — toda lib
+  nova do `requirements.txt` só chegava se alguém rodasse o `sync_windows.bat` à
+  mão. Foi assim que o notebook ficou sem `google-api-python-client` e o
+  histórico passou a gravar em `data\history` em vez do Drive, sem erro nenhum
+  no log. O script instala quando o `requirements.txt` muda (hash SHA256), quando
+  um pacote crítico não importa, ou quando o hash não pôde ser calculado; fora
+  isso sai em ~1s. O stamp (`logs\deps_state.txt`) só é gravado com **imports
+  passando e browsers instalados** — stamp otimista faria a execução seguinte
+  pular justamente o conserto. `--upgrade` fica reservado ao `--force` (sync
+  manual): no caminho agendado o objetivo é convergir para o `requirements.txt`,
+  não puxar a última versão de tudo numa coleta noturna. Falha na instalação
+  **não** aborta a coleta (coletar com a venv antiga é melhor que não coletar).
 - Coleta agendada com exit ≠ 0 dispara **alerta no Telegram**
   (`notify_scheduler_failure` em `utils/n8n_notify.py`).
+
+#### Onde os dados da coleta agendada vão parar
+
+| Destino | Quando | Como conferir |
+|---------|--------|---------------|
+| `output\rac_monitoramento_*.csv` | sempre | o próprio arquivo |
+| Drive `coletas/` (Parquet do dia) | sempre que o `.env` tiver `GDRIVE_*` | log: `[Histórico] … → drive:<id>` |
+| Drive `csv_coletas/` (CSV cru) | idem (`RAC_DRIVE_CSV=off` desliga) | log: `[Drive] CSV espelhado: …` |
+| Supabase (janela quente) | se o banco aceitar | log: `[Supabase] Enviando …` |
+
+Se o log disser `→ local:C:\...\data\history`, o Drive **não** está configurado
+nesta máquina e o dia existe só nela — com o Supabase restrito por cota (HTTP
+402), sem nenhuma outra cópia. Conserto: passo 2 do Setup acima. Backfill do que
+já ficou preso no disco:
+
+```powershell
+python scripts\history_cli.py import-csv output\rac_monitoramento_*.csv --mirror
+```
 
 > ⚠️ **A Action fica congelada no Task Scheduler.** Depois de atualizar o repo
 > com este fix, é obrigatório **re-rodar o `setup_local_scheduler.ps1` uma
@@ -247,6 +289,8 @@ ou logar depois, dentro da janela (o catch-up cobre). As tarefas usam
 | `RAC_CDP_PORT` | `9222` | Porta do DevTools do Chrome comum. |
 | `RAC_CHROME_EXE` | (auto) | Caminho do `chrome.exe`/`msedge.exe` se a busca automática falhar. |
 | `RAC_LOCAL_CHROME_KEEP` | `1` | `0` encerra o Chrome que a coleta abriu, ao fim (padrão: deixa aberto). |
+| `RAC_HISTORY_BACKEND` | `auto` | `auto` usa o Drive quando há `GDRIVE_FOLDER_ID`; senão grava em `data\history`. |
+| `RAC_DRIVE_CSV` | `on` | `off` desliga o espelho do CSV cru no Drive (`csv_coletas/`). |
 
 ---
 
@@ -264,6 +308,9 @@ ou logar depois, dentro da janela (o catch-up cobre). As tarefas usam
 | **Tarefa agendada não rodou** / `scheduler.log` sem linhas novas | Action antiga (`cmd /c` + aspas + espaço no caminho) morre sem log; ou tarefa nunca re-registrada | Rode `scripts\check_local_scheduler.ps1`; correção padrão: `git pull` + re-rodar `setup_local_scheduler.ps1` |
 | Log mostra "fora da janela … pulando" | Tarefa disparou atrasada (fora de 9–12h / 20–23h) | Comportamento correto — protege o turno do registro; o próximo slot/logon cobre |
 | Log mostra "ja coletado hoje" | Gatilho de logon disparou após coleta OK | Comportamento correto (marcador diário evita duplicar) |
+| Log diz `[Histórico] … → local:C:\...` | `.env` desta máquina sem `GDRIVE_*` (repo em dia ≠ máquina em dia) | `python scripts\gdrive_setup.py --client-secrets <json>`; depois `--check` |
+| `CSV NÃO espelhado — histórico em modo local` | idem acima | idem; backfill com `history_cli.py import-csv ... --mirror` |
+| Coleta roda mas falta lib nova (`ImportError`) | venv atrasada em relação ao `requirements.txt` | `scripts\ensure_deps.bat --force` (a coleta agendada já faz isso sozinha) |
 | Quero conferir o login | — | `python scripts\setup_local_profile.py --check` |
 
 > **Importante sobre o Google:** o Google só recusa login em browsers

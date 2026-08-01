@@ -7,6 +7,9 @@ requests>=2.31.0
 curl-cffi>=0.6.0
 beautifulsoup4==4.12.3
 pandas>=2.2.2
+# numpy vem junto do pandas, mas é importado DIRETO (reenviar_csv.py, testes):
+# dependência transitiva não declarada quebra o dia em que o pandas trocar.
+numpy>=1.26.0
 # Histórico frio em Parquet (utils/history) — Drive/disco
 pyarrow>=15.0.0
 # Google Drive como destino do histórico. Opcionais: sem eles o histórico
@@ -27,3 +30,7 @@ Pillow>=10.0.0
 filelock>=3.13.0
 # Leitor de .xlsx (PriceTrack uploads via Streamlit Import History)
 openpyxl>=3.1.0
+# OPCIONAL — só para o backend DSN direto do pricetrack_importer
+# (SUPABASE_DSN). Sem ele o importador usa a API REST do Supabase e avisa.
+# Descomente se for usar o caminho psycopg2:
+# psycopg2-binary>=2.9.9

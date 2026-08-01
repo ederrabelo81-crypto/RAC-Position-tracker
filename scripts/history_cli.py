@@ -146,6 +146,7 @@ def cmd_import_csv(args: argparse.Namespace) -> int:
             logger.info(
                 f"[DRY-RUN] {path.name}: {len(records)} registros, "
                 f"run_id={run_id[:8]}"
+                + (" (+ espelho do CSV no Drive)" if args.mirror else "")
             )
             total += len(records)
             continue
@@ -157,6 +158,13 @@ def cmd_import_csv(args: argparse.Namespace) -> int:
             continue
         logger.success(f"{path.name}: {len(records)} linhas → {len(keys)} partição(ões)")
         total += len(records)
+
+        # Backfill do CSV cru: o Parquet não abre no Excel nem volta por
+        # upload_csv.py. Falha no espelho não invalida a partição já gravada.
+        if args.mirror:
+            from utils.history.csv_mirror import mirror_csv_to_drive
+            if not mirror_csv_to_drive(path):
+                logger.warning(f"{path.name}: partição gravada, espelho do CSV não.")
 
     logger.success(f"Total: {total:,} registros · {falhas} arquivo(s) com falha.")
     return 1 if falhas else 0
@@ -399,6 +407,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_imp.add_argument("csv_files", nargs="+", metavar="CSV")
     p_imp.add_argument("--run-id", metavar="UUID", help="run_id fixo (default: pelo nome do arquivo).")
     p_imp.add_argument("--dry-run", action="store_true", help="Só relata; não grava.")
+    p_imp.add_argument(
+        "--mirror", action="store_true",
+        help="Também sobe o CSV cru para o Drive (csv_coletas/) — backfill de "
+             "coletas antigas que ficaram só no disco.",
+    )
     p_imp.set_defaults(func=cmd_import_csv)
 
     p_tier = sub.add_parser("tier", help="Supabase → histórico (fora da janela quente).")

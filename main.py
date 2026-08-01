@@ -550,6 +550,19 @@ def main() -> None:
             except Exception as exc:
                 logger.error(f"Histórico frio falhou: {exc}")
 
+        # --- Espelho do CSV cru no Drive ---
+        # O Parquet do histórico não abre no Excel nem volta por
+        # scripts/upload_csv.py; o CSV, sim. Sem este espelho ele fica só no
+        # disco de quem coletou — e com o Supabase restrito por cota (402) essa
+        # é a única cópia crua do dia. Fora do `if RAC_HISTORY` de propósito:
+        # quem desliga o Parquet não está pedindo para o CSV ficar preso na
+        # máquina. Desligue com RAC_DRIVE_CSV=off.
+        try:
+            from utils.history.csv_mirror import mirror_csv_to_drive
+            mirror_csv_to_drive(csv_path)
+        except Exception as exc:
+            logger.error(f"Espelho do CSV no Drive falhou: {exc}")
+
         # --- Upload para Supabase (não bloqueia — CSV já está salvo) ---
         # Importa primeiro para que load_dotenv() do supabase_client carregue o .env,
         # depois verifica se as credenciais estão disponíveis.
