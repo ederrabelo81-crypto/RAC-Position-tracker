@@ -123,7 +123,10 @@ scripts\sync_windows.bat
 
 # 2. Google Drive — destino do histórico e do CSV. SEM isto o dado da coleta
 #    fica só nesta máquina (o log mostra "→ local:C:\..."). Uma vez só:
-python scripts\gdrive_setup.py --client-secrets client_secret.json
+#    2a. Google Cloud Console → ative a Google Drive API → Credenciais →
+#        "ID do cliente OAuth" → tipo "App para computador" → baixe o JSON.
+#    2b. Rode com o CAMINHO REAL do arquivo baixado:
+python scripts\gdrive_setup.py --client-secrets "$env:USERPROFILE\Downloads\client_secret_123.json"
 #    cole no .env as 5 linhas impressas e confirme:
 python scripts\gdrive_setup.py --check
 
@@ -308,7 +311,9 @@ ou logar depois, dentro da janela (o catch-up cobre). As tarefas usam
 | **Tarefa agendada não rodou** / `scheduler.log` sem linhas novas | Action antiga (`cmd /c` + aspas + espaço no caminho) morre sem log; ou tarefa nunca re-registrada | Rode `scripts\check_local_scheduler.ps1`; correção padrão: `git pull` + re-rodar `setup_local_scheduler.ps1` |
 | Log mostra "fora da janela … pulando" | Tarefa disparou atrasada (fora de 9–12h / 20–23h) | Comportamento correto — protege o turno do registro; o próximo slot/logon cobre |
 | Log mostra "ja coletado hoje" | Gatilho de logon disparou após coleta OK | Comportamento correto (marcador diário evita duplicar) |
-| Log diz `[Histórico] … → local:C:\...` | `.env` desta máquina sem `GDRIVE_*` (repo em dia ≠ máquina em dia) | `python scripts\gdrive_setup.py --client-secrets <json>`; depois `--check` |
+| Log diz `[Histórico] … → local:C:\...` | `.env` desta máquina sem `GDRIVE_*` (repo em dia ≠ máquina em dia) | `python scripts\gdrive_setup.py --client-secrets CAMINHO.json` (caminho real do JSON baixado); depois `--check` |
+| `The '<' operator is reserved for future use` | Placeholder `<json>` colado literalmente — no PowerShell `<` é operador reservado | Passe o caminho real do arquivo, entre aspas se tiver espaço |
+| `npm install falhou` e o sync parou no passo do Node | Corrigido: faltava `call` antes do `npm` (npm é `.cmd`; sem `call` o `.bat` termina junto) | `git pull`; o passo do Node agora é o último e não bloqueia o check do Drive |
 | `CSV NÃO espelhado — histórico em modo local` | idem acima | idem; backfill com `history_cli.py import-csv ... --mirror` |
 | Coleta roda mas falta lib nova (`ImportError`) | venv atrasada em relação ao `requirements.txt` | `scripts\ensure_deps.bat --force` (a coleta agendada já faz isso sozinha) |
 | Quero conferir o login | — | `python scripts\setup_local_profile.py --check` |

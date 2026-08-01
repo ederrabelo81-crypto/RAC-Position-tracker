@@ -24,6 +24,7 @@ from loguru import logger
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
 
+from utils.cli_args import expand_paths
 from utils.supabase_client import upload_to_supabase, log_auditoria_run
 
 
@@ -119,8 +120,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    paths = [Path(f) for f in args.csv_files]
+    # Curinga vindo do PowerShell/cmd chega literal (só o bash expande antes).
+    paths, sem_match = expand_paths(args.csv_files)
     results: dict[str, bool] = {}
+    for padrao in sem_match:
+        logger.error(f"Nenhum arquivo casou com o padrão: {padrao}")
+        results[padrao] = False
 
     for csv_path in paths:
         if args.no_run_id:
