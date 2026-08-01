@@ -18,11 +18,24 @@ o Python — assim o mesmo comando copiado do README funciona nas duas shells.
 from __future__ import annotations
 
 import glob
+import os
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
 #: Caracteres que fazem de um argumento um padrão, não um caminho.
 _WILDCARDS = ("*", "?", "[")
+
+
+def _chave_dedupe(raw: str) -> str:
+    """Identidade do arquivo para o dedupe, independente de como foi escrito.
+
+    ``output/a.csv`` (literal) e ``./output/*.csv`` (curinga, que o glob devolve
+    com o ``./``) são o mesmo arquivo e não podem ser importados/enviados duas
+    vezes. ``normcase`` cobre o Windows, onde ``C:\\Out`` e ``c:\\out`` também são
+    o mesmo caminho. Sem ``realpath``: resolver symlink custaria I/O por
+    argumento e não é o caso de uso que aparece na prática.
+    """
+    return os.path.normcase(os.path.abspath(raw))
 
 
 def expand_paths(raw_args: Sequence[str]) -> Tuple[List[Path], List[str]]:
@@ -48,8 +61,9 @@ def expand_paths(raw_args: Sequence[str]) -> Tuple[List[Path], List[str]]:
 
     for raw in raw_args:
         if not any(c in raw for c in _WILDCARDS):
-            if raw not in vistos:
-                vistos.add(raw)
+            chave = _chave_dedupe(raw)
+            if chave not in vistos:
+                vistos.add(chave)
                 caminhos.append(Path(raw))
             continue
 
@@ -60,8 +74,9 @@ def expand_paths(raw_args: Sequence[str]) -> Tuple[List[Path], List[str]]:
             sem_match.append(raw)
             continue
         for achado in achados:
-            if achado not in vistos:
-                vistos.add(achado)
+            chave = _chave_dedupe(achado)
+            if chave not in vistos:
+                vistos.add(chave)
                 caminhos.append(Path(achado))
 
     return caminhos, sem_match

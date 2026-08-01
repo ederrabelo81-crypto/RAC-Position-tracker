@@ -204,13 +204,13 @@ if (Test-Path $envFile) {
                 ($envText -match "(?m)^\s*GDRIVE_CLIENT_SECRET\s*=\s*\S") -and
                 ($envText -match "(?m)^\s*GDRIVE_REFRESH_TOKEN\s*=\s*\S")
     if (-not $hasFolder) {
-        Write-Bad ".env sem GDRIVE_FOLDER_ID - o historico/CSV NAO vai para o Drive (rode: python scripts\gdrive_setup.py --client-secrets <json>)"
+        Write-Bad ".env sem GDRIVE_FOLDER_ID - o historico/CSV NAO vai para o Drive (rode: python scripts\gdrive_setup.py --client-secrets \"CAMINHO.json\")"
     } elseif ($hasSvcAcct) {
         Write-Ok ".env tem GDRIVE_FOLDER_ID + conta de servico (Shared Drive)"
     } elseif ($hasOAuth) {
         Write-Ok ".env tem GDRIVE_FOLDER_ID + as 3 credenciais OAuth"
     } else {
-        Write-Bad ".env tem GDRIVE_FOLDER_ID mas nao as credenciais - defina GDRIVE_SERVICE_ACCOUNT_JSON ou o trio GDRIVE_CLIENT_ID/_SECRET/_REFRESH_TOKEN (python scripts\gdrive_setup.py --client-secrets <json>)"
+        Write-Bad ".env tem GDRIVE_FOLDER_ID mas nao as credenciais - defina GDRIVE_SERVICE_ACCOUNT_JSON ou o trio GDRIVE_CLIENT_ID/_SECRET/_REFRESH_TOKEN (python scripts\gdrive_setup.py --client-secrets \"CAMINHO.json\")"
     }
 } else {
     Write-Bad ".env nao encontrado em $BaseDir"
@@ -249,7 +249,7 @@ if ($pyExe) {
         } elseif ($politica -eq "drive") {
             Write-Bad "RAC_HISTORY_BACKEND=drive mas o store cai em DISCO LOCAL [$efetivo] - credencial ou lib do Drive faltando. Rode: python scripts\gdrive_setup.py --check"
         } else {
-            Write-Bad "Historico -> DISCO LOCAL [$efetivo]: o dado sai da coleta e nao sai da maquina. Configure: python scripts\gdrive_setup.py --client-secrets <json>"
+            Write-Bad "Historico -> DISCO LOCAL [$efetivo]: o dado sai da coleta e nao sai da maquina. Configure: python scripts\gdrive_setup.py --client-secrets \"CAMINHO.json\""
         }
         if ($csvEspelho -ne "on") {
             Write-Warn "RAC_DRIVE_CSV=off - o CSV cru fica so em output\ nesta maquina"
@@ -346,7 +346,7 @@ if ($script:ErrCount -eq 0 -and $script:WarnCount -eq 0) {
     Write-Host ""
     Write-Host " Correcao padrao (resolve a maioria dos erros acima):" -ForegroundColor Yellow
     Write-Host "   1. scripts\sync_windows.bat   (git pull + dependencias + check do Drive)" -ForegroundColor Gray
-    Write-Host "   2. Drive ainda nao configurado? python scripts\gdrive_setup.py --client-secrets <json>" -ForegroundColor Gray
+    Write-Host "   2. Drive ainda nao configurado? python scripts\gdrive_setup.py --client-secrets \"CAMINHO.json\"" -ForegroundColor Gray
     Write-Host "   3. PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1" -ForegroundColor Gray
     Write-Host "   4. Teste: Start-ScheduledTask -TaskName 'RAC_Local_Manha'" -ForegroundColor Gray
     Write-Host "      e confira: Get-Content logs\scheduler.log -Tail 30" -ForegroundColor Gray

@@ -134,8 +134,9 @@ echo.
 echo       Como configurar ^(uma vez, ~3 min^):
 echo         1. Baixe o JSON do "ID do cliente OAuth" ^(tipo: App para computador^)
 echo            em https://console.cloud.google.com/ ^(ative a Google Drive API^).
-echo         2. python scripts\gdrive_setup.py --client-secrets CAMINHO\DO\ARQUIVO.json
-echo            ^(caminho real do arquivo baixado - nao literalmente ^<json^>^)
+echo         2. python scripts\gdrive_setup.py --client-secrets "CAMINHO\DO\ARQUIVO.json"
+echo            ^(caminho real do arquivo baixado, entre aspas: a pasta do seu
+echo            usuario pode ter espaco no nome^)
 echo         3. Cole no .env as 5 linhas que ele imprime ^(GDRIVE_* + RAC_HISTORY_BACKEND^)
 echo         4. python scripts\gdrive_setup.py --check
 echo       Passo a passo: docs\HISTORICO_DRIVE.md

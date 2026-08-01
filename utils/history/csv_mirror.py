@@ -97,7 +97,7 @@ def mirror_csv_to_drive(
         logger.warning(
             f"[Drive] CSV NÃO espelhado — o histórico deste host está em modo "
             f"local, então {path.name} existe só nesta máquina. Configure o "
-            f"Drive com: python scripts/gdrive_setup.py --client-secrets <json>"
+            f'Drive com: python scripts/gdrive_setup.py --client-secrets "CAMINHO.json"'
         )
         return None
 

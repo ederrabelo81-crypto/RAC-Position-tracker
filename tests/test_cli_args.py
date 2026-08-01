@@ -91,6 +91,35 @@ def test_nao_duplica_arquivo_coberto_por_dois_padroes(output_dir):
     assert len(caminhos) == len({str(p) for p in caminhos}) == 3
 
 
+def test_nao_duplica_literal_e_curinga_com_grafias_diferentes(output_dir):
+    """``output/a.csv`` e ``./output/*.csv`` são o mesmo arquivo.
+
+    O glob devolve o caminho com o ``./`` na frente; comparar as strings cruas
+    deixaria passar duas entradas para o mesmo CSV — e aí o import/upload
+    aconteceria duas vezes (linhas duplicadas no Supabase, espelho repetido).
+    """
+    alvo = "output/rac_monitoramento_20260731_1713.csv"
+
+    caminhos, sem_match = expand_paths([alvo, "./output/rac_monitoramento_2026073*.csv"])
+
+    assert sem_match == []
+    # O literal vem primeiro (ordem dos argumentos) e não se repete quando o
+    # curinga o alcança de novo, com outra grafia.
+    assert [p.name for p in caminhos] == [
+        "rac_monitoramento_20260731_1713.csv",
+        "rac_monitoramento_20260730_2107.csv",
+    ]
+
+
+def test_nao_duplica_caminho_absoluto_e_relativo(output_dir):
+    """Mesmo arquivo por caminho absoluto e por curinga relativo."""
+    absoluto = str(output_dir / "rac_monitoramento_20260729_1013.csv")
+
+    caminhos, _ = expand_paths([absoluto, "output/rac_monitoramento_*.csv"])
+
+    assert len(caminhos) == 3
+
+
 def test_mistura_de_literais_e_padroes(output_dir):
     caminhos, sem_match = expand_paths(
         ["output/outro_arquivo.txt", "output/rac_monitoramento_202607_3*.csv"]
