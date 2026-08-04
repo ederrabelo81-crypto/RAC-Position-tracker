@@ -196,6 +196,26 @@ python scripts/history_cli.py import-csv arquivo.csv --dry-run   # só confere
 O `run_id` é derivado do nome do arquivo, então **reimportar o mesmo CSV é
 idempotente** — a partição é reescrita, não duplicada.
 
+### `output/raw_<RUN_ID>.csv` — o dump que não depende de formatação
+
+Desde Ago/2026 a coleta grava, **antes de qualquer tipagem**, um dump bruto de
+tudo que os scrapers devolveram:
+
+```bash
+python scripts/history_cli.py import-csv output/raw_<RUN_ID>.csv
+python scripts/upload_csv.py output/raw_<RUN_ID>.csv       # repõe no Supabase
+```
+
+Ele existe porque o CSV formatado pode falhar **pelo conteúdo do dado**: no run
+`#174`, um valor que não cabia em `Int64` derrubou a exportação e levou junto o
+histórico e o Supabase — 6.047 registros e 1h22m de scraping perdidos. O dump
+bruto não converte nada, sai primeiro e é independente das demais etapas; o
+prefixo `raw_` o mantém fora dos globs de import automático (que procuram
+`rac_monitoramento_*.csv`). Ele também **preserva colunas que o CSV formatado
+descarta**, como `Produto Normalizado`.
+
+Vai junto no artifact `rac-coleta-*` do Actions.
+
 ### Resgate direto dos artifacts do Actions
 
 Quando a gravação falhou mas a coleta rodou, o CSV está no artifact do job.
@@ -367,6 +387,7 @@ gravá-lo no lugar errado — e `history_cli.py stats` mostra onde ele está.
 | GitHub Actions roda "com sucesso" e nada chega ao Drive | Secrets `GDRIVE_*` não cadastrados no repositório | O workflow emite `::warning` no início do job; cadastre os quatro secrets |
 | Coleta falhou e ninguém avisou | Alerta do Telegram sem secrets no repositório | `collect.yml` avisa por `::warning` quando `TELEGRAM_BOT_TOKEN`/`N8N_TELEGRAM_CHAT_ID` faltam |
 | Dias perdidos e os CSVs ficaram só no runner | Job morreu antes de gravar | `python scripts/recover_from_artifacts.py --list` (prazo: 30 dias do run) |
+| Log diz "Exportação do CSV falhou" mas o job seguiu | Valor impossível de tipar numa coluna inteira | É o comportamento novo: as demais etapas continuam e o dado está em `output/raw_<RUN_ID>.csv` (`tests/test_csv_int_cast.py` cobre a regressão) |
 
 ---
 
