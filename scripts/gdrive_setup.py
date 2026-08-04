@@ -27,6 +27,13 @@ Uso
 ---
     python scripts/gdrive_setup.py --client-secrets client_secret.json
     python scripts/gdrive_setup.py --check          # valida o .env atual
+
+O ``--client-secrets`` aceita curinga ou a pasta do download, porque o nome que
+o Google dá ao arquivo é comprido e a página do Console mostra o *client id* —
+parecido, mas sem o ``.json`` do fim::
+
+    python scripts/gdrive_setup.py --client-secrets "%USERPROFILE%\\Downloads"
+    python scripts/gdrive_setup.py --client-secrets "~/Downloads/client_secret*.json"
 """
 
 from __future__ import annotations
@@ -90,15 +97,111 @@ def _ensure_folder(service, name: str) -> str:
     return created["id"]
 
 
+def _candidatos(pasta: Path) -> list[Path]:
+    """JSONs de cliente OAuth numa pasta, mais recentes primeiro."""
+    if not pasta.is_dir():
+        return []
+    achados = list(pasta.glob("client_secret*.json"))
+    return sorted(achados, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def _resolver_client_secrets(raw: str) -> Path | None:
+    """Aceita caminho, curinga ou pasta e devolve o JSON do cliente OAuth.
+
+    O Google batiza o arquivo de
+    ``client_secret_<id>.apps.googleusercontent.com.json`` — comprido o
+    bastante para errar ao digitar. Pior: a página do Console exibe o *client
+    id*, que termina em ``.apps.googleusercontent.com`` e é o que se copia por
+    engano; falta só o ``.json`` do fim, e o erro "arquivo não encontrado"
+    parecia dizer que o download tinha falhado.
+
+    Args:
+        raw: Valor de ``--client-secrets`` (caminho, curinga ou diretório).
+
+    Returns:
+        O arquivo a usar, ou ``None`` se não houver um só candidato — nesse
+        caso os candidatos encontrados já foram logados.
+    """
+    from utils.cli_args import expand_paths
+
+    bruto = Path(raw)
+
+    # Pasta: o caso "baixei em Downloads e não quero digitar o nome".
+    if bruto.is_dir():
+        achados = _candidatos(bruto)
+    elif any(c in raw for c in ("*", "?", "[")):
+        achados, _ = expand_paths([raw])
+    elif bruto.exists():
+        achados = [bruto]
+    elif Path(f"{bruto}.json").exists():
+        # Faltou só o ".json" (client id copiado do Console). Concatenar a
+        # string em vez de with_suffix: o nome tem pontos no meio e with_suffix
+        # trocaria o ".com" pelo ".json".
+        achados = [Path(f"{bruto}.json")]
+        logger.info(f"Faltava o .json no fim — usando: {achados[0].name}")
+    else:
+        achados = []
+
+    if len(achados) == 1:
+        return achados[0]
+
+    if not achados:
+        logger.error(f"Arquivo de credenciais não encontrado: {bruto}")
+        vizinhos = _candidatos(bruto.parent if bruto.parent != Path("") else Path("."))
+        if vizinhos:
+            logger.info("Encontrei estes JSONs de cliente OAuth na mesma pasta:")
+            for cand in vizinhos:
+                logger.info(f"  --client-secrets \"{cand}\"")
+        else:
+            logger.info(
+                "Nenhum client_secret*.json nessa pasta. O nome termina em "
+                '".apps.googleusercontent.com.json" — o que o Console mostra '
+                "na tela é o client id, sem o .json do fim."
+            )
+        return None
+
+    logger.error(f"{len(achados)} JSONs casaram — escolha um (o de cima é o mais recente):")
+    for cand in achados:
+        logger.info(f"  --client-secrets \"{cand}\"")
+    logger.info("Cada arquivo é um cliente OAuth diferente, e o refresh token")
+    logger.info("vale só para o cliente que autorizou — por isso não escolho por você.")
+    return None
+
+
 def cmd_authorize(args: argparse.Namespace) -> int:
     """Fluxo OAuth completo: consentimento → refresh token → pasta → .env."""
     _require_google_libs()
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
 
-    secrets_path = Path(args.client_secrets)
-    if not secrets_path.exists():
-        logger.error(f"Arquivo de credenciais não encontrado: {secrets_path}")
+    secrets_path = _resolver_client_secrets(args.client_secrets)
+    if secrets_path is None:
+        return 1
+
+    # Valida o formato antes do consentimento: um JSON de conta de serviço (ou
+    # qualquer outro) passaria pelo fluxo e só apareceria como GDRIVE_CLIENT_ID
+    # vazio no fim, depois de o usuário já ter autorizado no navegador.
+    try:
+        client_cfg = json.loads(secrets_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error(f"Não consegui ler {secrets_path.name} como JSON: {exc}")
+        return 1
+    if not (client_cfg.get("installed") or client_cfg.get("web")):
+        logger.error(
+            f"{secrets_path.name} não é um JSON de 'ID do cliente OAuth' — falta a "
+            "chave 'installed'/'web'."
+        )
+        if client_cfg.get("type") == "service_account":
+            logger.info(
+                "Este é um JSON de conta de serviço. Para Shared Drive use "
+                "GDRIVE_SERVICE_ACCOUNT_JSON no .env e pule este script; em conta "
+                "pessoal (@gmail.com) ele falha com storageQuotaExceeded."
+            )
+        else:
+            logger.info(
+                "Baixe em Credenciais → Criar credenciais → ID do cliente OAuth "
+                "→ tipo 'App para computador'."
+            )
         return 1
 
     flow = InstalledAppFlow.from_client_secrets_file(str(secrets_path), _SCOPES)
@@ -119,7 +222,6 @@ def cmd_authorize(args: argparse.Namespace) -> int:
     service = build("drive", "v3", credentials=creds, cache_discovery=False)
     folder_id = _ensure_folder(service, args.folder_name)
 
-    client_cfg = json.loads(secrets_path.read_text(encoding="utf-8"))
     installed = client_cfg.get("installed") or client_cfg.get("web") or {}
 
     logger.success("Autorização concluída. Adicione estas linhas ao seu .env:\n")
@@ -178,7 +280,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--client-secrets", metavar="JSON",
-        help="JSON do 'ID do cliente OAuth' (tipo: App para computador).",
+        help="JSON do 'ID do cliente OAuth' (tipo: App para computador). "
+             "Aceita curinga ou a pasta onde o arquivo foi baixado.",
     )
     parser.add_argument(
         "--folder-name", default=_DEFAULT_FOLDER,
