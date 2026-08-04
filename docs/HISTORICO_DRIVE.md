@@ -82,6 +82,16 @@ pip install -r requirements.txt
 python scripts/gdrive_setup.py --client-secrets client_secret.json
 ```
 
+O nome real do arquivo baixado é `client_secret_<id>.apps.googleusercontent.com.json`
+— longo, e o que a página do Console mostra é o *client id*, igualzinho mas sem o
+`.json` do fim. Em vez de digitar, aponte a pasta (ou um curinga) e o script
+resolve; se houver mais de um cliente lá, ele lista os caminhos para você
+escolher:
+
+```powershell
+python scripts\gdrive_setup.py --client-secrets "$env:USERPROFILE\Downloads"
+```
+
 O navegador abre o consentimento do Google. Ao fim, o script cria a pasta
 `RAC Position Tracker - Historico` no seu Drive e imprime as linhas do `.env`:
 
