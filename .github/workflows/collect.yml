@@ -61,8 +61,13 @@ jobs:
 
     steps:
       # ── 1. Checkout ────────────────────────────────────────────────────────
+      # Actions no major mais recente (node24). O runner passou a avisar de
+      # deprecação do Node 20 em todo run, enterrando os avisos que importam.
+      # checkout@v7 muda o default só para `pull_request_target`/`workflow_run`
+      # (recusa checar out código de fork sem opt-in) — este workflow roda por
+      # `schedule`/`workflow_dispatch`, então não é afetado.
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # ── 2. Parâmetros do run (schedule vs. manual) ─────────────────────────
       - name: Set run parameters
@@ -109,7 +114,7 @@ jobs:
 
       # ── 3. Python ──────────────────────────────────────────────────────────
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
@@ -120,7 +125,7 @@ jobs:
 
       # ── 5. Perfil Chrome cacheado (Akamai trust acumula entre runs) ────────
       - name: Restore Magalu Chrome profile cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: data/magalu_chrome_profile
           key: magalu-chrome-profile-v1-${{ runner.os }}
@@ -202,13 +207,25 @@ jobs:
           xvfb-run -a --server-args="-screen 0 1366x768x24" $CMD
 
       # ── 9. Salva CSVs como artefato ────────────────────────────────────────
+      # `output/raw_*.csv` é o dump bruto que o main.py grava ANTES de
+      # qualquer formatação. É o que resta quando a exportação do CSV falha —
+      # deixá-lo fora daqui manteria o buraco do run #174 aberto: o dado
+      # existiria no runner efêmero e sumiria com a máquina. Vem listado
+      # explicitamente (mesmo já casando com `output/*.csv`) para que uma
+      # mudança futura naquele glob não o derrube junto sem querer.
+      #
+      # upload-artifact ≥v4 exige NOME ÚNICO por step (não dá mais para dois
+      # steps escreverem no mesmo artifact). Os dois steps abaixo já usam nomes
+      # distintos (`rac-coleta-…` e `rac-logs-…`), então o bump de major não
+      # pede ajuste extra.
       - name: Upload CSV artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rac-coleta-${{ steps.params.outputs.turno }}-${{ github.run_id }}
           path: |
             output/*.csv
+            output/raw_*.csv
             data/history/**/*.parquet
           retention-days: 30
           if-no-files-found: warn
@@ -216,7 +233,7 @@ jobs:
       # ── 10. Salva logs ─────────────────────────────────────────────────────
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rac-logs-${{ steps.params.outputs.turno }}-${{ github.run_id }}
           path: |
@@ -247,7 +264,8 @@ jobs:
             exit 0
           fi
           TEXT="🔴 <b>Coleta RAC FALHOU</b> — turno ${TURNO}
-          O job terminou em erro. Histórico e Supabase provavelmente NÃO receberam o dia.
+          O job terminou em erro: ao menos uma etapa de persistência (CSV, histórico frio ou Supabase) não concluiu.
+          O dado coletado segue no artifact do run (CSV formatado + <code>raw_*.csv</code>) — confira o log antes de recoletar.
           Log: ${RUN_URL}"
           curl -sS -m 30 -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \

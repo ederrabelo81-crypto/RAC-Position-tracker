@@ -213,3 +213,26 @@ usuário). Antídoto definitivo: logar o perfil
 (`setup_local_profile.py --site mercadolivre [--auto]`) ou API oficial.
 **Files:** `scrapers/mercado_livre.py` `_reset_anonymous_identity()`,
 `_try_solve_verification()`
+
+## 18. Persistência em cadeia: `astype("Int64")` derruba CSV, histórico e banco
+
+**Wrong:** exportar CSV primeiro, sem `try/except`, e só depois gravar
+histórico frio e Supabase — todos no mesmo fluxo linear. E tipar contagem com
+`pd.to_numeric(col, errors="coerce").astype("Int64")`.
+**Why:** `astype("Int64")` recusa **qualquer** valor que não sobreviva à ida e
+volta por int64: fracionário, ou grande demais para caber em float64 sem perda.
+Uma célula ruim vira `TypeError` no meio de `_export_csv`, a exceção sobe por
+`main()` e nem histórico nem Supabase chegam a rodar. Run #174 (Ago/2026):
+1h22m de scraping, 6.047 registros (960 Google Shopping + 3.500 Amazon + 1.587
+Leroy Merlin), **tudo perdido** por causa de uma coluna.
+**Right:** três coisas, juntas. 1) `_to_nullable_int()` — conversão tolerante
+que arredonda o fracionário e descarta o que não cabe, em vez de levantar;
+2) **dump bruto primeiro** (`output/raw_<RUN_ID>.csv`), sem transformação
+nenhuma, para que o dado nunca dependa do sucesso da formatação; 3) cada etapa
+de persistência em `try/except` próprio, com as falhas acumuladas e o exit code
+!= 0 só **depois** de tentar todas. Na origem, `parse_review_count()` devolve
+int sempre (resolve "mil"/"k" e ignora os dígitos da nota) e `_coerce_count()`
+avisa com plataforma + keyword quando arredonda.
+**Files:** `main.py` `_to_nullable_int()`, `_dump_raw_records()`, seção
+"Exporta resultados"; `utils/text.py` `parse_review_count()`;
+`scrapers/base.py` `_coerce_count()`; `tests/test_csv_int_cast.py`

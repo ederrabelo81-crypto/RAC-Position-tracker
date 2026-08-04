@@ -8,6 +8,7 @@ Define:
   - Construção do registro de dados (linha do DataFrame) com campos fixos
 """
 
+import math
 import random
 import time
 from abc import ABC, abstractmethod
@@ -34,7 +35,14 @@ from config import (
     USER_AGENTS,
 )
 from utils.brands import extract_brand
-from utils.text import get_turno, infer_keyword_category, normalize_text, now_brt
+from utils.text import (
+    MAX_COUNT_SANE,
+    get_turno,
+    infer_keyword_category,
+    normalize_text,
+    now_brt,
+    parse_review_count,
+)
 from utils.normalize_product import normalize_product_name, normalize_product_name_v2
 
 
@@ -483,6 +491,66 @@ class BaseScraper(ABC):
     # Construção de registro de dado padronizado
     # ------------------------------------------------------------------
 
+    def _coerce_count(
+        self,
+        value: Any,
+        field: str,
+        keyword: str,
+    ) -> Optional[int]:
+        """
+        Normaliza um contador (avaliações, sellers) para int — ou None.
+
+        As colunas "Qtd Avaliações" e "Qtd Sellers" são tipadas como ``Int64``
+        na exportação. Um valor fracionário ou grande demais ali não vira uma
+        célula estranha: derruba o `astype` e, com ele, o CSV inteiro (run #174).
+        A conversão acontece aqui, na única camada que conhece **plataforma e
+        keyword** — sem esse contexto o aviso não diz onde consertar o parser.
+
+        Args:
+            value:   valor cru vindo do parser (int, float, str ou None).
+            field:   nome da coluna, só para o log (ex: "Qtd Avaliações").
+            keyword: keyword em coleta, para localizar a origem do problema.
+
+        Returns:
+            Inteiro ≥ 0, ou None quando ausente/implausível.
+        """
+        if value is None or isinstance(value, bool):
+            return None
+
+        if isinstance(value, str):
+            # Strings já sabem lidar com "1.234"/"1,2 mil" no parser dedicado.
+            return parse_review_count(value)
+
+        if isinstance(value, int):
+            number: float = float(value)
+            rounded = value
+        else:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                logger.debug(
+                    f"[{self.platform_name}] {field} não numérico ({value!r}) "
+                    f"em '{keyword}' — descartado."
+                )
+                return None
+            if math.isnan(number) or math.isinf(number):
+                return None
+            rounded = int(round(number))
+            if rounded != number:
+                logger.warning(
+                    f"[{self.platform_name}] {field} fracionário ({number!r}) "
+                    f"na keyword '{keyword}' — arredondado para {rounded}. "
+                    "O parser de origem deveria devolver inteiro."
+                )
+
+        if rounded < 0 or rounded > MAX_COUNT_SANE:
+            logger.warning(
+                f"[{self.platform_name}] {field} implausível ({rounded}) na "
+                f"keyword '{keyword}' — descartado (limite: {MAX_COUNT_SANE})."
+            )
+            return None
+        return rounded
+
     def _build_record(
         self,
         *,
@@ -561,13 +629,17 @@ class BaseScraper(ABC):
             "Patrocinado?":        "Sim" if position_sponsored else "Não",
             # ── Insights de buy box / seller (foco principal) ──
             "Buy Box Seller":      normalize_text(buy_box_seller) or normalize_text(seller),
-            "Qtd Sellers":         qtd_sellers,
+            "Qtd Sellers":         self._coerce_count(
+                qtd_sellers, "Qtd Sellers", keyword
+            ),
             "Tipo Seller":         normalize_text(tipo_seller),
             "Reputação Seller":    normalize_text(reputacao_seller),
             "Seller / Vendedor":   normalize_text(seller),
             "Fulfillment?":        "Sim" if is_fulfillment else "Não",
             "Avaliação":           rating,
-            "Qtd Avaliações":      review_count,
+            "Qtd Avaliações":      self._coerce_count(
+                review_count, "Qtd Avaliações", keyword
+            ),
             "Tag Destaque":        normalize_text(tag_destaque),
             # ── Preço: secundário a partir de Mai/2026 ──
             "Preço (R$)":          price_float,

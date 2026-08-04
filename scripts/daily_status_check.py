@@ -29,9 +29,17 @@ Uso:
 
 Exit code:
     0 — todas as plataformas críticas PASS e o dia no histórico frio
-    1 — pelo menos uma plataforma crítica WARN/FAIL, ou histórico frio FAIL
-    2 — erro de configuração (Supabase indisponível, etc) — o alerta do
-        Telegram ainda sai, com o status do histórico frio
+    1 — o DADO não chegou: plataforma crítica WARN/FAIL, ou histórico frio FAIL
+    2 — Supabase não CONFIGURADO (SUPABASE_URL/KEY ausentes, pacote faltando)
+    3 — Supabase rejeitou a CREDENCIAL (401/403, chave inválida ou revogada)
+    4 — Supabase inacessível (rede, timeout, 5xx, projeto restrito por cota)
+
+    Os códigos 2–4 são erros de *ferramenta*, não de coleta: dizem que o
+    watchdog não conseguiu olhar, e não que a coleta falhou. Antes todos eles
+    caíam no mesmo exit 2 do caso "não veio dado", e a causa real (ex: nove
+    dias seguidos de 401 "Unregistered API key") ficava só no meio do log. Em
+    qualquer um deles o alerta do Telegram sai, e o resultado do HISTÓRICO
+    FRIO — que não depende do banco — continua sendo exibido.
 """
 
 import argparse
@@ -47,6 +55,127 @@ from loguru import logger
 from config import ACTIVE_PLATFORMS
 from utils.supabase_client import _get_client
 from utils.text import now_brt
+
+
+# ---------------------------------------------------------------------------
+# Exit codes — "não consegui olhar" ≠ "olhei e não tinha dado"
+# ---------------------------------------------------------------------------
+
+EXIT_OK = 0
+EXIT_DADO_AUSENTE = 1
+EXIT_SUPABASE_CONFIG = 2
+EXIT_SUPABASE_AUTH = 3
+EXIT_SUPABASE_CONEXAO = 4
+
+
+class SupabaseUnavailable(RuntimeError):
+    """Falha ao falar com o Supabase, já classificada por natureza.
+
+    Herda de ``RuntimeError`` de propósito: os checks best-effort (cobertura de
+    insight, import PriceTrack) capturam ``RuntimeError`` e continuam
+    degradando com elegância, sem precisar conhecer esta classe.
+
+    Attributes:
+        kind:   "config" | "auth" | "conexao" — decide exit code e mensagem.
+        remedy: o que fazer a respeito, em uma linha.
+    """
+
+    def __init__(self, kind: str, message: str, remedy: str = "") -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.remedy = remedy
+
+    @property
+    def exit_code(self) -> int:
+        """Exit code correspondente à natureza da falha."""
+        return _SUPABASE_FAILURE_KINDS.get(
+            self.kind, _SUPABASE_FAILURE_KINDS["conexao"]
+        )[0]
+
+    @property
+    def titulo(self) -> str:
+        """Título curto para o terminal e para o alerta do Telegram."""
+        return _SUPABASE_FAILURE_KINDS.get(
+            self.kind, _SUPABASE_FAILURE_KINDS["conexao"]
+        )[1]
+
+
+#: kind → (exit code, título do alerta)
+_SUPABASE_FAILURE_KINDS: Dict[str, Tuple[int, str]] = {
+    "config":  (EXIT_SUPABASE_CONFIG,  "Supabase não configurado"),
+    "auth":    (EXIT_SUPABASE_AUTH,    "Supabase rejeitou a credencial"),
+    "conexao": (EXIT_SUPABASE_CONEXAO, "Supabase inacessível"),
+}
+
+# Marcadores de credencial rejeitada. O caso que motivou a separação foi o
+# `401 Unregistered API key` — nove runs seguidos do watchdog em vermelho, todos
+# reportando o mesmo exit 2 genérico de "erro de configuração".
+_AUTH_MARKERS: Tuple[str, ...] = (
+    "unregistered api key",
+    "invalid api key",
+    "no api key found",
+    "invalid authentication",
+    "jwt expired",
+    "invalid jwt",
+    "jwserror",
+    "invalid claim",
+    "permission denied",
+    "401",
+    "403",
+)
+
+# Marcadores de indisponibilidade (rede, servidor, cota) — nada a ver com a
+# chave, e a remediação é outra.
+_CONN_MARKERS: Tuple[str, ...] = (
+    "timeout", "timed out", "connection", "getaddrinfo", "name or service",
+    "temporary failure in name resolution", "max retries", "ssl",
+    "502", "503", "504", "exceed_db_size_quota", "402",
+)
+
+
+def _classify_supabase_error(exc: Exception) -> SupabaseUnavailable:
+    """Classifica uma exceção do Supabase como credencial × indisponibilidade.
+
+    Args:
+        exc: exceção capturada de uma chamada ao PostgREST.
+
+    Returns:
+        SupabaseUnavailable com ``kind`` preenchido. Erro não reconhecido cai
+        em "conexao": é o palpite menos perigoso — sugere olhar o serviço em vez
+        de mandar alguém trocar uma chave que talvez esteja correta.
+    """
+    texto = str(exc).lower()
+    if any(marker in texto for marker in _AUTH_MARKERS):
+        return SupabaseUnavailable(
+            "auth",
+            f"Supabase recusou a credencial: {exc}",
+            "Gere uma nova chave service_role e atualize o secret "
+            "SUPABASE_KEY (Settings → Secrets and variables → Actions) "
+            "e o .env das máquinas coletoras.",
+        )
+    if any(marker in texto for marker in _CONN_MARKERS):
+        return SupabaseUnavailable(
+            "conexao",
+            f"Supabase não respondeu: {exc}",
+            "Verifique o status do projeto no painel do Supabase "
+            "(pausado por inatividade? restrito por cota?).",
+        )
+    return SupabaseUnavailable(
+        "conexao",
+        f"Erro ao consultar o Supabase: {exc}",
+        "Veja o traceback completo no log do run.",
+    )
+
+
+def _erro_supabase_nao_configurado() -> SupabaseUnavailable:
+    """Falha padrão de quando `_get_client()` devolve None."""
+    return SupabaseUnavailable(
+        "config",
+        "Supabase indisponível — SUPABASE_URL/SUPABASE_KEY ausentes ou "
+        "pacote `supabase` não instalado",
+        "Cadastre SUPABASE_URL e SUPABASE_KEY no .env (ou nos secrets do "
+        "repositório) e confirme `pip install supabase`.",
+    )
 
 
 def _load_dealer_configs() -> Dict[str, Dict]:
@@ -150,10 +279,14 @@ def _fetch_counts(
 
     Returns:
         Dict[(plataforma, turno), count]
+
+    Raises:
+        SupabaseUnavailable: já classificada em config/auth/conexao — é ela que
+            define o exit code do script.
     """
     client = _get_client()
     if client is None:
-        raise RuntimeError("Supabase indisponível — verifique SUPABASE_URL/KEY no .env")
+        raise _erro_supabase_nao_configurado()
 
     query = client.table("coletas").select(
         "plataforma, turno"
@@ -176,7 +309,7 @@ def _fetch_counts(
                 break
             offset += page_size
     except Exception as exc:
-        raise RuntimeError(f"Erro ao consultar Supabase: {exc}")
+        raise _classify_supabase_error(exc)
 
     counts: Dict[Tuple[str, str], int] = {}
     for row in all_rows:
@@ -231,12 +364,13 @@ def _fetch_insight_rows(data_str: str, turno: Optional[str]) -> List[Dict]:
         Lista de dicts com data, plataforma e os campos de _INSIGHT_FIELDS.
 
     Raises:
-        RuntimeError: Supabase indisponível, colunas de insight ausentes
-            (banco não migrado) ou falha de consulta.
+        SupabaseUnavailable: Supabase indisponível, colunas de insight ausentes
+            (banco não migrado) ou falha de consulta. É subclasse de
+            RuntimeError — o chamador trata como best-effort.
     """
     client = _get_client()
     if client is None:
-        raise RuntimeError("Supabase indisponível — verifique SUPABASE_URL/KEY no .env")
+        raise _erro_supabase_nao_configurado()
 
     target = datetime.strptime(data_str, "%Y-%m-%d").date()
     since = (target - timedelta(days=_COVERAGE_BASELINE_DAYS)).isoformat()
@@ -263,7 +397,7 @@ def _fetch_insight_rows(data_str: str, turno: Optional[str]) -> List[Dict]:
                 break
             offset += page_size
     except Exception as exc:
-        raise RuntimeError(f"Erro ao consultar cobertura de insight: {exc}")
+        raise _classify_supabase_error(exc)
     return all_rows
 
 
@@ -397,11 +531,12 @@ def _check_pricetrack_import(data_str: str) -> Dict:
         Dict {status, d1, detail} com status ∈ {"PASS", "WARN", "FAIL"}.
 
     Raises:
-        RuntimeError: Supabase indisponível ou erro de consulta.
+        SupabaseUnavailable: Supabase indisponível ou erro de consulta
+            (subclasse de RuntimeError — tratado como best-effort).
     """
     client = _get_client()
     if client is None:
-        raise RuntimeError("Supabase indisponível — verifique SUPABASE_URL/KEY no .env")
+        raise _erro_supabase_nao_configurado()
 
     target = datetime.strptime(data_str, "%Y-%m-%d").date()
     d1 = (target - timedelta(days=1)).isoformat()
@@ -426,7 +561,7 @@ def _check_pricetrack_import(data_str: str) -> Dict:
         )
         log = (log_resp.data or [None])[0]
     except Exception as exc:
-        raise RuntimeError(f"Erro ao consultar import PriceTrack: {exc}")
+        raise _classify_supabase_error(exc)
 
     if rows_d1 > 0:
         detail = f"{rows_d1:,} linhas D-1 ({d1})".replace(",", ".")
@@ -889,7 +1024,7 @@ def _format_telegram(
 
 
 def _format_telegram_sem_supabase(
-    data_str: str, erro: str, hist: Optional[Dict]
+    data_str: str, falha: SupabaseUnavailable, hist: Optional[Dict]
 ) -> str:
     """Alerta para quando o Supabase não responde.
 
@@ -897,6 +1032,10 @@ def _format_telegram_sem_supabase(
     em que o alerta mais importa (banco fora) era o único dia em que ele não
     saía. A mensagem carrega o status do frio justamente porque é ele que
     decide se o dia foi perdido ou só ficou invisível no dashboard.
+
+    O título vem da classificação (``falha.titulo``): "rejeitou a credencial"
+    e "inacessível" mandam a pessoa de plantão para lugares diferentes, e o
+    alerta genérico de antes não distinguia os dois.
     """
     import html as _html
     esc = _html.escape
@@ -904,10 +1043,14 @@ def _format_telegram_sem_supabase(
     lines = [
         f"🔴 <b>Status Coleta {esc(data_str)}</b>",
         "",
-        "<b>❌ Supabase indisponível</b>",
-        f"  <code>{esc(erro[:300])}</code>",
-        "",
+        f"<b>❌ {esc(falha.titulo)}</b> "
+        f"(exit {falha.exit_code} — o watchdog não conseguiu ler o banco; "
+        "isso NÃO significa que a coleta falhou)",
+        f"  <code>{esc(str(falha)[:300])}</code>",
     ]
+    if falha.remedy:
+        lines.append(f"  🛠 {esc(falha.remedy)}")
+    lines.append("")
     if hist:
         lines.extend(_history_telegram_lines(hist))
         if hist["status"] == "PASS":
@@ -1019,15 +1162,38 @@ def main() -> int:
     try:
         counts = _fetch_counts(data_str, args.turno)
     except RuntimeError as exc:
-        logger.error(f"[daily_status] {exc}")
-        # Sem o banco não há tabela de plataformas para montar — mas o alerta
-        # sai assim mesmo, carregando o que se sabe do frio.
+        falha = (
+            exc if isinstance(exc, SupabaseUnavailable)
+            else _classify_supabase_error(exc)
+        )
+        logger.error(f"[daily_status] {falha.titulo}: {falha}")
+
+        # Banner no terminal (e não só no log): o motivo real precisa ser a
+        # primeira coisa visível na aba Actions. Nove runs seguidos falharam
+        # por 401 "Unregistered API key" com a causa enterrada no meio do log,
+        # indistinguível de "a coleta não trouxe dado".
+        print("\n" + "=" * 78)
+        print(f"{'FALHA DE FERRAMENTA — WATCHDOG NÃO PÔDE LER O SUPABASE':^78}")
+        print("=" * 78)
+        print(f"Natureza : {falha.titulo} (exit {falha.exit_code})")
+        print(f"Detalhe  : {str(falha)[:300]}")
+        if falha.remedy:
+            print(f"Ação     : {falha.remedy}")
+        print(
+            "Nota     : isto NÃO é o mesmo que 'a coleta não trouxe dado' "
+            f"(exit {EXIT_DADO_AUSENTE})."
+        )
+        print("=" * 78)
+
+        # Sem o banco não há tabela de plataformas para montar — mas o frio é
+        # verificável sem ele, e é o que decide se o dia foi perdido de fato.
         if hist:
             icon = _STATUS_ICON.get(hist["status"], "?")
-            print(f"\nHISTÓRICO FRIO: {icon} {hist['status']} — {hist['detail']}\n")
+            print(f"\nHISTÓRICO FRIO: {icon} {hist['status']} — {hist['detail']}")
+            print("=" * 78 + "\n")
         if not args.no_notify:
-            _send_telegram(_format_telegram_sem_supabase(data_str, str(exc), hist))
-        return 2
+            _send_telegram(_format_telegram_sem_supabase(data_str, falha, hist))
+        return falha.exit_code
 
     rows, summary = _build_report(data_str, args.turno, counts)
 
@@ -1098,7 +1264,7 @@ def main() -> int:
             logger.warning("[daily_status] Notificação Telegram não enviada "
                            "(N8N_WEBHOOK_URL / TELEGRAM_BOT_TOKEN ausentes?).")
 
-    return 0 if summary["critical_fail"] == 0 else 1
+    return EXIT_OK if summary["critical_fail"] == 0 else EXIT_DADO_AUSENTE
 
 
 if __name__ == "__main__":

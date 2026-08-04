@@ -26,17 +26,26 @@ name: Watchdog de Coleta
 #
 # Exit codes do script (viram o status do job):
 #   0 — todas as plataformas críticas PASS
-#   1 — ao menos uma plataforma crítica WARN/FAIL
-#   2 — erro de configuração (Supabase indisponível/restrito por cota)
+#   1 — o DADO não chegou: plataforma crítica WARN/FAIL, ou histórico frio FAIL
+#   2 — Supabase não CONFIGURADO (SUPABASE_URL/KEY ausentes, pacote faltando)
+#   3 — Supabase rejeitou a CREDENCIAL (401/403, chave inválida ou revogada)
+#   4 — Supabase inacessível (rede, timeout, 5xx, projeto restrito por cota)
+#
+# 2, 3 e 4 dizem que o watchdog não conseguiu OLHAR — não que a coleta falhou.
+# Eram todos o mesmo exit 2 até Ago/2026, e nove runs seguidos em vermelho por
+# `401 Unregistered API key` ficaram indistinguíveis de "não veio dado", com a
+# causa real só no meio do log. Agora o código, o banner no terminal e o título
+# do alerta dizem qual dos dois é.
 #
 # Secrets necessários (Settings → Secrets and variables → Actions):
 #   SUPABASE_URL, SUPABASE_KEY — leitura da tabela `coletas`
 #   TELEGRAM_BOT_TOKEN, N8N_TELEGRAM_CHAT_ID — destino do alerta
 #
-# ⚠️ Enquanto o Supabase estiver restrito por cota, este workflow vai FALHAR
-# todo dia com exit 2. Isso é o comportamento correto — ele está sinalizando um
-# problema real e não resolvido. Para silenciar, resolva a cota (veja
-# scripts/retention_cleanup.sql), não desligue o watchdog.
+# ⚠️ Enquanto o Supabase estiver restrito por cota (ou com a chave inválida),
+# este workflow vai FALHAR todo dia. Isso é o comportamento correto — ele está
+# sinalizando um problema real e não resolvido. Para silenciar, resolva a causa
+# (cota: veja scripts/retention_cleanup.sql; credencial: renove SUPABASE_KEY),
+# não desligue o watchdog.
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:

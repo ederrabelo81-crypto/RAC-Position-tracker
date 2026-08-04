@@ -289,17 +289,166 @@ def parse_rating(raw: Optional[str]) -> Optional[float]:
     return None
 
 
+# Teto de sanidade para contagens (avaliações, sellers). Nenhum marketplace
+# brasileiro de RAC passa disso; acima daqui o valor é lixo de parsing, não
+# dado. Existe porque a versão antiga desta função concatenava TODOS os dígitos
+# do texto — "4,7 de 5 estrelas, 12.345 avaliações" virava 47512345 — e um
+# aria-label longo o bastante gerava um inteiro acima de 2^53. O pandas então
+# perdia precisão ao converter a coluna para float64 e o `astype("Int64")` do
+# _export_csv abortava com "cannot safely cast non-equivalent float64 to
+# int64", derrubando a exportação inteira (run #174, 6.047 registros perdidos).
+MAX_COUNT_SANE = 50_000_000
+
+# Sufixos de escala usados nas SERPs (PT-BR e EN). Ordem importa: a alternação
+# é avaliada da esquerda para a direita, então "milhões" precisa vir antes de
+# "mil", e "mil" antes de "mi".
+_SCALE_SUFFIXES: tuple = (
+    (r"milh(?:ões|oes|ão|ao)", 1_000_000),
+    (r"mil",                   1_000),
+    (r"mi",                    1_000_000),
+    (r"kk",                    1_000_000),
+    (r"k",                     1_000),
+    (r"m",                     1_000_000),
+)
+_RE_SCALE = re.compile(
+    r"^\s*(" + "|".join(pat for pat, _ in _SCALE_SUFFIXES) + r")\b",
+    re.IGNORECASE,
+)
+_SCALE_LOOKUP = {
+    "milhões": 1_000_000, "milhoes": 1_000_000,
+    "milhão": 1_000_000,  "milhao": 1_000_000,
+    "mil": 1_000, "mi": 1_000_000, "kk": 1_000_000,
+    "k": 1_000,   "m": 1_000_000,
+}
+
+# Cláusulas de nota que precedem a contagem no mesmo texto: "4,7 de 5 estrelas",
+# "4.7 out of 5 stars", "5 estrelas". Precisam sair ANTES de procurar a
+# contagem, senão os dígitos da nota entram no número.
+_RE_RATING_CLAUSE = re.compile(
+    r"\d+(?:[.,]\d+)?\s*(?:de|of|out\s+of)\s*\d+(?:[.,]\d+)?\s*"
+    r"(?:estrelas?|stars?)",
+    re.IGNORECASE,
+)
+_RE_STAR_TOKEN = re.compile(
+    r"\d+(?:[.,]\d+)?\s*(?:estrelas?|stars?)", re.IGNORECASE
+)
+
+# Sequência numérica maximal, já tolerando separadores internos e NBSP.
+_RE_NUMBER_RUN = re.compile(r"\d[\d.,\s ]*\d|\d")
+
+# Palavras que identificam o número como sendo a CONTAGEM (e não preço, posição,
+# BTUs do título…). Quando alguma aparece logo depois do número, ele é preferido.
+_REVIEW_WORDS: tuple = (
+    "avaliaç", "avaliac", "review", "classificaç", "classificac",
+    "rating", "opini", "comentári", "comentari", "voto",
+)
+
+
+def _digits_to_int(raw_number: str) -> Optional[int]:
+    """Converte uma corrida numérica SEM sufixo de escala em inteiro.
+
+    Todos os separadores (ponto, vírgula, espaço, NBSP) são tratados como
+    separador de milhar — é o que "(1.234)", "1,234" e "1 234" significam numa
+    contagem de avaliações, onde casa decimal não existe.
+
+    Args:
+        raw_number: trecho numérico bruto (ex: ``"1.234"``).
+
+    Returns:
+        Inteiro parseado, ou None se não sobrar dígito algum.
+    """
+    digits = re.sub(r"[^\d]", "", raw_number)
+    return int(digits) if digits else None
+
+
+def _scaled_to_int(raw_number: str, multiplier: int) -> Optional[int]:
+    """Converte "1,2" + escala 1.000 em 1200 (inteiro, nunca fracionário).
+
+    Com sufixo de escala presente ("1,2 mil"), o separador passa a ser decimal
+    — é o oposto do caso sem sufixo. O resultado é arredondado aqui mesmo para
+    que a coluna nunca receba um float: era exatamente esse valor fracionário
+    que o `astype("Int64")` do CSV recusava.
+
+    Args:
+        raw_number: trecho numérico bruto (ex: ``"1,2"``).
+        multiplier: fator da escala (1.000 para "mil"/"k", 1.000.000 para "mi").
+
+    Returns:
+        Inteiro já escalado, ou None se o trecho não for numérico.
+    """
+    cleaned = re.sub(r"[\s ]", "", raw_number).replace(",", ".")
+    # "1.234,5 mil" → o último separador é o decimal; os anteriores, milhar.
+    if cleaned.count(".") > 1:
+        head, _, tail = cleaned.rpartition(".")
+        cleaned = head.replace(".", "") + "." + tail
+    try:
+        return int(round(float(cleaned) * multiplier))
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_review_count(raw: Optional[str]) -> Optional[int]:
     """
-    Extrai número inteiro de avaliações.
+    Extrai a contagem de avaliações como inteiro, a partir do texto do card.
 
-    Exemplos: "(1.234)", "1234 avaliações", "1,234" → 1234
+    O resultado é **sempre** um int (ou None): sufixos de escala são resolvidos
+    aqui, nunca repassados como fração para a camada de exportação.
+
+    Args:
+        raw: texto ou aria-label bruto do elemento (ex: ``"(1.234)"``,
+            ``"4,7 de 5 estrelas, 12.345 avaliações"``, ``"1,2 mil"``).
+
+    Returns:
+        Contagem inteira, ou None quando não há número plausível — inclusive
+        quando o valor encontrado passa de :data:`MAX_COUNT_SANE`, sinal de
+        texto colado/ruído em vez de contagem real.
+
+    Example:
+        >>> parse_review_count("(1.234)")
+        1234
+        >>> parse_review_count("4,7 de 5 estrelas, 12.345 avaliações")
+        12345
+        >>> parse_review_count("1,2 mil avaliações")
+        1200
+
+    Note:
+        A versão anterior fazia ``re.sub(r"[^\\d]", "", raw)``, concatenando os
+        dígitos da nota com os da contagem ("4,7 … 12.345" → 47512345). Além de
+        inflar a métrica, um texto com dígitos suficientes produzia um inteiro
+        acima de 2^53 — que o pandas não consegue converter para Int64 sem
+        perda e que abortava a exportação do CSV (run #174).
     """
-    if not raw:
+    if raw is None:
         return None
-    # remove todos os não-dígitos exceto separadores de milhar
-    digits = re.sub(r"[^\d]", "", raw)
-    return int(digits) if digits else None
+    text = str(raw).replace(" ", " ").strip()
+    if not text:
+        return None
+
+    # Tira a nota do caminho antes de procurar a contagem.
+    text = _RE_RATING_CLAUSE.sub(" ", text)
+    text = _RE_STAR_TOKEN.sub(" ", text)
+
+    fallback: Optional[int] = None
+    for match in _RE_NUMBER_RUN.finditer(text):
+        tail = text[match.end():]
+        scale_match = _RE_SCALE.match(tail)
+        if scale_match:
+            multiplier = _SCALE_LOOKUP[scale_match.group(1).lower()]
+            value = _scaled_to_int(match.group(0), multiplier)
+            tail = tail[scale_match.end():]
+        else:
+            value = _digits_to_int(match.group(0))
+
+        if value is None or value < 0 or value > MAX_COUNT_SANE:
+            continue
+
+        # Número seguido de palavra de avaliação vence qualquer outro candidato.
+        if any(word in tail[:30].lower() for word in _REVIEW_WORDS):
+            return value
+        if fallback is None:
+            fallback = value
+
+    return fallback
 
 
 def get_turno(hora: Optional[datetime] = None) -> str:

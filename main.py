@@ -23,6 +23,7 @@ exigir sessão autenticada.
 """
 
 import argparse
+import csv
 import os
 import random
 import sys
@@ -168,8 +169,122 @@ def _setup_logging(log_dir: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dump bruto de segurança
+# ---------------------------------------------------------------------------
+
+def _dump_raw_records(
+    records: List[Dict[str, Any]], output_dir: str, run_id: str
+) -> Path:
+    """
+    Grava os registros crus em CSV, ANTES de qualquer tipagem ou formatação.
+
+    É a primeira coisa a acontecer depois da coleta, de propósito: no run #174,
+    1h22m de scraping (6.047 registros) virou pó porque a única gravação
+    dependia de um `astype("Int64")` que estourou. Aqui não há conversão
+    numérica nenhuma — o `csv` da stdlib serializa o que veio do scraper — então
+    o conteúdo dos dados não tem como derrubar a escrita.
+
+    Formato idêntico ao CSV de produção (``;`` + UTF-8 BOM) para que a rota de
+    recuperação documentada funcione sem adaptação::
+
+        python scripts/upload_csv.py output/raw_<RUN_ID>.csv
+        python scripts/history_cli.py import-csv output/raw_<RUN_ID>.csv
+
+    O prefixo ``raw_`` (e não ``rac_monitoramento_``) mantém o arquivo fora dos
+    globs de import automático — ele é rede de segurança, não uma segunda cópia
+    a ser ingerida em todo run.
+
+    Args:
+        records:    lista de dicts coletados pelos scrapers.
+        output_dir: diretório de saída.
+        run_id:     UUID desta execução — casa o dump com o run no Supabase.
+
+    Returns:
+        Path do arquivo gravado.
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    filepath = Path(output_dir) / f"raw_{run_id}.csv"
+
+    # Colunas conhecidas primeiro; o que os scrapers mandarem além disso entra
+    # na ordem em que apareceu. O CSV formatado descarta campos fora do
+    # COLUMN_ORDER (ex: "Produto Normalizado") — o dump bruto, não.
+    fieldnames: List[str] = list(COLUMN_ORDER)
+    vistos = set(fieldnames)
+    for record in records:
+        for key in record:
+            if key not in vistos:
+                vistos.add(key)
+                fieldnames.append(key)
+
+    with filepath.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=fieldnames, delimiter=";", extrasaction="ignore"
+        )
+        writer.writeheader()
+        writer.writerows(records)
+
+    logger.success(
+        f"Dump bruto de segurança: {filepath} ({len(records)} registros)"
+    )
+    return filepath
+
+
+# ---------------------------------------------------------------------------
 # Exportação do CSV
 # ---------------------------------------------------------------------------
+
+#: Maior inteiro representável em float64 sem perda (2^53). Acima disso o
+#: pandas não consegue voltar para Int64 e o `astype` aborta.
+_INT64_SAFE_MAX = 2 ** 53
+
+
+def _to_nullable_int(series: pd.Series, column: str = "") -> pd.Series:
+    """
+    Converte uma coluna para ``Int64`` anulável sem nunca abortar a exportação.
+
+    `pd.to_numeric(...).astype("Int64")` puro recusa qualquer valor que não
+    sobreviva à ida e volta por int64 — fracionário ("1,2 mil" parseado como
+    1.2) ou grande demais para caber em float64 sem perda. Foi assim que o run
+    #174 morreu depois de 1h22m de coleta, com o traceback
+    ``TypeError: cannot safely cast non-equivalent float64 to int64``.
+
+    Aqui o não-numérico vira nulo (``errors="coerce"``), o fracionário é
+    arredondado e o absurdo é descartado — uma célula vazia custa infinitamente
+    menos que a coleta inteira.
+
+    Args:
+        series: coluna crua (object, float ou int).
+        column: nome da coluna, apenas para o log de valores descartados.
+
+    Returns:
+        Série ``Int64`` (inteiro anulável), mesmo índice da entrada.
+    """
+    numeric = pd.to_numeric(series, errors="coerce")
+
+    # Já inteiro e dentro da faixa: converte direto, sem passar por float.
+    if pd.api.types.is_signed_integer_dtype(numeric):
+        return numeric.astype("Int64")
+
+    numeric = numeric.astype("float64")
+
+    fora_da_faixa = numeric.notna() & (numeric.abs() > _INT64_SAFE_MAX)
+    if fora_da_faixa.any():
+        logger.warning(
+            f"{column or 'coluna'}: {int(fora_da_faixa.sum())} valor(es) fora "
+            f"da faixa segura de inteiro (>2^53) — gravados como vazio. "
+            "Sinal de texto colado no parser de origem."
+        )
+        numeric = numeric.where(~fora_da_faixa)
+
+    fracionarios = numeric.notna() & (numeric != numeric.round())
+    if fracionarios.any():
+        logger.warning(
+            f"{column or 'coluna'}: {int(fracionarios.sum())} valor(es) "
+            "fracionário(s) arredondado(s) para inteiro."
+        )
+
+    return numeric.round().astype("Int64")
+
 
 def _export_csv(records: List[Dict[str, Any]], output_dir: str) -> Path:
     """
@@ -199,11 +314,12 @@ def _export_csv(records: List[Dict[str, Any]], output_dir: str) -> Path:
 
     df = df[COLUMN_ORDER]  # reordena colunas
 
-    # Força tipos corretos
+    # Força tipos corretos. Preço e avaliação seguem float (têm casa decimal
+    # real); as contagens são inteiros anuláveis via conversão tolerante.
     df["Preço (R$)"]     = pd.to_numeric(df["Preço (R$)"], errors="coerce")
     df["Avaliação"]      = pd.to_numeric(df["Avaliação"], errors="coerce")
-    df["Qtd Avaliações"] = pd.to_numeric(df["Qtd Avaliações"], errors="coerce").astype("Int64")
-    df["Qtd Sellers"]    = pd.to_numeric(df["Qtd Sellers"], errors="coerce").astype("Int64")
+    df["Qtd Avaliações"] = _to_nullable_int(df["Qtd Avaliações"], "Qtd Avaliações")
+    df["Qtd Sellers"]    = _to_nullable_int(df["Qtd Sellers"], "Qtd Sellers")
 
     # encoding utf-8-sig → Excel abre corretamente no Brasil
     df.to_csv(filepath, index=False, encoding="utf-8-sig", sep=";")
@@ -407,7 +523,15 @@ def _parse_args() -> argparse.Namespace:
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def main() -> int:
+    """
+    Executa a coleta e persiste o resultado por vários caminhos independentes.
+
+    Returns:
+        0 quando todas as etapas de persistência tentadas concluíram;
+        1 quando alguma falhou (os dados coletados continuam em disco —
+        o código != 0 existe para o alerta do workflow continuar disparando).
+    """
     args = _parse_args()
     _setup_logging(LOGS_DIR)
 
@@ -436,7 +560,7 @@ def main() -> None:
 
     if not selected_scrapers:
         logger.error("Nenhuma plataforma ativa. Verifique ACTIVE_PLATFORMS em config.py.")
-        return
+        return 1
 
     logger.info(
         f"Plataformas: {', '.join(platform_names)} | "
@@ -518,17 +642,47 @@ def main() -> None:
             )
 
     # --- Exporta resultados ---
-    if all_records:
-        csv_path = _export_csv(all_records, args.output_dir)
-        logger.success(
-            f"\nColeta finalizada! {len(all_records)} registros totais.\n"
-            f"Arquivo: {csv_path}"
-        )
+    # Cada etapa de persistência é INDEPENDENTE das outras. Antes, o CSV vinha
+    # primeiro e sem proteção: uma exceção de tipagem nele abortava main() e
+    # levava junto o histórico frio e o Supabase, que nem chegavam a rodar.
+    # Foi assim que o run #174 perdeu 6.047 registros depois de 1h22m de
+    # coleta. Agora as falhas são registradas em `falhas_persistencia` e o
+    # processo tenta TODAS as etapas antes de sair com código != 0.
+    falhas_persistencia: List[str] = []
 
-        # --- Histórico frio (Parquet no Drive/disco) ---
+    if all_records:
+        # --- 0. Dump bruto de segurança (antes de qualquer transformação) ---
+        # Nenhuma outra etapa é pré-requisito desta, e ela não é pré-requisito
+        # de nenhuma: é a rede de segurança que sobrevive à falha das demais.
+        raw_path: Optional[Path] = None
+        try:
+            raw_path = _dump_raw_records(all_records, args.output_dir, RUN_ID)
+        except Exception as exc:
+            falhas_persistencia.append("dump bruto")
+            logger.error(f"Dump bruto de segurança falhou: {exc}")
+
+        # --- 1. CSV formatado ---
+        csv_path: Optional[Path] = None
+        try:
+            csv_path = _export_csv(all_records, args.output_dir)
+            logger.success(
+                f"\nColeta finalizada! {len(all_records)} registros totais.\n"
+                f"Arquivo: {csv_path}"
+            )
+        except Exception as exc:
+            falhas_persistencia.append("CSV")
+            logger.error(
+                f"Exportação do CSV falhou: {exc}. O dado cru está em "
+                f"{raw_path or '(dump bruto também falhou)'} — as demais "
+                "etapas de persistência seguem normalmente."
+            )
+
+        # --- 2. Histórico frio (Parquet no Drive/disco) ---
         # Gravado ANTES do Supabase e independente dele: quando o banco está
         # restrito por cota (HTTP 402), o dia ainda entra no histórico. Foi
         # essa independência que faltou no incidente de 16–25/07/2026.
+        # Escreve a partir de `all_records`, nunca do CSV — por isso continua
+        # valendo mesmo quando a etapa anterior falha.
         # Desative com RAC_HISTORY=off no .env.
         if os.getenv("RAC_HISTORY", "on").strip().lower() not in ("off", "0", "false"):
             try:
@@ -538,32 +692,41 @@ def main() -> None:
                 # checar o retorno, uma queda do Drive passaria como sucesso e
                 # a garantia de durabilidade viraria ficção.
                 if not _hist_keys:
+                    falhas_persistencia.append("histórico frio")
                     logger.error(
                         "Histórico frio NÃO gravou nenhuma partição — a coleta "
-                        f"deste run existe só no CSV ({csv_path}). Verifique o "
-                        "destino com: python scripts/history_cli.py stats"
+                        f"deste run existe só nos arquivos locais "
+                        f"({csv_path or raw_path}). Verifique o destino com: "
+                        "python scripts/history_cli.py stats"
                     )
                 else:
                     logger.success(
                         f"Histórico frio: {len(_hist_keys)} partição(ões) gravada(s)."
                     )
             except Exception as exc:
+                falhas_persistencia.append("histórico frio")
                 logger.error(f"Histórico frio falhou: {exc}")
 
-        # --- Espelho do CSV cru no Drive ---
+        # --- 3. Espelho do CSV cru no Drive ---
         # O Parquet do histórico não abre no Excel nem volta por
         # scripts/upload_csv.py; o CSV, sim. Sem este espelho ele fica só no
         # disco de quem coletou — e com o Supabase restrito por cota (402) essa
         # é a única cópia crua do dia. Fora do `if RAC_HISTORY` de propósito:
         # quem desliga o Parquet não está pedindo para o CSV ficar preso na
         # máquina. Desligue com RAC_DRIVE_CSV=off.
-        try:
-            from utils.history.csv_mirror import mirror_csv_to_drive
-            mirror_csv_to_drive(csv_path)
-        except Exception as exc:
-            logger.error(f"Espelho do CSV no Drive falhou: {exc}")
+        if csv_path is not None:
+            try:
+                from utils.history.csv_mirror import mirror_csv_to_drive
+                mirror_csv_to_drive(csv_path)
+            except Exception as exc:
+                falhas_persistencia.append("espelho do CSV no Drive")
+                logger.error(f"Espelho do CSV no Drive falhou: {exc}")
+        else:
+            logger.warning(
+                "Espelho do CSV no Drive pulado — não há CSV para espelhar."
+            )
 
-        # --- Upload para Supabase (não bloqueia — CSV já está salvo) ---
+        # --- 4. Upload para Supabase (não bloqueia — arquivos já estão salvos) ---
         # Importa primeiro para que load_dotenv() do supabase_client carregue o .env,
         # depois verifica se as credenciais estão disponíveis.
         try:
@@ -576,6 +739,8 @@ def main() -> None:
             _supabase_url = os.getenv("SUPABASE_URL", "").strip()
             _supabase_key = os.getenv("SUPABASE_KEY", "").strip()
             if not _supabase_url or not _supabase_key:
+                # Credencial ausente é configuração, não falha de execução:
+                # coleta local sem .env não deve terminar vermelha.
                 logger.warning(
                     "Supabase upload IGNORADO — SUPABASE_URL ou SUPABASE_KEY não configuradas. "
                     "Adicione ao arquivo .env na raiz do projeto ou configure como secrets."
@@ -583,12 +748,14 @@ def main() -> None:
             else:
                 ok = upload_to_supabase(all_records, run_id=RUN_ID)
                 if not ok:
+                    falhas_persistencia.append("upload Supabase")
                     logger.error(
                         "Supabase upload retornou falha — verifique os logs acima para detalhes."
                     )
                 else:
-                    log_auditoria_run(RUN_ID, str(csv_path))
+                    log_auditoria_run(RUN_ID, str(csv_path or raw_path or ""))
         except Exception as exc:
+            falhas_persistencia.append("upload Supabase")
             logger.error(f"Supabase upload lançou exceção: {exc}")
 
         # --- N8N: notificação de fim com resumo e comparação ---
@@ -623,6 +790,20 @@ def main() -> None:
         close_local_browser()
     except Exception as exc:
         logger.debug(f"Falha ao fechar o Chrome local compartilhado: {exc}")
+
+    # --- Veredito final ---
+    # Só depois de TENTAR todas as etapas. O código != 0 mantém o alerta do
+    # workflow disparando quando alguma persistência falhou — mas agora ele
+    # significa "uma cópia faltou", não mais "a coleta inteira se perdeu".
+    if falhas_persistencia:
+        logger.error(
+            "Etapa(s) de persistência com falha: "
+            + ", ".join(falhas_persistencia)
+            + ". Os dados coletados estão nos arquivos gravados em "
+            f"{args.output_dir}/ (inclusive raw_{RUN_ID}.csv)."
+        )
+        return 1
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -667,4 +848,6 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         demo()
     else:
-        main()
+        # O exit code propaga a falha de persistência para o workflow/cron —
+        # sem ele, um CSV que não gravou terminava o job em verde.
+        sys.exit(main())
