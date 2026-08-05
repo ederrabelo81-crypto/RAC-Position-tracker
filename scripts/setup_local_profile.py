@@ -285,16 +285,47 @@ def _ml_auto_login(port: int) -> bool:
         )
         return False
     finally:
+        _release_cdp(pw, browser)
+
+
+def _release_cdp(pw, browser) -> None:
+    """
+    Solta a conexão CDP SEM fechar o Chrome do usuário.
+
+    `browser.close()` numa conexão `connect_over_cdp` é ambíguo (a versão do
+    Playwright decide se apenas desconecta ou se manda `Browser.close`) — e
+    quando manda, a janela some no meio do login. Parar só o driver encerra o
+    websocket e deixa o Chrome vivo, que é o modelo do perfil quente.
+
+    Args:
+        pw:      handle do sync_playwright a parar.
+        browser: conexão CDP — recebida de propósito e deixada ABERTA; é o
+                 Chrome do usuário, quem o fecha é o usuário.
+    """
+    try:
+        if pw is not None:
+            pw.stop()
+    except Exception:
+        pass
+
+
+def _safe_content(page) -> str:
+    """
+    `page.content()` com uma segunda chance.
+
+    O rebrowser-playwright às vezes perde o execution context durante uma
+    navegação ("Cannot find context with specified id") — a página está
+    saudável, o evaluate é que pegou o momento errado. Uma pausa curta e
+    nova tentativa evita concluir o diagnóstico em cima de um HTML parcial.
+    """
+    for tentativa in (1, 2):
         try:
-            if browser is not None:
-                browser.close()   # em CDP, close() apenas DESCONECTA
+            return page.content()
         except Exception:
-            pass
-        try:
-            if pw is not None:
-                pw.stop()
-        except Exception:
-            pass
+            if tentativa == 2:
+                raise
+            time.sleep(2)
+    return ""
 
 
 def _dump_check_html(html: str) -> str:
@@ -342,7 +373,7 @@ def _check_magalu_serp(ctx) -> bool:
             )
         except Exception:
             pass
-        html = page.content()
+        html = _safe_content(page)
         url = page.url or ""
 
         if MagaluScraper._has_product_markup(html):
@@ -368,8 +399,10 @@ def _check_magalu_serp(ctx) -> bool:
             else:
                 print("     A tela de login veio no lugar da SERP (mesma URL).")
             print(
-                "     Ação: python scripts/setup_local_profile.py --site magalu\n"
-                "     (faça login na janela do Chrome e rode --check de novo)"
+                "\n     Ação — rode este comando (SEM --check, é ele que espera\n"
+                "     você logar; o --check é só a sonda e sai na hora):\n"
+                "        python scripts/setup_local_profile.py --site magalu\n"
+                "     Depois de logar na janela, volte aqui e dê ENTER."
             )
             dump = _dump_check_html(html)
             if dump:
@@ -389,8 +422,11 @@ def _check_magalu_serp(ctx) -> bool:
         print(f"  [aviso] não consegui abrir a busca da Magalu: {exc}")
         return False
     finally:
+        # Fecha a aba da sonda — MAS só se não for a última do Chrome: fechar
+        # a única aba fecha a janela inteira, e aí o usuário fica sem onde
+        # logar justamente quando o check acabou de pedir login.
         try:
-            if page is not None:
+            if page is not None and len(ctx.pages) > 1:
                 page.close()
         except Exception:
             pass
@@ -442,16 +478,7 @@ def _report_login(port: int, site: str) -> bool:
         print(f"  [aviso] não consegui checar o login via CDP: {exc}")
         return False
     finally:
-        try:
-            if browser is not None:
-                browser.close()
-        except Exception:
-            pass
-        try:
-            if pw is not None:
-                pw.stop()
-        except Exception:
-            pass
+        _release_cdp(pw, browser)
 
 
 def main() -> int:
