@@ -121,21 +121,34 @@ def _looks_like_placeholder(value: str) -> bool:
     return any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
 
 
+def _url_host(url: str) -> Optional[str]:
+    """Host da URL, ou None se ela não for parseável (ex.: `[YOUR-REF]`)."""
+    try:
+        return urlsplit(url).hostname
+    except ValueError:
+        return None
+
+
 def _has_placeholder_brackets(url: str) -> bool:
     """
     True se os colchetes da URL são de placeholder, não de IPv6 legítimo.
 
-    Colchete em URL tem UM uso válido: literal IPv6 (`http://[::1]:54321`, que
-    um Supabase self-hosted pode usar). Barrar todo colchete pegaria justamente
-    esse caso — irônico, já que o bug que originou a validação era um
-    placeholder sendo confundido com IPv6.
+    No HOST, colchete tem UM uso válido: literal IPv6 (`http://[::1]:54321`,
+    que um Supabase self-hosted pode usar) — barrar todos pegaria justamente
+    esse caso, irônico para uma validação que nasceu de um placeholder sendo
+    confundido com IPv6. Fora do host (path, query) colchete não diz nada
+    sobre placeholder, então a varredura fica restrita ao netloc.
     """
-    if "[" not in url and "]" not in url:
-        return False
     try:
-        host = urlsplit(url).hostname  # já devolve o literal IPv6 sem colchetes
+        parts = urlsplit(url)
+        host = parts.hostname  # já devolve o literal IPv6 sem colchetes
     except ValueError:
-        return True  # o parser recusou: é o `[YOUR-REF]` da documentação
+        # O parser recusou a URL — só acontece com colchete inválido no host,
+        # que é exatamente o `[YOUR-REF]` da documentação.
+        return "[" in url or "]" in url
+
+    if "[" not in parts.netloc and "]" not in parts.netloc:
+        return False
     if not host:
         return True
     try:
@@ -178,6 +191,16 @@ def _validate_credentials(url: str, key: str) -> bool:
             f"[Supabase] ❌ SUPABASE_URL sem esquema http(s): {url}\n"
             f"    Corrija em {env_path} — precisa começar com https:// "
             "(ou http:// num Supabase self-hosted)."
+        )
+        return False
+
+    # `https://` sozinho tem esquema e nenhum endereço — passava daqui e ia
+    # estourar lá no create_client, de novo sem dizer o que corrigir.
+    if not _url_host(url):
+        logger.error(
+            f"[Supabase] ❌ SUPABASE_URL sem endereço do projeto: {url}\n"
+            f"    Corrija em {env_path} — falta o host, no formato "
+            "https://<ref-do-projeto>.supabase.co"
         )
         return False
 

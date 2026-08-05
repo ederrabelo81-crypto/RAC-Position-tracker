@@ -62,6 +62,12 @@ class TestColchetes:
         """Chave real é base64/JWT — colchete ali só vem de documentação."""
         assert _validate_credentials(_URL_OK, "[COLE-SUA-CHAVE]") is False
 
+    def test_colchete_fora_do_host_nao_reprova(self):
+        """Colchete em path/query não tem relação com o bug do `[YOUR-REF]`."""
+        assert _validate_credentials(
+            "https://abcdefghijkl.supabase.co/rest/v1/[id]", _KEY_OK
+        ) is True
+
 
 class TestValidateCredentials:
     def test_url_placeholder_reprovada(self):
@@ -78,6 +84,11 @@ class TestValidateCredentials:
     def test_url_sem_esquema_reprovada(self):
         """Sem https:// o create_client falha lá na frente, sem explicar."""
         assert _validate_credentials("abcdefghijkl.supabase.co", _KEY_OK) is False
+
+    @pytest.mark.parametrize("url", ["https://", "http://", "https:///rest/v1"])
+    def test_url_so_com_esquema_reprovada(self, url):
+        """Tem esquema mas não tem endereço — não pode chegar no create_client."""
+        assert _validate_credentials(url, _KEY_OK) is False
 
     def test_key_placeholder_reprovada(self):
         assert _validate_credentials(_URL_OK, "<sua-chave>") is False
