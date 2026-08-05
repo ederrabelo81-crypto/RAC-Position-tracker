@@ -317,14 +317,19 @@ def _safe_content(page) -> str:
     navegação ("Cannot find context with specified id") — a página está
     saudável, o evaluate é que pegou o momento errado. Uma pausa curta e
     nova tentativa evita concluir o diagnóstico em cima de um HTML parcial.
+
+    Devolve "" (em vez de propagar) na segunda falha: quem chama precisa
+    distinguir "não consegui LER a página" de "a página não abriu" — são
+    diagnósticos diferentes. Mesmo contrato do `MagaluScraper._safe_content`.
     """
     for tentativa in (1, 2):
         try:
             return page.content()
-        except Exception:
+        except Exception as exc:
             if tentativa == 2:
-                raise
-            time.sleep(2)
+                print(f"  [aviso] não consegui ler o HTML da página: {exc}")
+            else:
+                time.sleep(2)
     return ""
 
 
@@ -375,6 +380,15 @@ def _check_magalu_serp(ctx) -> bool:
             pass
         html = _safe_content(page)
         url = page.url or ""
+
+        if not html:
+            print(
+                "  ⚠️  Magalu: a busca abriu, mas não consegui LER o HTML "
+                "(ProtocolError\n     do rebrowser, duas vezes). Não é "
+                "veredito sobre login/bloqueio — rode o --check de novo.\n"
+                f"     URL final: {url[:100]}"
+            )
+            return False
 
         if MagaluScraper._has_product_markup(html):
             print("  ✅ Magalu OK — a busca renderizou produtos (coleta deve passar).")

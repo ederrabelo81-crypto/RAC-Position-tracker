@@ -245,7 +245,12 @@ O `--check` da Magalu é **funcional**: abre `/busca/ar+condicionado/` no
 perfil e diz se vieram cards de produto, se veio o muro de login, ou se veio
 outra coisa (Akamai/layout). É a mesma pergunta que a coleta faz.
 
-O HTML da tela de login fica em `logs/magalu_block_login_*.html`.
+Onde fica o HTML capturado, por origem:
+
+| Origem | Arquivo |
+|--------|---------|
+| `--check` do `setup_local_profile.py` | `logs/magalu_check_*.html` |
+| Coleta (`main.py --platforms magalu`) | `logs/magalu_block_login_*.html` |
 
 ### Coleta retorna 0 produtos mesmo com Chrome aberto
 

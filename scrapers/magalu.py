@@ -865,8 +865,8 @@ class MagaluScraper(BaseScraper):
                     logger.warning(
                         f"[{self.platform_name}] content() falhou 2×: {exc}"
                     )
-                    return ""
-                time.sleep(1.5)
+                else:
+                    time.sleep(1.5)
         return ""
 
     def _page_is_dead(self) -> bool:

@@ -16,11 +16,13 @@ REQUISITOS:
         SUPABASE_KEY=eyJ...
 """
 
+import ipaddress
 import os
 import math
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from loguru import logger
 from utils.text import is_valid_product
@@ -95,17 +97,21 @@ _BOOL_COLS  = {"fulfillment", "patrocinado"}
 
 
 # Trechos que denunciam credencial de EXEMPLO copiada do `.env.example` (ou da
-# documentação) sem ter sido substituída pela real.
+# documentação) sem ter sido substituída pela real. Os valores EXATOS que este
+# repositório documenta vêm primeiro — foi um deles que passou batido e derrubou
+# o upload de uma coleta inteira.
 _PLACEHOLDER_MARKERS = (
-    "your-ref",
+    "your-ref",                 # .env.example: https://[YOUR-REF].supabase.co
+    "seu-ref",                  # mensagem de erro desta própria função
+    "your_service_role_key",    # .env.example: SUPABASE_KEY=...
+    "sua_service_role_key",
+    "eyj...",                   # docstring deste módulo: SUPABASE_KEY=eyJ...
     "your-project",
     "yourproject",
     "xxxx",
     "seu-projeto",
     "<",
     ">",
-    "[",
-    "]",
 )
 
 
@@ -113,6 +119,29 @@ def _looks_like_placeholder(value: str) -> bool:
     """True se o valor parece um placeholder de documentação, não a credencial."""
     lowered = value.lower()
     return any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
+
+
+def _has_placeholder_brackets(url: str) -> bool:
+    """
+    True se os colchetes da URL são de placeholder, não de IPv6 legítimo.
+
+    Colchete em URL tem UM uso válido: literal IPv6 (`http://[::1]:54321`, que
+    um Supabase self-hosted pode usar). Barrar todo colchete pegaria justamente
+    esse caso — irônico, já que o bug que originou a validação era um
+    placeholder sendo confundido com IPv6.
+    """
+    if "[" not in url and "]" not in url:
+        return False
+    try:
+        host = urlsplit(url).hostname  # já devolve o literal IPv6 sem colchetes
+    except ValueError:
+        return True  # o parser recusou: é o `[YOUR-REF]` da documentação
+    if not host:
+        return True
+    try:
+        return ipaddress.ip_address(host).version != 6
+    except ValueError:
+        return True
 
 
 def _validate_credentials(url: str, key: str) -> bool:
@@ -134,24 +163,25 @@ def _validate_credentials(url: str, key: str) -> bool:
     """
     env_path = Path(__file__).parent.parent / ".env"
 
-    if _looks_like_placeholder(url):
+    if _looks_like_placeholder(url) or _has_placeholder_brackets(url):
         logger.error(
             f"[Supabase] ❌ SUPABASE_URL ainda é o EXEMPLO da documentação: "
             f"{url}\n"
             f"    Edite {env_path} e troque pela URL real do projeto "
             "(Supabase → Project Settings → Data API → Project URL), no "
-            "formato https://SEU-REF.supabase.co — sem colchetes."
+            "formato https://<ref-do-projeto>.supabase.co — sem colchetes."
         )
         return False
 
-    if not url.startswith(("http://", "https://")):
+    if not url.lower().startswith(("http://", "https://")):
         logger.error(
             f"[Supabase] ❌ SUPABASE_URL sem esquema http(s): {url}\n"
-            f"    Corrija em {env_path} — precisa começar com https://"
+            f"    Corrija em {env_path} — precisa começar com https:// "
+            "(ou http:// num Supabase self-hosted)."
         )
         return False
 
-    if _looks_like_placeholder(key):
+    if _looks_like_placeholder(key) or "[" in key or "]" in key:
         logger.error(
             "[Supabase] ❌ SUPABASE_KEY ainda é o EXEMPLO da documentação.\n"
             f"    Edite {env_path} e cole a chave real (service_role) do "
