@@ -663,6 +663,15 @@ class MagaluScraper(BaseScraper):
         try:
             cal_url = f"{_MAGALU_MOBILE_BASE}/busca/ar+condicionado/"
             self._pw_page.goto(cal_url, wait_until="domcontentloaded", timeout=30_000)
+            # A SERP hidrata client-side — sem esperar o card, a calibração
+            # pode julgar uma página ainda montando como "sem produtos".
+            try:
+                self._pw_page.wait_for_selector(
+                    'a[href*="/p/"], [data-testid="product-card"]',
+                    timeout=12_000,
+                )
+            except Exception:
+                pass
             time.sleep(random.uniform(2.0, 3.5))
             html = self._pw_page.content()
             self._calibrate_from_html(html)
