@@ -285,16 +285,64 @@ def _ml_auto_login(port: int) -> bool:
         )
         return False
     finally:
+        _release_cdp(pw, browser)
+
+
+def _release_cdp(pw, browser) -> None:
+    """
+    Solta a conexão CDP SEM fechar o Chrome do usuário.
+
+    `browser.close()` numa conexão `connect_over_cdp` é ambíguo (a versão do
+    Playwright decide se apenas desconecta ou se manda `Browser.close`) — e
+    quando manda, a janela some no meio do login. Parar só o driver encerra o
+    websocket e deixa o Chrome vivo, que é o modelo do perfil quente.
+
+    Args:
+        pw:      handle do sync_playwright a parar.
+        browser: conexão CDP — recebida de propósito e deixada ABERTA; é o
+                 Chrome do usuário, quem o fecha é o usuário.
+    """
+    try:
+        if pw is not None:
+            pw.stop()
+    except Exception:
+        pass
+
+
+def _safe_content(page) -> str:
+    """
+    `page.content()` com uma segunda chance.
+
+    O rebrowser-playwright às vezes perde o execution context durante uma
+    navegação ("Cannot find context with specified id") — a página está
+    saudável, o evaluate é que pegou o momento errado. Uma pausa curta e
+    nova tentativa evita concluir o diagnóstico em cima de um HTML parcial.
+
+    Devolve "" (em vez de propagar) na segunda falha: quem chama precisa
+    distinguir "não consegui LER a página" de "a página não abriu" — são
+    diagnósticos diferentes. Mesmo contrato do `MagaluScraper._safe_content`.
+    """
+    for tentativa in (1, 2):
         try:
-            if browser is not None:
-                browser.close()   # em CDP, close() apenas DESCONECTA
-        except Exception:
-            pass
-        try:
-            if pw is not None:
-                pw.stop()
-        except Exception:
-            pass
+            return page.content()
+        except Exception as exc:
+            if tentativa == 2:
+                print(f"  [aviso] não consegui ler o HTML da página: {exc}")
+            else:
+                time.sleep(2)
+    return ""
+
+
+def _dump_check_html(html: str) -> str:
+    """Salva o HTML da checagem em logs/ e devolve o caminho (ou "")."""
+    try:
+        log_dir = _REPO_ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / f"magalu_check_{time.strftime('%Y%m%d_%H%M%S')}.html"
+        path.write_text(html[:200_000], encoding="utf-8")
+        return str(path)
+    except Exception:
+        return ""
 
 
 def _check_magalu_serp(ctx) -> bool:
@@ -304,11 +352,16 @@ def _check_magalu_serp(ctx) -> bool:
     Vale mais que olhar cookie: é literalmente a requisição que a coleta faz.
     Reusa os detectores do scraper pra não divergirem com o tempo.
 
+    Distingue os três desfechos que exigem ações diferentes:
+      * SERP renderizou           → coleta passa, nada a fazer
+      * redirect pra tela de login → precisa logar no perfil
+      * modal de identificação     → a coleta dispensa sozinha (ESC/fechar)
+
     Args:
         ctx: BrowserContext já conectado ao Chrome do perfil.
 
     Returns:
-        True se a SERP renderizou cards de produto.
+        True se a busca entrega produtos (com ou sem dispensar modal).
     """
     from scrapers.magalu import MagaluScraper
 
@@ -316,34 +369,81 @@ def _check_magalu_serp(ctx) -> bool:
     try:
         page = ctx.new_page()
         page.goto(_MAGALU_SEARCH_URL, wait_until="domcontentloaded", timeout=40_000)
-        time.sleep(3)
-        html = page.content()
+        # A SERP hidrata client-side: esperar o card evita concluir "sem
+        # produtos" só porque a página ainda estava montando.
+        try:
+            page.wait_for_selector(
+                'a[data-testid="product-card-container"], [data-testid="product-card"]',
+                timeout=15_000,
+            )
+        except Exception:
+            pass
+        html = _safe_content(page)
         url = page.url or ""
+
+        if not html:
+            print(
+                "  ⚠️  Magalu: a busca abriu, mas não consegui LER o HTML "
+                "(ProtocolError\n     do rebrowser, duas vezes). Não é "
+                "veredito sobre login/bloqueio — rode o --check de novo.\n"
+                f"     URL final: {url[:100]}"
+            )
+            return False
+
+        if MagaluScraper._has_product_markup(html):
+            print("  ✅ Magalu OK — a busca renderizou produtos (coleta deve passar).")
+            return True
+
+        redirecionou = url.rstrip("/") != _MAGALU_SEARCH_URL.rstrip("/")
+        if MagaluScraper._looks_like_login_wall(html, url):
+            # A coleta tenta dispensar o modal antes de desistir — reproduzir
+            # isso aqui responde se a coleta se viraria sozinha.
+            probe = MagaluScraper()
+            probe._pw_page = page
+            if probe._dismiss_login_wall():
+                print(
+                    "  ✅ Magalu: era um MODAL de identificação, e ele fecha "
+                    "sem login.\n     A coleta dispensa esse modal sozinha — "
+                    "deve passar."
+                )
+                return True
+            print("  ❌ Magalu está pedindo LOGIN na busca — é o que derruba a coleta.")
+            if redirecionou:
+                print(f"     A busca redirecionou para: {url[:100]}")
+            else:
+                print("     A tela de login veio no lugar da SERP (mesma URL).")
+            print(
+                "\n     Ação — rode este comando (SEM --check, é ele que espera\n"
+                "     você logar; o --check é só a sonda e sai na hora):\n"
+                "        python scripts/setup_local_profile.py --site magalu\n"
+                "     Depois de logar na janela, volte aqui e dê ENTER."
+            )
+            dump = _dump_check_html(html)
+            if dump:
+                print(f"     HTML salvo em: {dump}")
+            return False
+
+        print(
+            f"  ⚠️  Magalu: a busca abriu ({len(html):,} bytes) mas sem cards de "
+            f"produto.\n     URL final: {url[:100]}\n"
+            "     Pode ser bloqueio do Akamai ou layout novo."
+        )
+        dump = _dump_check_html(html)
+        if dump:
+            print(f"     HTML salvo em: {dump}")
+        return False
     except Exception as exc:
         print(f"  [aviso] não consegui abrir a busca da Magalu: {exc}")
         return False
     finally:
+        # Fecha a aba da sonda — MAS só se não for a última do Chrome: fechar
+        # a única aba fecha a janela inteira, e aí o usuário fica sem onde
+        # logar justamente quando o check acabou de pedir login.
         try:
-            if page is not None:
+            if page is not None and len(ctx.pages) > 1:
                 page.close()
         except Exception:
             pass
-
-    if MagaluScraper._has_product_markup(html):
-        print("  ✅ Magalu OK — a busca renderizou produtos (coleta deve passar).")
-        return True
-    if MagaluScraper._looks_like_login_wall(html, url):
-        print(
-            "  ❌ Magalu está pedindo LOGIN na busca — é isso que derruba a "
-            "coleta.\n     Faça login na janela do Chrome e rode --check de novo."
-        )
-        return False
-    print(
-        f"  ⚠️  Magalu: a busca abriu ({len(html):,} bytes) mas sem cards de "
-        "produto.\n     Pode ser bloqueio do Akamai ou layout novo — veja "
-        "logs/magalu_block_*.html após uma coleta."
-    )
-    return False
 
 
 def _report_login(port: int, site: str) -> bool:
@@ -392,16 +492,7 @@ def _report_login(port: int, site: str) -> bool:
         print(f"  [aviso] não consegui checar o login via CDP: {exc}")
         return False
     finally:
-        try:
-            if browser is not None:
-                browser.close()
-        except Exception:
-            pass
-        try:
-            if pw is not None:
-                pw.stop()
-        except Exception:
-            pass
+        _release_cdp(pw, browser)
 
 
 def main() -> int:

@@ -663,15 +663,24 @@ class MagaluScraper(BaseScraper):
         try:
             cal_url = f"{_MAGALU_MOBILE_BASE}/busca/ar+condicionado/"
             self._pw_page.goto(cal_url, wait_until="domcontentloaded", timeout=30_000)
+            # A SERP hidrata client-side — sem esperar o card, a calibração
+            # pode julgar uma página ainda montando como "sem produtos".
+            try:
+                self._pw_page.wait_for_selector(
+                    'a[href*="/p/"], [data-testid="product-card"]',
+                    timeout=12_000,
+                )
+            except Exception:
+                pass
             time.sleep(random.uniform(2.0, 3.5))
-            html = self._pw_page.content()
+            html = self._safe_content()
             self._calibrate_from_html(html)
         except Exception as exc:
             logger.warning(f"[Magalu] Busca de calibração falhou: {exc}")
 
         # Tenta extrair BUILD_ID daqui pra futuras chamadas
         try:
-            html = self._pw_page.content()
+            html = self._safe_content()
             build_id = self._extract_build_id(html)
             if build_id:
                 self._build_id = build_id
@@ -721,9 +730,8 @@ class MagaluScraper(BaseScraper):
                 self._flag_login_required("busca de calibração")
                 self._dump_block_html(html, "login_calibracao")
                 return False
-            try:
-                html = self._pw_page.content()  # type: ignore[union-attr]
-            except Exception:
+            html = self._safe_content()
+            if not html:
                 return False
 
         for parser_name, parser in (
@@ -829,6 +837,37 @@ class MagaluScraper(BaseScraper):
         self._pw_context = None
         self._pw_browser = None
         self._pw_handle = None
+
+    def _safe_content(self, page: Any = None) -> str:
+        """
+        `page.content()` com uma segunda chance.
+
+        O rebrowser-playwright perde o execution context quando o evaluate
+        cai no meio de uma navegação ("Cannot find context with specified
+        id" / "session closed"). A página está viva — foi o timing. Sem o
+        retry, a tentativa da keyword inteira era descartada por causa de
+        uma janela de milissegundos.
+
+        Args:
+            page: página a ler (default: a aba de coleta).
+
+        Returns:
+            HTML da página, ou "" se as duas tentativas falharem.
+        """
+        target = page or self._pw_page
+        if target is None:
+            return ""
+        for attempt in (1, 2):
+            try:
+                return target.content()
+            except Exception as exc:
+                if attempt == 2:
+                    logger.warning(
+                        f"[{self.platform_name}] content() falhou 2×: {exc}"
+                    )
+                else:
+                    time.sleep(1.5)
+        return ""
 
     def _page_is_dead(self) -> bool:
         """True se a aba de coleta não existe mais (fechada/crashed)."""
@@ -1035,9 +1074,8 @@ class MagaluScraper(BaseScraper):
                     break
             except Exception:
                 continue
-        try:
-            html = page.content()
-        except Exception:
+        html = self._safe_content(page)
+        if not html:
             return False
         if self._has_product_markup(html):
             logger.info(
@@ -1138,10 +1176,8 @@ class MagaluScraper(BaseScraper):
 
             time.sleep(random.uniform(0.8, 1.5))
 
-            try:
-                html = self._pw_page.content()
-            except Exception as exc:
-                logger.warning(f"[{self.platform_name}] Browser content() erro: {exc}")
+            html = self._safe_content()
+            if not html:
                 continue
 
             # Muro de login (Ago/2026): a página vem 200 e grande, então
@@ -1158,9 +1194,8 @@ class MagaluScraper(BaseScraper):
                     f"(url={current_url[:80]}) — tentando dispensar o modal"
                 )
                 if self._dismiss_login_wall():
-                    try:
-                        html = self._pw_page.content()
-                    except Exception:
+                    html = self._safe_content()
+                    if not html:
                         continue
                 else:
                     self._flag_login_required(f"'{keyword}' p{page_num}")

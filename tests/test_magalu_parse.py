@@ -346,6 +346,44 @@ class TestDiagnostico:
         assert s.collection_aborted is True
 
 
+class _FlakyPage(_FakePage):
+    """Página cujo `content()` falha nas N primeiras chamadas."""
+
+    def __init__(self, falhas: int):
+        super().__init__()
+        self.falhas = falhas
+        self.chamadas = 0
+
+    def content(self) -> str:
+        self.chamadas += 1
+        if self.chamadas <= self.falhas:
+            raise RuntimeError("Protocol error (Runtime.evaluate): session closed")
+        return "<html>ok</html>"
+
+
+class TestSafeContent:
+    """
+    O rebrowser perde o execution context se o evaluate cai no meio de uma
+    navegação. A página está viva — sem retry, a tentativa da keyword era
+    descartada por uma janela de milissegundos.
+    """
+
+    def test_retorna_html_na_segunda_tentativa(self, scraper, monkeypatch):
+        monkeypatch.setattr("scrapers.magalu.time.sleep", lambda _s: None)
+        page = _FlakyPage(falhas=1)
+        assert scraper._safe_content(page) == "<html>ok</html>"
+        assert page.chamadas == 2
+
+    def test_desiste_apos_duas_falhas(self, scraper, monkeypatch):
+        monkeypatch.setattr("scrapers.magalu.time.sleep", lambda _s: None)
+        page = _FlakyPage(falhas=5)
+        assert scraper._safe_content(page) == ""
+        assert page.chamadas == 2
+
+    def test_sem_pagina_retorna_vazio(self, scraper):
+        assert scraper._safe_content(None) == ""
+
+
 class TestCascataDeEstrategias:
     """
     O fallback curl_cffi só faz sentido quando o browser não entregou nada.
