@@ -767,7 +767,7 @@ python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv --mirror
 | Amazon | ✅ | Buy box via "Vendido por"; `Qtd Sellers` de "X ofertas"; 1P vs 3P |
 | Leroy Merlin | ✅ | Algolia API; 1P vs 3P marketplace. Seller 3P vem como **ObjectId opaco** — resolvido via PDP ("Vendido e entregue por") com cache persistente em `data/leroy_sellers.json` (1 PDP por seller novo, não por produto). Diagnóstico: `python scripts/leroy_seller_probe.py --scan "<keyword>"` |
 | Google Shopping | ⚠️ | reCAPTCHA em headless; `Qtd Sellers` = nº de lojas comparando |
-| Magalu | ✅ Python | `scrapers/magalu.py` — curl_cffi/browser persistente (Akamai); seller 1P vs 3P. **Automatizado** (substitui coleta manual via extensão Chrome) |
+| Magalu | ✅ Python | `scrapers/magalu.py` — browser persistente (Akamai); seller 1P vs 3P. **Automatizado**. Extração em 3 parsers sobre o mesmo HTML: `__NEXT_DATA__` → RSC (`__next_f`, App Router) → cards do DOM. Muro de login (Ago/2026) é detectado e nomeado no log; antídoto: `python scripts/setup_local_profile.py --site magalu`. Diagnóstico pelo prefixo do dump em `logs/` (`login_`/`layout_`/`vazia_`) — ver `docs/cdp_magalu_collection.md` |
 | Casas Bahia | ✅ | `scrapers/casas_bahia.py` — VTEX intelligent-search + **warm-up de cookies Akamai** (session curl_cffi persistente); `sellers[]` → buy box (`sellerDefault`) |
 | Shopee | 🟡 Python | `scrapers/shopee.py` — API v4 + sessão capturada (curl_cffi). **Best-effort** sem proxy BR; flags Mall/Preferred+. Node em `magalu_shopee/` fica como fallback |
 | Fast Shop | ⏸️ | PerimeterX total block |

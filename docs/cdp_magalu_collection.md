@@ -211,12 +211,60 @@ Causa provável, em ordem:
 O scraper agora tem um **circuit breaker**: após 5 keywords seguidas 100%
 bloqueadas ele aborta a coleta Magalu (log `Circuit breaker disparado`) em vez
 de insistir nas ~31 keywords — a execução falha em ~1min em vez de ~9min.
+A mensagem nomeia a causa (Akamai, muro de login, layout novo ou rede); no
+caso do login ele aborta já na 2ª keyword, porque a ação é humana.
 O número `Akamai Ref #...` no log identifica qual regra do Bot Manager
 disparou (útil pra abrir suporte).
 
+### Muro de login (a busca pede identificação) — Ago/2026
+
+Sintoma no log: a coleta abre o browser, a calibração passa, e **todas** as
+keywords fecham em 0 produtos. Diferente do bloqueio Akamai, aqui a página
+volta **HTTP 200 e grande** (>1 MB) — é a tela de identificação da Magalu
+servida no lugar da SERP.
+
+O scraper detecta isso explicitamente e loga:
+
+```
+[Magalu] A Magalu está exigindo LOGIN em 'ar condicionado split' p1 — ...
+[Magalu] Circuit breaker disparado: 2 keywords ... Causa: a Magalu está exigindo LOGIN na busca.
+```
+
+Antes de abortar ele ainda tenta dispensar o modal (ESC + botão fechar) —
+boa parte dos "muros" é um modal por cima de uma SERP já renderizada, e
+nesse caso a coleta segue normalmente.
+
+**Antídoto** (login fica salvo no perfil dedicado, vale pras próximas coletas):
+
+```bash
+python scripts/setup_local_profile.py --site magalu     # abre o Chrome e loga
+python scripts/setup_local_profile.py --site magalu --check   # confere a SERP
+```
+
+O `--check` da Magalu é **funcional**: abre `/busca/ar+condicionado/` no
+perfil e diz se vieram cards de produto, se veio o muro de login, ou se veio
+outra coisa (Akamai/layout). É a mesma pergunta que a coleta faz.
+
+O HTML da tela de login fica em `logs/magalu_block_login_*.html`.
+
 ### Coleta retorna 0 produtos mesmo com Chrome aberto
+
+Comece pelo **prefixo do arquivo dumpado em `logs/`** — ele nomeia a causa:
+
+| Arquivo | Causa | Ação |
+|---------|-------|------|
+| `magalu_block_login_*.html` | Muro de login | `setup_local_profile.py --site magalu` (seção acima) |
+| `magalu_block_layout_*.html` | A SERP renderizou cards, mas nenhum parser extraiu — **layout novo** | Atualizar `_DOM_CARD_SELECTORS`/`_DOM_PRICE_SELECTORS` em `scrapers/magalu.py` |
+| `magalu_block_browser_*.html` / `search_*` | Bloqueio Akamai de verdade | Aquecer perfil, trocar IP, ver seção anterior |
+| `magalu_block_vazia_*.html` | Página sem cards nem payload | Abrir o HTML e comparar com a SERP no browser |
+
+O scraper tenta **três parsers** sobre o mesmo HTML, nesta ordem:
+`__NEXT_DATA__` → payload RSC do App Router (`self.__next_f.push`) → cards do
+DOM. O log diz qual funcionou: `12 produtos via browser (DOM)`. Se a Magalu
+migrar o layout de novo, o terceiro parser costuma segurar a coleta sozinho.
+
+Outras verificações que continuam valendo:
 - Aqueça o perfil mais (5-10 min de navegação real)
-- Faça login no Magalu
 - Verifique se o IP atual não está em alguma blocklist do Akamai (raro, mas possível)
 - Tente abrir manualmente uma URL de busca no Chrome — se aparecer captcha, resolva uma vez
 
