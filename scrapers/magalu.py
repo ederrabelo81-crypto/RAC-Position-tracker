@@ -22,6 +22,26 @@ Estratégia (Mai/2026, redesign após bypass falho do sensor.js Akamai):
   **Custos:** ~3-5s por keyword (page.goto + render + scroll). Pra coletas
   de 31 keywords × 1-2 páginas, total ~3-6min — aceitável.
 
+Extração (revisão Ago/2026, após a coleta fechar 40 keywords em 0 produtos):
+
+  Três parsers rodam em cascata sobre o MESMO HTML que o browser entregou:
+
+    1. `__NEXT_DATA__`  — payload do Pages Router (o mais rico)
+    2. RSC flight       — `self.__next_f.push([1,"..."])` do App Router
+    3. Cards do DOM     — `a[data-testid="product-card-container"]` & cia.
+
+  Só o primeiro existia. Quando a Magalu mudou o que serve na SERP, a página
+  chegava inteira no parser e saía como "0 produtos" — indistinguível de um
+  bloqueio. O 3º parser lê o que o browser renderizou, então segura a coleta
+  mesmo sem nenhum payload JSON embutido.
+
+  **Muro de login:** a busca passou a redirecionar pra tela de identificação
+  em sessões consideradas suspeitas. Ela vem HTTP 200 com >1 MB — passa por
+  toda a detecção de bloqueio Akamai. É detectada explicitamente (URL de SSO
+  ou ≥2 marcadores textuais sem nenhum card na página), o scraper tenta
+  dispensar o modal e, se não der, aborta com a ação necessária no log
+  (logar no perfil via `scripts/setup_local_profile.py --site magalu`).
+
 Env vars:
   MAGALU_HEADLESS=false       → browser visível (default true). REQUIRED
                                 em produção: o sensor.js do Akamai detecta
@@ -175,10 +195,114 @@ _SEARCH_INPUT_SELECTORS = (
     'header input[type="text"]',
 )
 
+# ── Login wall (Ago/2026) ────────────────────────────────────────────────
+# A Magalu passou a interpor uma tela/modal de identificação antes da SERP
+# quando a sessão é considerada suspeita (ou quando o perfil do Chrome está
+# deslogado). Essa página vem com HTTP 200 e >50 KB — passa por TODA a
+# detecção de bloqueio Akamai, chega no parser, que não acha produto nenhum
+# e devolve 0 itens sem dizer o porquê. Detectar explicitamente é o que
+# transforma "0 produtos" num diagnóstico acionável.
+_LOGIN_URL_MARKERS = (
+    "/login",
+    "/entrar",
+    "/sso/",
+    "/autenticacao",
+    "id.magazineluiza.com.br",
+    "sso.magazineluiza.com.br",
+    "autenticacao.magazineluiza.com.br",
+    "/cliente/entrar",
+)
+
+# Marcadores textuais da tela de identificação. Exigimos ≥2 porque o header
+# padrão da Magalu já traz "Entre ou cadastre-se" em TODA página — um único
+# hit não distingue SERP normal de muro de login.
+_LOGIN_HTML_PATTERNS = (
+    "entre ou cadastre-se",
+    "entre na sua conta",
+    "acesse sua conta",
+    "identifique-se",
+    "faça login",
+    "esqueci minha senha",
+    'name="password"',
+    'type="password"',
+    'data-testid="login',
+)
+
+# Botões que fecham o modal de identificação sem exigir credenciais.
+_LOGIN_DISMISS_SELECTORS = (
+    '[data-testid="modal-close"]',
+    '[data-testid="close-button"]',
+    '[data-testid="close"]',
+    'button[aria-label="Fechar"]',
+    'button[aria-label="fechar"]',
+    'button[title="Fechar"]',
+    'button[aria-label*="echar"]',
+)
+
+# ── Parser de DOM (Ago/2026) ─────────────────────────────────────────────
+# Fallback para quando o payload JSON não está mais no HTML (migração pro
+# App Router do Next.js remove o <script id="__NEXT_DATA__"> e serializa o
+# estado como RSC flight em `self.__next_f.push`). Seletores confirmados em
+# produção pelo scraper Node (`magalu_shopee/src/config/selectors.ts`).
+_DOM_CARD_SELECTORS = (
+    'a[data-testid="product-card-container"]',
+    'li[data-testid="product-card"] a[href*="/p/"]',
+    '[data-testid="product-card"] a[href*="/p/"]',
+    '[data-testid="product-list"] a[href*="/p/"]',
+)
+_DOM_TITLE_SELECTORS = ('[data-testid="product-title"]', "h2", "h3")
+_DOM_PRICE_SELECTORS = (
+    '[data-testid="price-value"]',
+    '[data-testid="price-best"]',
+    '[data-testid="best-price"]',
+    '[data-testid="current-price"]',
+    '[data-testid="price"]',
+)
+_DOM_RATING_SELECTOR = '[data-testid="review"]'
+_DOM_SELLER_SELECTORS = (
+    '[data-testid="seller-name"]',
+    '[data-testid="product-seller"]',
+)
+_DOM_SPONSORED_PATTERNS = ("patrocinado", "patrocinada", "anúncio", "anuncio", "publicidade")
+
+# Regex de preço BR dentro do texto do card (último recurso do parser DOM).
+_DOM_PRICE_RE = re.compile(r"R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}")
+
+# Erros de rede do Chrome que NÃO são bloqueio anti-bot — internet caiu,
+# DNS falhou, proxy derrubou a conexão. Contá-los como bloqueio Akamai
+# manda o diagnóstico (e o operador) pro lado errado.
+_NETWORK_ERROR_MARKERS = (
+    "ERR_INTERNET_DISCONNECTED",
+    "ERR_NAME_NOT_RESOLVED",
+    "ERR_CONNECTION_RESET",
+    "ERR_CONNECTION_CLOSED",
+    "ERR_CONNECTION_TIMED_OUT",
+    "ERR_NETWORK_CHANGED",
+    "ERR_PROXY_CONNECTION_FAILED",
+    "Connection was reset",
+)
+
+# Causas possíveis de uma keyword voltar vazia — alimentam a mensagem do
+# circuit breaker com a ação certa em vez de sempre culpar o Akamai.
+_REASON_AKAMAI = "akamai"
+_REASON_LOGIN = "login"
+_REASON_LAYOUT = "layout"
+_REASON_NETWORK = "rede"
+_REASON_UNKNOWN = "desconhecida"
+
 # Circuit breaker: após N keywords seguidas 100% bloqueadas, aborta a coleta
 # Magalu inteira em vez de insistir nas ~31 keywords (cada uma ~15-20s de
 # navegação garantidamente bloqueada — ~9min de trabalho inútil por execução).
 _ABORT_AFTER_BLOCKED_KEYWORDS = 5
+
+# Muro de login não passa com insistência: aborta mais cedo, porque a ação
+# necessária é humana (logar no Chrome do perfil dedicado).
+_ABORT_AFTER_LOGIN_KEYWORDS = 2
+
+# curl_cffi só serve quando o browser está fora do ar. Após N falhas
+# seguidas, desliga o fallback: cada tentativa custa ~45s de timeout e o
+# Akamai não aceita cookies de browser numa sessão TLS diferente.
+_CFFI_FAILURES_BEFORE_DISABLE = 2
 
 
 class MagaluScraper(BaseScraper):
@@ -223,6 +347,16 @@ class MagaluScraper(BaseScraper):
         # o Akamai está negando a rota /busca/ de forma persistente.
         self._blocked_keyword_streak: int = 0
         self.collection_aborted: bool = False
+
+        # Causa da última keyword vazia — decide a mensagem (e a ação) do
+        # circuit breaker: Akamai, muro de login, layout novo ou rede.
+        self._last_failure_reason: str = _REASON_UNKNOWN
+        self._login_required: bool = False
+
+        # curl_cffi é só rede de segurança pra quando o browser cai. Depois de
+        # algumas falhas seguidas ele é desligado (cada tentativa custa ~45s).
+        self._cffi_failures: int = 0
+        self._cffi_disabled: bool = False
 
         # Resolução de headless (prioridade: env var > CLI --no-headless > True)
         env_headless = os.getenv("MAGALU_HEADLESS")
@@ -521,20 +655,17 @@ class MagaluScraper(BaseScraper):
             )
 
         # Calibração: navega pra busca dentro do mesmo browser. Isso força
-        # Akamai a promover o cookie pra rota /busca/.
+        # Akamai a promover o cookie pra rota /busca/ — e, de quebra, é o
+        # momento mais barato pra descobrir que a coleta NÃO vai funcionar.
+        # O critério antigo (só tamanho do HTML) dava "OK" pra uma tela de
+        # login de 1,1 MB; agora a calibração só passa se der pra EXTRAIR
+        # produto da página.
         try:
             cal_url = f"{_MAGALU_MOBILE_BASE}/busca/ar+condicionado/"
             self._pw_page.goto(cal_url, wait_until="domcontentloaded", timeout=30_000)
             time.sleep(random.uniform(2.0, 3.5))
             html = self._pw_page.content()
-            if len(html) > 50_000 and "Não é possível acessar a página" not in html:
-                logger.info(
-                    f"[Magalu] Busca de calibração OK ({len(html):,} bytes) — sessão pronta"
-                )
-            else:
-                logger.warning(
-                    f"[Magalu] Busca de calibração suspeita (len={len(html):,}) — pode dar 403"
-                )
+            self._calibrate_from_html(html)
         except Exception as exc:
             logger.warning(f"[Magalu] Busca de calibração falhou: {exc}")
 
@@ -564,6 +695,70 @@ class MagaluScraper(BaseScraper):
             pass
 
         return True
+
+    def _calibrate_from_html(self, html: str) -> bool:
+        """
+        Valida a busca de calibração EXTRAINDO produtos, não medindo bytes.
+
+        Uma tela de identificação da Magalu tem >1 MB de HTML e passava pelo
+        antigo `len(html) > 50_000` como "sessão pronta" — a coleta então
+        rodava 40 keywords pra descobrir o óbvio. Aqui o problema aparece
+        aos 40 segundos de execução, com o motivo certo.
+
+        Args:
+            html: HTML da SERP de calibração.
+
+        Returns:
+            True se a página rende produtos (coleta deve funcionar).
+        """
+        try:
+            current_url = self._pw_page.url if self._pw_page else ""
+        except Exception:
+            current_url = ""
+
+        if self._looks_like_login_wall(html, current_url):
+            if not self._dismiss_login_wall():
+                self._flag_login_required("busca de calibração")
+                self._dump_block_html(html, "login_calibracao")
+                return False
+            try:
+                html = self._pw_page.content()  # type: ignore[union-attr]
+            except Exception:
+                return False
+
+        for parser_name, parser in (
+            ("__NEXT_DATA__", self._products_from_next_data),
+            ("RSC/App Router", self._find_products_in_rsc),
+            ("DOM", self._parse_dom_cards),
+        ):
+            try:
+                products = parser(html)
+            except Exception:
+                continue
+            if products:
+                logger.info(
+                    f"[{self.platform_name}] Busca de calibração OK "
+                    f"({len(html):,} bytes, {len(products)} produtos via "
+                    f"{parser_name}) — sessão pronta"
+                )
+                return True
+
+        if self._has_product_markup(html):
+            self._last_failure_reason = _REASON_LAYOUT
+            logger.error(
+                f"[{self.platform_name}] Calibração: a SERP renderizou "
+                f"({len(html):,} bytes) mas nenhum parser extraiu produtos — "
+                "layout novo. HTML salvo pra atualizar os seletores."
+            )
+            self._dump_block_html(html, "layout_calibracao")
+        else:
+            logger.warning(
+                f"[{self.platform_name}] Busca de calibração suspeita "
+                f"(len={len(html):,}, sem produtos) — as keywords podem "
+                "voltar vazias"
+            )
+            self._dump_block_html(html, "calibracao")
+        return False
 
     def _close_persistent_browser(self) -> None:
         """Fecha o browser persistente limpando recursos.
@@ -770,6 +965,103 @@ class MagaluScraper(BaseScraper):
         m = re.search(r"Reference[^0-9]{0,12}([0-9][0-9a-fA-F.]+)", html)
         return m.group(1) if m else None
 
+    # ------------------------------------------------------------------
+    # Muro de login (Ago/2026) — a Magalu passou a exigir identificação
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _has_product_markup(html: str) -> bool:
+        """True se o HTML tem cards de produto renderizados (SERP de verdade)."""
+        if not html:
+            return False
+        return (
+            'data-testid="product-card' in html
+            or 'data-testid="product-title"' in html
+        )
+
+    @classmethod
+    def _looks_like_login_wall(cls, html: str, url: str = "") -> bool:
+        """
+        True se a página é a tela/modal de identificação da Magalu.
+
+        A checagem é conservadora de propósito: o header padrão do site traz
+        "Entre ou cadastre-se" em toda página, então exigimos (a) ausência de
+        cards de produto e (b) ≥2 marcadores de login — ou uma URL de SSO,
+        que é evidência suficiente sozinha.
+
+        Args:
+            html: HTML renderizado da página.
+            url:  URL final após redirects (page.url), quando disponível.
+
+        Returns:
+            True quando a coleta esbarrou no muro de login.
+        """
+        lowered_url = (url or "").lower()
+        if any(marker in lowered_url for marker in _LOGIN_URL_MARKERS):
+            return True
+        if not html:
+            return False
+        # SERP renderizada (mesmo com modal por cima) ainda tem os produtos no
+        # DOM — dá pra extrair sem passar pelo login.
+        if cls._has_product_markup(html):
+            return False
+        head = html[:200_000].lower()
+        hits = sum(1 for pattern in _LOGIN_HTML_PATTERNS if pattern in head)
+        return hits >= 2
+
+    def _dismiss_login_wall(self) -> bool:
+        """
+        Tenta fechar o modal de identificação sem credenciais (ESC + botões
+        de fechar). Muitos "muros" da Magalu são modais dispensáveis sobre uma
+        SERP já renderizada.
+
+        Returns:
+            True se após a tentativa a página tem cards de produto.
+        """
+        page = self._pw_page
+        if page is None:
+            return False
+        try:
+            page.keyboard.press("Escape")
+            time.sleep(random.uniform(0.4, 0.8))
+        except Exception:
+            pass
+        for selector in _LOGIN_DISMISS_SELECTORS:
+            try:
+                el = page.query_selector(selector)
+                if el and el.is_visible():
+                    el.click(timeout=3_000)
+                    time.sleep(random.uniform(0.5, 1.0))
+                    break
+            except Exception:
+                continue
+        try:
+            html = page.content()
+        except Exception:
+            return False
+        if self._has_product_markup(html):
+            logger.info(
+                f"[{self.platform_name}] Modal de identificação dispensado — "
+                "SERP acessível por baixo ✓"
+            )
+            return True
+        return False
+
+    def _flag_login_required(self, where: str) -> None:
+        """Marca a coleta como bloqueada por login e loga a ação necessária."""
+        self._last_failure_reason = _REASON_LOGIN
+        if self._login_required:
+            return
+        self._login_required = True
+        logger.error(
+            f"[{self.platform_name}] A Magalu está exigindo LOGIN em {where} — "
+            "a busca redireciona pra tela de identificação em vez da SERP. "
+            "Ação: abra o Chrome do perfil dedicado "
+            "(`python scripts/setup_local_profile.py --site magalu`), faça "
+            "login na conta Magalu, confirme que /busca/ abre normalmente e "
+            "rode a coleta de novo. Ver docs/cdp_magalu_collection.md."
+        )
+
     def _search_via_browser(self, keyword: str, page_num: int) -> Optional[str]:
         """
         Navega pra `/busca/{keyword}` dentro do browser persistente e retorna
@@ -815,6 +1107,12 @@ class MagaluScraper(BaseScraper):
                         f"[{self.platform_name}] Browser goto '{keyword}' "
                         f"p{page_num} em {base[8:30]}: {exc}"
                     )
+                    # Rede caiu / DNS falhou: não é anti-bot. Marca a causa
+                    # (o circuit breaker precisa saber) e dá um respiro antes
+                    # da próxima tentativa em vez de martelar a conexão morta.
+                    if any(m in str(exc) for m in _NETWORK_ERROR_MARKERS):
+                        self._last_failure_reason = _REASON_NETWORK
+                        time.sleep(random.uniform(3.0, 6.0))
                     # Aba/janela fechada no meio da coleta → tenta reviver
                     # antes da próxima tentativa; sem browser, vai pro cffi.
                     if "closed" in str(exc).lower() and not self._revive_page():
@@ -845,6 +1143,29 @@ class MagaluScraper(BaseScraper):
             except Exception as exc:
                 logger.warning(f"[{self.platform_name}] Browser content() erro: {exc}")
                 continue
+
+            # Muro de login (Ago/2026): a página vem 200 e grande, então
+            # precisa ser checada ANTES da heurística de bloqueio Akamai —
+            # senão passa batido e o parser devolve 0 itens sem explicação.
+            try:
+                current_url = self._pw_page.url or ""
+            except Exception:
+                current_url = ""
+            if self._looks_like_login_wall(html, current_url):
+                logger.warning(
+                    f"[{self.platform_name}] Tela de identificação em "
+                    f"'{keyword}' p{page_num} via {label} "
+                    f"(url={current_url[:80]}) — tentando dispensar o modal"
+                )
+                if self._dismiss_login_wall():
+                    try:
+                        html = self._pw_page.content()
+                    except Exception:
+                        continue
+                else:
+                    self._flag_login_required(f"'{keyword}' p{page_num}")
+                    self._dump_block_html(html, f"login_{keyword}_p{page_num}")
+                    continue
 
             blocked = (
                 "Não é possível acessar a página" in html
@@ -1244,6 +1565,270 @@ class MagaluScraper(BaseScraper):
             return None
 
     # ------------------------------------------------------------------
+    # Estratégia 2: RSC flight payload (Next.js App Router)
+    # ------------------------------------------------------------------
+    # No App Router não existe mais <script id="__NEXT_DATA__">: o estado do
+    # servidor é transmitido em pedaços `self.__next_f.push([1,"<chunk>"])`.
+    # Concatenando os chunks (cada um é uma string JSON escapada) obtemos o
+    # mesmo payload de produtos que antes vinha no __NEXT_DATA__.
+
+    _RSC_CHUNK_RE = re.compile(
+        r'self\.__next_f\.push\(\s*\[\s*\d+\s*,\s*("(?:[^"\\]|\\.)*")', re.DOTALL
+    )
+
+    @classmethod
+    def _extract_rsc_payload(cls, html: str) -> Optional[str]:
+        """
+        Reconstrói o payload RSC (flight) a partir dos chunks `__next_f.push`.
+
+        Args:
+            html: HTML da página renderizada.
+
+        Returns:
+            Texto do payload concatenado, ou None se a página não usa RSC.
+        """
+        chunks = cls._RSC_CHUNK_RE.findall(html)
+        if not chunks:
+            return None
+        parts: List[str] = []
+        for raw in chunks:
+            try:
+                parts.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue
+        return "".join(parts) if parts else None
+
+    @staticmethod
+    def _balanced_slice(text: str, start: int) -> Optional[str]:
+        """
+        Recorta a estrutura JSON balanceada que começa em `text[start]`.
+
+        Conta apenas o par de colchetes/chaves do caractere inicial e ignora
+        o conteúdo de strings (com escapes) — o payload RSC vem concatenado
+        com lixo em volta, então `json.loads` do texto inteiro não serve.
+
+        Args:
+            text:  Texto contendo JSON embutido.
+            start: Índice do `[` ou `{` inicial.
+
+        Returns:
+            Substring JSON balanceada, ou None se não fechar.
+        """
+        opening = text[start:start + 1]
+        closing = {"[": "]", "{": "}"}.get(opening)
+        if closing is None:
+            return None
+        depth = 0
+        in_string = False
+        escaped = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == opening:
+                depth += 1
+            elif ch == closing:
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        return None
+
+    def _find_products_in_rsc(self, html: str) -> List[Dict]:
+        """
+        Procura o array de produtos dentro do payload RSC do App Router.
+
+        Returns:
+            Lista de produtos (mesmo formato do __NEXT_DATA__) ou [] se nada
+            reconhecível foi encontrado.
+        """
+        payload = self._extract_rsc_payload(html)
+        if not payload:
+            return []
+
+        for key in ("products", "items", "results"):
+            needle = f'"{key}":'
+            cursor = 0
+            while True:
+                idx = payload.find(needle, cursor)
+                if idx == -1:
+                    break
+                cursor = idx + len(needle)
+                start = cursor
+                while start < len(payload) and payload[start] in " \t\r\n":
+                    start += 1
+                if start >= len(payload) or payload[start] != "[":
+                    continue
+                blob = self._balanced_slice(payload, start)
+                if not blob:
+                    continue
+                try:
+                    arr = json.loads(blob)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(arr, list) and arr
+                    and self._array_has_priced_products(arr)
+                ):
+                    return [item for item in arr if isinstance(item, dict)]
+        return []
+
+    # ------------------------------------------------------------------
+    # Estratégia 3: parser de DOM (cards renderizados)
+    # ------------------------------------------------------------------
+    # Rede de segurança final: quando nem __NEXT_DATA__ nem RSC entregam o
+    # payload (mudança de layout, hidratação client-side, HTML parcial), os
+    # cards ainda estão no DOM que o browser renderizou. Os seletores são os
+    # mesmos confirmados em produção pelo scraper Node.
+
+    @staticmethod
+    def _dom_text(node: Any, selectors: Tuple[str, ...]) -> Optional[str]:
+        """Primeiro texto não-vazio entre os seletores, dentro de `node`."""
+        for selector in selectors:
+            try:
+                el = node.select_one(selector)
+            except Exception:
+                continue
+            if el:
+                text = el.get_text(" ", strip=True)
+                if text:
+                    return text
+        return None
+
+    @staticmethod
+    def _is_card_container(node: Any) -> bool:
+        """True se o elemento delimita UM produto (e não a lista inteira)."""
+        try:
+            testid = node.get("data-testid") or ""
+            return node.name == "li" or "product-card" in testid
+        except Exception:
+            return False
+
+    def _parse_dom_cards(self, html: str) -> List[Dict[str, Any]]:
+        """
+        Extrai produtos dos cards renderizados no HTML.
+
+        Devolve dicts no MESMO formato dos produtos do JSON do Next.js
+        (title/path/seller/rating/badge + `bestPriceTemplate` com o preço
+        em texto BR), pra reaproveitar `_parse_products` sem ramificação.
+
+        Args:
+            html: HTML renderizado da SERP.
+
+        Returns:
+            Lista de produtos na ordem em que aparecem na página.
+        """
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] DOM parse falhou: {exc}")
+            return []
+
+        cards: List[Any] = []
+        for selector in _DOM_CARD_SELECTORS:
+            try:
+                cards = soup.select(selector)
+            except Exception:
+                continue
+            if cards:
+                break
+        if not cards:
+            return []
+
+        products: List[Dict[str, Any]] = []
+        seen_hrefs: set = set()
+
+        for card in cards:
+            href = card.get("href") or ""
+            if "/p/" not in href:
+                continue
+            if href in seen_hrefs:
+                continue
+            seen_hrefs.add(href)
+
+            # O título às vezes vive fora do <a> (card = <li> com o link
+            # dentro). Sobe um nível quando não achar no próprio card — mas
+            # só se o pai for o container do card: subir até a <ul> misturaria
+            # o texto de TODOS os produtos e o preço sairia do card errado.
+            scope = card
+            title = self._dom_text(scope, _DOM_TITLE_SELECTORS)
+            parent = card.parent
+            if not title and parent is not None and self._is_card_container(parent):
+                scope = parent
+                title = self._dom_text(scope, _DOM_TITLE_SELECTORS)
+            if not title:
+                title = (card.get("title") or "").strip() or None
+            if not title:
+                continue
+
+            card_text = scope.get_text(" ", strip=True)
+
+            price_text = self._dom_text(scope, _DOM_PRICE_SELECTORS)
+            if not price_text or parse_price(price_text) is None:
+                match = _DOM_PRICE_RE.search(card_text)
+                price_text = match.group(0) if match else price_text
+            if not price_text:
+                continue
+
+            product_id = ""
+            id_match = re.search(r"/p/([a-z0-9]+)/", href, re.IGNORECASE)
+            if id_match:
+                product_id = id_match.group(1).upper()
+
+            seller = self._dom_text(scope, _DOM_SELLER_SELECTORS)
+            if not seller:
+                # A URL do card carrega o slug do seller — é o vencedor da
+                # buy box daquela listagem, informação central do projeto.
+                seller_match = re.search(r"[?&]seller_id=([^&\"']+)", href)
+                if seller_match:
+                    seller = seller_match.group(1).strip()
+
+            rating_text = self._dom_text(scope, (_DOM_RATING_SELECTOR,))
+            rating_score: Optional[float] = None
+            rating_count: Optional[int] = None
+            if rating_text:
+                score_match = re.search(r"(\d+[.,]\d+|\d+)", rating_text)
+                if score_match:
+                    try:
+                        rating_score = float(score_match.group(1).replace(",", "."))
+                    except ValueError:
+                        rating_score = None
+                count_match = re.search(r"\((\d[\d.]*)\)", rating_text)
+                if count_match:
+                    try:
+                        rating_count = int(count_match.group(1).replace(".", ""))
+                    except ValueError:
+                        rating_count = None
+
+            lowered = card_text.lower()
+            badge = next(
+                (p for p in _DOM_SPONSORED_PATTERNS if p in lowered), None
+            )
+
+            product: Dict[str, Any] = {
+                "id": product_id or href,
+                "title": title,
+                "path": href,
+                "bestPriceTemplate": price_text,
+            }
+            if seller:
+                product["seller"] = {"description": seller}
+            if rating_score is not None or rating_count is not None:
+                product["rating"] = {"score": rating_score, "count": rating_count}
+            if badge:
+                product["badge"] = "Patrocinado"
+            products.append(product)
+
+        return products
+
+    # ------------------------------------------------------------------
     # Parser do JSON do Next.js — caminha a estrutura procurando produtos
     # ------------------------------------------------------------------
 
@@ -1594,6 +2179,113 @@ class MagaluScraper(BaseScraper):
         except Exception as exc:
             logger.warning(f"[{self.platform_name}] Revalidação falhou: {exc}")
 
+    # ------------------------------------------------------------------
+    # Extração — 3 parsers em cascata sobre o MESMO HTML
+    # ------------------------------------------------------------------
+
+    def _records_from_html(
+        self,
+        html: str,
+        keyword: str,
+        keyword_category_map: dict,
+        page: int,
+        source: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Converte o HTML de uma SERP em registros, tentando os 3 parsers.
+
+        Ordem: `__NEXT_DATA__` (payload completo, o mais rico) → RSC flight
+        do App Router → cards do DOM. Antes só existia o primeiro: quando a
+        Magalu mudava o layout, a página chegava inteira aqui e saía como
+        "0 produtos", indistinguível de um bloqueio.
+
+        Args:
+            html:                 HTML renderizado da busca.
+            keyword:              Termo pesquisado.
+            keyword_category_map: Mapa keyword → categoria.
+            page:                 Número da página (1-based).
+            source:               "browser" ou "curl_cffi" (só pra log).
+
+        Returns:
+            Registros prontos pro DataFrame — [] se nenhum parser reconheceu.
+        """
+        parsers = (
+            ("__NEXT_DATA__", self._products_from_next_data),
+            ("RSC/App Router", self._find_products_in_rsc),
+            ("DOM", self._parse_dom_cards),
+        )
+        for parser_name, parser in parsers:
+            try:
+                products = parser(html)
+            except Exception as exc:
+                logger.warning(
+                    f"[{self.platform_name}] Parser {parser_name} falhou em "
+                    f"'{keyword}' p{page}: {exc}"
+                )
+                continue
+            if not products:
+                continue
+            records = self._parse_products(
+                products, keyword, keyword_category_map, page
+            )
+            if records:
+                logger.info(
+                    f"[{self.platform_name}] {len(records)} produtos via "
+                    f"{source} ({parser_name})"
+                )
+                new_build = self._extract_build_id(html)
+                if new_build and new_build != self._build_id:
+                    self._build_id = new_build
+                return records
+        return []
+
+    def _products_from_next_data(self, html: str) -> List[Dict]:
+        """Produtos do `<script id="__NEXT_DATA__">`, ou [] se ausente."""
+        next_data = self._extract_next_data_from_html(html)
+        if not next_data:
+            return []
+        return self._find_products_in_json(next_data)
+
+    def _diagnose_empty_html(self, html: str, keyword: str, page: int) -> None:
+        """
+        Explica (e dumpa) uma página que carregou mas não rendeu produtos.
+
+        Sem isso, os três cenários abaixo produziam exatamente a mesma linha
+        de log — "0 itens" — e o operador não tinha como saber qual deles
+        estava acontecendo nem o que fazer a respeito.
+        """
+        try:
+            current_url = self._pw_page.url if self._pw_page else ""
+        except Exception:
+            current_url = ""
+
+        if self._looks_like_login_wall(html, current_url):
+            self._flag_login_required(f"'{keyword}' p{page}")
+            self._dump_block_html(html, f"login_{keyword}_p{page}")
+            return
+
+        if self._has_product_markup(html):
+            # Cards no DOM mas nenhum parser extraiu: layout novo. É bug
+            # nosso, não bloqueio — o dump é o material pra corrigir.
+            self._last_failure_reason = _REASON_LAYOUT
+            logger.error(
+                f"[{self.platform_name}] '{keyword}' p{page}: a página tem "
+                f"cards de produto ({len(html):,} bytes) mas NENHUM parser "
+                "extraiu itens — layout da Magalu provavelmente mudou. "
+                "Revise os seletores em _DOM_CARD_SELECTORS usando o HTML "
+                "salvo abaixo."
+            )
+            self._dump_block_html(html, f"layout_{keyword}_p{page}")
+            return
+
+        self._last_failure_reason = _REASON_UNKNOWN
+        logger.warning(
+            f"[{self.platform_name}] '{keyword}' p{page}: página carregou "
+            f"({len(html):,} bytes) sem cards nem payload de produtos "
+            f"(url={current_url[:80]}) — HTML salvo pra diagnóstico"
+        )
+        self._dump_block_html(html, f"vazia_{keyword}_p{page}")
+
     def _search_page(
         self,
         keyword: str,
@@ -1603,10 +2295,10 @@ class MagaluScraper(BaseScraper):
         """
         Executa a busca em UMA página. Estratégias em cascata:
           A. Browser persistente (modo principal — Akamai aceita)
-          B. curl_cffi HTML com cookies do browser (fallback)
+          B. curl_cffi, SÓ quando o browser não entregou HTML nenhum
         """
         records: List[Dict[str, Any]] = []
-        html: Optional[str] = None
+        browser_html: Optional[str] = None
 
         # Revalida sessão após N bloqueios consecutivos
         if (
@@ -1618,52 +2310,66 @@ class MagaluScraper(BaseScraper):
 
         # --- Estratégia A: Browser persistente (modo principal) ---
         if self._browser_mode and self._pw_page:
-            html = self._search_via_browser(keyword, page)
-            if html:
-                next_data = self._extract_next_data_from_html(html)
-                if next_data:
-                    products = self._find_products_in_json(next_data)
-                    if products:
-                        records = self._parse_products(
-                            products, keyword, keyword_category_map, page
-                        )
-                        logger.info(
-                            f"[{self.platform_name}] {len(records)} produtos via browser"
-                        )
-                        new_build = self._extract_build_id(html)
-                        if new_build and new_build != self._build_id:
-                            self._build_id = new_build
+            browser_html = self._search_via_browser(keyword, page)
+            if browser_html:
+                records = self._records_from_html(
+                    browser_html, keyword, keyword_category_map, page, "browser"
+                )
+                if not records:
+                    self._diagnose_empty_html(browser_html, keyword, page)
+            elif self._last_failure_reason not in (_REASON_LOGIN, _REASON_NETWORK):
+                self._last_failure_reason = _REASON_AKAMAI
 
-        # --- Estratégia B: curl_cffi HTML com cookies recém-extraídos ---
-        # Refresca cookies do browser antes de cada tentativa curl_cffi —
-        # _abck pode ter sido promovido durante a navegação anterior.
-        if not records:
-            if self._pw_context and self._cffi_session is not None:
+        # --- Estratégia B: curl_cffi (só como rede de segurança) ---
+        # Quando o browser ENTREGOU o HTML e mesmo assim não saiu produto, o
+        # curl_cffi não tem nada a acrescentar: o Akamai amarra os cookies à
+        # sessão TLS que os emitiu, então a mesma busca via cffi devolve 403
+        # depois de ~45s de timeout. Rodar isso em toda keyword só queimava
+        # tempo de coleta e enchia o log de "HTML search bloqueado".
+        should_try_cffi = (
+            not records
+            and browser_html is None
+            and not self._cffi_disabled
+            and self._cffi_session is not None
+        )
+        if should_try_cffi:
+            # Refresca cookies do browser antes da tentativa — _abck pode ter
+            # sido promovido durante a navegação anterior.
+            if self._pw_context:
                 try:
-                    cookies = self._pw_context.cookies()
-                    self._apply_cookies_to_cffi(cookies)
+                    self._apply_cookies_to_cffi(self._pw_context.cookies())
                 except Exception:
                     pass
 
             html = self._fetch_html_search(keyword, page)
             if html:
-                next_data = self._extract_next_data_from_html(html)
-                if next_data:
-                    products = self._find_products_in_json(next_data)
-                    if products:
-                        records = self._parse_products(
-                            products, keyword, keyword_category_map, page
-                        )
-                        logger.info(
-                            f"[{self.platform_name}] {len(records)} produtos via "
-                            "curl_cffi HTML"
-                        )
-                        new_build = self._extract_build_id(html)
-                        if new_build and new_build != self._build_id:
-                            self._build_id = new_build
+                records = self._records_from_html(
+                    html, keyword, keyword_category_map, page, "curl_cffi"
+                )
+            if records:
+                self._cffi_failures = 0
+            else:
+                self._cffi_failures += 1
+                # Em MAGALU_FORCE_CURL o cffi é o único caminho — desligá-lo
+                # deixaria a coleta sem plano nenhum.
+                if (
+                    self._browser_mode
+                    and self._cffi_failures >= _CFFI_FAILURES_BEFORE_DISABLE
+                ):
+                    self._cffi_disabled = True
+                    logger.warning(
+                        f"[{self.platform_name}] Fallback curl_cffi desligado "
+                        f"após {self._cffi_failures} falhas seguidas — o Akamai "
+                        "não aceita os cookies do browser numa sessão TLS "
+                        "diferente. A coleta segue só pelo browser."
+                    )
 
         if records:
             self._consecutive_blocks = 0
+            self._last_failure_reason = _REASON_UNKNOWN
+            # A busca voltou a funcionar: se o muro de login foi dispensado
+            # (ou era intermitente), a coleta não deve mais abortar cedo.
+            self._login_required = False
         else:
             self._consecutive_blocks += 1
 
@@ -1738,19 +2444,62 @@ class MagaluScraper(BaseScraper):
             self._blocked_keyword_streak = 0
         else:
             self._blocked_keyword_streak += 1
-            if (
-                self._blocked_keyword_streak >= _ABORT_AFTER_BLOCKED_KEYWORDS
-                and not self.collection_aborted
-            ):
-                self.collection_aborted = True
-                logger.error(
-                    f"[{self.platform_name}] Circuit breaker disparado: "
-                    f"{self._blocked_keyword_streak} keywords seguidas 100% "
-                    "bloqueadas pelo Akamai. Abortando a coleta Magalu — as "
-                    "keywords restantes serão puladas. Causa provável: IP ou "
-                    "perfil do Chrome CDP flagado pelo Bot Manager. "
-                    "Ver docs/cdp_magalu_collection.md (seção Troubleshooting)."
-                )
+            self._maybe_trip_circuit_breaker()
 
         self._log_search_result(keyword, len(all_records))
         return all_records
+
+    def _maybe_trip_circuit_breaker(self) -> None:
+        """
+        Aborta a coleta Magalu quando as keywords vêm vazias em sequência.
+
+        A mensagem é escolhida pela causa registrada em
+        `_last_failure_reason`: culpar o Akamai quando o problema é login
+        expirado (ou layout novo, ou a internet caída) manda o operador
+        investigar a coisa errada.
+        """
+        if self.collection_aborted:
+            return
+
+        # Muro de login exige ação humana — não adianta gastar 5 keywords.
+        limit = (
+            _ABORT_AFTER_LOGIN_KEYWORDS if self._login_required
+            else _ABORT_AFTER_BLOCKED_KEYWORDS
+        )
+        if self._blocked_keyword_streak < limit:
+            return
+
+        self.collection_aborted = True
+        streak = self._blocked_keyword_streak
+        prefix = (
+            f"[{self.platform_name}] Circuit breaker disparado: {streak} "
+            "keywords seguidas sem produtos. Abortando a coleta Magalu — as "
+            "keywords restantes serão puladas. "
+        )
+
+        if self._login_required:
+            logger.error(
+                prefix + "Causa: a Magalu está exigindo LOGIN na busca. "
+                "Ação: rode `python scripts/setup_local_profile.py --site "
+                "magalu`, faça login na janela do Chrome e repita a coleta. "
+                "Ver docs/cdp_magalu_collection.md (seção Muro de login)."
+            )
+        elif self._last_failure_reason == _REASON_LAYOUT:
+            logger.error(
+                prefix + "Causa: as páginas CARREGARAM com cards de produto, "
+                "mas nenhum parser extraiu itens — o layout da Magalu mudou. "
+                "Ação: abra os HTMLs `logs/magalu_block_layout_*.html` e "
+                "atualize os seletores em scrapers/magalu.py."
+            )
+        elif self._last_failure_reason == _REASON_NETWORK:
+            logger.error(
+                prefix + "Causa: erros de REDE do Chrome (conexão caiu/DNS), "
+                "não anti-bot. Ação: verifique a internet da máquina "
+                "coletora e rode de novo."
+            )
+        else:
+            logger.error(
+                prefix + "Causa provável: IP ou perfil do Chrome flagado pelo "
+                "Bot Manager do Akamai. Ver docs/cdp_magalu_collection.md "
+                "(seção Troubleshooting)."
+            )

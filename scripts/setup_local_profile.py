@@ -20,13 +20,19 @@ O que precisa (e o que NÃO precisa) de login
   * **Mercado Livre** — não precisa no dia a dia, MAS logar é o antídoto do
     "login gate"/device-verification quando ele começa a pegar keyword atrás de
     keyword (incidente de 31/07/2026). Sessão logada não recebe o desafio.
-  * **Casas Bahia** e **Magalu** — não precisam de conta. Dependem só de IP
-    residencial + Chrome real, que este modo já entrega.
+  * **Magalu** — passou a interpor uma tela de identificação na busca
+    (Ago/2026): a SERP volta como página de login e a coleta fecha em 0
+    produtos. Logar no perfil é o antídoto. O ``--check`` daqui confere
+    abrindo a própria busca, não um cookie.
+  * **Casas Bahia** — não precisa de conta. Depende só de IP residencial +
+    Chrome real, que este modo já entrega.
 
 USO:
     python scripts/setup_local_profile.py                      # Shopee (padrão)
     python scripts/setup_local_profile.py --site mercadolivre  # login no ML
+    python scripts/setup_local_profile.py --site magalu        # login na Magalu
     python scripts/setup_local_profile.py --site ambos         # Shopee + ML
+    python scripts/setup_local_profile.py --site todos         # + Magalu
     python scripts/setup_local_profile.py --check              # só relata status
     python scripts/setup_local_profile.py --no-login           # só abre o Chrome
 
@@ -80,6 +86,11 @@ _ML_HOME = "https://www.mercadolivre.com.br/"
 # caminho que o `--auto` usa antes de cair no clique do "Entre" na home.
 _ML_ACCOUNT_URL = "https://myaccount.mercadolivre.com.br/"
 
+# Magalu: home pra logar, busca pra CONFERIR que a SERP abre sem o muro de
+# identificação que derrubou a coleta em Ago/2026.
+_MAGALU_HOME = "https://www.magazineluiza.com.br/"
+_MAGALU_SEARCH_URL = "https://www.magazineluiza.com.br/busca/ar+condicionado/"
+
 # Sites suportados. `login_cookies` = any-of que indica sessão autenticada.
 SITES = {
     "shopee": {
@@ -111,6 +122,26 @@ SITES = {
             "é justamente esse desafio que derruba a coleta quando não está logado.",
             "Depois de logar, abra lista.mercadolivre.com.br/ar-condicionado na mão:",
             "se os produtos aparecerem ali, a coleta também vai passar.",
+        ],
+    },
+    "magalu": {
+        "label":         "Magalu",
+        "start_url":     _MAGALU_HOME,
+        "cookie_url":    "https://www.magazineluiza.com.br",
+        # A Magalu não expõe um cookie de sessão com nome estável, então a
+        # verificação aqui é FUNCIONAL: abrimos a SERP e olhamos se vieram
+        # cards de produto ou a tela de identificação. É exatamente a
+        # pergunta que importa pra coleta.
+        "login_cookies": (),
+        "check":         "serp",
+        # Historicamente a Magalu coletava anônima; passou a interpor o muro
+        # de login em sessões que considera suspeitas (Ago/2026).
+        "obrigatorio":   False,
+        "instrucoes": [
+            "Abriu a HOME da Magalu: clique em 'Entre ou cadastre-se' e faça",
+            "login com a SUA conta (e-mail/CPF + senha).",
+            "Depois de logar, abra www.magazineluiza.com.br/busca/ar+condicionado/",
+            "na mão: se os produtos aparecerem ali, a coleta também passa.",
         ],
     },
 }
@@ -266,6 +297,55 @@ def _ml_auto_login(port: int) -> bool:
             pass
 
 
+def _check_magalu_serp(ctx) -> bool:
+    """
+    Checagem funcional da Magalu: a busca abre ou cai no muro de login?
+
+    Vale mais que olhar cookie: é literalmente a requisição que a coleta faz.
+    Reusa os detectores do scraper pra não divergirem com o tempo.
+
+    Args:
+        ctx: BrowserContext já conectado ao Chrome do perfil.
+
+    Returns:
+        True se a SERP renderizou cards de produto.
+    """
+    from scrapers.magalu import MagaluScraper
+
+    page = None
+    try:
+        page = ctx.new_page()
+        page.goto(_MAGALU_SEARCH_URL, wait_until="domcontentloaded", timeout=40_000)
+        time.sleep(3)
+        html = page.content()
+        url = page.url or ""
+    except Exception as exc:
+        print(f"  [aviso] não consegui abrir a busca da Magalu: {exc}")
+        return False
+    finally:
+        try:
+            if page is not None:
+                page.close()
+        except Exception:
+            pass
+
+    if MagaluScraper._has_product_markup(html):
+        print("  ✅ Magalu OK — a busca renderizou produtos (coleta deve passar).")
+        return True
+    if MagaluScraper._looks_like_login_wall(html, url):
+        print(
+            "  ❌ Magalu está pedindo LOGIN na busca — é isso que derruba a "
+            "coleta.\n     Faça login na janela do Chrome e rode --check de novo."
+        )
+        return False
+    print(
+        f"  ⚠️  Magalu: a busca abriu ({len(html):,} bytes) mas sem cards de "
+        "produto.\n     Pode ser bloqueio do Akamai ou layout novo — veja "
+        "logs/magalu_block_*.html após uma coleta."
+    )
+    return False
+
+
 def _report_login(port: int, site: str) -> bool:
     """Conecta via CDP (breve) e relata se o site está logado. True se logado."""
     cfg = SITES[site]
@@ -285,6 +365,9 @@ def _report_login(port: int, site: str) -> bool:
         pw = sync_playwright().start()
         browser = pw.chromium.connect_over_cdp(endpoint, timeout=15_000)
         ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        if cfg.get("check") == "serp":
+            print(f"\n  Checando {cfg['label']} pela própria busca...")
+            return _check_magalu_serp(ctx)
         cookies = ctx.cookies(cfg["cookie_url"])
         names = {c.get("name") for c in cookies}
         login_cookies = cfg["login_cookies"]
@@ -330,12 +413,15 @@ def main() -> int:
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
-        "--site", choices=("shopee", "mercadolivre", "ambos"), default="shopee",
+        "--site", choices=("shopee", "mercadolivre", "magalu", "ambos", "todos"),
+        default="shopee",
         help=(
             "Onde logar neste perfil:\n"
             "  shopee        (padrão) — obrigatório para a API v4\n"
             "  mercadolivre  — antídoto do login gate / device-verification\n"
-            "  ambos         — um login de cada vez, na mesma janela"
+            "  magalu        — antídoto do muro de identificação na busca\n"
+            "  ambos         — Shopee + Mercado Livre, na mesma janela\n"
+            "  todos         — Shopee + Mercado Livre + Magalu"
         ),
     )
     parser.add_argument(
@@ -355,7 +441,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    sites = ["shopee", "mercadolivre"] if args.site == "ambos" else [args.site]
+    if args.site == "ambos":
+        sites = ["shopee", "mercadolivre"]
+    elif args.site == "todos":
+        sites = ["shopee", "mercadolivre", "magalu"]
+    else:
+        sites = [args.site]
 
     port = _resolve_port()
     profile_dir = _resolve_profile_dir()
