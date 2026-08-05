@@ -94,6 +94,74 @@ _FLOAT_COLS = {"preco", "avaliacao"}
 _BOOL_COLS  = {"fulfillment", "patrocinado"}
 
 
+# Trechos que denunciam credencial de EXEMPLO copiada do `.env.example` (ou da
+# documentação) sem ter sido substituída pela real.
+_PLACEHOLDER_MARKERS = (
+    "your-ref",
+    "your-project",
+    "yourproject",
+    "xxxx",
+    "seu-projeto",
+    "<",
+    ">",
+    "[",
+    "]",
+)
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    """True se o valor parece um placeholder de documentação, não a credencial."""
+    lowered = value.lower()
+    return any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
+
+
+def _validate_credentials(url: str, key: str) -> bool:
+    """
+    Valida URL/chave ANTES de chamar `create_client`.
+
+    Motivação (05/08/2026): um `.env` com o placeholder do `.env.example`
+    (`https://[YOUR-REF].supabase.co`) fazia o `create_client` estourar com
+    `Invalid IPv6 URL` — os colchetes do placeholder viram sintaxe de IPv6 pro
+    parser de URL. A coleta de 2.223 registros terminava com uma mensagem que
+    não tem nenhuma relação com a causa (nem com a solução).
+
+    Args:
+        url: valor de SUPABASE_URL.
+        key: valor de SUPABASE_KEY.
+
+    Returns:
+        True se as credenciais têm cara de credencial de verdade.
+    """
+    env_path = Path(__file__).parent.parent / ".env"
+
+    if _looks_like_placeholder(url):
+        logger.error(
+            f"[Supabase] ❌ SUPABASE_URL ainda é o EXEMPLO da documentação: "
+            f"{url}\n"
+            f"    Edite {env_path} e troque pela URL real do projeto "
+            "(Supabase → Project Settings → Data API → Project URL), no "
+            "formato https://SEU-REF.supabase.co — sem colchetes."
+        )
+        return False
+
+    if not url.startswith(("http://", "https://")):
+        logger.error(
+            f"[Supabase] ❌ SUPABASE_URL sem esquema http(s): {url}\n"
+            f"    Corrija em {env_path} — precisa começar com https://"
+        )
+        return False
+
+    if _looks_like_placeholder(key):
+        logger.error(
+            "[Supabase] ❌ SUPABASE_KEY ainda é o EXEMPLO da documentação.\n"
+            f"    Edite {env_path} e cole a chave real (service_role) do "
+            "projeto — Supabase → Project Settings → API Keys."
+        )
+        return False
+
+    return True
+
+
 def _get_client() -> Optional["Client"]:
     """Cria e retorna o client Supabase, ou None se não configurado."""
     if not _HAS_SUPABASE:
@@ -117,6 +185,9 @@ def _get_client() -> Optional["Client"]:
             "[Supabase] ❌ SUPABASE_KEY não encontrada. "
             f"Verifique o arquivo .env em: {Path(__file__).parent.parent / '.env'}"
         )
+        return None
+
+    if not _validate_credentials(url, key):
         return None
 
     logger.info(f"[Supabase] Conectando em: {url[:40]}...")
