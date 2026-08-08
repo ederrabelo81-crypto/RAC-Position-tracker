@@ -7,7 +7,7 @@ observabilidade estruturada.
 
 **Status:** ✅ Produção — é a camada de API usada por
 `scripts/pricetrack_api_import.py` (workflows `pricetrack_daily.yml` e
-`pricetrack_intraday.yml`).
+`pricetrack_daily.yml`; o intra-dia horário foi aposentado em 08/08/2026).
 
 ---
 

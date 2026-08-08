@@ -137,7 +137,7 @@ categoria AR CONDICIONADO → tabela `pricetrack_daily`.
 - **Pipeline:** `scripts/pricetrack_api_import.py` (export assíncrono → NDJSON.gz → agrega → upsert) + `--gaps-only` auto-heal dos últimos 14 dias
 - **Camada de API — pacote `pricetrack_api/` (Jul/2026):** cliente tipado da API Externa PriceTrack v1.2.0 (schemas `Offer`/`Shipping`, `PriceTrackClient`, `SmartCollector`), com paginação sempre via `meta.hasNextPage` + guarda anti-loop por assinatura completa de página, `ExportManager` com até 3 exports em voo e renovação automática de `downloadUrl` (TTL 1h), retry com backoff exponencial + jitter e erros tipados (400/401/409/429 — 429 honra `Retry-After` com teto), `SmartCollector` decide paginado × export em massa por threshold configurável, métricas estruturadas + alertas Telegram/log. 88 testes sem rede. `scripts/pricetrack_api_import.py` delega os exports do import diário a essa camada (`--concurrent` agora funciona de verdade). Docs: `pricetrack_api/README.md`; variáveis `PRICETRACK_*` opcionais no `.env.example`
 - **Turnos intra-dia (Jun/2026):** `aggregate_offers()` deriva o turno do `collection_hour` e emite linhas **Manhã** (08–12h BRT) e **Tarde** (18–22h BRT) além do agregado **Diário** (dia inteiro), alimentando os turnos manhã/tarde do dashboard. Migration `migrations/003_pricetrack_turno.sql`
-- **Import intra-dia do dia corrente (Jun/2026):** além do D-1 (06:00 BRT, definitivo), o PriceTrack de **hoje** é importado provisoriamente às **13:10** (após a manhã) e **23:10 BRT** (após a tarde) — `.github/workflows/pricetrack_intraday.yml` (e `pricetrack_import_linux.sh today` na VM). Assim, passado o meio-dia, a Manhã de hoje já vem do PriceTrack (não mais do fallback de Coletas). As linhas provisórias são sobrescritas pela versão completa no D-1 do dia seguinte (`--force`); `_should_redownload()` re-baixa hoje/ontem para não reaproveitar export parcial em cache
+- **Import intra-dia — APOSENTADO em 08/08/2026.** O import do dia corrente rodava de hora em hora (`pricetrack_intraday.yml` + cron `refresh` na VM). Cada run criava um export; quando o run era morto antes de terminar, o export ficava **órfão segurando um dos 3 slots** da organização. Dois zumbis assim travaram toda a importação com HTTP 429 — inclusive as manuais. Ficou só o **D-1 das 06:00 BRT**. A Manhã/Tarde de hoje voltam a vir do fallback de Coletas até o D-1 do dia seguinte. O modo continua disponível para uso manual: `pricetrack_import_linux.sh today`
 - **Importador manual** (md/xlsx): `python -m pricetrack_importer arquivo.md`
 - **Precedência (28/05/2026):** para cada `(data, sku_resolvido)` presente no PriceTrack, os dashboards de preço descartam a linha equivalente das coletas
 - **Reconciliação:** de-para de marketplace (`_PT_TO_CANONICAL_PLATFORM` no `app.py`) e de seller (`pricetrack_importer/seller_map.py`, ~103 variantes → ~30 canônicos)
@@ -389,7 +389,6 @@ python scripts/daily_status_check.py --data 2026-05-14 --no-notify
 |----------|---------|--------|
 | `collect.yml` | cron 13:00/00:00 UTC + manual | Coleta (sem ML — IP bloqueado); Magalu com `MAGALU_HEADLESS=false` + xvfb; inputs: platforms/pages/priority |
 | `pricetrack_daily.yml` | cron 09:00 UTC + manual | Import PriceTrack D-1 (agendado `--force`) + auto-heal `--gaps-only` (14 dias); inputs: start/end/force |
-| `pricetrack_intraday.yml` | cron 16:10/02:10 UTC + manual | Import PriceTrack do dia corrente (intra-dia: 13:10/23:10 BRT) p/ a Manhã/Tarde de hoje virem do PriceTrack |
 
 ---
 
@@ -475,7 +474,7 @@ rac-position-tracker/
 ## 🧪 Testes & Diagnóstico
 
 ```bash
-# Suíte completa — 777 testes (validado em 08/08/2026)
+# Suíte completa — 948 testes (validado em 08/08/2026)
 pytest tests/ pricetrack_api/tests pricetrack_importer/tests -q
 
 pytest tests/ -q                          # parser ML, de-para, normalização v2
@@ -718,8 +717,10 @@ retomar o Supabase como base principal.
 
 **Repositório validado nesta data:** árvore limpa, **638 testes passando**
 (`tests/` + `pricetrack_api/tests` + `pricetrack_importer/tests`), workflows
-agendados executando (`collect.yml` 2×/dia, `pricetrack_daily.yml`,
-`pricetrack_intraday.yml` de hora em hora).
+agendados executando (`collect.yml` 2×/dia, `pricetrack_daily.yml`).
+
+> Nota (08/08/2026): o `pricetrack_intraday.yml` citado aqui foi aposentado —
+> ver a seção do PriceTrack.
 
 - 🚨 **Gravação bloqueada desde 16/07** — Supabase em `exceed_db_size_quota`
   (HTTP 402). A coleta de 25/07 produziu 5.651 registros e **0 foram gravados**.

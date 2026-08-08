@@ -89,10 +89,11 @@ jobs:
           START="${START:-$YESTERDAY}"
           END="${END:-$YESTERDAY}"
 
-          # O run agendado SEMPRE força: o import intra-dia (pricetrack_intraday.yml)
-          # pode ter gravado linhas provisórias para o dia (parciais, só manhã/tarde
-          # coletadas até ali). Sem --force, date_exists() pularia esse D-1 e a versão
-          # parcial ficaria como definitiva. Forçar re-importa o dia já fechado e
+          # O run agendado SEMPRE força: um import intra-dia MANUAL
+          # (`pricetrack_import_linux.sh today`) pode ter gravado linhas
+          # provisórias para o dia (parciais, só manhã/tarde coletadas até ali).
+          # Sem --force, date_exists() pularia esse D-1 e a versão parcial
+          # ficaria como definitiva. Forçar re-importa o dia já fechado e
           # sobrescreve (upsert) a provisória pela completa — também auto-cura
           # primeiros imports parciais.
           FORCE_FLAG=""
@@ -115,6 +116,11 @@ jobs:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # Menor que o `timeout-minutes: 60` do job, de propósito: se o
+          # cliente esperar mais que o job vive, o runner é morto NO MEIO do
+          # voo e os exports criados ficam órfãos segurando os 3 slots da
+          # organização. Foi assim que a importação toda travou em 08/08/2026.
+          PRICETRACK_POLL_TIMEOUT_SECONDS: "2700"
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
@@ -134,6 +140,11 @@ jobs:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # Menor que o `timeout-minutes: 60` do job, de propósito: se o
+          # cliente esperar mais que o job vive, o runner é morto NO MEIO do
+          # voo e os exports criados ficam órfãos segurando os 3 slots da
+          # organização. Foi assim que a importação toda travou em 08/08/2026.
+          PRICETRACK_POLL_TIMEOUT_SECONDS: "2700"
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
