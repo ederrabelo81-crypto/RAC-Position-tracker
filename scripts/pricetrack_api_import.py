@@ -577,6 +577,67 @@ def _should_redownload(
     return cd >= ref - timedelta(days=1)
 
 
+def write_history(
+    records: List[Dict],
+    collection_date: str,
+    dry_run: bool = False,
+) -> List[str]:
+    """Grava o dia importado no histórico frio, em paralelo ao Supabase.
+
+    Contraparte, para o PriceTrack, da escrita dupla que a coleta faz desde
+    Jul/2026. Sem ela o dia só chegava ao Drive quando a migração
+    (`history_cli.py tier`) rodava — então um import feito com o banco fora
+    ficava sem nenhuma cópia durável.
+
+    O `run_id` é **estável por data** (``import``), de propósito: reimportar a
+    mesma data sobrescreve a partição em vez de duplicá-la, que é o
+    comportamento certo para o import horário do intra-dia. Quando a migração
+    passar por esse dia, ela grava a versão do banco e apaga esta — a
+    resolvida é a autoritativa.
+
+    Args:
+        records: Linhas já no schema de `pricetrack_daily`.
+        collection_date: Dia importado (``YYYY-MM-DD``), só para log.
+        dry_run: ``True`` não grava nada.
+
+    Returns:
+        Chaves das partições gravadas; lista vazia se desligado, em dry-run,
+        sem registros ou se a gravação falhou (o import não morre por isso).
+    """
+    if dry_run:
+        logger.info(f"[DRY-RUN] {collection_date} — histórico frio não gravado.")
+        return []
+    if not records:
+        return []
+    # Mesmo interruptor da coleta, para desligar os dois de uma vez.
+    if os.getenv("RAC_HISTORY", "on").strip().lower() in ("off", "0", "false"):
+        logger.info("[Histórico] desligado por RAC_HISTORY — pulando.")
+        return []
+
+    try:
+        from utils.history import DATASET_PRICETRACK
+        from utils.history import write_records as _write_history
+
+        keys = _write_history(
+            records,
+            run_id="import",
+            dataset=DATASET_PRICETRACK,
+            already_mapped=True,      # já vêm no schema da tabela
+            date_column="collection_date",
+        )
+        if not keys:
+            logger.warning(
+                f"{collection_date} — histórico frio NÃO gravou partição; o dia "
+                f"depende do Supabase e do arquivo em {_offers_dest(collection_date)}."
+            )
+        return keys
+    except Exception as exc:
+        # Destino do histórico nunca pode derrubar o import: o Supabase ainda
+        # pode receber o dia, e o NDJSON baixado continua em disco.
+        logger.error(f"{collection_date} — histórico frio falhou: {exc}")
+        return []
+
+
 def _process_date(
     collection_date: str,
     dry_run: bool,
@@ -657,6 +718,12 @@ def _process_date(
         for k in ("min_price", "avg_price", "mode_price", "max_price"):
             if r[k] is not None:
                 r[k] = round(float(r[k]), 2)
+
+    # ── Histórico frio (Parquet no Drive) ─────────────────────────────────
+    # ANTES do Supabase e independente dele: é o que faz o dia sobreviver a um
+    # banco fora do ar ou restrito por cota. Mesma ordem usada pela coleta em
+    # main.py — foi a ausência dela que deixou 17 dias só no artifact.
+    write_history(records, collection_date, dry_run=dry_run)
 
     inserted = insert_rows(records, dry_run=dry_run)
     log_import(

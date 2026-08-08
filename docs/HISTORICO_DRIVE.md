@@ -133,6 +133,25 @@ Nada a fazer: `main.py` grava o histórico a cada coleta. Desligue com
 > do Drive e o dia inteiro ficou numa máquina só. O espelho do CSV avisa no
 > mesmo run (`CSV NÃO espelhado — o histórico deste host está em modo local`).
 
+### PriceTrack (automático desde Ago/2026)
+
+O import (`scripts/pricetrack_api_import.py`, usado pelos workflows diário e
+horário) grava a partição do dia **antes** do Supabase e independente dele —
+mesma ordem da coleta:
+
+```
+[Histórico] 8.412 linhas em 1 partição(ões) → drive:1KX1...
+```
+
+O `run_id` é fixo (`import`), então **reimportar a mesma data sobrescreve** em
+vez de duplicar — que é o comportamento certo para o import horário do
+intra-dia, que passa várias vezes pelo mesmo dia. Quando a migração alcançar
+esse dia, ela grava a versão do banco (já resolvida) e apaga esta.
+
+> ⚠️ Os workflows precisam dos secrets `GDRIVE_*`. Sem eles a gravação cai no
+> disco do runner e some com o job — sobra só o Parquet no artifact, que expira
+> em 14 dias. `RAC_HISTORY=off` desliga a escrita nos dois pipelines.
+
 ### Por que o CSV cru também vai ao Drive
 
 O Parquet é o formato de leitura do dashboard, mas não abre no Excel e não volta
@@ -393,16 +412,10 @@ gravá-lo no lugar errado — e `history_cli.py stats` mostra onde ele está.
 
 ## Limites conhecidos
 
-- **PriceTrack migra, mas ainda não tem escrita dupla.** Desde Ago/2026
-  `history_cli.py tier --dataset pricetrack` move `pricetrack_daily` para o
-  Drive e `query_pricetrack_daily()` costura frio + quente, como `coletas`. O
-  que falta é o import diário gravar o Parquet **junto** com o Supabase: hoje o
-  dia só entra no frio quando a migração roda, então um import feito com o
-  banco fora ainda depende de reimportar o export. Para `coletas` essa escrita
-  dupla existe desde Jul/2026.
-- **A migração precisa do banco de pé.** Com o projeto restrito por cota, a API
-  REST recusa até leitura, então `tier` não roda. O desbloqueio inicial continua
-  sendo pelo SQL Editor.
+- **A migração precisa do banco de pé** (vale para os dois datasets). Com o
+  projeto restrito por cota, a API REST recusa até leitura, então `tier` não
+  roda. O desbloqueio inicial continua sendo pelo SQL Editor. A **escrita
+  dupla**, essa sim, não depende do banco — é o caminho que garante o dia.
 - **Filtros do histórico são reproduzidos em pandas**
   (`_filter_history_coletas` e `_filter_history_pricetrack` em `app.py`). Ao
   mudar um predicado no lado do PostgREST, mude no outro —

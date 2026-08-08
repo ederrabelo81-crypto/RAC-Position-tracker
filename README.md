@@ -475,7 +475,7 @@ rac-position-tracker/
 ## 🧪 Testes & Diagnóstico
 
 ```bash
-# Suíte completa — 765 testes (validado em 08/08/2026)
+# Suíte completa — 777 testes (validado em 08/08/2026)
 pytest tests/ pricetrack_api/tests pricetrack_importer/tests -q
 
 pytest tests/ -q                          # parser ML, de-para, normalização v2
@@ -532,7 +532,13 @@ dashboard ─┬─ query_coletas()          ─┬─ Supabase: últimos 15 dia
 ```
 
 Os **dois datasets** (`coletas` e `pricetrack`) percorrem o mesmo caminho: cada
-um tem sua subpasta no Drive, sua migração e sua costura no dashboard.
+um tem sua subpasta no Drive, **escrita dupla** no momento da gravação, sua
+migração e sua costura no dashboard. A escrita do Parquet acontece **antes** do
+Supabase e não depende dele — é o que faz o dia sobreviver a um banco fora do ar
+ou restrito por cota.
+
+> Os workflows do PriceTrack precisam dos secrets `GDRIVE_*` para isso valer no
+> Actions; sem eles o Parquet fica só no artifact do run (14 dias).
 
 A gravação do histórico acontece **antes** do Supabase e não depende dele: com
 o banco restrito por cota, o dia entra no histórico mesmo assim. A leitura é
@@ -682,7 +688,8 @@ retomar o Supabase como base principal.
   dashboard já as costura. Não é preciso resgatar artifact nenhum.
 - ✅ **Histórico frio íntegro**, cobrindo de 01/06/2026 a 07/08/2026 em
   `coletas/`, mais o espelho de CSV cru em `csv_coletas/`.
-- ✅ **765 testes passando**, incluindo os 25 novos da costura do PriceTrack.
+- ✅ **777 testes passando**, incluindo os 37 novos da costura do PriceTrack
+  (25) e da escrita dupla do import (12).
 
 **Vermelho — resolver antes de confiar no Actions:**
 
