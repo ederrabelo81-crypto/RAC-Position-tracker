@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Import do PriceTrack → Supabase (backup da VM Oracle do GitHub Actions).
 #
-# Espelha .github/workflows/pricetrack_daily.yml + pricetrack_intraday.yml.
+# Espelha .github/workflows/pricetrack_daily.yml. O intra-dia horário foi
+# aposentado em 08/08/2026 (exports órfãos travavam os slots com 429); os
+# modos `today`/`refresh` seguem aqui para uso MANUAL.
 #
 # Modos (1º argumento):
 #   (vazio) | yesterday  → importa o DIA ANTERIOR (D-1), já fechado — definitivo.

@@ -43,6 +43,9 @@ SHIPPING_PATH = "/collects-shipping-external"
 EXPORT_OFFERS_PATH = "/exports-external/collects-offers"
 EXPORT_SHIPPING_PATH = "/exports-external/collects-shipping"
 EXPORTS_PATH = "/exports-external"
+#: Teto de páginas ao listar exports. Com `page_take` de 100, cobre 5 mil
+#: exports — muito além do plausível para uma organização.
+_EXPORTS_PAGE_CAP = 50
 
 
 class PriceTrackClient:
@@ -190,15 +193,51 @@ class PriceTrackClient:
         payload = self._transport.request_json("GET", f"{EXPORTS_PATH}/{export_id}")
         return ExportJob.from_api(payload, fetched_at=self._clock())
 
-    def list_exports(self) -> List[ExportJob]:
-        """GET /exports-external — exports da organização (data[0] = recente)."""
-        payload = self._transport.request_json("GET", EXPORTS_PATH)
-        items = payload.get("data") or []
-        now = self._clock()
-        return [ExportJob.from_api(item, fetched_at=now) for item in items]
+    def list_exports(self, all_pages: bool = True) -> List[ExportJob]:
+        """GET /exports-external — exports da organização (data[0] = recente).
+
+        Pagina enquanto a API informar ``meta.hasNextPage``. Sem isso a
+        chamada devolvia só a primeira página (20 itens no padrão da API) e
+        `count_active_exports` **subestimava** os exports em voo: o cliente
+        concluía que havia slot livre e tomava 429 ao criar o export. Foi o
+        que mascarou dois exports zumbis em 08/08/2026.
+
+        Args:
+            all_pages: ``False`` lê só a primeira página (diagnóstico rápido).
+
+        Returns:
+            Exports da organização, do mais recente para o mais antigo.
+        """
+        jobs: List[ExportJob] = []
+        page = 1
+        while True:
+            payload = self._transport.request_json(
+                "GET", EXPORTS_PATH,
+                params={"page": page, "take": self.settings.page_take},
+            )
+            items = payload.get("data") or []
+            now = self._clock()
+            jobs.extend(ExportJob.from_api(item, fetched_at=now) for item in items)
+
+            meta = payload.get("meta") or {}
+            tem_proxima = bool(meta.get("hasNextPage"))
+            # Sem `meta`, a API não expõe paginação: o que veio é tudo que há.
+            if not all_pages or not tem_proxima or not items:
+                return jobs
+            page += 1
+            if page > _EXPORTS_PAGE_CAP:
+                logger.warning(
+                    f"PriceTrack {EXPORTS_PATH}: hasNextPage após "
+                    f"{_EXPORTS_PAGE_CAP} páginas — interrompendo."
+                )
+                return jobs
 
     def count_active_exports(self) -> int:
-        """Exports pending/processing em andamento (limite: 3 por organização)."""
+        """Exports pending/processing em andamento (limite: 3 por organização).
+
+        Conta **todas** as páginas: um export travado fora da primeira página
+        segura slot do mesmo jeito.
+        """
         return sum(1 for job in self.list_exports() if job.is_active)
 
     # ── Download com renovação de URL ────────────────────────────────────
