@@ -2,24 +2,48 @@
 
 Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ⚠️ Coleta OK / Supabase bloqueado (histórico no Drive mitiga) | **Última atualização:** 25 de Julho de 2026 (v4.6)
+**Status:** ✅ Produção — arquitetura híbrida Supabase + Drive | **Última atualização:** 8 de Agosto de 2026 (v4.7)
 
-> 🚨 **Incidente aberto desde 16/07/2026 — leia antes de usar os dados.**
-> A coleta continua rodando normalmente (5.651 registros em 25/07), mas o
-> Supabase está **restrito por cota de armazenamento** (HTTP 402
-> `exceed_db_size_quota`) e **rejeita 100% das gravações**. O banco tem 449 MB
-> dos 500 MB do plano free e o histórico foi podado para **21 dias corridos**
-> (26/06 → 16/07). Os dias sem gravar existem como **artifact CSV do GitHub
-> Actions (retenção de 30 dias)** e podem ser reenviados com
-> `python scripts/upload_csv.py <arquivo.csv>` (idempotente) assim que houver
-> espaço. Diagnóstico completo, contas e opções de saída:
-> **[`docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`](docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md)**.
+> ### 🗄️ As duas bases, e o que cada uma faz
 >
-> 🆕 **Mitigação implementada:** a coleta agora grava um **histórico frio em
-> Parquet no Google Drive**, independente do Supabase — um novo 402 não faz
-> mais perder dado. O banco passa a guardar só a **janela quente de 15 dias** e
-> `scripts/history_cli.py tier` migra o resto. Setup e operação:
-> **[`docs/HISTORICO_DRIVE.md`](docs/HISTORICO_DRIVE.md)**.
+> O Supabase é a **base de dados principal**. Como o plano free termina em
+> 500 MB, ele guarda apenas a **janela quente** (`RAC_HOT_WINDOW_DAYS`, hoje
+> 15 dias) — é o lado com SQL, RPCs e o de-para aplicado pela automação Admin.
+> Todo o histórico que não cabe ali vive em **Parquet no Google Drive**, que
+> não tem teto prático (um ano ≈ 0,23 GB contra 15 GB gratuitos).
+>
+> **No dashboard as duas aparecem juntas.** `query_coletas()` e
+> `query_pricetrack_daily()` leem o Supabase primeiro e **completam com o
+> Drive os dias que o banco não devolveu** — seja porque já migraram, seja
+> porque o banco está fora. Nenhuma página precisa saber de onde veio o dado;
+> a coluna `_origem` marca a procedência para quem quiser sinalizar.
+>
+> ```
+> coleta ──┬─► CSV local           (sempre)
+>          ├─► Parquet no Drive    (sempre — independente do banco)
+>          └─► Supabase            (janela quente)
+>
+> dashboard ──┬── Supabase: janela quente ─┐
+>             └── Drive: todo o resto ─────┴─► uma série só
+> ```
+>
+> Setup, operação e troubleshooting: **[`docs/HISTORICO_DRIVE.md`](docs/HISTORICO_DRIVE.md)**.
+> A conta que justifica o desenho: **[`docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`](docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md)**.
+
+> ### ⚠️ Antes de religar a coleta no Supabase — 3 verificações
+>
+> 1. **`SUPABASE_KEY` dos GitHub Secrets.** Em 08/08/2026 todas as execuções
+>    do `collect.yml` desde 04/08 falhavam com HTTP 401 `Unregistered API key`
+>    — a chave do repositório não é válida para o projeto (a do `.env` do PC
+>    coletor é, e por isso só ele gravou). Reponha o secret com uma
+>    `service_role` válida antes de contar com o Actions.
+> 2. **Espaço.** O banco fica dentro do free tier enquanto a migração rodar:
+>    `python scripts/history_cli.py tier --dataset all --confirm` (mensal).
+>    Sem ela o teto volta em semanas — `pricetrack_daily` sozinha responde por
+>    quase metade do banco.
+> 3. **Secrets de alerta.** `TELEGRAM_BOT_TOKEN` e `N8N_TELEGRAM_CHAT_ID`
+>    estavam vazios no repositório, então as 8 falhas seguidas não notificaram
+>    ninguém. O workflow avisa por `::warning`, que ninguém lê.
 
 ---
 
@@ -451,7 +475,7 @@ rac-position-tracker/
 ## 🧪 Testes & Diagnóstico
 
 ```bash
-# Suíte completa — 638 testes (validado em 25/07/2026)
+# Suíte completa — 765 testes (validado em 08/08/2026)
 pytest tests/ pricetrack_api/tests pricetrack_importer/tests -q
 
 pytest tests/ -q                          # parser ML, de-para, normalização v2
@@ -503,9 +527,12 @@ coleta ──┬─► CSV local            (sempre)
          ├─► Histórico Parquet    (sempre — Drive, independente do banco)
          └─► Supabase             (janela quente de 15 dias)
 
-dashboard ── query_coletas() ──┬── Supabase: últimos 15 dias
-                               └── Histórico: todo o resto
+dashboard ─┬─ query_coletas()          ─┬─ Supabase: últimos 15 dias
+           └─ query_pricetrack_daily()  └─ Histórico: todo o resto
 ```
+
+Os **dois datasets** (`coletas` e `pricetrack`) percorrem o mesmo caminho: cada
+um tem sua subpasta no Drive, sua migração e sua costura no dashboard.
 
 A gravação do histórico acontece **antes** do Supabase e não depende dele: com
 o banco restrito por cota, o dia entra no histórico mesmo assim. A leitura é
@@ -530,16 +557,27 @@ python scripts/gdrive_setup.py --check          # testa gravar/reler/limpar
 # Operação
 python scripts/history_cli.py stats             # dias, volume e buracos na série
 python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv
-python scripts/history_cli.py tier              # Supabase → Drive (não apaga)
+python scripts/history_cli.py tier              # coletas: Supabase → Drive (não apaga)
 python scripts/history_cli.py tier --confirm    # apaga o já verificado
+
+# PriceTrack — a maior tabela do banco tem o mesmo caminho desde Ago/2026.
+# `--dataset all` migra coletas + pricetrack_daily de uma vez (rode mensalmente).
+python scripts/history_cli.py tier --dataset pricetrack --confirm
+python scripts/history_cli.py tier --dataset all --confirm
+
 python scripts/history_cli.py export --start 2026-01-01 --end 2026-07-25 \
     -o reports/historico.csv
 ```
 
-**No dashboard:** `query_coletas()` completa com o histórico os dias que o
-Supabase não devolveu. Partições ainda sem de-para (gravadas pela coleta ou
-importadas de CSV) aparecem pelo interruptor **Filtros Globais → "Incluir
-histórico do Drive sem de-para"**, ligado por padrão — sem ele o filtro
+A ordem de segurança da migração é sempre a mesma: **lê do banco → grava a
+partição → relê o Parquet para conferir a contagem → só então apaga**. Um dia
+que não passa na releitura não é apagado.
+
+**No dashboard:** `query_coletas()` e `query_pricetrack_daily()` completam com o
+histórico os dias que o Supabase não devolveu — é isso que faz as duas bases
+aparecerem numa série só. Partições de `coletas` ainda sem de-para (gravadas
+pela coleta ou importadas de CSV) aparecem pelo interruptor **Filtros Globais →
+"Incluir histórico do Drive sem de-para"**, ligado por padrão — sem ele o filtro
 `estado_match = MAPEADO` esconderia todo o histórico recuperado.
 
 Detalhes, credenciais e troubleshooting: **[`docs/HISTORICO_DRIVE.md`](docs/HISTORICO_DRIVE.md)**.
@@ -558,32 +596,34 @@ chegou**. Secrets: `SUPABASE_URL`, `SUPABASE_KEY`, `TELEGRAM_BOT_TOKEN`,
 
 ### ⚠️ Cota — o limite estrutural do plano free
 
-Medição de **25/07/2026** (org `Mydea`, plano **free**, limite 500 MB):
+Medição de **08/08/2026** (org `Mydea`, plano **free**, limite 500 MB), após a
+poda do intra-dia antigo do PriceTrack + `VACUUM FULL`:
 
 | Medida | Valor |
 |--------|-------|
-| `pg_database_size` | **449 MB** |
-| Janela de histórico existente | **26/06 → 16/07 = 21 dias corridos** |
-| Crescimento observado | ~26,4 mil linhas/dia (`pricetrack_daily`) + ~9,6 mil/dia (`coletas`) ≈ **19 MB/dia** |
-| `pricetrack_daily` | 224 MB · 554.944 linhas |
-| `coletas` | 172 MB · 201.689 linhas |
+| `pg_database_size` | **393 MB** (78,7% do teto) — era 486 MB antes da poda |
+| `coletas` | 209 MB · 237.255 linhas · 26/06 → 06/08 (25 dias com dado) |
+| `pricetrack_daily` | ~130 MB · 324.646 linhas (só `Diário` + intra-dia ≤30d) |
 | `rac_monitoramento` (legado) | 33 MB · 38.509 linhas |
+| Crescimento observado | ≈ **19 MB/dia** somando as duas tabelas quentes |
 
-> **449 MB para 21 dias** significa que o plano free comporta **~24 dias de
-> histórico — permanentemente**, não "24 dias até a próxima faxina". Análise de
-> sazonalidade, comparação mês a mês e Black Friday vs. base são
-> estruturalmente inviáveis neste plano. As opções de saída (Supabase Pro,
-> Parquet no Drive + DuckDB, emagrecimento de schema) estão comparadas com
+> **A conta que decide a operação:** a ~19 MB/dia, os 107 MB livres duram
+> poucos dias. O plano free só se sustenta com a **migração rodando** —
+> `history_cli.py tier --dataset all --confirm`, mensal ou quando a cota
+> apertar. Sem ela o 402 volta. As alternativas de fundo (Supabase Pro a
+> US$ 25/mês, que compra ~14 meses de janela quente) estão comparadas com
 > custo e esforço em
 > [`docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`](docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md).
 
 Quando a API devolve 402, `utils/supabase_client.py` faz **fail-fast** com
 `is_quota_restricted_error()` — aborta os lotes restantes, preserva o CSV local
-e a automação Admin é pulada (as etapas falhariam igual).
+e a automação Admin é pulada (as etapas falhariam igual). O dado do dia **não**
+se perde: o histórico no Drive é gravado antes e não depende do banco.
 
 ⚠️ `docs/DB_RETENTION.md` descreve a política "Equilibrada" de 14/07 (todo o
 histórico `Diário` + 90 dias de `coletas`) — **essa não é mais a realidade do
-banco**: a poda emergencial levou o histórico anterior a 26/06.
+banco**: a poda emergencial levou o histórico anterior a 26/06, e desde
+Ago/2026 o que sai da janela quente vai para o Drive em vez de ser apagado.
 
 ### Utilitários
 
@@ -622,6 +662,42 @@ Utilitários: `cleanup_supabase.py`, `normalize_supabase.py`,
 `anthropic>=0.40` · `openpyxl` (PriceTrack xlsx) · `Pillow` · `filelock`
 
 Dashboard usa o subset `requirements_app.txt`.
+
+---
+
+## ✅ Validação Operacional — 08/08/2026 (volta do Supabase)
+
+Checagem feita contra o projeto de produção (`RAC`, `sa-east-1`) antes de
+retomar o Supabase como base principal.
+
+**Verde:**
+
+- ✅ **Projeto `ACTIVE_HEALTHY`, não restrito por cota.** A leitura e a escrita
+  via API respondem normalmente — o 402 de 16/07 não está mais em vigor.
+- ✅ **Espaço recuperado:** 486 MB → **393 MB** (78,7% do teto) pela poda do
+  intra-dia do PriceTrack com mais de 30 dias (230.298 linhas) + `VACUUM FULL`.
+  Todo o histórico `Diário` — a fonte de verdade de preço — foi preservado.
+- ✅ **Nenhum dado perdido no buraco de 17/07 → 02/08.** Esses 17 dias não
+  estão no Supabase, mas **estão no Drive**: as partições existem e o
+  dashboard já as costura. Não é preciso resgatar artifact nenhum.
+- ✅ **Histórico frio íntegro**, cobrindo de 01/06/2026 a 07/08/2026 em
+  `coletas/`, mais o espelho de CSV cru em `csv_coletas/`.
+- ✅ **765 testes passando**, incluindo os 25 novos da costura do PriceTrack.
+
+**Vermelho — resolver antes de confiar no Actions:**
+
+- ❌ **`SUPABASE_KEY` do GitHub inválida.** Todas as execuções do `collect.yml`
+  desde 04/08 (8 seguidas) falham com HTTP 401 `Unregistered API key`. A chave
+  legada do projeto continua válida, então o problema é o **secret**, não o
+  banco. O PC coletor tem a chave certa no `.env` — foi ele quem gravou os
+  dias 04–06/08.
+- ❌ **Alertas mudos.** `TELEGRAM_BOT_TOKEN` e `N8N_TELEGRAM_CHAT_ID` estão
+  vazios no repositório: as 8 falhas não notificaram ninguém.
+- ⚠️ **`pricetrack_daily` parada desde 16/07** — o import diário não roda há
+  três semanas. Sem ele o preço de referência do dashboard congela.
+- ⚠️ **Migração ainda não executada.** A `tier` precisa rodar de uma máquina
+  com as credenciais `GDRIVE_*` (o PC coletor). Sem ela, os 107 MB livres
+  duram poucos dias no ritmo atual.
 
 ---
 
