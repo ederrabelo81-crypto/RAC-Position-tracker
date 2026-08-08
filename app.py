@@ -1509,6 +1509,248 @@ def _collect_pt_skus(
     return skus
 
 
+def _filter_history_pricetrack(
+    df: pd.DataFrame,
+    turnos: list[str] | None = None,
+    brands: list[str] | None = None,
+    platforms: list[str] | None = None,
+    sellers: list[str] | None = None,
+    sku_set: set | None = None,
+    btu_filter: list[str] | None = None,
+    product_types: list[str] | None = None,
+) -> pd.DataFrame:
+    """Reproduz em pandas os filtros que `query_pricetrack_daily` faz no PostgREST.
+
+    Espelho de `_filter_history_coletas`, para o dataset `pricetrack`. Os
+    predicados precisam casar com os do lado do banco: ao mudar um, mude o
+    outro — `tests/test_pricetrack_history.py` cobre a paridade.
+
+    O `ilike` do PostgREST sem curinga é igualdade case-insensitive; com `%`
+    vira `str.contains`. É essa a tradução aplicada aqui.
+
+    Args:
+        df: Partições cruas do histórico (schema de `pricetrack_daily`).
+        turnos: Turnos aceitos. Vazio/None ⇒ apenas `Diário`, igual ao banco.
+        brands: Marcas já expandidas pelo chamador.
+        platforms: Nomes canônicos de plataforma.
+        sellers: Sellers (match exato, case-insensitive).
+        sku_set: SKUs canônicos do catálogo.
+        btu_filter: BTUs procurados no título (com e sem separador de milhar).
+        product_types: Rótulos de `PRODUCT_TYPE_OPTIONS`.
+
+    Returns:
+        DataFrame filtrado.
+    """
+    if df.empty:
+        return df
+
+    def _norm(serie: pd.Series) -> pd.Series:
+        return serie.astype(str).str.strip().str.casefold()
+
+    # Turno: sem escolha explícita o banco usa `.eq("turno", "Diário")`.
+    if "turno" in df.columns:
+        alvo = turnos or ["Diário"]
+        df = df[_norm(df["turno"]).isin({t.casefold() for t in alvo})]
+    if df.empty:
+        return df
+
+    if brands and "brand" in df.columns:
+        df = df[_norm(df["brand"]).isin({b.casefold() for b in _expand_brands(brands)})]
+    if platforms and "marketplace" in df.columns:
+        alvo = {v.casefold() for v in _pt_platform_match_values(platforms)}
+        df = df[_norm(df["marketplace"]).isin(alvo)]
+    if sellers and "seller" in df.columns:
+        df = df[_norm(df["seller"]).isin({s.casefold() for s in sellers})]
+    if sku_set and "sku" in df.columns:
+        df = df[df["sku"].astype(str).isin({str(s) for s in sku_set})]
+    if df.empty:
+        return df
+
+    # BTU e tipo de produto são OR de `title ilike %padrão%`.
+    if btu_filter and "title" in df.columns:
+        titulo = _norm(df["title"])
+        padroes: list[str] = []
+        for btu in btu_filter:
+            padroes.append(str(btu))
+            try:
+                dotted = f"{int(btu):,}".replace(",", ".")
+                if dotted != str(btu):
+                    padroes.append(dotted)
+            except (TypeError, ValueError):
+                pass
+        if padroes:
+            mask = pd.Series(False, index=df.index)
+            for pat in padroes:
+                mask |= titulo.str.contains(pat.casefold(), regex=False, na=False)
+            df = df[mask]
+    if product_types and "title" in df.columns and not df.empty:
+        titulo = _norm(df["title"])
+        mask = pd.Series(False, index=df.index)
+        for label in product_types:
+            for pat in PRODUCT_TYPE_OPTIONS.get(label, [label]):
+                mask |= titulo.str.contains(str(pat).casefold(), regex=False, na=False)
+        df = df[mask]
+    return df
+
+
+def _pricetrack_gap_fill(
+    start_date: date,
+    end_date: date,
+    ja_presentes: set,
+    limit: int | None = None,
+    **filtros,
+) -> pd.DataFrame:
+    """Lê do histórico frio os dias de PriceTrack que o Supabase não devolveu.
+
+    Contraparte de `_history_gap_fill` para `pricetrack_daily` — a maior tabela
+    do banco e, por isso, a primeira a sair da janela quente. Sem esta costura,
+    um dia migrado pelo `history_cli.py tier --dataset pricetrack` sumiria do
+    painel mesmo estando íntegro no Drive.
+
+    Args:
+        start_date: Primeiro dia pedido.
+        end_date: Último dia pedido.
+        ja_presentes: Dias que o Supabase já entregou (não relidos aqui).
+        limit: Teto de linhas; mantém os dias mais recentes, como o keyset.
+        **filtros: Repassados a `_filter_history_pricetrack`.
+
+    Returns:
+        DataFrame no schema de coletas; vazio se não há histórico frio.
+    """
+    if limit is not None and limit <= 0:
+        return pd.DataFrame()
+    try:
+        store = _history_store()
+        df = store.read("pricetrack", start=start_date, end=end_date)
+        _avisar_particoes_ilegiveis(store)
+    except Exception as exc:
+        from loguru import logger as _logger
+        _logger.warning(f"[Dashboard] histórico frio do PriceTrack indisponível: {exc}")
+        _avisar_uma_vez(
+            "historico_frio_pricetrack_indisponivel",
+            f"Histórico frio do PriceTrack (Parquet no Drive) indisponível — o "
+            f"painel está mostrando apenas o que o Supabase devolveu. Causa: {exc}",
+        )
+        return pd.DataFrame()
+
+    if df.empty:
+        return df
+    if ja_presentes and "collection_date" in df.columns:
+        dias = pd.to_datetime(df["collection_date"], errors="coerce").dt.date
+        df = df[~dias.isin(ja_presentes)]
+    if df.empty:
+        return df
+
+    df = _filter_history_pricetrack(df, **filtros)
+    if df.empty:
+        return df
+
+    if limit is not None and len(df) > limit:
+        if "collection_date" in df.columns:
+            df = df.sort_values("collection_date", ascending=False, kind="stable")
+        df = df.head(limit)
+
+    out = _pt_raw_to_df(df.reset_index(drop=True))
+    if not out.empty:
+        # Mesma sinalização de procedência usada pelo frio de `coletas`.
+        out["_origem"] = "historico"
+    return out
+
+
+def _pt_raw_to_df(raw: pd.DataFrame) -> pd.DataFrame:
+    """Converte linhas cruas de `pricetrack_daily` para o schema de coletas.
+
+    Usada pelos dois lados da costura: a janela quente lida do Supabase e o
+    histórico frio lido do Parquet. Manter uma função só é o que garante que
+    um dia migrado para o Drive apareça no painel com exatamente as mesmas
+    colunas, tipos e canonicalizações de quando estava no banco.
+
+    Args:
+        raw: DataFrame com as colunas cruas de `pricetrack_daily`
+            (`collection_date`, `turno`, `brand`, `sku`, `title`,
+            `marketplace`, `seller`, `min_price`, `avg_price`,
+            `mode_price`, `max_price`).
+
+    Returns:
+        DataFrame no schema de coletas, com `source="pricetrack"`.
+    """
+    if raw.empty:
+        return pd.DataFrame()
+    preco = pd.to_numeric(raw.get("mode_price"), errors="coerce")
+    # Fallback chain for missing mode: avg → min → max
+    preco = preco.fillna(pd.to_numeric(raw.get("avg_price"), errors="coerce"))
+    preco = preco.fillna(pd.to_numeric(raw.get("min_price"), errors="coerce"))
+    preco = preco.fillna(pd.to_numeric(raw.get("max_price"), errors="coerce"))
+
+    # Canonicalise produto pelo SKU do catálogo: PriceTrack publica
+    # o mesmo SKU sob dezenas de títulos diferentes por seller (342
+    # títulos distintos pra ~25 SKUs em Midea 9000 BTUs), o que
+    # inflaria o cartão "Unique SKUs" e desenharia uma linha por
+    # anúncio em vez de uma por produto. Quando o catálogo tem o
+    # `produto` cadastrado pra esse SKU, usamos o nome amigável
+    # (ex.: "AR CONDICIONADO SPLIT 9000 BTU FRIO AI ECOMASTER ...")
+    # para o gráfico não ficar com códigos crus na legenda; fallback
+    # pro código do SKU e, em último caso, pro título do anúncio.
+    sku_series   = raw.get("sku")
+    title_series = raw.get("title")
+    catalog = get_catalogo()
+    sku_to_produto: dict = {}
+    if not catalog.empty and "produto" in catalog.columns:
+        sku_to_produto = dict(zip(
+            catalog["sku"].astype(str),
+            catalog["produto"].astype(str),
+        ))
+    if sku_series is not None:
+        sku_str = sku_series.astype(str)
+        friendly = sku_str.map(sku_to_produto)
+        produto = friendly.where(friendly.notna(), sku_series)
+        produto = produto.where(
+            sku_series.notna() & (sku_str.str.strip() != ""),
+            title_series,
+        )
+    else:
+        produto = title_series
+
+    # Back-compat: linhas "Diário" continuam saindo como "PriceTrack"
+    # (sentinela que _TURNO_TO_PERIODO mapeia para o período "Diário");
+    # Manhã/Tarde saem com o próprio rótulo para alimentar os turnos.
+    if "turno" in raw.columns:
+        turno_out = raw["turno"].where(raw["turno"] != "Diário", "PriceTrack")
+    else:
+        turno_out = pd.Series(["PriceTrack"] * len(raw), index=raw.index)
+
+    df = pd.DataFrame({
+        "data":             pd.to_datetime(raw["collection_date"]).dt.date,
+        "turno":            turno_out,
+        "plataforma":       raw["marketplace"].map(_normalize_pt_platform)
+                            if "marketplace" in raw.columns else pd.NA,
+        "marca":            raw.get("brand"),
+        "produto":          produto,
+        "sku":              sku_series,
+        "title":            title_series,
+        "preco":            preco,
+        "seller":           raw.get("seller"),
+        "keyword":          pd.NA,
+        "posicao_geral":    pd.array([pd.NA] * len(raw), dtype="Int64"),
+        "posicao_organica": pd.array([pd.NA] * len(raw), dtype="Int64"),
+        "tag":              pd.NA,
+        "source":           "pricetrack",
+        # Estatísticas brutas da caixa de ofertas — preservadas por linha
+        # para que o módulo Price Evolution possa escolher a métrica
+        # (Buy Box = min(min_price); Moda/Mediana sobre min_price;
+        # Médio sobre avg_price) em vez de ficar preso à moda (`preco`).
+        "min_price":        pd.to_numeric(raw.get("min_price"), errors="coerce"),
+        "avg_price":        pd.to_numeric(raw.get("avg_price"), errors="coerce"),
+        "mode_price":       pd.to_numeric(raw.get("mode_price"), errors="coerce"),
+        "max_price":        pd.to_numeric(raw.get("max_price"), errors="coerce"),
+    })
+    if _MARCA_TO_CANONICAL:
+        df["marca"] = df["marca"].map(
+            lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
+        )
+    return df
+
+
 def query_pricetrack_daily(
     start_date: date,
     end_date: date,
@@ -1539,8 +1781,6 @@ def query_pricetrack_daily(
     # página concluía, erroneamente, que faltava dado no PriceTrack.
     st.session_state["pt_query_error"] = None
     client = _get_supabase()
-    if client is None:
-        return pd.DataFrame()
 
     # Filtro global de Fonte de Dados: se "PriceTrack" estiver desligada,
     # esta fonte não contribui com nenhuma linha. O merge em
@@ -1624,118 +1864,68 @@ def query_pricetrack_daily(
                 q = q.or_(",".join(parts))
         return q
 
-    try:
-        all_data: list = []
-        last_date: str | None = None
-        last_id: int | None = None
-        while len(all_data) < limit:
-            fetch = min(_SUPABASE_PAGE_PT, limit - len(all_data))
-            q = _build_q()
-            if last_date is not None and last_id is not None:
-                q = q.or_(
-                    f"collection_date.lt.{last_date},"
-                    f"and(collection_date.eq.{last_date},id.lt.{last_id})"
-                )
-            resp = q.limit(fetch).execute()
-            if not resp.data:
-                break
-            all_data.extend(resp.data)
-            if len(resp.data) < fetch:
-                break
-            last_row = resp.data[-1]
-            last_date = str(last_row.get("collection_date")) if last_row.get("collection_date") else None
-            last_id = last_row.get("id")
-            if last_date is None or last_id is None:
-                break
-
-        if not all_data:
-            return pd.DataFrame()
-
-        raw = pd.DataFrame(all_data)
-        preco = pd.to_numeric(raw.get("mode_price"), errors="coerce")
-        # Fallback chain for missing mode: avg → min → max
-        preco = preco.fillna(pd.to_numeric(raw.get("avg_price"), errors="coerce"))
-        preco = preco.fillna(pd.to_numeric(raw.get("min_price"), errors="coerce"))
-        preco = preco.fillna(pd.to_numeric(raw.get("max_price"), errors="coerce"))
-
-        # Canonicalise produto pelo SKU do catálogo: PriceTrack publica
-        # o mesmo SKU sob dezenas de títulos diferentes por seller (342
-        # títulos distintos pra ~25 SKUs em Midea 9000 BTUs), o que
-        # inflaria o cartão "Unique SKUs" e desenharia uma linha por
-        # anúncio em vez de uma por produto. Quando o catálogo tem o
-        # `produto` cadastrado pra esse SKU, usamos o nome amigável
-        # (ex.: "AR CONDICIONADO SPLIT 9000 BTU FRIO AI ECOMASTER ...")
-        # para o gráfico não ficar com códigos crus na legenda; fallback
-        # pro código do SKU e, em último caso, pro título do anúncio.
-        sku_series   = raw.get("sku")
-        title_series = raw.get("title")
-        catalog = get_catalogo()
-        sku_to_produto: dict = {}
-        if not catalog.empty and "produto" in catalog.columns:
-            sku_to_produto = dict(zip(
-                catalog["sku"].astype(str),
-                catalog["produto"].astype(str),
-            ))
-        if sku_series is not None:
-            sku_str = sku_series.astype(str)
-            friendly = sku_str.map(sku_to_produto)
-            produto = friendly.where(friendly.notna(), sku_series)
-            produto = produto.where(
-                sku_series.notna() & (sku_str.str.strip() != ""),
-                title_series,
+    all_data: list = []
+    # Sem cliente (deploy sem credencial, banco fora) a janela quente
+    # simplesmente não contribui — o frio abaixo ainda responde.
+    if client is not None:
+        try:
+            last_date: str | None = None
+            last_id: int | None = None
+            while len(all_data) < limit:
+                fetch = min(_SUPABASE_PAGE_PT, limit - len(all_data))
+                q = _build_q()
+                if last_date is not None and last_id is not None:
+                    q = q.or_(
+                        f"collection_date.lt.{last_date},"
+                        f"and(collection_date.eq.{last_date},id.lt.{last_id})"
+                    )
+                resp = q.limit(fetch).execute()
+                if not resp.data:
+                    break
+                all_data.extend(resp.data)
+                if len(resp.data) < fetch:
+                    break
+                last_row = resp.data[-1]
+                last_date = str(last_row.get("collection_date")) if last_row.get("collection_date") else None
+                last_id = last_row.get("id")
+                if last_date is None or last_id is None:
+                    break
+        except Exception as exc:
+            # Registra o erro para a UI não confundir falha de consulta com
+            # ausência de cobertura. Timeout (57014) é o caso típico em janelas
+            # grandes; o dado costuma existir, só não foi lido a tempo.
+            st.session_state["pt_query_error"] = str(exc)
+            st.warning(
+                "Erro consultando pricetrack_daily — a consulta pode ter "
+                "expirado (statement_timeout). Os dados provavelmente existem; "
+                f"tente recarregar ou reduzir o período. Detalhe: {exc}"
             )
-        else:
-            produto = title_series
+            all_data = []
 
-        # Back-compat: linhas "Diário" continuam saindo como "PriceTrack"
-        # (sentinela que _TURNO_TO_PERIODO mapeia para o período "Diário");
-        # Manhã/Tarde saem com o próprio rótulo para alimentar os turnos.
-        if "turno" in raw.columns:
-            turno_out = raw["turno"].where(raw["turno"] != "Diário", "PriceTrack")
-        else:
-            turno_out = pd.Series(["PriceTrack"] * len(raw), index=raw.index)
+    df_quente = _pt_raw_to_df(pd.DataFrame(all_data)) if all_data else pd.DataFrame()
 
-        df = pd.DataFrame({
-            "data":             pd.to_datetime(raw["collection_date"]).dt.date,
-            "turno":            turno_out,
-            "plataforma":       raw["marketplace"].map(_normalize_pt_platform)
-                                if "marketplace" in raw.columns else pd.NA,
-            "marca":            raw.get("brand"),
-            "produto":          produto,
-            "sku":              sku_series,
-            "title":            title_series,
-            "preco":            preco,
-            "seller":           raw.get("seller"),
-            "keyword":          pd.NA,
-            "posicao_geral":    pd.array([pd.NA] * len(raw), dtype="Int64"),
-            "posicao_organica": pd.array([pd.NA] * len(raw), dtype="Int64"),
-            "tag":              pd.NA,
-            "source":           "pricetrack",
-            # Estatísticas brutas da caixa de ofertas — preservadas por linha
-            # para que o módulo Price Evolution possa escolher a métrica
-            # (Buy Box = min(min_price); Moda/Mediana sobre min_price;
-            # Médio sobre avg_price) em vez de ficar preso à moda (`preco`).
-            "min_price":        pd.to_numeric(raw.get("min_price"), errors="coerce"),
-            "avg_price":        pd.to_numeric(raw.get("avg_price"), errors="coerce"),
-            "mode_price":       pd.to_numeric(raw.get("mode_price"), errors="coerce"),
-            "max_price":        pd.to_numeric(raw.get("max_price"), errors="coerce"),
-        })
-        if _MARCA_TO_CANONICAL:
-            df["marca"] = df["marca"].map(
-                lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
-            )
-        return df
-    except Exception as exc:
-        # Registra o erro para a UI não confundir falha de consulta com
-        # ausência de cobertura. Timeout (57014) é o caso típico em janelas
-        # grandes; o dado costuma existir, só não foi lido a tempo.
-        st.session_state["pt_query_error"] = str(exc)
-        st.warning(
-            "Erro consultando pricetrack_daily — a consulta pode ter "
-            "expirado (statement_timeout). Os dados provavelmente existem; "
-            f"tente recarregar ou reduzir o período. Detalhe: {exc}"
-        )
-        return pd.DataFrame()
+    # Costura com o histórico frio: os dias que o Supabase não devolveu — por
+    # já terem migrado para o Drive, por cota ou por o banco estar fora — saem
+    # do Parquet. É o que faz as duas bases aparecerem no painel.
+    ja_presentes = set(df_quente["data"].dropna().unique()) if not df_quente.empty else set()
+    df_frio = _pricetrack_gap_fill(
+        start_date,
+        end_date,
+        ja_presentes,
+        limit=max(limit - len(df_quente), 0),
+        turnos=turnos,
+        brands=brands,
+        platforms=platforms,
+        sellers=sellers,
+        sku_set=sku_set,
+        btu_filter=btu_filter,
+        product_types=product_types,
+    )
+    if df_frio.empty:
+        return df_quente
+    if df_quente.empty:
+        return df_frio
+    return pd.concat([df_quente, df_frio], ignore_index=True)
 
 
 def query_price_evolution_data(

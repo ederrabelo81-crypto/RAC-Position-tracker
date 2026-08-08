@@ -23,6 +23,10 @@ Exemplos
     # ... e agora apaga do Supabase o que já foi verificado no histórico
     python scripts/history_cli.py tier --confirm
 
+    # A maior tabela do banco é pricetrack_daily — migre-a junto para manter
+    # o projeto dentro do plano free (`--dataset all` cobre as duas).
+    python scripts/history_cli.py tier --dataset all --confirm
+
     # Relatório de um período qualquer, atravessando frio + quente
     python scripts/history_cli.py export --start 2026-01-01 --end 2026-07-25 \\
         -o reports/historico.csv
@@ -35,7 +39,7 @@ import sys
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, NamedTuple
 
 from loguru import logger
 
@@ -44,6 +48,7 @@ sys.path.insert(0, str(_ROOT))
 
 from utils.history import (  # noqa: E402
     DATASET_COLETAS,
+    DATASET_PRICETRACK,
     HistoryBackendError,
     HistoryStoreError,
     get_store,
@@ -56,6 +61,30 @@ from utils.history import (  # noqa: E402
 )
 
 _SUPABASE_PAGE = 1000
+
+
+class TierSpec(NamedTuple):
+    """Como migrar um dataset: de qual tabela, por qual coluna de data.
+
+    `coletas` e `pricetrack_daily` têm nomes de coluna de data diferentes
+    (`data` vs `collection_date`), e é só isso que separa as duas migrações —
+    o resto do fluxo (ler → gravar → reler → apagar) é idêntico.
+
+    Attributes:
+        dataset: Nome do dataset no histórico (subpasta no Drive).
+        table: Tabela de origem no Supabase.
+        date_col: Coluna de data usada para recortar o dia.
+    """
+
+    dataset: str
+    table: str
+    date_col: str
+
+
+_TIER_SPECS: Dict[str, TierSpec] = {
+    DATASET_COLETAS: TierSpec(DATASET_COLETAS, "coletas", "data"),
+    DATASET_PRICETRACK: TierSpec(DATASET_PRICETRACK, "pricetrack_daily", "collection_date"),
+}
 
 
 def _parse_day(raw: str) -> date:
@@ -182,15 +211,21 @@ def cmd_import_csv(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # tier
 # ---------------------------------------------------------------------------
-def _fetch_day(client: Any, day: date) -> List[Dict[str, Any]]:
-    """Lê todas as linhas de `coletas` de um dia, paginando o teto do PostgREST."""
+def _fetch_day(client: Any, day: date, spec: TierSpec = _TIER_SPECS[DATASET_COLETAS]) -> List[Dict[str, Any]]:
+    """Lê todas as linhas de um dia, paginando o teto do PostgREST.
+
+    Args:
+        client: Cliente Supabase autenticado.
+        day: Dia a ler.
+        spec: Tabela/coluna de data do dataset (default: ``coletas``).
+    """
     rows: List[Dict[str, Any]] = []
     offset = 0
     while True:
         resp = (
-            client.table("coletas")
+            client.table(spec.table)
             .select("*")
-            .eq("data", day.isoformat())
+            .eq(spec.date_col, day.isoformat())
             .order("id", desc=False)
             .range(offset, offset + _SUPABASE_PAGE - 1)
             .execute()
@@ -202,31 +237,35 @@ def _fetch_day(client: Any, day: date) -> List[Dict[str, Any]]:
         offset += _SUPABASE_PAGE
 
 
-def _distinct_days_before(client: Any, cutoff: date) -> List[date]:
-    """Dias com linhas em `coletas` anteriores a ``cutoff``.
+def _distinct_days_before(
+    client: Any,
+    cutoff: date,
+    spec: TierSpec = _TIER_SPECS[DATASET_COLETAS],
+) -> List[date]:
+    """Dias com linhas anteriores a ``cutoff`` na tabela do dataset.
 
     O PostgREST não tem DISTINCT, então partimos do dia mais antigo e
     contamos por dia — barato (`head=True` não traz linhas).
     """
     resp = (
-        client.table("coletas")
-        .select("data")
-        .order("data", desc=False)
+        client.table(spec.table)
+        .select(spec.date_col)
+        .order(spec.date_col, desc=False)
         .limit(1)
         .execute()
     )
     if not resp.data:
         return []
-    first_raw = resp.data[0].get("data")
+    first_raw = resp.data[0].get(spec.date_col)
     first = datetime.strptime(str(first_raw)[:10], "%Y-%m-%d").date()
 
     days: List[date] = []
     cursor = first
     while cursor < cutoff:
         count = (
-            client.table("coletas")
+            client.table(spec.table)
             .select("id", count="exact", head=True)
-            .eq("data", cursor.isoformat())
+            .eq(spec.date_col, cursor.isoformat())
             .execute()
         ).count or 0
         if count:
@@ -235,13 +274,29 @@ def _distinct_days_before(client: Any, cutoff: date) -> List[date]:
     return days
 
 
+def _tier_datasets(args: argparse.Namespace) -> List[TierSpec]:
+    """Resolve `--dataset` para a lista de specs a migrar.
+
+    `getattr` com default mantém compatível quem constrói o Namespace à mão
+    (testes e chamadas programáticas anteriores ao flag).
+    """
+    escolha = getattr(args, "dataset", DATASET_COLETAS)
+    if escolha == "all":
+        return [_TIER_SPECS[DATASET_COLETAS], _TIER_SPECS[DATASET_PRICETRACK]]
+    return [_TIER_SPECS[escolha]]
+
+
 def cmd_tier(args: argparse.Namespace) -> int:
     """Migra do Supabase para o histórico o que saiu da janela quente.
 
     Fluxo por dia: lê do banco → grava a partição → **verifica** relendo o
     Parquet → só então apaga do banco (e apenas com ``--confirm``).
+
+    Com ``--dataset all`` roda o mesmo fluxo para `coletas` e
+    `pricetrack_daily`. Uma falha num dataset não impede o outro de migrar —
+    o código de saída agrega os dois.
     """
-    from utils.supabase_client import _get_client, is_quota_restricted_error
+    from utils.supabase_client import _get_client
 
     client = _get_client()
     if client is None:
@@ -254,8 +309,29 @@ def cmd_tier(args: argparse.Namespace) -> int:
         f"{cutoff.isoformat()}."
     )
 
+    specs = _tier_datasets(args)
+    piores = 0
+    for spec in specs:
+        if len(specs) > 1:
+            logger.info(f"── Dataset '{spec.dataset}' ({spec.table}) ──")
+        rc = _tier_one(client, spec, args, cutoff)
+        # Cota restrita (2) é o diagnóstico mais acionável — preserva-o sobre
+        # o genérico (1) quando os dois aparecem.
+        piores = 2 if 2 in (piores, rc) else max(piores, rc)
+    return piores
+
+
+def _tier_one(
+    client: Any,
+    spec: TierSpec,
+    args: argparse.Namespace,
+    cutoff: date,
+) -> int:
+    """Executa a migração de um único dataset. Ver `cmd_tier`."""
+    from utils.supabase_client import is_quota_restricted_error
+
     try:
-        days = _distinct_days_before(client, cutoff)
+        days = _distinct_days_before(client, cutoff, spec)
     except Exception as exc:
         if is_quota_restricted_error(exc):
             logger.error(
@@ -265,14 +341,16 @@ def cmd_tier(args: argparse.Namespace) -> int:
                 "e rode este comando depois."
             )
             return 2
-        logger.error(f"Falha listando dias a migrar: {exc}")
+        logger.error(f"[{spec.dataset}] Falha listando dias a migrar: {exc}")
         return 1
 
     if not days:
-        logger.success("Nada a migrar — o banco só tem dias da janela quente.")
+        logger.success(
+            f"[{spec.dataset}] Nada a migrar — só há dias da janela quente."
+        )
         return 0
 
-    logger.info(f"{len(days)} dia(s) a migrar: {days[0]} → {days[-1]}")
+    logger.info(f"[{spec.dataset}] {len(days)} dia(s) a migrar: {days[0]} → {days[-1]}")
     store = get_store()
     migrados = 0
     apagados = 0
@@ -280,7 +358,7 @@ def cmd_tier(args: argparse.Namespace) -> int:
 
     for day in days:
         try:
-            rows = _fetch_day(client, day)
+            rows = _fetch_day(client, day, spec)
         except Exception as exc:
             logger.error(f"{day}: falha lendo do Supabase: {exc}")
             falhas.append(f"{day} (leitura)")
@@ -295,7 +373,7 @@ def cmd_tier(args: argparse.Namespace) -> int:
         # Falha de escrita é isolada ao dia: uma indisponibilidade transitória
         # do Drive não pode abortar a migração dos dias seguintes.
         try:
-            key = store.write_day(DATASET_COLETAS, day, rows, run_id=f"tier{day:%m%d}")
+            key = store.write_day(spec.dataset, day, rows, run_id=f"tier{day:%m%d}")
         except (HistoryStoreError, HistoryBackendError) as exc:
             logger.error(f"{day}: gravação falhou ({exc}) — banco intacto.")
             falhas.append(f"{day} (escrita)")
@@ -307,7 +385,7 @@ def cmd_tier(args: argparse.Namespace) -> int:
 
         # Verificação antes de apagar: releia o que foi gravado.
         try:
-            conferido = store.read(DATASET_COLETAS, start=day, end=day)
+            conferido = store.read(spec.dataset, start=day, end=day)
         except (HistoryStoreError, HistoryBackendError) as exc:
             logger.error(f"{day}: verificação falhou ({exc}) — banco intacto.")
             falhas.append(f"{day} (verificação)")
@@ -324,7 +402,7 @@ def cmd_tier(args: argparse.Namespace) -> int:
         # família, SKU) e cobre todos os runs do dia — ela substitui as que a
         # coleta gravou. Sem esta limpeza o dia seria lido em dobro.
         try:
-            supersedidas = store.drop_day(DATASET_COLETAS, day, exceto=key)
+            supersedidas = store.drop_day(spec.dataset, day, exceto=key)
             if supersedidas:
                 logger.info(
                     f"{day}: {supersedidas} partição(ões) da coleta substituída(s) "
@@ -344,14 +422,16 @@ def cmd_tier(args: argparse.Namespace) -> int:
         if not args.confirm:
             continue
         try:
-            client.table("coletas").delete().eq("data", day.isoformat()).execute()
+            client.table(spec.table).delete().eq(spec.date_col, day.isoformat()).execute()
             apagados += 1
             logger.success(f"{day}: removido do Supabase (espaço liberado).")
         except Exception as exc:
             logger.error(f"{day}: falha apagando do Supabase: {exc}")
             falhas.append(f"{day} (remoção)")
 
-    logger.success(f"Migrados: {migrados} dia(s) · Apagados do banco: {apagados}")
+    logger.success(
+        f"[{spec.dataset}] Migrados: {migrados} dia(s) · Apagados do banco: {apagados}"
+    )
     if migrados and not args.confirm and not args.dry_run:
         logger.warning(
             "Rode de novo com --confirm para apagar do Supabase os dias já "
@@ -424,6 +504,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_imp.set_defaults(func=cmd_import_csv)
 
     p_tier = sub.add_parser("tier", help="Supabase → histórico (fora da janela quente).")
+    p_tier.add_argument(
+        "--dataset", choices=[DATASET_COLETAS, DATASET_PRICETRACK, "all"],
+        default=DATASET_COLETAS,
+        help="Qual tabela migrar. 'pricetrack' cobre pricetrack_daily — a maior "
+             "do banco. 'all' migra as duas (default: coletas).",
+    )
     p_tier.add_argument(
         "--cutoff", type=_parse_day, metavar="YYYY-MM-DD",
         help="Migra tudo ANTES desta data (default: início da janela quente).",

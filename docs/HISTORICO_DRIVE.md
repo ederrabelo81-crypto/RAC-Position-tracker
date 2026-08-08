@@ -393,16 +393,21 @@ gravá-lo no lugar errado — e `history_cli.py stats` mostra onde ele está.
 
 ## Limites conhecidos
 
-- **PriceTrack ainda não usa o histórico.** O dataset `pricetrack` existe no
-  módulo, mas `query_pricetrack_daily()` continua lendo só do Supabase. A maior
-  tabela do banco (224 MB) é justamente essa — migrá-la é o próximo passo de
-  maior retorno.
+- **PriceTrack migra, mas ainda não tem escrita dupla.** Desde Ago/2026
+  `history_cli.py tier --dataset pricetrack` move `pricetrack_daily` para o
+  Drive e `query_pricetrack_daily()` costura frio + quente, como `coletas`. O
+  que falta é o import diário gravar o Parquet **junto** com o Supabase: hoje o
+  dia só entra no frio quando a migração roda, então um import feito com o
+  banco fora ainda depende de reimportar o export. Para `coletas` essa escrita
+  dupla existe desde Jul/2026.
 - **A migração precisa do banco de pé.** Com o projeto restrito por cota, a API
   REST recusa até leitura, então `tier` não roda. O desbloqueio inicial continua
   sendo pelo SQL Editor.
-- **Filtros do histórico são reproduzidos em pandas** (`_filter_history_coletas`
-  em `app.py`). Ao mudar um predicado no lado do PostgREST, mude no outro —
-  `tests/test_history_dashboard.py` cobre a paridade.
+- **Filtros do histórico são reproduzidos em pandas**
+  (`_filter_history_coletas` e `_filter_history_pricetrack` em `app.py`). Ao
+  mudar um predicado no lado do PostgREST, mude no outro —
+  `tests/test_history_dashboard.py` e `tests/test_pricetrack_history.py`
+  cobrem a paridade.
 - **Partições da coleta não têm de-para** até a migração trazer a versão
   resolvida. Elas aparecem no painel pelo interruptor "Incluir histórico do
   Drive sem de-para", mas não participam dos filtros de família/SKU — para
