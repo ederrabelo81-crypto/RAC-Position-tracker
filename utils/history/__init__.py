@@ -105,6 +105,7 @@ def write_records(
     dataset: str = DATASET_COLETAS,
     store: Optional[HistoryStore] = None,
     already_mapped: bool = False,
+    date_column: str = "data",
 ) -> List[str]:
     """Grava registros de coleta no histórico frio.
 
@@ -120,6 +121,10 @@ def write_records(
         store: Store a usar. ``None`` = resolve do ambiente.
         already_mapped: ``True`` quando os registros já estão no schema do
             banco (caso da migração vinda do Supabase).
+        date_column: Coluna que carrega o dia da partição. `coletas` usa
+            ``data``; `pricetrack` usa ``collection_date``. Errar este
+            parâmetro descarta **todas** as linhas, porque o store não acha
+            o dia — por isso ele acompanha o `dataset` em toda chamada.
 
     Returns:
         Chaves das partições gravadas — lista vazia se não havia o que gravar.
@@ -157,7 +162,9 @@ def write_records(
 
     target = store or get_store()
     try:
-        keys = target.write_records(rows, dataset=dataset, run_id=run_id)
+        keys = target.write_records(
+            rows, dataset=dataset, run_id=run_id, date_column=date_column
+        )
         logger.success(
             f"[Histórico] {len(rows)} linhas em {len(keys)} partição(ões) "
             f"→ {target.backend.describe}"
@@ -174,7 +181,9 @@ def write_records(
         return []
     try:
         local = get_store("local")
-        keys = local.write_records(rows, dataset=dataset, run_id=run_id)
+        keys = local.write_records(
+            rows, dataset=dataset, run_id=run_id, date_column=date_column
+        )
         logger.warning(
             f"[Histórico] gravado em DISCO como fallback ({local.backend.describe}) "
             f"— {len(rows)} linhas em {len(keys)} partição(ões). Sincronize com o "

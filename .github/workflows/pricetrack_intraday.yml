@@ -38,6 +38,10 @@ name: PriceTrack Hourly Refresh
 # Variáveis obrigatórias (Settings → Secrets and variables → Actions):
 #   PRICETRACK_API_KEY · SUPABASE_URL · SUPABASE_KEY
 #
+# Recomendados (histórico frio no Drive; sem eles o Parquet fica só no runner):
+#   GDRIVE_CLIENT_ID · GDRIVE_CLIENT_SECRET · GDRIVE_REFRESH_TOKEN
+#   GDRIVE_FOLDER_ID    —  ver docs/HISTORICO_DRIVE.md
+#
 # NOTA: depende de a API do PriceTrack disponibilizar export do dia corrente.
 # Se ainda não houver dados (HTTP 409), o import sai como "no_data" sem erro e o
 # dashboard segue exibindo o banner de "PriceTrack de hoje pendente".
@@ -100,6 +104,10 @@ jobs:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           python scripts/pricetrack_api_import.py \
             --start "${{ steps.params.outputs.today }}" \
@@ -114,6 +122,10 @@ jobs:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           python scripts/pricetrack_api_import.py \
             --start "${{ steps.params.outputs.heal_start }}" \
@@ -125,6 +137,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pricetrack-hourly-logs-${{ github.run_id }}
-          path: logs/pricetrack_api_import_*.log
+          path: |
+            logs/pricetrack_api_import_*.log
+            data/history/**/*.parquet
           retention-days: 7
           if-no-files-found: ignore

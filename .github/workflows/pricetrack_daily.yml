@@ -18,6 +18,11 @@ name: PriceTrack Daily Import
 #   PRICETRACK_API_KEY  —  token da API do PriceTrack (Configurações → API)
 #   SUPABASE_URL        —  URL do projeto Supabase
 #   SUPABASE_KEY        —  chave de serviço (service_role)
+#
+# Recomendados — sem eles o histórico frio cai no disco do runner e some com o
+# job (o Parquet ainda sobe no artifact, mas expira em 14 dias):
+#   GDRIVE_CLIENT_ID · GDRIVE_CLIENT_SECRET · GDRIVE_REFRESH_TOKEN
+#   GDRIVE_FOLDER_ID    —  ver docs/HISTORICO_DRIVE.md
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -110,6 +115,10 @@ jobs:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           python scripts/pricetrack_api_import.py \
             --start "${{ steps.params.outputs.start }}" \
@@ -125,6 +134,10 @@ jobs:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           GAP_START=$(date -u -d '14 days ago' +%F)
           GAP_END=$(date -u -d 'yesterday' +%F)
@@ -137,6 +150,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pricetrack-import-logs-${{ github.run_id }}
-          path: logs/pricetrack_api_import_*.log
+          path: |
+            logs/pricetrack_api_import_*.log
+            data/history/**/*.parquet
           retention-days: 14
           if-no-files-found: ignore
