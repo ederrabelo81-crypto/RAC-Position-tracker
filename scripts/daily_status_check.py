@@ -251,6 +251,62 @@ DEALER_THRESHOLD: Tuple[int, int, bool] = (3, 3, False)
 
 
 # ---------------------------------------------------------------------------
+# Canal de coleta — de qual máquina cada plataforma vem
+# ---------------------------------------------------------------------------
+# Sem isso o watchdog não distinguia "o scraper do ML quebrou" de "o PC que
+# roda o ML estava desligado". Todo fim de semana o PC fica fora e o relatório
+# saía com 4 FAIL críticos, exit 1 e run vermelho — 16 execuções seguidas
+# vermelhas até 10/08/2026, quando o alerta deixou de ser lido justamente por
+# ser sempre igual.
+#
+# A regra: se TODAS as plataformas de um canal vieram zeradas no turno, o
+# diagnóstico é "canal offline" (um alerta, não N), e ele não conta como falha
+# crítica de plataforma. Se ao menos uma coletou, o canal estava de pé — e aí
+# quem veio zerada quebrou de verdade e continua crítica.
+CHANNEL_ACTIONS = "GitHub Actions"
+CHANNEL_LOCAL = "PC local (IP residencial)"
+
+PLATFORM_CHANNEL: Dict[str, str] = {
+    "Amazon":           CHANNEL_ACTIONS,
+    "Leroy Merlin":     CHANNEL_ACTIONS,
+    "Google Shopping":  CHANNEL_ACTIONS,
+    "Mercado Livre":    CHANNEL_LOCAL,
+    "Magalu":           CHANNEL_LOCAL,
+    "Shopee":           CHANNEL_LOCAL,
+    "Casas Bahia":      CHANNEL_LOCAL,
+}
+
+
+def _offline_channels(
+    counts: Dict[Tuple[str, str], int], turno: str, expected: List[str]
+) -> set:
+    """
+    Identifica canais sem NENHUM registro no turno — máquina offline.
+
+    Args:
+        counts: mapa (plataforma, turno) → nº de registros.
+        turno: turno avaliado ("Abertura" ou "Fechamento").
+        expected: plataformas ativas hoje.
+
+    Returns:
+        Set de nomes de canal que não produziram nada. Um canal só entra aqui
+        se TODAS as suas plataformas esperadas vieram zeradas — uma única
+        plataforma com dado prova que a máquina rodou.
+    """
+    por_canal: Dict[str, List[int]] = {}
+    for platform in expected:
+        canal = PLATFORM_CHANNEL.get(platform)
+        if canal is None:
+            continue
+        por_canal.setdefault(canal, []).append(counts.get((platform, turno), 0))
+
+    return {
+        canal for canal, valores in por_canal.items()
+        if valores and not any(valores)
+    }
+
+
+# ---------------------------------------------------------------------------
 # Coleta dos dados
 # ---------------------------------------------------------------------------
 
@@ -773,12 +829,29 @@ def _build_report(
     turnos = [turno_filter] if turno_filter else ["Abertura", "Fechamento"]
 
     rows: List[Dict] = []
-    summary = {"pass": 0, "warn": 0, "fail": 0, "critical_fail": 0}
+    summary = {
+        "pass": 0, "warn": 0, "fail": 0,
+        "critical_fail": 0, "offline_channels": 0,
+    }
+    offline_vistos: set = set()
 
     for turno in turnos:
+        offline = _offline_channels(counts, turno, expected)
+        offline_vistos |= offline
+
         for platform in expected:
             count = counts.get((platform, turno), 0)
             status, desc, critical = _evaluate(platform, turno, count)
+
+            # Canal offline: a plataforma não falhou, a máquina não rodou.
+            # Rebaixa para WARN e tira do exit code, para o alerta crítico
+            # voltar a significar "algo quebrou e precisa de conserto".
+            canal = PLATFORM_CHANNEL.get(platform)
+            if status == "FAIL" and canal in offline:
+                status = "WARN"
+                desc = f"canal offline — {canal}"
+                critical = False
+
             rows.append({
                 "platform": platform,
                 "turno":    turno,
@@ -792,6 +865,9 @@ def _build_report(
                 summary[key] += 1
             if status == "FAIL" and critical:
                 summary["critical_fail"] += 1
+
+    summary["offline_channels"] = len(offline_vistos)
+    summary["offline_names"] = sorted(offline_vistos)
 
     # Plataformas que coletaram dados mas NÃO estão no expected (ex: dealer
     # novo ou typo) — entram como INFO no relatório
@@ -861,6 +937,11 @@ def _print_terminal(
         f"Resumo: ✅ {summary['pass']} PASS | ⚠️ {summary['warn']} WARN | "
         f"❌ {summary['fail']} FAIL | crítico: {summary['critical_fail']}"
     )
+    for canal in summary.get("offline_names") or []:
+        print(
+            f"⚠️  CANAL OFFLINE: {canal} — nenhuma plataforma deste canal "
+            "coletou. Máquina desligada, não scraper quebrado."
+        )
     print("=" * 78 + "\n")
 
 

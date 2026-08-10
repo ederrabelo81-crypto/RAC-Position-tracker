@@ -795,6 +795,26 @@ class CasasBahiaScraper(BaseScraper):
             review_count = None
         return rating, review_count
 
+    @staticmethod
+    def _has_seller_data(records: Optional[List[Dict[str, Any]]]) -> bool:
+        """
+        True se ao menos um registro carrega o dado de buy box.
+
+        Distingue "a página devolveu cards" de "a página devolveu quem vence a
+        oferta". O parser de DOM zera ``Buy Box Seller`` de propósito (a vitrine
+        não expõe ``sellers[]``), então uma lista cheia de registros pode não
+        ter nenhum dado de competição — que é o que a coleta busca.
+
+        Args:
+            records: registros já normalizados por ``_build_record``, ou None.
+
+        Returns:
+            True se algum registro tem ``Buy Box Seller`` preenchido.
+        """
+        if not records:
+            return False
+        return any(rec.get("Buy Box Seller") for rec in records)
+
     def _parse_api_products(
         self,
         keyword: str,
@@ -1565,14 +1585,34 @@ class CasasBahiaScraper(BaseScraper):
                     break
                 records = browser_records
 
-                # 3) Fallback rico: API VTEX via fetch same-origin (raramente
-                #    responde na CB, mas mantém a chance quando o catalog libera).
-                if not records:
+                # 3) Fallback rico: API VTEX via fetch same-origin.
+                #    O gatilho NÃO é "0 registros": o DOM quase sempre devolve
+                #    cards (com preço), e por isso esta etapa nunca era
+                #    alcançada — o resultado media 0% de `Buy Box Seller` e
+                #    `Qtd Sellers` no banco (10/08/2026), justamente os campos
+                #    que são o foco da coleta desde Mai/2026. O DOM da vitrine
+                #    não expõe `sellers[]`, então "tem registro" e "tem buy box"
+                #    são coisas diferentes: buscar a API quando falta o dado de
+                #    seller é o que destrava o campo.
+                if not self._has_seller_data(records):
                     products = self._vtex_fetch_in_page(keyword, page)
                     if products:
-                        records = self._parse_api_products(
+                        api_records = self._parse_api_products(
                             keyword, keyword_category_map, offset, products=products
                         )
+                        # Só troca se a API de fato trouxe seller — senão
+                        # mantém os registros do DOM (que ao menos têm preço,
+                        # posição e título) em vez de regredir a coleta.
+                        if self._has_seller_data(api_records):
+                            logger.info(
+                                f"[{self.platform_name}] Buy box recuperada via "
+                                f"API VTEX — {len(api_records)} registros com "
+                                f"sellers[] substituem {len(records)} do DOM "
+                                f"(pág {page})"
+                            )
+                            records = api_records
+                        elif api_records and not records:
+                            records = api_records
 
                 # 4) Último recurso: curl_cffi (provável bloqueio, mas tenta)
                 if not records:

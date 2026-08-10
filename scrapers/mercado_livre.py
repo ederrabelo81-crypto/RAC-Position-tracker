@@ -58,7 +58,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config import MAX_PAGES, PAGE_TIMEOUT
 from scrapers.base import BaseScraper
 from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
-from utils.text import parse_rating, parse_review_count
+from utils.text import parse_offer_count, parse_rating, parse_review_count
 
 
 # ---------------------------------------------------------------------------
@@ -1164,6 +1164,11 @@ class MLScraper(BaseScraper):
             # --- fulfillment ---
             fulfillment = self._is_fulfillment(item)
 
+            # --- competição de sellers ("Outras opções de compra") ---
+            # Texto, não seletor: o ML muda classe com frequência, mas o rótulo
+            # PT-BR é estável. None quando não há sinal (≠ seller único).
+            qtd_sellers = parse_offer_count(item.get_text(" ", strip=True))
+
             # --- avaliação + qtd avaliações (CSS + texto acessível + estrutura) ---
             rating, review_count = self._extract_reviews(item)
 
@@ -1204,6 +1209,7 @@ class MLScraper(BaseScraper):
                 price_float=price,
                 seller=seller,
                 buy_box_seller=seller,
+                qtd_sellers=qtd_sellers,
                 tipo_seller=tipo_seller,
                 is_fulfillment=fulfillment,
                 rating=rating,

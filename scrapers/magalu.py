@@ -1974,6 +1974,43 @@ class MagaluScraper(BaseScraper):
                 return None
         return obj
 
+    def _extract_seller_count(self, product: Dict) -> Optional[int]:
+        """
+        Extrai o nº de sellers competindo pelo produto no payload do Magalu.
+
+        Lê apenas campos tipados do JSON — nunca regex sobre o blob serializado,
+        que confundiria preço, BTU e contagem de avaliações com nº de ofertas.
+        Estruturas conhecidas:
+          - ``sellers``: [ {...}, {...} ]        → len()
+          - ``sellerCount`` / ``sellersCount``   → int direto
+          - ``offers``: [ ... ] / ``offerCount`` → nº de ofertas
+
+        Args:
+            product: dict do produto vindo de ``__NEXT_DATA__`` ou RSC.
+
+        Returns:
+            Nº de sellers, ou None quando o payload não informa. Devolve None
+            (não 1) no silêncio: desconhecido ≠ seller único, e assumir 1
+            inflaria artificialmente o share de buy box do 1P.
+        """
+        for key in ("sellers", "offers", "marketplaceSellers"):
+            val = product.get(key)
+            if isinstance(val, list) and val:
+                return len(val)
+
+        for key in ("sellerCount", "sellersCount", "offerCount", "offersCount"):
+            val = product.get(key)
+            if isinstance(val, bool):
+                continue
+            if isinstance(val, int) and 1 <= val <= 200:
+                return val
+            if isinstance(val, str) and val.strip().isdigit():
+                count = int(val.strip())
+                if 1 <= count <= 200:
+                    return count
+
+        return None
+
     def _extract_price(self, product: Dict) -> Optional[float]:
         """
         Extrai preço de um produto Magalu. Estruturas típicas:
@@ -2151,6 +2188,7 @@ class MagaluScraper(BaseScraper):
                 price_float=price,
                 seller=seller,
                 buy_box_seller=seller,
+                qtd_sellers=self._extract_seller_count(prod),
                 tipo_seller=tipo_seller,
                 is_fulfillment=False,
                 rating=rating_f,

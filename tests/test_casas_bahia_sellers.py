@@ -107,3 +107,36 @@ class TestExtractVtexSellers:
         info = scraper._extract_vtex_sellers(prod)
         assert info["buy_box_seller"] == "Casas Bahia"
         assert info["qtd_sellers"] is None  # nenhum disponível
+
+
+class TestHasSellerData:
+    """Gate que decide se vale buscar a API VTEX depois do DOM.
+
+    Regressão de 10/08/2026: o gatilho do fallback rico era `not records`, e o
+    parser de DOM quase sempre devolve cards — então a etapa da API nunca era
+    alcançada e `Buy Box Seller`/`Qtd Sellers` ficaram 0% no banco.
+    """
+
+    def test_lista_vazia_nao_tem_seller(self, scraper):
+        assert scraper._has_seller_data([]) is False
+
+    def test_none_nao_tem_seller(self, scraper):
+        assert scraper._has_seller_data(None) is False
+
+    def test_registros_do_dom_nao_tem_seller(self, scraper):
+        """O parser de DOM zera Buy Box Seller de propósito."""
+        dom_records = [
+            {"Produto / SKU": "Split 9000", "Preço (R$)": 2199.0, "Buy Box Seller": None},
+            {"Produto / SKU": "Split 12000", "Preço (R$)": 2599.0, "Buy Box Seller": None},
+        ]
+        assert scraper._has_seller_data(dom_records) is False
+
+    def test_um_registro_com_buy_box_basta(self, scraper):
+        mistos = [
+            {"Produto / SKU": "A", "Buy Box Seller": None},
+            {"Produto / SKU": "B", "Buy Box Seller": "Refri Center"},
+        ]
+        assert scraper._has_seller_data(mistos) is True
+
+    def test_string_vazia_nao_conta_como_seller(self, scraper):
+        assert scraper._has_seller_data([{"Buy Box Seller": ""}]) is False
