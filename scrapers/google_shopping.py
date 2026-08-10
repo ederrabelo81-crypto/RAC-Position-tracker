@@ -13,7 +13,9 @@ Manutenção de seletores — estrutura confirmada via debug HTML de 31/mar/2026
   Título:    primeiro <div> folha (sem filhos, sem classe) com 15-200 chars, sem R$
   Preço:     span.VbBaOe — texto "R$\xa02.184,05" (non-breaking space, não espaço normal)
   O Google Shopping rotaciona nomes de classe constantemente; guardamos fallbacks.
-  Quando 0 itens: HTML salvo em logs/google_debug_p{n}_{kw}.html
+  Quando 0 itens: HTML salvo em logs/google_{causa}_p{n}_{kw}.html, onde
+  {causa} é challenge|consent|sem_resultados|login|layout (ver
+  _classify_zero_result) — o nome do arquivo já diz o diagnóstico.
 
 ATUALIZAÇÃO 08/mai/2026: Múltiplas estratégias de extração de título + mais seletores CSS.
 ATUALIZAÇÃO 09/mai/2026: Restaurada leaf-div como estratégia primária (COMMON_MISTAKES #2);
@@ -436,21 +438,41 @@ class GoogleShoppingScraper(BaseScraper):
     # IP residencial; um layout novo se resolve com parser. Nomear a causa no
     # log e no nome do dump é o que transforma "não funciona" em uma decisão.
 
+    # Marcadores de ALTO SINAL — só aparecem numa página de controle, nunca
+    # no rodapé de uma SERP normal. Um scan ingênuo por substring erraria aqui:
+    # toda SERP do Google traz link de cookies/privacidade no rodapé, então
+    # procurar "aceitar tudo" em qualquer lugar do HTML classificaria uma
+    # página perfeitamente normal (o caso `layout`) como muro de consentimento
+    # — a conclusão enganosa que esta classificação existe para evitar.
     _CAUSAS_ZERO = (
         ("challenge", (
-            "unusual traffic", "tráfego incomum", "/sorry/",
-            "detected unusual", "systems have detected",
+            "unusual traffic", "tráfego incomum",
+            "detected unusual", "our systems have detected",
         )),
         ("consent", (
-            "consent.google", "before you continue", "antes de continuar",
-            "aceitar tudo", "accept all", "cookieconsent",
+            "before you continue to google", "antes de continuar no google",
         )),
         ("sem_resultados", (
             "did not match any", "não encontrou nenhum",
-            "no results found", "nenhum resultado",
+            "no results found", "nenhum documento",
         )),
-        ("login", ("accounts.google.com/servicelogin", "faça login")),
+        ("login", ("sign in to continue", "faça login para continuar")),
     )
+
+    #: Marcadores que só valem quando aparecem no <title> ou numa URL de
+    #: redirect — lá são estruturais, no corpo seriam só um link de rodapé.
+    _CAUSAS_POR_TITULO = (
+        ("challenge", ("sorry", "unusual traffic", "erro")),
+        ("consent", ("before you continue", "antes de continuar", "consent")),
+        ("login", ("sign in", "fazer login", "entrar")),
+    )
+
+    @staticmethod
+    def _document_title(html: str) -> str:
+        """Extrai o <title> em minúsculas, ou string vazia."""
+        match = re.search(r"<title[^>]*>(.*?)</title>", html or "",
+                          re.IGNORECASE | re.DOTALL)
+        return " ".join(match.group(1).split()).lower() if match else ""
 
     def _classify_zero_result(self, html: str) -> str:
         """
@@ -467,12 +489,26 @@ class GoogleShoppingScraper(BaseScraper):
 
         Note:
             ``layout`` é o único caso em que mexer no parser é o conserto certo;
-            nos demais o parser está correto e o problema é de acesso.
+            nos demais o parser está correto e o problema é de acesso. Por isso
+            a classificação é conservadora: na dúvida devolve ``layout``, que
+            manda olhar o HTML salvo, em vez de mandar trocar de IP à toa.
         """
         lowered = (html or "").lower()
+
+        # 1) Título e redirect são estruturais: uma página de controle se
+        #    identifica neles, uma SERP normal não.
+        titulo = self._document_title(lowered)
+        for causa, marcadores in self._CAUSAS_POR_TITULO:
+            if titulo and any(marcador in titulo for marcador in marcadores):
+                return causa
+        if "/sorry/index" in lowered or "google.com/sorry" in lowered:
+            return "challenge"
+
+        # 2) Frases longas o bastante para não caberem num link de rodapé.
         for causa, marcadores in self._CAUSAS_ZERO:
             if any(marcador in lowered for marcador in marcadores):
                 return causa
+
         return "layout"
 
     _ACAO_POR_CAUSA = {

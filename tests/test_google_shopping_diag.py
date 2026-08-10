@@ -29,14 +29,14 @@ class TestClassifyZeroResult:
         "<html>Our systems have detected unusual traffic</html>",
         "<html>Detectamos tráfego incomum da sua rede</html>",
         '<html><a href="/sorry/index?continue=x">x</a></html>',
+        "<html><title>Sorry...</title><body>x</body></html>",
     ])
     def test_challenge_antibot(self, scraper, html):
         assert scraper._classify_zero_result(html) == "challenge"
 
     @pytest.mark.parametrize("html", [
-        "<html>Before you continue to Google</html>",
-        "<html>Antes de continuar — Aceitar tudo</html>",
-        '<html><div id="cookieconsent">x</div></html>',
+        "<html>Before you continue to Google Search</html>",
+        "<html><title>Antes de continuar</title><body>x</body></html>",
     ])
     def test_muro_de_consentimento(self, scraper, html):
         assert scraper._classify_zero_result(html) == "consent"
@@ -45,8 +45,8 @@ class TestClassifyZeroResult:
         html = "<html>Sua pesquisa não encontrou nenhum documento</html>"
         assert scraper._classify_zero_result(html) == "sem_resultados"
 
-    def test_redirect_de_login(self, scraper):
-        html = '<html><a href="https://accounts.google.com/ServiceLogin">e</a></html>'
+    def test_pagina_de_login(self, scraper):
+        html = "<html><title>Fazer login - Contas do Google</title>x</html>"
         assert scraper._classify_zero_result(html) == "login"
 
     def test_pagina_normal_com_layout_novo(self, scraper):
@@ -75,3 +75,53 @@ class TestAcaoPorCausa:
         assert "parser" in scraper._ACAO_POR_CAUSA["layout"].lower()
         for causa in ("challenge", "consent"):
             assert "parser está ok" in scraper._ACAO_POR_CAUSA[causa].lower()
+
+
+class TestFalsoPositivoDeRodape:
+    """
+    O risco real da classificação por substring.
+
+    Toda SERP do Google carrega link de cookies/privacidade/login no rodapé.
+    Se um scan ingênuo achar "aceitar tudo" ali, uma página perfeitamente
+    normal — o caso `layout`, o único em que mexer no parser é o conserto
+    certo — seria diagnosticada como muro de consentimento, e mandaria alguém
+    trocar de IP ou de perfil à toa. É exatamente a conclusão enganosa que
+    esta feature existe para evitar, então os casos abaixo travam o
+    comportamento correto.
+    """
+
+    _RODAPE = (
+        '<div id="footer">'
+        '<a href="https://policies.google.com/privacy">Privacidade</a>'
+        '<a href="https://consent.google.com/">Cookies</a>'
+        '<a href="https://accounts.google.com/ServiceLogin">Fazer login</a>'
+        "<button>Aceitar tudo</button>"
+        "</div>"
+    )
+
+    def test_serp_normal_com_rodape_completo_e_layout(self, scraper):
+        html = (
+            "<html><title>ar condicionado - Google Shopping</title>"
+            f"<body><div class='classe-nova'>produtos</div>{self._RODAPE}</body></html>"
+        )
+        assert scraper._classify_zero_result(html) == "layout"
+
+    def test_link_de_consent_no_rodape_nao_vira_consent(self, scraper):
+        html = f"<html><body>resultados{self._RODAPE}</body></html>"
+        assert scraper._classify_zero_result(html) == "layout"
+
+    def test_link_de_login_no_rodape_nao_vira_login(self, scraper):
+        html = (
+            '<html><body>resultados'
+            '<a href="https://accounts.google.com/ServiceLogin">Fazer login</a>'
+            "</body></html>"
+        )
+        assert scraper._classify_zero_result(html) == "layout"
+
+    def test_muro_real_ainda_e_detectado_apesar_do_rodape(self, scraper):
+        """A tolerância ao rodapé não pode cegar o caso verdadeiro."""
+        html = (
+            "<html><title>Antes de continuar</title>"
+            f"<body>Before you continue to Google Search{self._RODAPE}</body></html>"
+        )
+        assert scraper._classify_zero_result(html) == "consent"

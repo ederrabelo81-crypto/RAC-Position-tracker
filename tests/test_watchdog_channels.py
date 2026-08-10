@@ -21,6 +21,7 @@ from scripts.daily_status_check import (  # noqa: E402
     CHANNEL_ACTIONS,
     CHANNEL_LOCAL,
     _build_report,
+    _format_telegram,
     _offline_channels,
 )
 
@@ -63,9 +64,24 @@ class TestOfflineChannels:
         )
         assert CHANNEL_ACTIONS not in _offline_channels(counts, "Abertura", TODAS)
 
-    def test_dia_sem_nenhuma_coleta_marca_os_dois_canais(self):
-        offline = _offline_channels({}, "Abertura", TODAS)
-        assert offline == {CHANNEL_ACTIONS, CHANNEL_LOCAL}
+    def test_apagao_total_nao_e_canal_offline(self):
+        """
+        Nenhum canal é "offline" quando TODOS vieram zerados.
+
+        Esta asserção já esteve invertida aqui: eu tinha escrito que o dia sem
+        nenhuma coleta marcava os dois canais como offline. O efeito era que
+        toda falha crítica virava WARN e o watchdog saía com exit 0 — ou seja,
+        o alerta silenciava exatamente no caso mais grave, um apagão total de
+        coleta ou de upload. "Máquina desligada" só é diagnóstico plausível
+        quando ALGUM canal produziu dado; sem isso, o que houve foi apagão.
+        """
+        assert _offline_channels({}, "Abertura", TODAS) == set()
+
+    def test_apagao_total_mantem_falha_critica_no_exit_code(self):
+        rows, summary = _build_report("2026-08-10", "Abertura", {})
+        assert summary["critical_fail"] > 0, (
+            "apagão total precisa gritar — é o caso mais grave, não o mais quieto"
+        )
 
 
 class TestBuildReportExitCode:
@@ -99,3 +115,39 @@ class TestBuildReportExitCode:
         magalu = next(r for r in rows if r["platform"] == "Magalu")
         assert magalu["status"] == "FAIL"
         assert magalu["critical"] is True
+
+
+class TestTelegramAgrupaCanalOffline:
+    """
+    Um canal offline é UM fato, não N plataformas quietas.
+
+    O alerta tinha virado ruído — 16 runs vermelhos seguidos. Rebaixar o
+    status sem agrupar a mensagem trocaria "N linhas vermelhas" por "N linhas
+    amarelas", o que não resolve o problema que motivou a mudança.
+    """
+
+    def _msg(self):
+        counts = _counts(
+            "Abertura",
+            **{"Amazon": 2351, "Leroy Merlin": 1068, "Google Shopping": 300},
+        )
+        rows, summary = _build_report("2026-08-09", "Abertura", counts)
+        return _format_telegram("2026-08-09", "Abertura", rows, summary)
+
+    def test_uma_linha_por_canal(self):
+        msg = self._msg()
+        assert msg.count("Canal offline") == 1
+
+    def test_nomeia_o_canal_e_conta_as_plataformas(self):
+        msg = self._msg()
+        assert CHANNEL_LOCAL in msg
+        assert "plataforma(s) sem coleta" in msg
+
+    def test_plataformas_do_canal_nao_ganham_linha_propria(self):
+        msg = self._msg()
+        for plataforma in ("Mercado Livre", "Magalu", "Shopee"):
+            assert f"<code>{plataforma}</code>: 0 reg" not in msg
+
+    def test_plataformas_que_coletaram_seguem_visiveis(self):
+        msg = self._msg()
+        assert "Amazon" in msg and "2351" in msg

@@ -815,6 +815,61 @@ class CasasBahiaScraper(BaseScraper):
             return False
         return any(rec.get("Buy Box Seller") for rec in records)
 
+    #: Campos de competição que a API traz e o DOM não.
+    _SELLER_FIELDS = ("Buy Box Seller", "Qtd Sellers", "Tipo Seller",
+                      "Reputação Seller", "Seller / Vendedor")
+
+    @staticmethod
+    def _product_key(record: Dict[str, Any]) -> Optional[str]:
+        """Chave de casamento entre um registro do DOM e um da API."""
+        url = (record.get("URL Produto") or "").split("?")[0].rstrip("/")
+        if url:
+            return url.lower()
+        sku = record.get("Produto / SKU")
+        return str(sku).strip().lower() if sku else None
+
+    @classmethod
+    def _merge_seller_fields(
+        cls,
+        dom_records: List[Dict[str, Any]],
+        api_records: List[Dict[str, Any]],
+    ) -> int:
+        """
+        Copia os campos de seller da API para os registros do DOM.
+
+        Enriquecer em vez de substituir preserva a cobertura da página: o
+        recorte da API (``_from``/``_to`` sobre o catálogo) e a vitrine
+        renderizada não devolvem sempre o mesmo conjunto — SKUs indisponíveis
+        são filtrados e a ordenação pode divergir. Numa troca integral, os
+        cards que só existiam no DOM sumiriam da coleta levando junto preço e
+        posição, que estavam corretos. A posição do DOM também é a que o
+        usuário de fato viu na busca orgânica, então é ela que deve prevalecer.
+
+        Args:
+            dom_records: registros do DOM; alterados no lugar.
+            api_records: registros da API, com ``sellers[]`` resolvido.
+
+        Returns:
+            Quantos registros do DOM foram enriquecidos.
+        """
+        index = {}
+        for rec in api_records:
+            key = cls._product_key(rec)
+            if key and rec.get("Buy Box Seller"):
+                index.setdefault(key, rec)
+
+        enriquecidos = 0
+        for rec in dom_records:
+            match = index.get(cls._product_key(rec) or "")
+            if not match:
+                continue
+            for campo in cls._SELLER_FIELDS:
+                valor = match.get(campo)
+                if valor is not None and not rec.get(campo):
+                    rec[campo] = valor
+            enriquecidos += 1
+        return enriquecidos
+
     def _parse_api_products(
         self,
         keyword: str,
@@ -1600,17 +1655,32 @@ class CasasBahiaScraper(BaseScraper):
                         api_records = self._parse_api_products(
                             keyword, keyword_category_map, offset, products=products
                         )
-                        # Só troca se a API de fato trouxe seller — senão
+                        # Só aproveita se a API de fato trouxe seller — senão
                         # mantém os registros do DOM (que ao menos têm preço,
                         # posição e título) em vez de regredir a coleta.
                         if self._has_seller_data(api_records):
-                            logger.info(
-                                f"[{self.platform_name}] Buy box recuperada via "
-                                f"API VTEX — {len(api_records)} registros com "
-                                f"sellers[] substituem {len(records)} do DOM "
-                                f"(pág {page})"
+                            enriquecidos = self._merge_seller_fields(
+                                records, api_records
                             )
-                            records = api_records
+                            if enriquecidos:
+                                # Caminho normal: DOM mantém posição/preço e
+                                # ganha a buy box da API.
+                                logger.info(
+                                    f"[{self.platform_name}] Buy box recuperada "
+                                    f"via API VTEX — {enriquecidos}/{len(records)} "
+                                    f"registros do DOM enriquecidos (pág {page})"
+                                )
+                            else:
+                                # Nenhum casou por URL/SKU: os dois conjuntos
+                                # divergiram. Aí a API é a melhor fonte, porque
+                                # ter buy box é o objetivo da coleta.
+                                logger.warning(
+                                    f"[{self.platform_name}] Nenhum registro do "
+                                    f"DOM casou com a API (pág {page}) — usando "
+                                    f"os {len(api_records)} da API no lugar dos "
+                                    f"{len(records)} do DOM"
+                                )
+                                records = api_records
                         elif api_records and not records:
                             records = api_records
 

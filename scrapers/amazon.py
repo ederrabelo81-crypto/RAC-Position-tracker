@@ -462,8 +462,12 @@ class AmazonScraper(BaseScraper):
             else:
                 cache.mark_failed(asin, "PDP sem 'Vendido por'")
 
-        if resolvidos_pdp:
-            cache.save()
+        # Salva sempre: `mark_failed` também suja o cache, e é justamente no
+        # caso em que NADA resolveu (Amazon bloqueando todos os PDPs) que a
+        # quarentena precisa chegar ao disco — senão os mesmos ASINs mortos
+        # reconsomem o orçamento na próxima execução, que é exatamente o que a
+        # quarentena existe para evitar. `save()` já é no-op se nada mudou.
+        cache.save()
         if resolvidos_cache or resolvidos_pdp:
             logger.info(
                 f"[{self.platform_name}] Buy box resolvida: "

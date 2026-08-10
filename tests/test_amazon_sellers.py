@@ -256,3 +256,68 @@ class TestOrcamentoNoScraper:
         registros = [{"Buy Box Seller": None, "_asin": None}]
         scraper._resolve_buybox_via_pdp(registros)
         assert chamadas == []
+
+
+class TestFulfillmentNaoVazaNoNome:
+    """
+    O PDP escreve "Vendido por X e enviado PELA Amazon".
+
+    A primeira versão cortava só o literal " e enviado por", que NÃO casa com
+    "e enviado pela" — e o teste da época passava porque eu o escrevi com a
+    mesma redação errada do código. O efeito em produção seria gravar
+    "KARZEN ELETRO e enviado pela Amazon" como vendedor: nome sujo no relatório
+    e, pior, um produto vendido pela própria Amazon classificado como 3P,
+    corrompendo justamente o share of buy box que a coleta existe para medir.
+    """
+
+    @pytest.mark.parametrize("html,esperado", [
+        ('<div id="merchant-info">Vendido por KARZEN e enviado pela Amazon</div>',
+         "KARZEN"),
+        ('<div id="merchant-info">Vendido por LojaX e enviado por Amazon</div>',
+         "LojaX"),
+        ('<div id="merchant-info">Vendido por LojaY e entregue pelo parceiro</div>',
+         "LojaY"),
+        ('<div id="merchant-info">Vendido por LojaZ E ENVIADO PELA AMAZON</div>',
+         "LojaZ"),
+        ('<div id="merchant-info">Sold by ACME and Fulfilled by Amazon</div>',
+         "ACME"),
+        ('<div id="merchant-info">Sold by ACME and shipped by Amazon</div>',
+         "ACME"),
+    ])
+    def test_corta_o_trecho_de_fulfillment(self, html, esperado):
+        assert extract_seller_from_pdp(html) == esperado
+
+    def test_1p_com_fulfillment_continua_1p(self):
+        """O caso que a classificação errada estragava."""
+        html = ('<div id="merchant-info">Vendido por Amazon.com.br '
+                'e enviado pela Amazon</div>')
+        assert is_amazon_self(extract_seller_from_pdp(html)) is True
+
+
+class TestQuarentenaPersiste:
+    def test_run_sem_nenhum_sucesso_ainda_grava_a_quarentena(self, tmp_path, monkeypatch):
+        """
+        O caso all-fail: a Amazon bloqueia todos os PDPs.
+
+        A quarentena existe para os ASINs mortos não reconsumirem o orçamento
+        na execução seguinte. Se ela só fosse gravada quando algum PDP desse
+        certo, o cenário em que ela mais importa — nenhum deu — seria
+        exatamente o que não persistia.
+        """
+        from scrapers.amazon import AmazonScraper
+
+        monkeypatch.setenv("RAC_AMAZON_PDP_BUYBOX", "1")
+        cache_path = tmp_path / "c.json"
+
+        s = AmazonScraper()
+        s._seller_cache = AmazonSellerCache(path=cache_path)
+        s._pdp_budget_left = 5
+        monkeypatch.setattr(s, "_fetch_pdp_seller", lambda asin: None)
+
+        s._resolve_buybox_via_pdp(
+            [{"Buy Box Seller": None, "_asin": "B0MORTO1234"}]
+        )
+
+        assert cache_path.exists(), "quarentena precisa chegar ao disco"
+        recarregado = AmazonSellerCache(path=cache_path)
+        assert recarregado.should_retry("B0MORTO1234") is False

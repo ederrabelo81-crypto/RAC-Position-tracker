@@ -64,6 +64,17 @@ _RE_VENDIDO_POR = re.compile(
     re.IGNORECASE,
 )
 
+# Corta o trecho de fulfillment que vem colado no nome do vendedor. O PDP
+# escreve "Vendido por X e enviado PELA Amazon" (concordância com "a Amazon"),
+# mas também "enviado POR X" e "enviado PELO parceiro" conforme o vendedor —
+# um separador literal só com "por" deixa "e enviado pela Amazon" grudado no
+# nome e a buy box vira 3P fantasma para um produto que a Amazon vende.
+_RE_FULFILLMENT = re.compile(
+    r"\s+(?:e\s+)?(?:enviad[oa]\s+(?:por|pel[oa])|entregue\s+(?:por|pel[oa])"
+    r"|and\s+(?:fulfilled|shipped|delivered)\s+by|fulfilled\s+by)\b.*$",
+    re.IGNORECASE,
+)
+
 #: Seletores do bloco de compra do PDP, do mais específico ao mais genérico.
 _PDP_SELLER_SELECTORS = (
     "#sellerProfileTriggerId",
@@ -108,8 +119,12 @@ def clean_seller_name(raw: Any) -> Optional[str]:
     if match:
         text = match.group(1).strip()
 
+    # Corta o trecho de fulfillment ("... e enviado pela Amazon") antes de
+    # qualquer outra limpeza — é o que mais suja o nome na prática.
+    text = _RE_FULFILLMENT.sub("", text).strip()
+
     # Corta em separadores que iniciam outro campo do bloco de compra.
-    for sep in (" e enviado por", " and Fulfilled by", "|", " • ", "  "):
+    for sep in ("|", " • ", "  "):
         if sep in text:
             text = text.split(sep)[0].strip()
 

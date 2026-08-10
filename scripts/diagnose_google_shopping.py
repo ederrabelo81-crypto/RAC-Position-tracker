@@ -12,7 +12,7 @@ Uso:
     python scripts/diagnose_google_shopping.py
     python scripts/diagnose_google_shopping.py --keyword "ar condicionado 9000"
     python scripts/diagnose_google_shopping.py --headless
-    python scripts/diagnose_google_shopping.py --html logs/google_debug_p1_ar.html
+    python scripts/diagnose_google_shopping.py --html logs/google_layout_p1_ar.html
 
 Saída:
     logs/google_diag_<timestamp>.html   HTML bruto capturado
@@ -475,7 +475,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--html", metavar="FILE",
-        help="Usar HTML já salvo em disco em vez de abrir o browser (ex: logs/google_debug_p1_ar.html)"
+        help="Usar HTML já salvo em disco em vez de abrir o browser "
+             "(ex: logs/google_layout_p1_ar.html; o prefixo após google_ é a "
+             "causa classificada pelo scraper)"
     )
     args = parser.parse_args()
 

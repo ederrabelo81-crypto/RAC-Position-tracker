@@ -1190,6 +1190,11 @@ class MLScraper(BaseScraper):
                 ("title", title), ("price", price), ("url", url_produto),
                 ("seller", seller), ("rating", rating),
                 ("review_count", review_count), ("tag", tag),
+                # Instrumentado junto com os demais: `Qtd Sellers` é um dos
+                # campos que este PR passou a preencher, e sem cobertura por
+                # keyword uma regressão voltaria a aparecer só semanas depois,
+                # como 0% no Supabase, em vez de na hora no log da coleta.
+                ("qtd_sellers", qtd_sellers),
             ):
                 if value is not None:
                     cursor.hit(name)

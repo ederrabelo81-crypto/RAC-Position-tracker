@@ -300,10 +300,24 @@ def _offline_channels(
             continue
         por_canal.setdefault(canal, []).append(counts.get((platform, turno), 0))
 
-    return {
+    offline = {
         canal for canal, valores in por_canal.items()
         if valores and not any(valores)
     }
+
+    # Salvaguarda: se TODOS os canais vieram zerados, não houve "máquina
+    # desligada" — houve apagão total de coleta ou de upload, que é justamente
+    # o caso mais grave. Suprimir aqui faria o alerta silenciar exatamente
+    # quando mais precisa gritar, então nenhum canal é considerado offline e
+    # todas as falhas críticas voltam a contar para o exit code.
+    if offline and len(offline) == len(por_canal):
+        logger.error(
+            "[Watchdog] TODOS os canais zerados — apagão total de coleta/upload, "
+            "não é máquina desligada. Falhas críticas mantidas."
+        )
+        return set()
+
+    return offline
 
 
 # ---------------------------------------------------------------------------
@@ -847,10 +861,12 @@ def _build_report(
             # Rebaixa para WARN e tira do exit code, para o alerta crítico
             # voltar a significar "algo quebrou e precisa de conserto".
             canal = PLATFORM_CHANNEL.get(platform)
+            canal_offline = None
             if status == "FAIL" and canal in offline:
                 status = "WARN"
                 desc = f"canal offline — {canal}"
                 critical = False
+                canal_offline = canal
 
             rows.append({
                 "platform": platform,
@@ -859,6 +875,10 @@ def _build_report(
                 "status":   status,
                 "desc":     desc,
                 "critical": critical,
+                # Nome do canal quando a linha só está zerada porque a máquina
+                # não rodou. O Telegram agrupa essas linhas numa só: o fato a
+                # comunicar é "o PC não rodou", não N plataformas quietas.
+                "canal_offline": canal_offline,
             })
             key = status.lower()
             if key in summary:
@@ -1051,12 +1071,29 @@ def _format_telegram(
         marketplaces = [r for r in by_turno[turno] if not _is_dealer(r["platform"])]
         dealers      = [r for r in by_turno[turno] if _is_dealer(r["platform"])]
 
+        # --- Canais offline: uma linha por canal, não uma por plataforma ---
+        # Quando o PC coletor não roda, todas as suas plataformas vêm zeradas.
+        # Repetir isso em N linhas é o mesmo ruído que o alerta queria acabar:
+        # o fato é único ("o canal não rodou") e assim deve ser comunicado.
+        offline_rows = [r for r in by_turno[turno] if r.get("canal_offline")]
+        for canal in sorted({r["canal_offline"] for r in offline_rows}):
+            nomes = sorted(
+                r["platform"] for r in offline_rows if r["canal_offline"] == canal
+            )
+            lines.append(
+                f"  ⚪ <b>Canal offline — {esc(canal)}</b>: "
+                f"{len(nomes)} plataforma(s) sem coleta "
+                f"(<code>{esc(', '.join(nomes))}</code>)"
+            )
+
         # --- Marketplaces: linha por linha ---
         mk_order = {"FAIL": 0, "WARN": 1, "PASS": 2, "INFO": 3}
         marketplaces.sort(key=lambda r: (mk_order.get(r["status"], 9), r["platform"]))
         for r in marketplaces:
             if r["status"] == "INFO":
                 continue  # não pertence ao registry — silencioso
+            if r.get("canal_offline"):
+                continue  # já contabilizada no bloco de canal offline acima
             icon = _STATUS_ICON[r["status"]]
             crit = " <b>[CRÍTICO]</b>" if r["critical"] and r["status"] != "PASS" else ""
             lines.append(
@@ -1067,6 +1104,8 @@ def _format_telegram(
         # --- Dealers: agrupados por status ---
         dealer_by_status: Dict[str, List[Dict]] = {}
         for r in dealers:
+            if r.get("canal_offline"):
+                continue  # já contabilizada no bloco de canal offline acima
             dealer_by_status.setdefault(r["status"], []).append(r)
 
         d_fail = dealer_by_status.get("FAIL", [])

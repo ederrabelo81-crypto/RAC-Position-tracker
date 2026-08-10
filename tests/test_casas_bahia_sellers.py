@@ -140,3 +140,87 @@ class TestHasSellerData:
 
     def test_string_vazia_nao_conta_como_seller(self, scraper):
         assert scraper._has_seller_data([{"Buy Box Seller": ""}]) is False
+
+
+
+
+class TestMergeSellerFields:
+    """
+    Enriquecer o DOM em vez de substituí-lo.
+
+    O recorte da API (`_from`/`_to` sobre o catálogo) e a vitrine renderizada
+    não devolvem sempre o mesmo conjunto de produtos. Numa troca integral, os
+    cards que só existiam no DOM sumiriam da coleta levando junto preço e
+    posição — que estavam corretos. A posição do DOM é, ainda por cima, a que
+    o usuário viu na busca orgânica.
+    """
+
+    @staticmethod
+    def _dom(url, pos, preco):
+        return {
+            "URL Produto": url, "Posição Geral": pos, "Preço (R$)": preco,
+            "Buy Box Seller": None, "Qtd Sellers": None, "Tipo Seller": None,
+        }
+
+    @staticmethod
+    def _api(url, seller, qtd):
+        return {
+            "URL Produto": url, "Buy Box Seller": seller,
+            "Qtd Sellers": qtd, "Tipo Seller": "3P",
+        }
+
+    def test_dom_ganha_seller_sem_perder_registros(self):
+        dom = [self._dom("https://cb.com/p/1", 1, 2199.0),
+               self._dom("https://cb.com/p/2", 2, 2599.0)]
+        api = [self._api("https://cb.com/p/1", "LojaX", 4),
+               self._api("https://cb.com/p/2", "LojaY", 2)]
+
+        n = CasasBahiaScraper._merge_seller_fields(dom, api)
+
+        assert n == 2
+        assert len(dom) == 2
+        assert dom[0]["Buy Box Seller"] == "LojaX"
+        assert dom[0]["Qtd Sellers"] == 4
+        # Preço e posição do DOM preservados — é o que a busca mostrou.
+        assert dom[0]["Posição Geral"] == 1
+        assert dom[0]["Preço (R$)"] == 2199.0
+
+    def test_api_parcial_nao_encolhe_a_pagina(self):
+        """O caso que a troca integral quebrava: API menor que o DOM."""
+        dom = [self._dom(f"https://cb.com/p/{i}", i, 1000.0 + i) for i in range(1, 6)]
+        api = [self._api("https://cb.com/p/2", "LojaX", 3)]
+
+        n = CasasBahiaScraper._merge_seller_fields(dom, api)
+
+        assert n == 1
+        assert len(dom) == 5, "nenhum card do DOM pode ser descartado"
+        assert dom[1]["Buy Box Seller"] == "LojaX"
+        assert dom[0]["Buy Box Seller"] is None
+
+    def test_casa_ignorando_query_string(self):
+        dom = [self._dom("https://cb.com/p/1?utm_source=busca", 1, 99.0)]
+        api = [self._api("https://cb.com/p/1", "LojaX", 2)]
+        assert CasasBahiaScraper._merge_seller_fields(dom, api) == 1
+        assert dom[0]["Buy Box Seller"] == "LojaX"
+
+    def test_sem_casamento_devolve_zero(self):
+        dom = [self._dom("https://cb.com/p/9", 1, 99.0)]
+        api = [self._api("https://cb.com/p/1", "LojaX", 2)]
+        assert CasasBahiaScraper._merge_seller_fields(dom, api) == 0
+        assert dom[0]["Buy Box Seller"] is None
+
+    def test_nao_sobrescreve_seller_ja_presente(self):
+        dom = [self._dom("https://cb.com/p/1", 1, 99.0)]
+        dom[0]["Buy Box Seller"] = "JaTinha"
+        api = [self._api("https://cb.com/p/1", "LojaX", 2)]
+
+        CasasBahiaScraper._merge_seller_fields(dom, api)
+
+        assert dom[0]["Buy Box Seller"] == "JaTinha"
+        assert dom[0]["Qtd Sellers"] == 2  # campo vazio ainda é preenchido
+
+    def test_api_sem_seller_nao_polui_o_dom(self):
+        dom = [self._dom("https://cb.com/p/1", 1, 99.0)]
+        api = [{"URL Produto": "https://cb.com/p/1", "Buy Box Seller": None}]
+        assert CasasBahiaScraper._merge_seller_fields(dom, api) == 0
+        assert dom[0]["Buy Box Seller"] is None
