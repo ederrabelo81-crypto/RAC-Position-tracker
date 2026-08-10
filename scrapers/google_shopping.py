@@ -409,16 +409,92 @@ class GoogleShoppingScraper(BaseScraper):
     # Debug dump
     # ------------------------------------------------------------------
 
-    def _dump_debug(self, html: str, page: int, keyword: str) -> None:
+    def _dump_debug(
+        self, html: str, page: int, keyword: str, causa: str = "debug"
+    ) -> None:
         try:
             log_dir = Path(LOGS_DIR)
             log_dir.mkdir(parents=True, exist_ok=True)
             safe_kw = keyword[:30].replace(" ", "_").replace("/", "-")
-            path = log_dir / f"google_debug_p{page}_{safe_kw}.html"
+            path = log_dir / f"google_{causa}_p{page}_{safe_kw}.html"
             path.write_text(html, encoding="utf-8")
             logger.warning(f"[{self.platform_name}] HTML salvo para diagnóstico: {path}")
         except Exception as e:
             logger.debug(f"[{self.platform_name}] Erro ao salvar debug: {e}")
+
+    # ------------------------------------------------------------------
+    # Diagnóstico de resultado vazio
+    # ------------------------------------------------------------------
+    # O Google Shopping está com ZERO registros desde 23/05/2026 (79 dias em
+    # 10/08). O remédio óbvio — mais seletores de fallback — já foi aplicado
+    # em Mai/2026 (são 13 hoje) e não resolveu, então repetir a dose não é
+    # diagnóstico. O que falta é saber QUAL das causas está em jogo: o log
+    # dizia apenas "0 cards encontrados", que é compatível com todas elas.
+    #
+    # As causas são mutuamente excludentes e pedem ações opostas: um muro de
+    # consentimento se resolve com cookie/perfil; um challenge se resolve com
+    # IP residencial; um layout novo se resolve com parser. Nomear a causa no
+    # log e no nome do dump é o que transforma "não funciona" em uma decisão.
+
+    _CAUSAS_ZERO = (
+        ("challenge", (
+            "unusual traffic", "tráfego incomum", "/sorry/",
+            "detected unusual", "systems have detected",
+        )),
+        ("consent", (
+            "consent.google", "before you continue", "antes de continuar",
+            "aceitar tudo", "accept all", "cookieconsent",
+        )),
+        ("sem_resultados", (
+            "did not match any", "não encontrou nenhum",
+            "no results found", "nenhum resultado",
+        )),
+        ("login", ("accounts.google.com/servicelogin", "faça login")),
+    )
+
+    def _classify_zero_result(self, html: str) -> str:
+        """
+        Nomeia a causa provável de uma página sem cards.
+
+        Args:
+            html: HTML bruto da resposta.
+
+        Returns:
+            Uma de: ``challenge`` (anti-bot/IP marcado), ``consent`` (muro de
+            cookies), ``sem_resultados`` (busca legítima e vazia), ``login``,
+            ou ``layout`` (a página veio normal — os seletores é que não
+            reconhecem mais os cards).
+
+        Note:
+            ``layout`` é o único caso em que mexer no parser é o conserto certo;
+            nos demais o parser está correto e o problema é de acesso.
+        """
+        lowered = (html or "").lower()
+        for causa, marcadores in self._CAUSAS_ZERO:
+            if any(marcador in lowered for marcador in marcadores):
+                return causa
+        return "layout"
+
+    _ACAO_POR_CAUSA = {
+        "challenge": (
+            "IP marcado pelo anti-bot do Google (datacenter). Parser está OK — "
+            "exige proxy residencial BR ou coleta pelo PC local."
+        ),
+        "consent": (
+            "Muro de consentimento de cookies bloqueando a SERP. Parser está OK "
+            "— exige perfil com o consentimento já aceito."
+        ),
+        "sem_resultados": (
+            "O Google respondeu busca vazia para esta keyword — não é falha "
+            "de coleta."
+        ),
+        "login": "Redirecionado para login do Google — exige perfil autenticado.",
+        "layout": (
+            "Página veio normal, mas nenhum dos 13 seletores reconheceu cards: "
+            "layout do Google Shopping mudou. Aqui sim o conserto é no parser "
+            "— use o HTML salvo para achar o novo container."
+        ),
+    }
 
     # ------------------------------------------------------------------
     # Parse principal
@@ -450,7 +526,13 @@ class GoogleShoppingScraper(BaseScraper):
         )
 
         if not items:
-            self._dump_debug(html, page, keyword)
+            causa = self._classify_zero_result(html)
+            logger.warning(
+                f"[{self.platform_name}] 0 cards em '{keyword}' (pág {page}) — "
+                f"causa provável: {causa.upper()}. "
+                f"{self._ACAO_POR_CAUSA.get(causa, '')}"
+            )
+            self._dump_debug(html, page, keyword, causa=causa)
             return []
 
         # Log único do HTML do primeiro card para diagnóstico de seletores
