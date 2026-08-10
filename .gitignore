@@ -25,6 +25,10 @@ utils/sessions/
 # Aqui ficam só o backend local e o cache das partições baixadas.
 data/history/
 
+# Série de mais vendidos — acumulada em runtime; a fonte de verdade é a
+# tabela `bestsellers` no Supabase.
+data/bestsellers/
+
 # Credenciais OAuth do Drive baixadas do Google Cloud Console
 client_secret*.json
 service_account*.json

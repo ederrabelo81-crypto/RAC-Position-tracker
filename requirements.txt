@@ -30,6 +30,10 @@ Pillow>=10.0.0
 filelock>=3.13.0
 # Leitor de .xlsx (PriceTrack uploads via Streamlit Import History)
 openpyxl>=3.1.0
+# Backend de `DataFrame.to_markdown()` — usado pelos briefs de mais vendidos
+# (bestsellers/report.py). Sem ele a coleta grava CSV/histórico e só então
+# morre com ImportError na hora de escrever o relatório.
+tabulate>=0.9.0
 # OPCIONAL — só para o backend DSN direto do pricetrack_importer
 # (SUPABASE_DSN). Sem ele o importador usa a API REST do Supabase e avisa.
 # Descomente se for usar o caminho psycopg2:

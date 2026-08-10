@@ -404,10 +404,25 @@ class ShopeeScraper(BaseScraper):
     # Chamada à API
     # ------------------------------------------------------------------
 
-    def _fetch_page(self, keyword: str, page: int) -> Optional[dict]:
+    def _fetch_page(
+        self, keyword: str, page: int, by: str = "relevancy"
+    ) -> Optional[dict]:
+        """
+        Uma página do `search_items`.
+
+        Args:
+            keyword: termo buscado.
+            page:    página 0-based (a API pagina por `newest`).
+            by:      critério de ordenação. "relevancy" é o da SERP monitorada
+                     por keyword; "sales" é a ordenação por vendas usada pela
+                     coleta de mais vendidos. São universos DIFERENTES e não
+                     comparáveis entre si — pela relevância a Midea aparecia em
+                     17 de 55 posições e melhor rank #4; pela ordenação de
+                     vendas, 1 de 35 e rank #14 (08/08/2026).
+        """
         newest = page * _ITEMS_PER_PAGE
         params = {
-            "by": "relevancy",
+            "by": by,
             "keyword": keyword,
             "limit": _ITEMS_PER_PAGE,
             "newest": newest,
