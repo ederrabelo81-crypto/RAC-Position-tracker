@@ -174,3 +174,16 @@ class TestPisoRelativoDeVolume:
         titulos = [f"Ar Condicionado Split Marca{i} 12000 BTUs" for i in range(20)]
         ocorrencias = validar(_coleta("mercadolivre", titulos))
         assert not any("truncada" in o.mensagem for o in ocorrencias)
+
+
+class TestBackfillSemProvaDeOrdenacao:
+    def test_export_sem_url_vai_para_quarentena(self):
+        """
+        Um .xlsx sem `web_scraper_start_url` não tem como provar que a lista
+        estava ordenada por vendas. Preencher o endpoint com a URL canônica do
+        registro (que sempre contém o parâmetro) faria qualquer planilha
+        passar — e contaminaria o histórico com ordenação não comprovada.
+        """
+        df = _coleta("amazon", _SPLITS, endpoint="")
+        df["url_coleta"] = ""
+        assert plataformas_em_quarentena(validar(df)) == ["amazon"]

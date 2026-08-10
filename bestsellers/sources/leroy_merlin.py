@@ -112,8 +112,12 @@ class LeroyMerlinBestSellers(BestSellerSource):
     # ------------------------------------------------------------------
 
     def _parse(self, hits: List[Dict[str, Any]], offset: int) -> List[BestSellerItem]:
+        # Passada 1: classifica sem tocar na rede e junta os IDs pendentes.
+        classificados = [(hit, self._leroy._classify_hit_seller(hit)) for hit in hits]
+        self._resolver_pendentes(classificados)
+
         itens: List[BestSellerItem] = []
-        for hit in hits:
+        for hit, info in classificados:
             titulo = (
                 hit.get("name")
                 or hit.get("shortName")
@@ -123,7 +127,6 @@ class LeroyMerlinBestSellers(BestSellerSource):
             if not titulo:
                 continue
 
-            info = self._leroy._classify_hit_seller(hit)
             itens.append(BestSellerItem(
                 rank=offset + len(itens) + 1,
                 titulo=titulo,
@@ -137,6 +140,38 @@ class LeroyMerlinBestSellers(BestSellerSource):
                 url_produto=self._leroy._extract_algolia_url(hit),
             ))
         return itens
+
+    def _resolver_pendentes(self, classificados) -> None:
+        """
+        Resolve os sellers 3P que o cache não conhece, abrindo 1 PDP por ID.
+
+        O índice devolve o lojista 3P como ObjectId opaco. Sem esta passada, o
+        seller de todo parceiro novo entraria vazio na série — e o cache
+        persistente nunca aprenderia o nome, repetindo a lacuna todo dia.
+        O custo é por SELLER novo, não por produto: dezenas de hits colapsam
+        em poucos IDs.
+        """
+        pendentes: Dict[str, str] = {}
+        for hit, info in classificados:
+            sid = info.get("seller_id")
+            if info.get("seller") is None and sid and sid not in pendentes:
+                url = self._leroy._extract_algolia_url(hit)
+                if url:
+                    pendentes[sid] = url
+        if not pendentes:
+            return
+
+        logger.debug(f"[{self.nome}] {len(pendentes)} seller(s) 3P a resolver via PDP")
+        try:
+            resolvidos = self._leroy._resolve_pending_sellers(pendentes)
+        except Exception as exc:
+            logger.warning(f"[{self.nome}] Resolução de sellers falhou: {exc}")
+            return
+
+        for _, info in classificados:
+            sid = info.get("seller_id")
+            if info.get("seller") is None and sid in resolvidos:
+                info["seller"] = resolvidos[sid]
 
     @staticmethod
     def _preco(hit: Dict[str, Any]) -> Optional[float]:

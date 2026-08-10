@@ -199,16 +199,26 @@ class BestSellerSource(ABC):
         carrossel. A chave é o SKU da plataforma quando existe — o título
         sozinho colapsaria variantes legítimas (mesmo modelo, BTU diferente,
         quando o BTU não está no título).
+
+        A ORDEM DE APARIÇÃO é preservada: o item fica onde foi encontrado e
+        apenas herda o menor `rank` entre suas ocorrências. Reordenar pela
+        posição — quando dois blocos independentes da página numeram cada um
+        a partir de 1 — promoveria um card do segundo bloco à frente de um
+        card que veio antes dele na página.
         """
         vistos: Dict[str, BestSellerItem] = {}
-        ordenados = sorted(itens, key=lambda i: i.rank)
-        for item in ordenados:
+        ordem: List[str] = []
+        for item in itens:
             chave = item.sku_plataforma or (item.titulo or "").strip().lower()
             if not chave:
                 continue
-            if chave not in vistos:
+            anterior = vistos.get(chave)
+            if anterior is None:
                 vistos[chave] = item
-        return sorted(vistos.values(), key=lambda i: i.rank)
+                ordem.append(chave)
+            elif item.rank < anterior.rank:
+                anterior.rank = item.rank
+        return [vistos[chave] for chave in ordem]
 
     def _normalizar_ranks(self, itens: List[BestSellerItem]) -> List[BestSellerItem]:
         """
@@ -234,8 +244,11 @@ class BestSellerSource(ABC):
                 "lista — ranking reescrito pela ordem de aparição."
             )
         elif self.ranks_explicitos:
-            return itens
+            # A numeração impressa É o ranking: ordena por ela (estável, então
+            # empates mantêm a ordem de aparição) e devolve como veio.
+            return sorted(itens, key=lambda i: i.rank)
 
+        # Sem numeração impressa, a ordem de aparição é o ranking.
         for novo, item in enumerate(itens, start=1):
             item.rank = novo
         return itens

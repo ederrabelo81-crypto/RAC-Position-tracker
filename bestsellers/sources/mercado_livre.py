@@ -97,7 +97,18 @@ class MercadoLivreBestSellers(BestSellerSource):
             page.wait_for_selector(", ".join(_ITEM_SELECTORS), timeout=15_000)
         except Exception:
             logger.debug(f"[{self.nome}] Cards não apareceram em 15s — segue para o parse.")
-        self._ml._human_scroll(steps=10, step_px=500)
+
+        # Uma navegação transitória do ML no meio do scroll destrói o contexto
+        # de execução e o `evaluate` estoura. Deixar isso subir marcaria a
+        # plataforma como AUSENTE sem nem chegar à detecção de gate nem ao
+        # parse — o estado atual da página costuma bastar.
+        try:
+            self._ml._human_scroll(steps=10, step_px=500)
+        except Exception as exc:
+            logger.warning(
+                f"[{self.nome}] Scroll interrompido ({exc}) — seguindo com o "
+                "estado atual da página."
+            )
 
         html = page.content()
 

@@ -250,16 +250,38 @@ class TestEstabilidade:
         assert tabela.iloc[0]["rank_inalterado_pct"] == 100
         assert tabela.iloc[0]["veredito"] == "CURADORIA SUSPEITA"
 
+    @staticmethod
+    def _lista_com_sku_estavel(data, ordem):
+        """
+        Mesma lista de anúncios em outra ordem.
+
+        O `sku_plataforma` acompanha o ANÚNCIO, não a posição — é assim na
+        vida real (o ASIN não muda quando o produto sobe no ranking), e é o
+        que permite medir deslocamento em vez de "todos os itens são novos".
+        """
+        spec = SOURCES["amazon"]
+        linhas = []
+        for posicao, anuncio in enumerate(ordem, start=1):
+            item = BestSellerItem(
+                rank=posicao,
+                titulo=f"Ar Condicionado Split Inverter Marca{anuncio} 12000 BTUs",
+                sku_plataforma=f"ASIN{anuncio:03d}",
+            )
+            linhas.append(item.to_row(
+                data=data, horario="09:30", run_id=None, spec=spec,
+                url_coleta="u", endpoint="e",
+            ))
+        return metrics.preparar(to_dataframe(linhas))
+
     def test_ranking_que_se_mexe(self):
-        antes = metrics.preparar(_lista("amazon", "2026-08-08", _TOP10_40PCT))
-        hoje = metrics.preparar(
-            _lista("amazon", "2026-08-10", list(reversed(_TOP10_40PCT)))
-        )
-        # sku_plataforma inclui a posição, então invertê-la muda a chave;
-        # o pareamento cai no título, que é o que sobra na vida real.
+        antes = self._lista_com_sku_estavel("2026-08-08", list(range(1, 11)))
+        hoje = self._lista_com_sku_estavel("2026-08-10", list(range(10, 0, -1)))
+
         tabela = metrics.estabilidade(hoje, antes)
-        if len(tabela):
-            assert tabela.iloc[0]["veredito"] == "ranking vivo"
+        assert len(tabela) == 1                       # os 10 anúncios pareiam
+        assert tabela.iloc[0]["itens_comuns"] == 10
+        assert tabela.iloc[0]["rank_inalterado_pct"] == 0
+        assert tabela.iloc[0]["veredito"] == "ranking vivo"
 
     def test_plataforma_excluida_nao_aparece(self):
         antes = metrics.preparar(_lista("amazon", "2026-08-08", _TOP10_40PCT))
@@ -380,3 +402,41 @@ class TestEstabilidadeAposIdaEVoltaPeloCsv:
         tabela = metrics.estabilidade(hoje, anterior)
         assert len(tabela) == 1
         assert tabela.iloc[0]["itens_comuns"] == 6   # 7 posições, 1 sem SKU
+
+
+class TestTrocaDeEndpointNoKpi:
+    """
+    O KPI é a métrica principal e não podia ser a exceção: preço e
+    estabilidade já excluíam a plataforma cujo endpoint mudou, mas o
+    `delta_pp` continuava publicado — comparando duas populações diferentes.
+    """
+
+    def test_delta_diario_exclui_plataforma_com_endpoint_novo(self):
+        hoje = metrics.preparar(_lista("amazon", "2026-08-17", _TOP10_10PCT))
+        antes = metrics.preparar(_lista("amazon", "2026-08-10", _TOP10_40PCT))
+
+        delta = metrics.delta_diario(hoje, antes, excluir=["amazon"])
+        assert pd.isna(delta.iloc[0]["delta_pp"])
+        assert delta.iloc[0]["pct_topN"] == 10.0   # o KPI do dia continua
+
+    def test_variacao_periodica_nao_compara_endpoints_diferentes(self):
+        antes = _lista("amazon", "2026-08-03", _TOP10_40PCT)
+        depois = _lista("amazon", "2026-08-10", _TOP10_10PCT)
+        depois["endpoint"] = "https://www.amazon.com.br/gp/bestsellers/home/OUTRO_NO/"
+        historico = metrics.preparar(pd.concat([antes, depois], ignore_index=True))
+
+        variacao = metrics.variacao_periodo(
+            metrics.serie_agregada(historico, metrics.PERIODO_SEMANAL)
+        )
+        assert list(variacao["direcao"]) == ["sem base", "endpoint mudou"]
+        assert pd.isna(variacao["delta_pp"].iloc[1])
+
+    def test_endpoint_estavel_continua_gerando_delta(self):
+        historico = metrics.preparar(pd.concat([
+            _lista("amazon", "2026-08-03", _TOP10_40PCT),
+            _lista("amazon", "2026-08-10", _TOP10_10PCT),
+        ], ignore_index=True))
+        variacao = metrics.variacao_periodo(
+            metrics.serie_agregada(historico, metrics.PERIODO_SEMANAL)
+        )
+        assert variacao["delta_pp"].iloc[1] == -30.0

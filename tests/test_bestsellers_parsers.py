@@ -366,3 +366,238 @@ class TestLiberacaoDeRecursos:
 
         with _FechamentoQuebrado([]):
             pass  # não deve levantar
+
+
+# ---------------------------------------------------------------------------
+# Casas Bahia (VTEX Intelligent Search)
+# ---------------------------------------------------------------------------
+
+def _produto_vtex(pid: str, nome: str, preco: float, seller: str, seller_id: str,
+                  disponivel: bool = True) -> dict:
+    return {
+        "productId": pid,
+        "productName": nome,
+        "linkText": nome.lower().replace(" ", "-"),
+        "rating": {"average": 4.4, "totalCount": 87},
+        "items": [{
+            "sellers": [{
+                "sellerId": seller_id,
+                "sellerName": seller,
+                "sellerDefault": True,
+                "commertialOffer": {"Price": preco, "IsAvailable": disponivel},
+            }],
+        }],
+    }
+
+
+class TestCasasBahiaParser:
+    @pytest.fixture
+    def fonte(self):
+        from bestsellers.sources.casas_bahia import CasasBahiaBestSellers
+        from scrapers.casas_bahia import CasasBahiaScraper
+
+        fonte = CasasBahiaBestSellers()
+        fonte._cb = CasasBahiaScraper()
+        return fonte
+
+    def test_extrai_produtos_e_ranks(self, fonte):
+        produtos = [
+            _produto_vtex("1", "Ar Condicionado Split Midea 12000 BTUs", 1899.0, "Casas Bahia", "1"),
+            _produto_vtex("2", "Ar Condicionado Split LG 9000 BTUs", 2199.0, "Loja Parceira", "77"),
+        ]
+        itens = fonte._parse(produtos, offset=0)
+        assert [i.rank for i in itens] == [1, 2]
+        assert itens[0].preco == 1899.0
+        assert itens[0].sku_plataforma == "1"
+        assert itens[0].rating == 4.4
+        assert itens[0].reviews == 87
+
+    def test_buy_box_seller_do_array_vtex(self, fonte):
+        """`sellers[]` é o motivo de usar a API em vez do DOM: só ele expõe
+        quem vence a buy box."""
+        itens = fonte._parse(
+            [_produto_vtex("1", "Ar Condicionado Split Gree 12000", 1799.0, "Loja Parceira", "77")],
+            offset=0,
+        )
+        assert itens[0].seller == "Loja Parceira"
+
+    def test_offset_continua_a_numeracao(self, fonte):
+        produtos = [_produto_vtex("9", "Ar Condicionado Split Midea 9000", 1699.0, "Casas Bahia", "1")]
+        assert fonte._parse(produtos, offset=24)[0].rank == 25
+
+    def test_contaminacao_entra_na_base_marcada(self, fonte):
+        """6 de 20 itens não-RAC em 10/08/2026 — o portão precisa vê-los."""
+        produtos = [
+            _produto_vtex("1", "Umidificador de Ar Ultrassônico 3L", 199.0, "Casas Bahia", "1"),
+            _produto_vtex("2", "Ar Condicionado Split Midea 12000 BTUs", 1899.0, "Casas Bahia", "1"),
+        ]
+        itens = fonte._parse(produtos, offset=0)
+        assert [i.no_escopo for i in itens] == [False, True]
+
+    def test_produto_sem_nome_e_descartado(self, fonte):
+        assert fonte._parse([{"productId": "5", "items": []}], offset=0) == []
+
+    def test_url_absoluta(self, fonte):
+        itens = fonte._parse(
+            [_produto_vtex("1", "Ar Condicionado Split Midea 12000", 1899.0, "Casas Bahia", "1")],
+            offset=0,
+        )
+        assert itens[0].url_produto.startswith("https://www.casasbahia.com.br/")
+
+    def test_resposta_html_vira_erro_de_bloqueio(self, fonte):
+        """HTML no lugar de JSON é desafio do Akamai — não lista curta."""
+        class _Resposta:
+            status_code = 200
+            headers = {"content-type": "text/html; charset=utf-8"}
+
+            def json(self):
+                return {}
+
+        class _Sessao:
+            def get(self, *_a, **_k):
+                return _Resposta()
+
+        with pytest.raises(RuntimeError, match="Akamai"):
+            fonte._consultar(_Sessao(), {"query": "ar condicionado"}, 1)
+
+
+# ---------------------------------------------------------------------------
+# Leroy Merlin (Algolia)
+# ---------------------------------------------------------------------------
+
+class TestLeroyMerlinParser:
+    @pytest.fixture
+    def fonte(self):
+        from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers
+        from scrapers.leroy_merlin import LeroyMerlinScraper
+
+        fonte = LeroyMerlinBestSellers()
+        fonte._leroy = LeroyMerlinScraper()
+        return fonte
+
+    def _hit(self, oid, nome, preco, **extra):
+        base = {
+            "objectID": oid,
+            "name": nome,
+            "averagePromotionalPrice": preco,
+            "linkText": nome.lower().replace(" ", "-"),
+        }
+        base.update(extra)
+        return base
+
+    def test_extrai_hits(self, fonte):
+        hits = [
+            self._hit("A1", "Ar Condicionado Split Inverter Midea 12000 BTUs", 1899.0),
+            self._hit("A2", "Ar Condicionado Split LG Dual 9000 BTUs", 2199.0),
+        ]
+        itens = fonte._parse(hits, offset=0)
+        assert [i.rank for i in itens] == [1, 2]
+        assert itens[0].preco == 1899.0
+        assert itens[0].sku_plataforma == "A1"
+
+    def test_produto_1p_sem_marketplace_sellers(self, fonte):
+        item = fonte._parse([self._hit("A1", "Ar Condicionado Split Midea 12000", 1899.0)], offset=0)[0]
+        assert item.seller == "Leroy Merlin"
+
+    def test_seller_3p_pendente_e_resolvido_via_pdp(self, fonte, monkeypatch):
+        """O índice devolve o lojista 3P como ObjectId opaco. Sem a passada de
+        resolução, todo parceiro novo entraria com seller vazio e o cache
+        nunca aprenderia o nome."""
+        chamadas = {}
+
+        def _resolver(pendentes):
+            chamadas.update(pendentes)
+            return {"5f3a": "Parceiro Clima"}
+
+        monkeypatch.setattr(fonte._leroy, "_resolve_pending_sellers", _resolver)
+        hits = [self._hit(
+            "A1", "Ar Condicionado Split Gree 12000 BTUs", 1799.0,
+            marketplaceSellers=["5f3a"],
+        )]
+        item = fonte._parse(hits, offset=0)[0]
+        assert item.seller == "Parceiro Clima"
+        assert "5f3a" in chamadas          # 1 PDP por seller novo, não por produto
+
+    def test_hit_sem_titulo_e_descartado(self, fonte):
+        assert fonte._parse([{"objectID": "A9"}], offset=0) == []
+
+
+class TestShopeeCamposSensiveis:
+    @pytest.fixture
+    def fonte(self):
+        fonte = ShopeeBestSellers()
+        from scrapers.shopee import ShopeeScraper
+
+        fonte._shopee = ShopeeScraper()
+        return fonte
+
+    def test_unidades_por_mes_sobrevivem_ao_campo_numerico(self, fonte):
+        """
+        O payload de produção traz o numérico `historical_sold_count` E o
+        texto com "/Mês". `ShopeeScraper._extract_sold` prioriza o numérico e
+        devolve "948 vendidos" — sem o qualificador, a Shopee inteira entraria
+        como 'acumulado' e o motor de métricas descartaria a ÚNICA medida de
+        velocidade real do conjunto.
+        """
+        payload = {
+            "itemid": 1, "shopid": 9, "name": "Ar Condicionado Split Midea 12000",
+            "price": 179900000, "shop_name": "Loja Fria",
+            "item_card_display_sold_count": {
+                "historical_sold_count": 948,
+                "historical_sold_count_text": "948 Vendido/Mês",
+            },
+        }
+        item = fonte._parse([{"item_basic": payload}], offset=0)[0]
+        assert item.vendidos == 948.0
+        assert item.base_vendidos == "mes"
+
+    def test_somente_numerico_e_acumulado(self, fonte):
+        """`historical_sold_count` sem texto é acumulado por definição —
+        marcar como mensal misturaria unidades na soma de velocidade."""
+        payload = {
+            "itemid": 2, "shopid": 9, "name": "Ar Condicionado Split LG 9000",
+            "price": 219900000, "shop_name": "Loja Quente",
+            "item_card_display_sold_count": {"historical_sold_count": 312},
+        }
+        item = fonte._parse([{"item_basic": payload}], offset=0)[0]
+        assert item.vendidos == 312.0
+        assert item.base_vendidos == "acumulado"
+
+    def test_cidade_nao_vira_seller(self, fonte):
+        """`shop_location` é a cidade de origem do envio. Gravá-la no campo de
+        seller corromperia a leitura de quem vende."""
+        payload = {
+            "itemid": 3, "shopid": 9, "name": "Ar Condicionado Split Gree 12000",
+            "price": 159900000, "shop_location": "São Paulo",
+        }
+        item = fonte._parse([{"item_basic": payload}], offset=0)[0]
+        assert item.seller is None
+
+    def test_seller_aninhado_em_shop_data(self, fonte):
+        payload = {
+            "itemid": 4, "shopid": 9, "name": "Ar Condicionado Split Midea 9000",
+            "price": 149900000, "shop_location": "Curitiba",
+            "shop_data": {"shop_name": "Midea Oficial"},
+        }
+        item = fonte._parse([{"item_basic": payload}], offset=0)[0]
+        assert item.seller == "Midea Oficial"
+
+    def test_modo_browser_local_nao_usa_a_sessao_http(self, fonte):
+        """Com RAC_LOCAL_CHROME o scraper não cria `_session`: chamar
+        `_fetch_page` ali estoura em `None.get` e a Shopee sai como ausente."""
+        fonte._shopee._local_active = True
+        fonte._shopee._session = None
+
+        def _explode(*_a, **_k):
+            raise AssertionError("_fetch_page não deve ser chamado no modo browser")
+
+        fonte._shopee._fetch_page = _explode
+        chamou = {}
+
+        def _via_browser(paginas):
+            chamou["paginas"] = paginas
+            return []
+
+        fonte._coletar_via_browser = _via_browser
+        assert fonte._coletar(2) == []
+        assert chamou["paginas"] == 2

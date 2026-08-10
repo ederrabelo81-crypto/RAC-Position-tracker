@@ -23,7 +23,8 @@ fingerprint. Sessão expira em horas — re-capturar com
 import random
 import re
 import time
-from typing import List, Optional
+from typing import Any, List, Optional
+from urllib.parse import quote_plus
 
 from loguru import logger
 
@@ -34,11 +35,12 @@ from scrapers.shopee import ShopeeScraper
 
 _KEYWORD = "ar condicionado"
 _ORDENACAO = "sales"
+_ITENS_POR_PAGINA = 60
 _DELAY_ENTRE_PAGINAS = (3.0, 7.0)
 
 # "948 Vendido/Mês", "1,2mil vendidos", "948 vendidos"
 _RE_VENDIDOS = re.compile(r"([\d.,]+)\s*(mil|k)?\s*vendid", re.I)
-_RE_POR_MES = re.compile(r"vendido\s*/\s*m[êe]s|/\s*m[êe]s", re.I)
+_RE_POR_MES = re.compile(r"/\s*m[êe]s|por\s+m[êe]s", re.I)
 
 
 class ShopeeBestSellers(BestSellerSource):
@@ -60,15 +62,26 @@ class ShopeeBestSellers(BestSellerSource):
             self._shopee = None
 
     def _coletar(self, paginas: int) -> List[BestSellerItem]:
-        shopee = self._shopee
         # O endpoint carrega o parâmetro de ordenação: é ele que o portão de
         # validação inspeciona para provar que a lista não é relevância.
         self.registrar_endpoint(
             f"https://shopee.com.br/api/v4/search/search_items"
             f"?by={_ORDENACAO}&keyword={_KEYWORD.replace(' ', '%20')}&order=desc"
         )
+        # Com RAC_LOCAL_CHROME o `ShopeeScraper` abre o Chrome logado e NÃO
+        # cria sessão HTTP — chamar `_fetch_page` ali estoura em `None.get`.
+        # O caminho do browser também é o melhor: a própria página dispara o
+        # `search_items` com o header anti-fraude que o replay não consegue
+        # forjar.
+        if self._shopee._local_active:
+            return self._coletar_via_browser(paginas)
+        return self._coletar_via_api(paginas)
 
+    def _coletar_via_api(self, paginas: int) -> List[BestSellerItem]:
+        """Replay da API v4 via curl_cffi + sessão capturada."""
+        shopee = self._shopee
         itens: List[BestSellerItem] = []
+
         for pagina in range(max(1, paginas)):
             dados = shopee._fetch_page(_KEYWORD, pagina, by=_ORDENACAO)
             if dados is None:
@@ -93,7 +106,78 @@ class ShopeeBestSellers(BestSellerSource):
                 )
             itens.extend(novos)
 
-            if len(brutos) < 60:
+            if len(brutos) < _ITENS_POR_PAGINA:
+                break
+            time.sleep(random.uniform(*_DELAY_ENTRE_PAGINAS))
+        return itens
+
+    def _coletar_via_browser(self, paginas: int) -> List[BestSellerItem]:
+        """
+        Coleta dentro do Chrome logado, interceptando a API v4 nativa.
+
+        A URL navegada carrega `sortBy=sales` — é a MESMA ordenação da rota
+        HTTP, então as duas vias produzem a mesma população. Sem o parâmetro,
+        a página serviria relevância e a coleta mediria outra coisa.
+        """
+        shopee = self._shopee
+        if shopee._local_browser is not None and shopee._page is not None:
+            shopee._local_browser.warmup(
+                shopee._page, "https://shopee.com.br/", host_key="shopee"
+            )
+
+        itens: List[BestSellerItem] = []
+        for pagina in range(max(1, paginas)):
+            url = (
+                f"https://shopee.com.br/search?keyword={quote_plus(_KEYWORD)}"
+                f"&sortBy={_ORDENACAO}&page={pagina}"
+            )
+            shopee._captured_search = []
+            try:
+                shopee._page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+            except Exception as exc:
+                logger.warning(f"[{self.nome}] goto p{pagina + 1} falhou: {exc}")
+                break
+
+            capturadas = shopee._await_captured(timeout_s=12.0)
+            if not capturadas:
+                # O scroll força a SERP a disparar a chamada quando o load
+                # sozinho não disparou.
+                try:
+                    for _ in range(4):
+                        shopee._page.mouse.wheel(0, 700)
+                        time.sleep(random.uniform(0.4, 0.9))
+                except Exception:
+                    pass
+                capturadas = shopee._await_captured(timeout_s=8.0)
+
+            if not capturadas:
+                raise RuntimeError(
+                    "nenhuma resposta de search_items capturada no Chrome local "
+                    "(a página pode estar exigindo login ou CAPTCHA)."
+                )
+
+            # A SERP dispara várias chamadas (ads, prefetch, resultados): fica
+            # com a que rende MAIS itens, em vez de assumir que a 1ª é a boa.
+            melhor: List[BestSellerItem] = []
+            brutos_melhor: List[dict] = []
+            for dados in capturadas:
+                brutos = dados.get("items") or []
+                if not brutos:
+                    continue
+                novos = self._parse(brutos, offset=len(itens))
+                if len(novos) > len(melhor):
+                    melhor, brutos_melhor = novos, brutos
+
+            if not melhor:
+                logger.info(f"[{self.nome}] Sem mais resultados (pág {pagina + 1}).")
+                break
+            itens.extend(melhor)
+            logger.info(
+                f"[{self.nome}] Pág {pagina + 1}: {len(melhor)} produtos "
+                "(Chrome local)"
+            )
+
+            if len(brutos_melhor) < _ITENS_POR_PAGINA:
                 break
             time.sleep(random.uniform(*_DELAY_ENTRE_PAGINAS))
         return itens
@@ -116,7 +200,9 @@ class ShopeeBestSellers(BestSellerSource):
             if not titulo:
                 continue
 
-            vendidos, base = self._extrair_vendidos(shopee._extract_sold(payload, asset))
+            vendidos, base = self._extrair_vendidos(
+                self._texto_de_vendas(payload, asset)
+            )
             itemid = payload.get("itemid") or payload.get("item_id")
             shopid = payload.get("shopid") or payload.get("shop_id")
 
@@ -128,7 +214,7 @@ class ShopeeBestSellers(BestSellerSource):
                 reviews=self._extrair_reviews(payload),
                 vendidos=vendidos,
                 base_vendidos=base,
-                seller=payload.get("shop_name") or payload.get("shop_location"),
+                seller=self._extrair_seller(payload, asset),
                 sku_plataforma=f"{shopid}_{itemid}" if itemid and shopid else None,
                 url_produto=(
                     f"https://shopee.com.br/product/{shopid}/{itemid}"
@@ -137,6 +223,75 @@ class ShopeeBestSellers(BestSellerSource):
                 patrocinado=shopee._is_sponsored(payload, bruto, asset),
             ))
         return itens
+
+    @staticmethod
+    def _extrair_seller(payload: dict, asset: dict) -> Optional[str]:
+        """
+        Nome da loja.
+
+        NUNCA cai para `shop_location`: aquele campo é a CIDADE de origem do
+        envio ("São Paulo"), e gravá-lo no campo de seller corromperia a
+        leitura de quem vende — o `data4` que a rotina manual já confundiu.
+        Sem nome de loja, o campo fica vazio: desconhecido não é um seller.
+        """
+        # No item e no asset, só chaves prefixadas por `shop_`: `name` ali é o
+        # nome do PRODUTO, e aceitá-lo colocaria o título no campo de seller.
+        for origem in (payload, asset):
+            if not isinstance(origem, dict):
+                continue
+            for chave in ("shop_name", "shop_username"):
+                valor = origem.get(chave)
+                if isinstance(valor, str) and valor.strip():
+                    return valor.strip()
+
+        # Dentro do bloco da loja, `name`/`username` já são da loja.
+        for chave_bloco in ("shop_data", "shop_info", "shop"):
+            bloco = payload.get(chave_bloco) or asset.get(chave_bloco)
+            if not isinstance(bloco, dict):
+                continue
+            for chave in ("shop_name", "name", "username"):
+                valor = bloco.get(chave)
+                if isinstance(valor, str) and valor.strip():
+                    return valor.strip()
+        return None
+
+    @staticmethod
+    def _texto_de_vendas(payload: dict, asset: dict) -> Optional[str]:
+        """
+        Texto de volume do card, PRESERVANDO o qualificador "/Mês".
+
+        `ShopeeScraper._extract_sold` devolve `f"{historical_sold_count}
+        vendidos"` sempre que o campo numérico existe — e ele existe quase
+        sempre. Passar por lá apagaria o "/Mês" do texto de exibição e a
+        Shopee inteira entraria como 'acumulado', descartando justamente a
+        única medida de velocidade real do conjunto.
+
+        Por isso os campos de TEXTO são consultados primeiro; o numérico
+        (`historical_sold_count`, acumulado por definição) só entra quando não
+        há texto nenhum.
+        """
+        blocos = [
+            payload.get("item_card_display_sold_count"),
+            asset.get("sold_count"),
+        ]
+        for bloco in blocos:
+            if not isinstance(bloco, dict):
+                continue
+            for chave in (
+                "historical_sold_count_text", "display_sold_count_text", "text",
+            ):
+                valor = bloco.get(chave)
+                if isinstance(valor, str) and valor.strip():
+                    return valor.strip()
+
+        for bloco in blocos:
+            if isinstance(bloco, dict):
+                numero = bloco.get("historical_sold_count")
+                if numero is not None:
+                    return f"{numero} vendidos"
+
+        numero = payload.get("historical_sold") or payload.get("sold")
+        return f"{numero} vendidos" if numero else None
 
     @staticmethod
     def _extrair_vendidos(texto: Optional[str]) -> tuple:

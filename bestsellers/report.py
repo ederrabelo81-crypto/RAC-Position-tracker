@@ -25,7 +25,7 @@ from bestsellers.config import (
     SOURCES,
     TOP_N,
 )
-from bestsellers.validate import NIVEL_QUARENTENA, Ocorrencia
+from bestsellers.validate import NIVEL_QUARENTENA, Ocorrencia, comparar_endpoints
 
 _RODAPE = (
     "---\n"
@@ -96,9 +96,22 @@ def brief_diario(
     linhas.append(f"## 1. KPI: % do top {n} ocupado pelo grupo Midea\n")
     base, mesmo_dia, intervalo = metrics.escolher_base_comparacao(historico, data)
 
+    # Plataformas cujo endpoint mudou desde a leitura anterior: a URL nova é
+    # outra população. Calculado UMA vez e aplicado a todas as comparações do
+    # brief — KPI, preço e estabilidade.
+    trocaram: List[str] = []
     if base is not None and len(base):
-        linhas.append(_tabela(metrics.delta_diario(hoje, base, n=n)))
+        trocaram = [o.plataforma for o in comparar_endpoints(hoje, base)]
+
+    if base is not None and len(base):
+        linhas.append(_tabela(metrics.delta_diario(hoje, base, n=n, excluir=trocaram)))
         linhas.append("")
+        if trocaram:
+            linhas.append(
+                f"**Endpoint mudou em: {', '.join(trocaram)} — `delta_pp` "
+                "vazio nessas linhas. A URL nova é outra população; a "
+                "diferença mediria troca de amostra, não competição.**\n"
+            )
         base_str = pd.to_datetime(base["data"].iloc[0]).strftime("%Y-%m-%d")
         if mesmo_dia:
             linhas.append(
@@ -138,18 +151,8 @@ def brief_diario(
 
     # --- 3 e 4. Preço e estabilidade -------------------------------------
     if base is not None and len(base):
-        from bestsellers.validate import comparar_endpoints
-
-        mudaram = [o.plataforma for o in comparar_endpoints(hoje, base)]
-        if mudaram:
-            linhas.append(
-                f"\n**Endpoint mudou em: {', '.join(mudaram)}. Populações "
-                "diferentes — estas plataformas ficam fora dos deltas de preço "
-                "e de posição.**\n"
-            )
-
         linhas.append("## 3. Piso de preço por marca e capacidade (9K/12K)\n")
-        piso = metrics.piso_preco(hoje, base, excluir=mudaram)
+        piso = metrics.piso_preco(hoje, base, excluir=trocaram)
         movimentos = metrics.movimentos_relevantes(piso)
         if len(movimentos):
             altas = int((movimentos["delta_pct"] > 0).sum())
@@ -171,7 +174,7 @@ def brief_diario(
             linhas.append("Nenhum movimento relevante de piso.\n")
 
         linhas.append("## 4. Estabilidade do ranking\n")
-        estabilidade = metrics.estabilidade(hoje, base, excluir=mudaram)
+        estabilidade = metrics.estabilidade(hoje, base, excluir=trocaram)
         linhas.append(_tabela(estabilidade))
         if len(estabilidade):
             linhas.append(

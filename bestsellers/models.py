@@ -65,6 +65,14 @@ _RE_NUCLEO_AC = re.compile(
 )
 
 
+# Frases que CONTÊM um termo de acessório mas descrevem o próprio aparelho.
+# "Bomba de Calor" é como o ciclo reverso (quente/frio) é anunciado, e vem
+# na frente do título com frequência: "Bomba de Calor 12000 BTUs Midea Split".
+# Sem esta exceção, o split reversível inteiro sairia do KPI — exatamente o
+# erro assimétrico que a classificação posicional existe para evitar.
+_RE_FALSOS_ACESSORIOS = re.compile(r"\bBOMBA\s+DE\s+CALOR\b|\bCICLO\s+REVERSO\b")
+
+
 def _regex_termos(termos) -> "re.Pattern":
     """Alternância com fronteira de palavra dos dois lados."""
     return re.compile(r"\b(?:" + "|".join(termos) + r")\b")
@@ -81,11 +89,16 @@ def _e_acessorio(texto_normalizado: str) -> bool:
     O critério é POSICIONAL: acessório antes do núcleo "ar condicionado" (ou
     núcleo ausente) significa que o anúncio é do acessório. Depois do núcleo,
     é apenas um atributo do aparelho.
+
+    Antes disso, as frases de `_RE_FALSOS_ACESSORIOS` são removidas do texto:
+    elas carregam um termo da lista ("Bomba de Calor" contém BOMBA) mas
+    descrevem o aparelho, não um acessório.
     """
-    acessorio = _RE_ACESSORIOS_NAO_RAC.search(texto_normalizado)
+    texto = _RE_FALSOS_ACESSORIOS.sub(" ", texto_normalizado)
+    acessorio = _RE_ACESSORIOS_NAO_RAC.search(texto)
     if acessorio is None:
         return False
-    nucleo = _RE_NUCLEO_AC.search(texto_normalizado)
+    nucleo = _RE_NUCLEO_AC.search(texto)
     return nucleo is None or acessorio.start() < nucleo.start()
 
 TIPO_SPLIT_HW = "SPLIT_HW"

@@ -193,6 +193,14 @@ def serie_agregada(
         rotulos = df[["data", coluna]].drop_duplicates()
         kpi = kpi.merge(rotulos, on="data", how="left").rename(columns={coluna: "periodo"})
 
+    # O endpoint viaja junto da agregação: é ele que diz se dois períodos
+    # mediram a mesma população (ver `variacao_periodo`).
+    endpoints = (
+        df.groupby(["data", "plataforma"])["endpoint"]
+        .first().reset_index().rename(columns={"endpoint": "_endpoint"})
+    )
+    kpi = kpi.merge(endpoints, on=["data", "plataforma"], how="left")
+
     agregado = (
         kpi.groupby(["periodo", "plataforma"])
         .agg(
@@ -201,6 +209,7 @@ def serie_agregada(
             pct_topN_min=("pct_topN", "min"),
             pct_topN_max=("pct_topN", "max"),
             melhor_rank=("melhor_rank", "min"),
+            endpoints=("_endpoint", lambda s: tuple(sorted(set(s.dropna())))),
         )
         .reset_index()
     )
@@ -232,6 +241,11 @@ def variacao_periodo(serie: pd.DataFrame) -> pd.DataFrame:
         lista de mais vendidos daquela plataforma — uma medida de prateleira
         que antecipa share, e que só vira leitura de share quando confrontada
         com GfK/Neotrust.
+
+        Períodos cujo endpoint de coleta mudou não geram delta: a URL nova é
+        outra população, e a diferença mediria troca de amostra em vez de
+        movimento competitivo. Esses casos saem como `direcao='endpoint
+        mudou'` — a mesma exclusão que o brief diário aplica.
     """
     if not len(serie):
         return serie.assign(pct_topN_anterior=None, delta_pp=None, direcao=None)
@@ -240,7 +254,24 @@ def variacao_periodo(serie: pd.DataFrame) -> pd.DataFrame:
     out["pct_topN_anterior"] = out.groupby("plataforma")["pct_topN_medio"].shift(1)
     out["delta_pp"] = (out["pct_topN_medio"] - out["pct_topN_anterior"]).round(1)
 
-    def _direcao(valor) -> str:
+    if "endpoints" in out.columns:
+        anteriores = out.groupby("plataforma")["endpoints"].shift(1)
+        # Descontinuidade = o conjunto de endpoints do período não bate com o
+        # do período anterior (troca de URL entre períodos), ou o próprio
+        # período misturou endpoints diferentes (troca no meio dele).
+        trocou = (
+            anteriores.notna()
+            & out["endpoints"].notna()
+            & (out["endpoints"] != anteriores)
+        ) | out["endpoints"].apply(lambda e: isinstance(e, tuple) and len(e) > 1)
+        out.loc[trocou, "delta_pp"] = np.nan
+    else:
+        trocou = pd.Series(False, index=out.index)
+
+    def _direcao(linha) -> str:
+        if linha["_trocou"]:
+            return "endpoint mudou"
+        valor = linha["delta_pp"]
         if pd.isna(valor):
             return "sem base"
         if valor > 0:
@@ -249,8 +280,9 @@ def variacao_periodo(serie: pd.DataFrame) -> pd.DataFrame:
             return "perda"
         return "estável"
 
-    out["direcao"] = out["delta_pp"].apply(_direcao)
-    return out.reset_index(drop=True)
+    out["_trocou"] = trocou
+    out["direcao"] = out.apply(_direcao, axis=1)
+    return out.drop(columns=["_trocou"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +324,26 @@ def escolher_base_comparacao(
     return base, mesmo_dia, int((alvo - data_escolhida).days)
 
 
-def delta_diario(hoje: pd.DataFrame, base: pd.DataFrame, n: int = TOP_N) -> pd.DataFrame:
-    """KPI do dia ao lado da base de comparação, com o delta em pontos percentuais."""
+def delta_diario(
+    hoje: pd.DataFrame,
+    base: pd.DataFrame,
+    n: int = TOP_N,
+    excluir: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """
+    KPI do dia ao lado da base de comparação, com o delta em pontos percentuais.
+
+    Args:
+        hoje:    coleta do dia, preparada.
+        base:    leitura anterior, preparada.
+        n:       tamanho do topo.
+        excluir: plataformas cujo endpoint mudou entre as duas datas. O KPI
+                 delas continua publicado — é o número do dia —, mas o
+                 `delta_pp` sai vazio: comparar duas populações diferentes
+                 produziria um "ganho" que é só troca de amostra. Preço e
+                 estabilidade já respeitam essa exclusão; o KPI é a métrica
+                 principal e não podia ser a exceção.
+    """
     atual = kpi_topo(hoje, n=n).set_index("plataforma")
     antes = kpi_topo(base, n=n).set_index("plataforma")
 
@@ -304,6 +354,9 @@ def delta_diario(hoje: pd.DataFrame, base: pd.DataFrame, n: int = TOP_N) -> pd.D
         antes[["pct_topN", "melhor_rank"]], rsuffix="_anterior", how="left"
     )
     tabela["delta_pp"] = (tabela["pct_topN"] - tabela["pct_topN_anterior"]).round(1)
+
+    for plataforma in set(excluir or []) & set(tabela.index):
+        tabela.loc[plataforma, ["pct_topN_anterior", "melhor_rank_anterior", "delta_pp"]] = np.nan
     return tabela.reset_index()
 
 

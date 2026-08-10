@@ -268,13 +268,25 @@ def resolver_keys(selecao) -> list:
         >>> resolver_keys(["amazon", "shopee"])
         ['amazon', 'shopee']
     """
-    if not selecao or "all" in selecao:
+    if not selecao:
         return list(sources_ativos().keys())
 
-    desconhecidas = [k for k in selecao if k not in SOURCES]
+    # A validação vem ANTES do atalho de `all`: com o atalho primeiro,
+    # `--plataformas all amazonn` engolia o erro de digitação e disparava a
+    # coleta das seis plataformas como se nada tivesse acontecido.
+    desconhecidas = [k for k in selecao if k != "all" and k not in SOURCES]
     if desconhecidas:
         raise ValueError(
             f"Plataforma(s) desconhecida(s): {', '.join(desconhecidas)}. "
             f"Disponíveis: {', '.join(SOURCES)}"
         )
+
+    if "all" in selecao:
+        if len(selecao) > 1:
+            raise ValueError(
+                "'all' não se combina com outras plataformas — use 'all' "
+                "sozinho ou liste as chaves desejadas."
+            )
+        return list(sources_ativos().keys())
+
     return [k for k in SOURCES if k in selecao]

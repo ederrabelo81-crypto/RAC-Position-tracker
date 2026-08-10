@@ -143,7 +143,7 @@ mentiroso.
 |---|---|---|
 | Ordenação por vendas | parâmetro canônico ausente do **endpoint chamado** | **QUARENTENA** — plataforma sai da análise |
 | Escopo de categoria | >15% de itens não-RAC | AVISO (itens ficam na base; o KPI os ignora) |
-| Volume mínimo | <10 itens | AVISO de coleta truncada |
+| Volume mínimo | abaixo de `max(10, 60% da lista esperada)` — na prática ≥18 para Amazon/Shopee/Leroy e ≥12 para Magalu/ML/Casas Bahia | AVISO de coleta truncada |
 | Cobertura de campo | `preco` ou `titulo` <85% | AVISO de parser quebrado |
 | Posições duplicadas | `rank` repetido | ERRO |
 | Plataforma ausente | fonte pedida sem linhas | AVISO com o motivo da falha |

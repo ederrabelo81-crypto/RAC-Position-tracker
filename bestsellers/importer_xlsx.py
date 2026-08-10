@@ -292,10 +292,13 @@ def importar_arquivo(caminho: str, data: str) -> pd.DataFrame:
             horario="",
             run_id=None,
             spec=spec,
-            url_coleta=url or spec.url_publica,
-            # O import legado prova a ordenação pela URL registrada no
-            # próprio export — é ela que o portão de validação inspeciona.
-            endpoint=url or spec.url_publica,
+            # A URL do próprio export é a ÚNICA prova de ordenação que um
+            # backfill tem. Quando ela não existe, os dois campos ficam
+            # vazios de propósito: preencher com `spec.url_publica` (que
+            # sempre contém o parâmetro) faria qualquer planilha passar no
+            # portão, contaminando o histórico com ordenação não comprovada.
+            url_coleta=url,
+            endpoint=url,
         ))
 
     logger.info(

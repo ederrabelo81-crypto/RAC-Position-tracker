@@ -368,3 +368,27 @@ class TestCsvBrutoDoDiaEMesclado:
         )
         relido = pd.read_csv(caminho, sep=";", encoding="utf-8-sig")
         assert relido.sort_values("rank")["marca"].iloc[0] == "LG"
+
+
+class TestArgumentosDoCli:
+    def test_data_invalida_e_rejeitada_antes_de_gravar(self):
+        """A data é a CHAVE da série: um valor livre criaria uma partição que
+        nenhuma comparação alcança — e o import terminava com sucesso."""
+        import scripts.collect_bestsellers as cli
+
+        with pytest.raises(SystemExit):
+            cli._parse_args(["--data", "ontem"])
+        with pytest.raises(SystemExit):
+            cli._parse_args(["--data", "10/08/2026"])
+        assert cli._parse_args(["--data", "2026-08-10"]).data == "2026-08-10"
+
+    def test_all_com_chave_invalida_nao_e_engolido(self):
+        """`--plataformas all amazonn` disparava a coleta das seis como se o
+        erro de digitação não existisse."""
+        from bestsellers.config import resolver_keys
+
+        with pytest.raises(ValueError, match="desconhecida"):
+            resolver_keys(["all", "amazonn"])
+        with pytest.raises(ValueError, match="não se combina"):
+            resolver_keys(["all", "amazon"])
+        assert resolver_keys(["all"])

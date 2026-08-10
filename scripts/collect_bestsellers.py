@@ -33,6 +33,7 @@ Códigos de saída:
 import argparse
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
@@ -295,6 +296,26 @@ def _notificar(mensagem: str) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _data_iso(valor: str) -> str:
+    """
+    Valida `--data` como data ISO.
+
+    A data é a CHAVE da série: um valor livre (`ontem`, `10/08/2026`) seria
+    gravado no CSV e no master antes de qualquer falha aparecer, criando uma
+    partição que nenhuma comparação alcança. O import, então, terminava com
+    sucesso.
+
+    Raises:
+        argparse.ArgumentTypeError: quando o valor não é YYYY-MM-DD válido.
+    """
+    try:
+        return datetime.strptime(valor, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"data inválida: {valor!r}. Use o formato YYYY-MM-DD (ex: 2026-08-10)."
+        )
+
+
 def _parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Coleta e análise diária das listas de mais vendidos RAC.",
@@ -313,7 +334,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help="Páginas da lista a percorrer (padrão: 1).",
     )
     parser.add_argument(
-        "--data", default=None,
+        "--data", default=None, type=_data_iso,
         help="Data da coleta (YYYY-MM-DD). Padrão: hoje em BRT.",
     )
     parser.add_argument(

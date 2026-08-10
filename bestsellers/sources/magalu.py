@@ -124,6 +124,10 @@ class MagaluBestSellers(BestSellerSource):
             logger.warning(f"[{self.nome}] goto p{pagina} falhou: {exc}")
             return None
 
+        # Espera a marcação de produto ANTES de rolar. A listagem hidrata do
+        # lado do cliente; ler o HTML após só os ~2s do scroll transformava
+        # hidratação lenta em "ranking vazio" — indistinguível de bloqueio.
+        self._esperar_produtos(mag._pw_page)
         self._rolar(mag._pw_page)
         html = mag._safe_content()
         if not html:
@@ -138,6 +142,22 @@ class MagaluBestSellers(BestSellerSource):
             )
             return None
         return html
+
+    @staticmethod
+    def _esperar_produtos(page: Any) -> None:
+        """
+        Aguarda o primeiro card renderizar — mesmos seletores que
+        `MagaluScraper._search_via_browser` usa.
+
+        Timeout aqui não é erro: a página pode ter mudado de layout e ainda
+        assim conter produtos que um dos três parsers reconhece.
+        """
+        try:
+            page.wait_for_selector(
+                'a[href*="/p/"], [data-testid="product-card"]', timeout=12_000
+            )
+        except Exception:
+            logger.debug("[Magalu] Cards não apareceram em 12s — segue para o parse.")
 
     @staticmethod
     def _rolar(page: Any) -> None:
