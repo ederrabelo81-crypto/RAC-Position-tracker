@@ -69,6 +69,20 @@ class PriceTrackSettings:
         self.api_key = str(self.api_key).strip()
         self.base_url = self.base_url.rstrip("/")
         self.data_dir = Path(self.data_dir)
+        # Armadilha de configuração: um orçamento MENOR que o timeout de um
+        # export faz `_budget_exhausted()` dar True já na primeira iteração —
+        # o manager recusa a fila inteira e a execução termina sem criar
+        # nenhum export, em silêncio. Foi o que quase entrou em produção com
+        # budget=2400 e poll=2700 no workflow diário. Falhar aqui, alto, é
+        # melhor que um import que "roda" todo dia sem importar nada.
+        if 0 < self.run_budget_seconds < self.poll_timeout_seconds:
+            raise PriceTrackConfigError(
+                f"run_budget_seconds ({self.run_budget_seconds:.0f}s) é menor "
+                f"que poll_timeout_seconds ({self.poll_timeout_seconds:.0f}s): "
+                "nenhum export seria submetido. O orçamento da execução "
+                "precisa comportar ao menos um export."
+            )
+
         if not 1 <= self.max_concurrent_exports <= 3:
             raise PriceTrackConfigError(
                 "max_concurrent_exports deve estar entre 1 e 3 (limite da API)."

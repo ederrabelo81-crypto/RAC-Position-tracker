@@ -140,16 +140,19 @@ jobs:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # 45min POR EXPORT (não pelo passo — quem limita o passo é o
+          # 40min POR EXPORT (não pelo passo — quem limita o passo é o
           # `timeout-minutes: 50` acima). Serve para um export travado não
-          # segurar sozinho o passo inteiro. Se o cliente esperar mais do que
-          # o passo vive, o processo é morto NO MEIO do voo e os exports
-          # criados ficam órfãos segurando os 3 slots da organização.
-          PRICETRACK_POLL_TIMEOUT_SECONDS: "2700"
-          # 40min de orçamento sob o teto de parede de 50min: o cliente para de
-          # submeter export que não caberia e sai limpo, em vez de ser morto
-          # pelo runner deixando exports órfãos nos 3 slots da organização.
-          PRICETRACK_RUN_BUDGET_SECONDS: "2400"
+          # segurar sozinho o passo inteiro.
+          # INVARIANTE: RUN_BUDGET >= POLL_TIMEOUT. Com o orçamento menor que
+          # o timeout de um export, `_budget_exhausted()` dá True na primeira
+          # iteração e o passo termina sem submeter NADA — o config valida
+          # isso e falha alto, mas a ordem certa dos números mora aqui:
+          #   poll 2400s <= budget 2700s < teto de parede 3000s (50min)
+          PRICETRACK_POLL_TIMEOUT_SECONDS: "2400"
+          # 45min de orçamento sob o teto de parede de 50min: o cliente para
+          # de submeter export que não caberia e sai limpo, em vez de ser
+          # morto pelo runner deixando exports órfãos nos 3 slots.
+          PRICETRACK_RUN_BUDGET_SECONDS: "2700"
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}

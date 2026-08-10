@@ -853,10 +853,44 @@ class CasasBahiaScraper(BaseScraper):
 
     @staticmethod
     def _product_key(record: Dict[str, Any]) -> Optional[str]:
-        """Chave de casamento entre um registro do DOM e um da API."""
-        url = (record.get("URL Produto") or "").split("?")[0].rstrip("/")
+        """
+        Chave de casamento entre um registro do DOM e um da API.
+
+        Usa o **slug** da URL, não a URL inteira. A vitrine renderiza o link
+        completo com o id de catálogo (``/slug/p/12345678``), enquanto o
+        payload VTEX expõe só ``linkText`` (``/slug/p``) — comparar as URLs
+        cruas nunca casaria, e o merge cairia silenciosamente para zero
+        acertos, desfazendo na prática a correção que ele implementa. O slug
+        é a parte que as duas fontes têm em comum.
+
+        Args:
+            record: registro normalizado por ``_build_record``.
+
+        Returns:
+            Slug do produto em minúsculas, ou o SKU normalizado como último
+            recurso, ou None.
+
+        Example:
+            >>> k = CasasBahiaScraper._product_key
+            >>> k({"URL Produto": "https://www.casasbahia.com.br/ar-x/p/12345"})
+            'ar-x'
+        """
+        url = (record.get("URL Produto") or "").split("?")[0].strip()
         if url:
-            return url.lower()
+            partes = [p for p in url.split("/") if p]
+            # Descarta esquema e host quando a URL é absoluta.
+            if partes and partes[0].endswith(":"):
+                partes = partes[2:]
+            elif partes and "." in partes[0] and len(partes) > 1:
+                partes = partes[1:]
+            # O slug é o segmento imediatamente antes do marcador "/p".
+            if "p" in partes:
+                idx = partes.index("p")
+                if idx > 0:
+                    return partes[idx - 1].lower()
+            if partes:
+                return partes[-1].lower()
+
         sku = record.get("Produto / SKU")
         return str(sku).strip().lower() if sku else None
 

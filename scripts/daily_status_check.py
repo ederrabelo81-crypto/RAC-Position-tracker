@@ -277,10 +277,19 @@ PLATFORM_CHANNEL: Dict[str, str] = {
 }
 
 
-#: Hora BRT em que a coleta de cada turno já deveria ter terminado e subido.
-#: A coleta roda 10:00 (Abertura) e 21:00 (Fechamento); a margem cobre a
-#: duração da coleta e o upload.
-_TURNO_DEADLINE_BRT = {"Abertura": 12, "Fechamento": 23}
+#: (hora, minuto) BRT a partir de quando zero registros num turno deixa de ser
+#: "ainda não rodou" e passa a ser falha. A coleta começa 10:00 (Abertura) e
+#: 21:00 (Fechamento); a margem de 30min cobre a partida da coleta.
+#:
+#: A margem precisa ser CURTA. `collect_manha_linux.sh` e
+#: `collect_noite_linux.sh` rodam `daily_status_check.py --turno <turno>` logo
+#: DEPOIS da própria coleta — por volta de 10:30–12:00 e 21:30–22:30. Uma
+#: margem larga (o primeiro palpite foi 12h e 23h) faria justamente essa
+#: verificação pós-coleta tratar um apagão total como "ainda dentro da janela"
+#: e rebaixar para WARN o caso mais grave que existe. Curta demais, por outro
+#: lado, faria o watchdog agendado das 20:30 gritar por causa do Fechamento
+#: que ainda nem começou. 30min após o início separa os dois.
+_TURNO_DEADLINE_BRT = {"Abertura": (10, 30), "Fechamento": (21, 30)}
 
 
 def _turno_window_closed(
@@ -315,7 +324,8 @@ def _turno_window_closed(
     if dia > agora.date():
         return False  # dia futuro: nada era esperado ainda
 
-    return agora.hour >= _TURNO_DEADLINE_BRT.get(turno, 0)
+    hora, minuto = _TURNO_DEADLINE_BRT.get(turno, (0, 0))
+    return (agora.hour, agora.minute) >= (hora, minuto)
 
 
 def _offline_channels(

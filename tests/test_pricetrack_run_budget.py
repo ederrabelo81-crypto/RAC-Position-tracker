@@ -65,11 +65,24 @@ class TestBudgetExhausted:
 
 class TestSettingsDoAmbiente:
     def test_le_run_budget_do_env(self):
+        # O poll vai junto: o default é 7200s (2h), e um orçamento menor que
+        # ele é rejeitado de propósito (ver TestConfigProibeOrcamentoMenorQuePoll).
         s = PriceTrackSettings.from_env({
             "PRICETRACK_API_KEY": "x",
+            "PRICETRACK_POLL_TIMEOUT_SECONDS": "2700",
             "PRICETRACK_RUN_BUDGET_SECONDS": "3000",
         })
         assert s.run_budget_seconds == 3000.0
+
+    def test_env_com_orcamento_abaixo_do_poll_falha_alto(self):
+        """Config errada no workflow morre na carga, não em silêncio."""
+        from pricetrack_api.config import PriceTrackConfigError
+        with pytest.raises(PriceTrackConfigError):
+            PriceTrackSettings.from_env({
+                "PRICETRACK_API_KEY": "x",
+                "PRICETRACK_POLL_TIMEOUT_SECONDS": "2700",
+                "PRICETRACK_RUN_BUDGET_SECONDS": "2400",
+            })
 
     def test_default_e_zero_sem_limite(self):
         s = PriceTrackSettings.from_env({"PRICETRACK_API_KEY": "x"})
@@ -82,3 +95,44 @@ class TestSettingsDoAmbiente:
                 "PRICETRACK_API_KEY": "x",
                 "PRICETRACK_RUN_BUDGET_SECONDS": "abc",
             })
+
+
+class TestConfigProibeOrcamentoMenorQuePoll:
+    """
+    A armadilha que quase entrou em produção.
+
+    `_budget_exhausted()` recusa submeter quando o tempo restante não comporta
+    um export inteiro. Se o orçamento TOTAL já for menor que o timeout de UM
+    export, isso é verdade na primeira iteração: o manager rejeita a fila
+    inteira e o passo termina sem criar nenhum export — em silêncio, com o run
+    verde. Foi exatamente o que o workflow diário teria feito com budget=2400 e
+    poll=2700, e os testes não pegaram porque usavam valores de brinquedo em
+    vez da configuração real. Agora a combinação é rejeitada na carga.
+    """
+
+    def test_orcamento_menor_que_poll_e_rejeitado(self):
+        from pricetrack_api.config import PriceTrackConfigError
+        with pytest.raises(PriceTrackConfigError, match="run_budget_seconds"):
+            PriceTrackSettings(
+                api_key="x", poll_timeout_seconds=2700, run_budget_seconds=2400,
+            )
+
+    def test_orcamento_igual_ao_poll_e_aceito(self):
+        s = PriceTrackSettings(
+            api_key="x", poll_timeout_seconds=2700, run_budget_seconds=2700,
+        )
+        assert s.run_budget_seconds == 2700
+
+    def test_orcamento_zero_continua_significando_sem_limite(self):
+        s = PriceTrackSettings(
+            api_key="x", poll_timeout_seconds=2700, run_budget_seconds=0,
+        )
+        assert s.run_budget_seconds == 0
+
+    @pytest.mark.parametrize("poll,budget", [(2400, 2700), (2700, 3000)])
+    def test_valores_reais_do_workflow_submetem(self, poll, budget):
+        """Os pares de fato usados em pricetrack_daily.yml (import e heal)."""
+        mgr = _manager(budget=budget, poll=poll, agora=lambda: 0.0)
+        assert mgr._budget_exhausted() is False, (
+            "com estes valores o passo não submeteria nenhum export"
+        )

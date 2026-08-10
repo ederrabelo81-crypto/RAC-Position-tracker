@@ -267,13 +267,52 @@ class TestChaveDeCasamentoReal:
     def test_payload_sem_url_devolve_none(self):
         assert CasasBahiaScraper._extract_api_url({"productName": "x"}) is None
 
-    def test_dom_e_api_casam_pela_url_normalizada(self):
-        """DOM com query string, API sem: precisam bater."""
-        dom = [{"URL Produto": "https://www.casasbahia.com.br/x/p/1?utm=busca",
+    def test_dom_com_id_casa_com_api_sem_id(self):
+        """
+        A divergência REAL entre as duas fontes.
+
+        A vitrine renderiza `/slug/p/12345678` (com id de catálogo); o payload
+        VTEX expõe só `linkText`, que vira `/slug/p`. Comparar URL crua nunca
+        casaria, e o merge cairia a zero acertos em silêncio — desfazendo na
+        prática a correção que ele implementa. Os primeiros testes usavam
+        `/x/p/1` dos dois lados, uma igualdade idealizada que escondia isso.
+        """
+        dom = [{"URL Produto":
+                "https://www.casasbahia.com.br/ar-midea-12000/p/12345678",
                 "Buy Box Seller": None, "Seller / Vendedor": "Casas Bahia"}]
-        api = [{"URL Produto": "https://www.casasbahia.com.br/x/p/1",
+        api = [{"URL Produto":
+                "https://www.casasbahia.com.br/ar-midea-12000/p",
                 "Buy Box Seller": "LojaX", "Seller / Vendedor": "LojaX"}]
+
         assert CasasBahiaScraper._merge_seller_fields(dom, api) == 1
+        assert dom[0]["Buy Box Seller"] == "LojaX"
+
+    def test_query_string_nao_atrapalha(self):
+        dom = [{"URL Produto":
+                "https://www.casasbahia.com.br/ar-x/p/999?utm_source=busca",
+                "Buy Box Seller": None}]
+        api = [{"URL Produto": "https://www.casasbahia.com.br/ar-x/p",
+                "Buy Box Seller": "LojaX"}]
+        assert CasasBahiaScraper._merge_seller_fields(dom, api) == 1
+
+    def test_slugs_diferentes_nao_casam(self):
+        """A chave não pode ser tão frouxa que case produtos distintos."""
+        dom = [{"URL Produto": "https://www.casasbahia.com.br/ar-midea/p/1",
+                "Buy Box Seller": None}]
+        api = [{"URL Produto": "https://www.casasbahia.com.br/ar-elgin/p/2",
+                "Buy Box Seller": "LojaX"}]
+        assert CasasBahiaScraper._merge_seller_fields(dom, api) == 0
+
+    @pytest.mark.parametrize("url", [
+        "https://www.casasbahia.com.br/ar-midea-12000/p/12345678",
+        "https://www.casasbahia.com.br/ar-midea-12000/p",
+        "/ar-midea-12000/p/12345678",
+        "https://www.casasbahia.com.br/ar-midea-12000/p/12345678?utm=x",
+    ])
+    def test_todas_as_formas_dao_o_mesmo_slug(self, url):
+        assert CasasBahiaScraper._product_key(
+            {"URL Produto": url}
+        ) == "ar-midea-12000"
 
 
 class TestPlaceholderDoSellerCede:
@@ -306,3 +345,65 @@ class TestPlaceholderDoSellerCede:
         CasasBahiaScraper._merge_seller_fields(dom, api)
 
         assert dom[0]["Seller / Vendedor"] == "LojaObservada"
+
+
+class TestUrlChegaAoRegistroPeloParserReal:
+    """
+    Prova a fiação, não só a função.
+
+    A regressão original foi exatamente esta: `_extract_api_url` podia existir
+    e funcionar, mas se `_parse_api_products` não passasse `url_produto=` ao
+    `_build_record`, o campo chegava vazio em produção e o merge caía no
+    fallback por título. Testar só o extrator deixaria isso passar de novo —
+    então aqui o caminho exercitado é o parser de verdade, e a asserção é
+    sobre o registro que ele devolve.
+    """
+
+    def test_parse_api_products_preenche_url_produto(self):
+        scraper = CasasBahiaScraper()
+        produtos = [{
+            "productName": "Ar Condicionado Midea 12000 BTUs",
+            "linkText": "ar-condicionado-midea-12000",
+            "items": [{"sellers": [{
+                "sellerName": "LojaX",
+                "commertialOffer": {"Price": 2199.0, "IsAvailable": True},
+            }]}],
+        }]
+
+        registros = scraper._parse_api_products(
+            "ar condicionado", {}, 0, products=produtos,
+        )
+
+        assert registros, "o parser precisa devolver ao menos um registro"
+        assert registros[0]["URL Produto"], (
+            "URL Produto vazio: `url_produto=` não está sendo passado ao "
+            "_build_record — o merge DOM↔API volta a cair no fallback"
+        )
+        assert CasasBahiaScraper._product_key(registros[0]) == \
+            "ar-condicionado-midea-12000"
+
+    def test_registro_da_api_casa_com_registro_de_dom_equivalente(self):
+        """Ponta a ponta da chave: parser real de um lado, href real do outro."""
+        scraper = CasasBahiaScraper()
+        produtos = [{
+            "productName": "Ar Condicionado Midea 12000 BTUs",
+            "linkText": "ar-condicionado-midea-12000",
+            "items": [{"sellers": [{
+                "sellerName": "LojaX",
+                "commertialOffer": {"Price": 2199.0, "IsAvailable": True},
+            }]}],
+        }]
+        api_records = scraper._parse_api_products(
+            "ar condicionado", {}, 0, products=produtos,
+        )
+
+        # Href como a vitrine renderiza: com id de catálogo.
+        dom = [{
+            "URL Produto":
+                "https://www.casasbahia.com.br/ar-condicionado-midea-12000/p/98765",
+            "Buy Box Seller": None,
+            "Seller / Vendedor": "Casas Bahia",
+        }]
+
+        assert CasasBahiaScraper._merge_seller_fields(dom, api_records) == 1
+        assert dom[0]["Buy Box Seller"] == "LojaX"

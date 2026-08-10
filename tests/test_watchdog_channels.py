@@ -169,17 +169,44 @@ class TestJanelaDeColeta:
 
     HOJE = "2026-08-10"
 
-    def _as(self, hora):
-        return datetime(2026, 8, 10, hora, 0)
+    def _as(self, hora, minuto=0):
+        return datetime(2026, 8, 10, hora, minuto)
+
+    # --- watchdog agendado (20:30), que roda ANTES da coleta das 21:00 ---
 
     def test_fechamento_as_2030_ainda_esta_na_janela(self):
-        assert _turno_window_closed("Fechamento", self.HOJE, self._as(20)) is False
-
-    def test_fechamento_depois_das_23_ja_fechou(self):
-        assert _turno_window_closed("Fechamento", self.HOJE, self._as(23)) is True
+        assert _turno_window_closed(
+            "Fechamento", self.HOJE, self._as(20, 30)
+        ) is False
 
     def test_abertura_as_2030_ja_fechou(self):
-        assert _turno_window_closed("Abertura", self.HOJE, self._as(20)) is True
+        assert _turno_window_closed(
+            "Abertura", self.HOJE, self._as(20, 30)
+        ) is True
+
+    # --- verificação pós-coleta, disparada pelos próprios scripts ---
+    # `collect_noite_linux.sh` chama --turno Fechamento logo após a coleta;
+    # `collect_manha_linux.sh` idem para Abertura. Nesses horários, zero em
+    # todos os canais é falha real e PRECISA escalar: uma margem larga
+    # (o primeiro palpite foi 23h) rebaixava justamente o caso mais grave.
+
+    def test_check_pos_coleta_da_noite_ja_conta_como_fechado(self):
+        for hora, minuto in ((21, 30), (22, 0), (22, 30)):
+            assert _turno_window_closed(
+                "Fechamento", self.HOJE, self._as(hora, minuto)
+            ) is True, f"{hora}:{minuto:02d} deveria contar como janela fechada"
+
+    def test_check_pos_coleta_da_manha_ja_conta_como_fechado(self):
+        for hora, minuto in ((10, 30), (11, 0), (12, 0)):
+            assert _turno_window_closed(
+                "Abertura", self.HOJE, self._as(hora, minuto)
+            ) is True
+
+    def test_fechamento_as_2100_em_ponto_ainda_esta_na_janela(self):
+        """A coleta acabou de começar — ainda não deu tempo de subir nada."""
+        assert _turno_window_closed(
+            "Fechamento", self.HOJE, self._as(21, 0)
+        ) is False
 
     def test_abertura_as_9_ainda_esta_na_janela(self):
         assert _turno_window_closed("Abertura", self.HOJE, self._as(9)) is False
