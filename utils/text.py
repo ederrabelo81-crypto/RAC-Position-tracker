@@ -494,3 +494,77 @@ def normalize_text(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
     return " ".join(text.split())
+
+
+# ---------------------------------------------------------------------------
+# Contagem de ofertas concorrentes ("Qtd Sellers") a partir de texto de card
+# ---------------------------------------------------------------------------
+# Contexto (10/08/2026): ML e Magalu gravavam `Qtd Sellers` 100% vazio no banco
+# — nenhum dos dois passava o campo ao `_build_record`, embora buy box já
+# funcionasse nos dois. As SERPs desses sites expõem a competição como TEXTO
+# ("Outras opções de compra: a partir de R$ X", "3 vendedores"), não como
+# atributo estável, então a extração é por regex sobre o texto do card e não
+# por seletor CSS — classe de bug que já matou o Google Shopping neste repo.
+#
+# Regra de honestidade do dado: quando o padrão NÃO aparece, devolve None
+# (desconhecido), nunca 1. "Não sabemos quantos competem" e "só há um seller"
+# são fatos diferentes, e tratá-los como iguais inflaria o share de buy box.
+
+_RE_N_VENDEDORES = re.compile(
+    r"(\d{1,3})\s*(?:vendedor(?:es)?|lojas?|ofertas?|an[úu]ncios?)\b",
+    re.IGNORECASE,
+)
+_RE_OUTRAS_OPCOES = re.compile(
+    r"(?:outras?\s+op[çc][õo]es|novo\s+a\s+partir|mais\s+op[çc][õo]es)",
+    re.IGNORECASE,
+)
+
+
+def parse_offer_count(raw: Optional[str]) -> Optional[int]:
+    """
+    Extrai o nº de sellers/ofertas competindo, a partir do texto de um card.
+
+    Reconhece os dois padrões PT-BR usados por ML e Magalu:
+      1. Contagem explícita — "3 vendedores", "5 ofertas", "2 lojas"
+      2. Menção sem número — "Outras opções de compra a partir de R$ 2.199"
+         indica competição existente mas de tamanho desconhecido → 2 (o
+         vencedor da buy box + ao menos um concorrente), um piso honesto.
+
+    Args:
+        raw: texto bruto do card (``item.get_text()``), ou None.
+
+    Returns:
+        Nº de sellers competindo, ou None se o texto não indica competição.
+
+    Example:
+        >>> parse_offer_count("Outras opções de compra: a partir de R$ 2.199")
+        2
+        >>> parse_offer_count("3 vendedores")
+        3
+        >>> parse_offer_count("Frete grátis")
+
+    Note:
+        Devolve None (não 1) quando não há sinal de competição — ausência de
+        evidência não é evidência de seller único.
+    """
+    if not raw:
+        return None
+
+    text = " ".join(raw.split())
+
+    match = _RE_N_VENDEDORES.search(text)
+    if match:
+        try:
+            count = int(match.group(1))
+        except (ValueError, TypeError):
+            return None
+        # Sanity: contagem de sellers acima de ~200 é lixo de parse (pegou
+        # número de avaliações, BTUs ou preço colado no texto).
+        if 1 <= count <= 200:
+            return count
+        return None
+
+    if _RE_OUTRAS_OPCOES.search(text):
+        return 2
+
+    return None

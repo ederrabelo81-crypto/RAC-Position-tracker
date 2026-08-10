@@ -46,6 +46,14 @@ class PriceTrackSettings:
     max_concurrent_exports: int = 3          # limite da API por organização
     poll_interval_seconds: float = 30.0
     poll_timeout_seconds: float = 7200.0     # 2h por export
+    # Orçamento TOTAL da execução (0 = sem limite). Diferente do acima, que é
+    # por export: com `max_concurrent_exports = 3`, um lote de N exports custa
+    # ceil(N/3) x poll_timeout, então um passo de CI com teto de parede pode
+    # ser morto no meio de um lote já submetido — e export morto no meio fica
+    # órfão segurando um dos 3 slots da organização, bloqueando os próximos
+    # imports com 429. Com o orçamento definido, o manager para de SUBMETER
+    # lote que não caberia no tempo restante, em vez de ser interrompido.
+    run_budget_seconds: float = 0.0
     # Margem de segurança sobre o TTL de 1h da downloadUrl: renova aos 50min.
     download_url_ttl_seconds: float = 3000.0
 
@@ -61,6 +69,20 @@ class PriceTrackSettings:
         self.api_key = str(self.api_key).strip()
         self.base_url = self.base_url.rstrip("/")
         self.data_dir = Path(self.data_dir)
+        # Armadilha de configuração: um orçamento MENOR que o timeout de um
+        # export faz `_budget_exhausted()` dar True já na primeira iteração —
+        # o manager recusa a fila inteira e a execução termina sem criar
+        # nenhum export, em silêncio. Foi o que quase entrou em produção com
+        # budget=2400 e poll=2700 no workflow diário. Falhar aqui, alto, é
+        # melhor que um import que "roda" todo dia sem importar nada.
+        if 0 < self.run_budget_seconds < self.poll_timeout_seconds:
+            raise PriceTrackConfigError(
+                f"run_budget_seconds ({self.run_budget_seconds:.0f}s) é menor "
+                f"que poll_timeout_seconds ({self.poll_timeout_seconds:.0f}s): "
+                "nenhum export seria submetido. O orçamento da execução "
+                "precisa comportar ao menos um export."
+            )
+
         if not 1 <= self.max_concurrent_exports <= 3:
             raise PriceTrackConfigError(
                 "max_concurrent_exports deve estar entre 1 e 3 (limite da API)."

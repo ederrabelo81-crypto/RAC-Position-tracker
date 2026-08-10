@@ -29,8 +29,15 @@ from bs4 import BeautifulSoup, Tag
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import MAX_PAGES, LOGS_DIR
+from config import MAX_PAGES, LOGS_DIR, PAGE_TIMEOUT
 from scrapers.base import BaseScraper
+from utils.amazon_sellers import (
+    AmazonSellerCache,
+    extract_seller_from_pdp,
+    is_amazon_self,
+    pdp_budget,
+    resolution_enabled,
+)
 from utils.text import parse_price, parse_rating, parse_review_count
 
 _SELECTORS = {
@@ -103,6 +110,10 @@ class AmazonScraper(BaseScraper):
         # quando IP foi marcado pelo Amazon (CAPTCHA infinito).
         self.captcha_hit: bool = False
         self._rotations_done: int = 0
+        # Resolução de buy box via PDP — cache carregado sob demanda e
+        # orçamento contado por execução do scraper, não por página.
+        self._seller_cache: Optional[AmazonSellerCache] = None
+        self._pdp_budget_left: int = pdp_budget()
 
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
@@ -352,9 +363,146 @@ class AmazonScraper(BaseScraper):
                 # aqui o vendedor é desconhecido (SERP sem "Vendido por") e não
                 # pode virar vitória 1P fantasma no share of buy box.
                 record["Buy Box Seller"] = None
+                # ASIN guardado no registro para a etapa opcional de PDP; sai
+                # do dict antes do CSV/Supabase (não é coluna do schema).
+                record["_asin"] = self._extract_asin(item)
             records.append(record)
 
+        self._resolve_buybox_via_pdp(records)
+        for record in records:
+            record.pop("_asin", None)
+
         return records
+
+    # ------------------------------------------------------------------
+    # Buy box via PDP (opcional — ver utils/amazon_sellers.py)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_asin(item: Tag) -> Optional[str]:
+        """
+        Extrai o ASIN do card da SERP.
+
+        A Amazon expõe o ASIN em ``data-asin`` no container do resultado —
+        atributo funcional (a própria página o usa), bem mais estável que as
+        classes de layout.
+
+        Args:
+            item: container do card.
+
+        Returns:
+            ASIN de 10 caracteres, ou None.
+        """
+        asin = (item.get("data-asin") or "").strip()
+        if re.fullmatch(r"[A-Z0-9]{10}", asin):
+            return asin
+        parent = item.find_parent(attrs={"data-asin": True})
+        if parent:
+            asin = (parent.get("data-asin") or "").strip()
+            if re.fullmatch(r"[A-Z0-9]{10}", asin):
+                return asin
+        return None
+
+    def _resolve_buybox_via_pdp(self, records: List[Dict[str, Any]]) -> None:
+        """
+        Preenche ``Buy Box Seller`` abrindo o PDP dos produtos sem vendedor.
+
+        Desligada por padrão: só roda com ``RAC_AMAZON_PDP_BUYBOX=1``. A SERP
+        da Amazon não expõe "Vendido por" (só o PDP), então este é o único
+        caminho para o campo — mas cada ASIN novo custa uma requisição na
+        plataforma mais agressiva em anti-bot do conjunto. Por isso o teto por
+        execução (``RAC_AMAZON_PDP_BUDGET``, default 40): batendo o limite os
+        demais registros seguem sem buy box, em vez de arriscar derrubar uma
+        coleta que hoje é estável. Degradar é melhor que derrubar.
+
+        Args:
+            records: registros da página; alterados no lugar.
+
+        Note:
+            Falhas são silenciosas por registro (o campo fica None, como antes)
+            e o ASIN entra em quarentena no cache para não consumir o orçamento
+            de novo na próxima execução.
+        """
+        if not resolution_enabled():
+            return
+
+        pendentes = [
+            rec for rec in records
+            if not rec.get("Buy Box Seller") and rec.get("_asin")
+        ]
+        if not pendentes:
+            return
+
+        if self._seller_cache is None:
+            self._seller_cache = AmazonSellerCache()
+        cache = self._seller_cache
+
+        resolvidos_cache = 0
+        resolvidos_pdp = 0
+        for rec in pendentes:
+            asin = rec["_asin"]
+
+            conhecido = cache.get(asin)
+            if conhecido:
+                rec["Buy Box Seller"] = conhecido
+                rec["Tipo Seller"] = "1P" if is_amazon_self(conhecido) else "3P"
+                resolvidos_cache += 1
+                continue
+
+            if self._pdp_budget_left <= 0 or not cache.should_retry(asin):
+                continue
+
+            self._pdp_budget_left -= 1
+            nome = self._fetch_pdp_seller(asin)
+            if nome:
+                cache.put(asin, nome)
+                rec["Buy Box Seller"] = nome
+                rec["Tipo Seller"] = "1P" if is_amazon_self(nome) else "3P"
+                resolvidos_pdp += 1
+            else:
+                cache.mark_failed(asin, "PDP sem 'Vendido por'")
+
+        # Salva sempre: `mark_failed` também suja o cache, e é justamente no
+        # caso em que NADA resolveu (Amazon bloqueando todos os PDPs) que a
+        # quarentena precisa chegar ao disco — senão os mesmos ASINs mortos
+        # reconsomem o orçamento na próxima execução, que é exatamente o que a
+        # quarentena existe para evitar. `save()` já é no-op se nada mudou.
+        cache.save()
+        if resolvidos_cache or resolvidos_pdp:
+            logger.info(
+                f"[{self.platform_name}] Buy box resolvida: "
+                f"{resolvidos_cache} do cache + {resolvidos_pdp} via PDP "
+                f"({len(pendentes)} pendentes · orçamento restante "
+                f"{self._pdp_budget_left})"
+            )
+
+    def _fetch_pdp_seller(self, asin: str) -> Optional[str]:
+        """
+        Abre o PDP do ASIN e devolve o vendedor da buy box.
+
+        Args:
+            asin: identificador do produto na Amazon.
+
+        Returns:
+            Nome do vendedor, ou None se o PDP não revelou (challenge de bot,
+            produto fora do ar, ou layout desconhecido).
+        """
+        if self._page is None:
+            return None
+        try:
+            self._page.goto(
+                f"https://www.amazon.com.br/dp/{asin}",
+                timeout=PAGE_TIMEOUT,
+                wait_until="domcontentloaded",
+            )
+            self._random_delay()
+            return extract_seller_from_pdp(self._page.content())
+        except Exception as exc:
+            logger.debug(
+                f"[{self.platform_name}] PDP {asin} falhou: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return None
 
     def _wait_for_products(self, timeout_ms: int = 12_000) -> bool:
         """Aguarda container de resultado aparecer."""

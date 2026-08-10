@@ -13,7 +13,9 @@ Manutenção de seletores — estrutura confirmada via debug HTML de 31/mar/2026
   Título:    primeiro <div> folha (sem filhos, sem classe) com 15-200 chars, sem R$
   Preço:     span.VbBaOe — texto "R$\xa02.184,05" (non-breaking space, não espaço normal)
   O Google Shopping rotaciona nomes de classe constantemente; guardamos fallbacks.
-  Quando 0 itens: HTML salvo em logs/google_debug_p{n}_{kw}.html
+  Quando 0 itens: HTML salvo em logs/google_{causa}_p{n}_{kw}.html, onde
+  {causa} é challenge|consent|sem_resultados|login|layout (ver
+  _classify_zero_result) — o nome do arquivo já diz o diagnóstico.
 
 ATUALIZAÇÃO 08/mai/2026: Múltiplas estratégias de extração de título + mais seletores CSS.
 ATUALIZAÇÃO 09/mai/2026: Restaurada leaf-div como estratégia primária (COMMON_MISTAKES #2);
@@ -409,16 +411,131 @@ class GoogleShoppingScraper(BaseScraper):
     # Debug dump
     # ------------------------------------------------------------------
 
-    def _dump_debug(self, html: str, page: int, keyword: str) -> None:
+    def _dump_debug(
+        self, html: str, page: int, keyword: str, causa: str = "debug"
+    ) -> None:
         try:
             log_dir = Path(LOGS_DIR)
             log_dir.mkdir(parents=True, exist_ok=True)
             safe_kw = keyword[:30].replace(" ", "_").replace("/", "-")
-            path = log_dir / f"google_debug_p{page}_{safe_kw}.html"
+            path = log_dir / f"google_{causa}_p{page}_{safe_kw}.html"
             path.write_text(html, encoding="utf-8")
             logger.warning(f"[{self.platform_name}] HTML salvo para diagnóstico: {path}")
         except Exception as e:
             logger.debug(f"[{self.platform_name}] Erro ao salvar debug: {e}")
+
+    # ------------------------------------------------------------------
+    # Diagnóstico de resultado vazio
+    # ------------------------------------------------------------------
+    # O Google Shopping está com ZERO registros desde 23/05/2026 (79 dias em
+    # 10/08). O remédio óbvio — mais seletores de fallback — já foi aplicado
+    # em Mai/2026 (são 13 hoje) e não resolveu, então repetir a dose não é
+    # diagnóstico. O que falta é saber QUAL das causas está em jogo: o log
+    # dizia apenas "0 cards encontrados", que é compatível com todas elas.
+    #
+    # As causas são mutuamente excludentes e pedem ações opostas: um muro de
+    # consentimento se resolve com cookie/perfil; um challenge se resolve com
+    # IP residencial; um layout novo se resolve com parser. Nomear a causa no
+    # log e no nome do dump é o que transforma "não funciona" em uma decisão.
+
+    # Marcadores de ALTO SINAL — só aparecem numa página de controle, nunca
+    # no rodapé de uma SERP normal. Um scan ingênuo por substring erraria aqui:
+    # toda SERP do Google traz link de cookies/privacidade no rodapé, então
+    # procurar "aceitar tudo" em qualquer lugar do HTML classificaria uma
+    # página perfeitamente normal (o caso `layout`) como muro de consentimento
+    # — a conclusão enganosa que esta classificação existe para evitar.
+    _CAUSAS_ZERO = (
+        ("challenge", (
+            "unusual traffic", "tráfego incomum",
+            "detected unusual", "our systems have detected",
+        )),
+        ("consent", (
+            "before you continue to google", "antes de continuar no google",
+        )),
+        ("sem_resultados", (
+            "did not match any", "não encontrou nenhum",
+            "no results found", "nenhum documento",
+        )),
+        ("login", ("sign in to continue", "faça login para continuar")),
+    )
+
+    #: Marcadores que só valem quando aparecem no <title> ou numa URL de
+    #: redirect — lá são estruturais, no corpo seriam só um link de rodapé.
+    # Só marcadores específicos de cada tipo de página de controle. "erro" e
+    # "entrar" já estiveram aqui e são genéricos demais: qualquer página de
+    # erro comum do Google mandaria o operador atrás de proxy residencial, e
+    # "entrar" aparece em botão de SERP normal. Marcador ambíguo devolve
+    # `layout`, que manda olhar o HTML — barato — em vez de trocar de IP.
+    _CAUSAS_POR_TITULO = (
+        ("challenge", ("sorry", "unusual traffic", "tráfego incomum")),
+        ("consent", ("before you continue", "antes de continuar", "consent")),
+        ("login", ("sign in", "fazer login", "iniciar sessão")),
+    )
+
+    @staticmethod
+    def _document_title(html: str) -> str:
+        """Extrai o <title> em minúsculas, ou string vazia."""
+        match = re.search(r"<title[^>]*>(.*?)</title>", html or "",
+                          re.IGNORECASE | re.DOTALL)
+        return " ".join(match.group(1).split()).lower() if match else ""
+
+    def _classify_zero_result(self, html: str) -> str:
+        """
+        Nomeia a causa provável de uma página sem cards.
+
+        Args:
+            html: HTML bruto da resposta.
+
+        Returns:
+            Uma de: ``challenge`` (anti-bot/IP marcado), ``consent`` (muro de
+            cookies), ``sem_resultados`` (busca legítima e vazia), ``login``,
+            ou ``layout`` (a página veio normal — os seletores é que não
+            reconhecem mais os cards).
+
+        Note:
+            ``layout`` é o único caso em que mexer no parser é o conserto certo;
+            nos demais o parser está correto e o problema é de acesso. Por isso
+            a classificação é conservadora: na dúvida devolve ``layout``, que
+            manda olhar o HTML salvo, em vez de mandar trocar de IP à toa.
+        """
+        lowered = (html or "").lower()
+
+        # 1) Título e redirect são estruturais: uma página de controle se
+        #    identifica neles, uma SERP normal não.
+        titulo = self._document_title(lowered)
+        for causa, marcadores in self._CAUSAS_POR_TITULO:
+            if titulo and any(marcador in titulo for marcador in marcadores):
+                return causa
+        if "/sorry/index" in lowered or "google.com/sorry" in lowered:
+            return "challenge"
+
+        # 2) Frases longas o bastante para não caberem num link de rodapé.
+        for causa, marcadores in self._CAUSAS_ZERO:
+            if any(marcador in lowered for marcador in marcadores):
+                return causa
+
+        return "layout"
+
+    _ACAO_POR_CAUSA = {
+        "challenge": (
+            "IP marcado pelo anti-bot do Google (datacenter). Parser está OK — "
+            "exige proxy residencial BR ou coleta pelo PC local."
+        ),
+        "consent": (
+            "Muro de consentimento de cookies bloqueando a SERP. Parser está OK "
+            "— exige perfil com o consentimento já aceito."
+        ),
+        "sem_resultados": (
+            "O Google respondeu busca vazia para esta keyword — não é falha "
+            "de coleta."
+        ),
+        "login": "Redirecionado para login do Google — exige perfil autenticado.",
+        "layout": (
+            "Página veio normal, mas nenhum dos 13 seletores reconheceu cards: "
+            "layout do Google Shopping mudou. Aqui sim o conserto é no parser "
+            "— use o HTML salvo para achar o novo container."
+        ),
+    }
 
     # ------------------------------------------------------------------
     # Parse principal
@@ -450,7 +567,13 @@ class GoogleShoppingScraper(BaseScraper):
         )
 
         if not items:
-            self._dump_debug(html, page, keyword)
+            causa = self._classify_zero_result(html)
+            logger.warning(
+                f"[{self.platform_name}] 0 cards em '{keyword}' (pág {page}) — "
+                f"causa provável: {causa.upper()}. "
+                f"{self._ACAO_POR_CAUSA.get(causa, '')}"
+            )
+            self._dump_debug(html, page, keyword, causa=causa)
             return []
 
         # Log único do HTML do primeiro card para diagnóstico de seletores

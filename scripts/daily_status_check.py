@@ -251,6 +251,138 @@ DEALER_THRESHOLD: Tuple[int, int, bool] = (3, 3, False)
 
 
 # ---------------------------------------------------------------------------
+# Canal de coleta — de qual máquina cada plataforma vem
+# ---------------------------------------------------------------------------
+# Sem isso o watchdog não distinguia "o scraper do ML quebrou" de "o PC que
+# roda o ML estava desligado". Todo fim de semana o PC fica fora e o relatório
+# saía com 4 FAIL críticos, exit 1 e run vermelho — 16 execuções seguidas
+# vermelhas até 10/08/2026, quando o alerta deixou de ser lido justamente por
+# ser sempre igual.
+#
+# A regra: se TODAS as plataformas de um canal vieram zeradas no turno, o
+# diagnóstico é "canal offline" (um alerta, não N), e ele não conta como falha
+# crítica de plataforma. Se ao menos uma coletou, o canal estava de pé — e aí
+# quem veio zerada quebrou de verdade e continua crítica.
+CHANNEL_ACTIONS = "GitHub Actions"
+CHANNEL_LOCAL = "PC local (IP residencial)"
+
+PLATFORM_CHANNEL: Dict[str, str] = {
+    "Amazon":           CHANNEL_ACTIONS,
+    "Leroy Merlin":     CHANNEL_ACTIONS,
+    "Google Shopping":  CHANNEL_ACTIONS,
+    "Mercado Livre":    CHANNEL_LOCAL,
+    "Magalu":           CHANNEL_LOCAL,
+    "Shopee":           CHANNEL_LOCAL,
+    "Casas Bahia":      CHANNEL_LOCAL,
+}
+
+
+#: (hora, minuto) BRT a partir de quando zero registros num turno deixa de ser
+#: "ainda não rodou" e passa a ser falha. A coleta começa 10:00 (Abertura) e
+#: 21:00 (Fechamento); a margem de 30min cobre a partida da coleta.
+#:
+#: A margem precisa ser CURTA. `collect_manha_linux.sh` e
+#: `collect_noite_linux.sh` rodam `daily_status_check.py --turno <turno>` logo
+#: DEPOIS da própria coleta — por volta de 10:30–12:00 e 21:30–22:30. Uma
+#: margem larga (o primeiro palpite foi 12h e 23h) faria justamente essa
+#: verificação pós-coleta tratar um apagão total como "ainda dentro da janela"
+#: e rebaixar para WARN o caso mais grave que existe. Curta demais, por outro
+#: lado, faria o watchdog agendado das 20:30 gritar por causa do Fechamento
+#: que ainda nem começou. 30min após o início separa os dois.
+_TURNO_DEADLINE_BRT = {"Abertura": (10, 30), "Fechamento": (21, 30)}
+
+
+def _turno_window_closed(
+    turno: str, data_str: str, agora: Optional[datetime] = None
+) -> bool:
+    """
+    True se a janela de coleta do turno já fechou.
+
+    O watchdog agendado roda 20:30 BRT e avalia OS DOIS turnos — ou seja,
+    avalia "Fechamento" antes das 21:00, quando é normal e esperado que não
+    exista nenhum registro ainda. Sem esta checagem, um turno que ainda nem
+    começou seria lido como apagão total e o alerta voltaria a ser vermelho
+    todo santo dia, que é justamente o problema que este watchdog está
+    tentando resolver.
+
+    Args:
+        turno: "Abertura" ou "Fechamento".
+        data_str: data avaliada (YYYY-MM-DD).
+        agora: instante de referência; default ``now_brt()`` (injetável em teste).
+
+    Returns:
+        True se a coleta daquele turno já deveria ter acontecido.
+    """
+    agora = agora or now_brt()
+    try:
+        dia = datetime.strptime(data_str, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return True  # data ilegível: não é motivo para suprimir alerta
+
+    if dia < agora.date():
+        return True   # dia passado: a janela fechou de qualquer forma
+    if dia > agora.date():
+        return False  # dia futuro: nada era esperado ainda
+
+    hora, minuto = _TURNO_DEADLINE_BRT.get(turno, (0, 0))
+    return (agora.hour, agora.minute) >= (hora, minuto)
+
+
+def _offline_channels(
+    counts: Dict[Tuple[str, str], int],
+    turno: str,
+    expected: List[str],
+    janela_fechada: bool = True,
+) -> set:
+    """
+    Identifica canais sem NENHUM registro no turno — máquina offline.
+
+    Args:
+        counts: mapa (plataforma, turno) → nº de registros.
+        turno: turno avaliado ("Abertura" ou "Fechamento").
+        expected: plataformas ativas hoje.
+
+    Returns:
+        Set de nomes de canal que não produziram nada. Um canal só entra aqui
+        se TODAS as suas plataformas esperadas vieram zeradas — uma única
+        plataforma com dado prova que a máquina rodou.
+    """
+    por_canal: Dict[str, List[int]] = {}
+    for platform in expected:
+        canal = PLATFORM_CHANNEL.get(platform)
+        if canal is None:
+            continue
+        por_canal.setdefault(canal, []).append(counts.get((platform, turno), 0))
+
+    offline = {
+        canal for canal, valores in por_canal.items()
+        if valores and not any(valores)
+    }
+
+    # Salvaguarda: se TODOS os canais vieram zerados, não houve "máquina
+    # desligada" — houve apagão total de coleta ou de upload, que é justamente
+    # o caso mais grave. Suprimir aqui faria o alerta silenciar exatamente
+    # quando mais precisa gritar, então nenhum canal é considerado offline e
+    # todas as falhas críticas voltam a contar para o exit code.
+    if offline and len(offline) == len(por_canal):
+        if not janela_fechada:
+            # O turno ainda nem rodou (o watchdog agendado às 20:30 avalia o
+            # Fechamento das 21:00). Zero aqui é o estado correto, não apagão.
+            logger.info(
+                f"[Watchdog] Turno '{turno}' ainda dentro da janela de coleta — "
+                "zero registros é esperado, sem escalar para crítico."
+            )
+            return offline
+        logger.error(
+            "[Watchdog] TODOS os canais zerados — apagão total de coleta/upload, "
+            "não é máquina desligada. Falhas críticas mantidas."
+        )
+        return set()
+
+    return offline
+
+
+# ---------------------------------------------------------------------------
 # Coleta dos dados
 # ---------------------------------------------------------------------------
 
@@ -773,12 +905,34 @@ def _build_report(
     turnos = [turno_filter] if turno_filter else ["Abertura", "Fechamento"]
 
     rows: List[Dict] = []
-    summary = {"pass": 0, "warn": 0, "fail": 0, "critical_fail": 0}
+    summary = {
+        "pass": 0, "warn": 0, "fail": 0,
+        "critical_fail": 0, "offline_channels": 0,
+    }
+    offline_vistos: set = set()
 
     for turno in turnos:
+        offline = _offline_channels(
+            counts, turno, expected,
+            janela_fechada=_turno_window_closed(turno, data_str),
+        )
+        offline_vistos |= offline
+
         for platform in expected:
             count = counts.get((platform, turno), 0)
             status, desc, critical = _evaluate(platform, turno, count)
+
+            # Canal offline: a plataforma não falhou, a máquina não rodou.
+            # Rebaixa para WARN e tira do exit code, para o alerta crítico
+            # voltar a significar "algo quebrou e precisa de conserto".
+            canal = PLATFORM_CHANNEL.get(platform)
+            canal_offline = None
+            if status == "FAIL" and canal in offline:
+                status = "WARN"
+                desc = f"canal offline — {canal}"
+                critical = False
+                canal_offline = canal
+
             rows.append({
                 "platform": platform,
                 "turno":    turno,
@@ -786,12 +940,19 @@ def _build_report(
                 "status":   status,
                 "desc":     desc,
                 "critical": critical,
+                # Nome do canal quando a linha só está zerada porque a máquina
+                # não rodou. O Telegram agrupa essas linhas numa só: o fato a
+                # comunicar é "o PC não rodou", não N plataformas quietas.
+                "canal_offline": canal_offline,
             })
             key = status.lower()
             if key in summary:
                 summary[key] += 1
             if status == "FAIL" and critical:
                 summary["critical_fail"] += 1
+
+    summary["offline_channels"] = len(offline_vistos)
+    summary["offline_names"] = sorted(offline_vistos)
 
     # Plataformas que coletaram dados mas NÃO estão no expected (ex: dealer
     # novo ou typo) — entram como INFO no relatório
@@ -861,6 +1022,11 @@ def _print_terminal(
         f"Resumo: ✅ {summary['pass']} PASS | ⚠️ {summary['warn']} WARN | "
         f"❌ {summary['fail']} FAIL | crítico: {summary['critical_fail']}"
     )
+    for canal in summary.get("offline_names") or []:
+        print(
+            f"⚠️  CANAL OFFLINE: {canal} — nenhuma plataforma deste canal "
+            "coletou. Máquina desligada, não scraper quebrado."
+        )
     print("=" * 78 + "\n")
 
 
@@ -970,12 +1136,29 @@ def _format_telegram(
         marketplaces = [r for r in by_turno[turno] if not _is_dealer(r["platform"])]
         dealers      = [r for r in by_turno[turno] if _is_dealer(r["platform"])]
 
+        # --- Canais offline: uma linha por canal, não uma por plataforma ---
+        # Quando o PC coletor não roda, todas as suas plataformas vêm zeradas.
+        # Repetir isso em N linhas é o mesmo ruído que o alerta queria acabar:
+        # o fato é único ("o canal não rodou") e assim deve ser comunicado.
+        offline_rows = [r for r in by_turno[turno] if r.get("canal_offline")]
+        for canal in sorted({r["canal_offline"] for r in offline_rows}):
+            nomes = sorted(
+                r["platform"] for r in offline_rows if r["canal_offline"] == canal
+            )
+            lines.append(
+                f"  ⚪ <b>Canal offline — {esc(canal)}</b>: "
+                f"{len(nomes)} plataforma(s) sem coleta "
+                f"(<code>{esc(', '.join(nomes))}</code>)"
+            )
+
         # --- Marketplaces: linha por linha ---
         mk_order = {"FAIL": 0, "WARN": 1, "PASS": 2, "INFO": 3}
         marketplaces.sort(key=lambda r: (mk_order.get(r["status"], 9), r["platform"]))
         for r in marketplaces:
             if r["status"] == "INFO":
                 continue  # não pertence ao registry — silencioso
+            if r.get("canal_offline"):
+                continue  # já contabilizada no bloco de canal offline acima
             icon = _STATUS_ICON[r["status"]]
             crit = " <b>[CRÍTICO]</b>" if r["critical"] and r["status"] != "PASS" else ""
             lines.append(
@@ -986,6 +1169,8 @@ def _format_telegram(
         # --- Dealers: agrupados por status ---
         dealer_by_status: Dict[str, List[Dict]] = {}
         for r in dealers:
+            if r.get("canal_offline"):
+                continue  # já contabilizada no bloco de canal offline acima
             dealer_by_status.setdefault(r["status"], []).append(r)
 
         d_fail = dealer_by_status.get("FAIL", [])

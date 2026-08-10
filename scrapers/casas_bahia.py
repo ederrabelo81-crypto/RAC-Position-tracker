@@ -795,6 +795,158 @@ class CasasBahiaScraper(BaseScraper):
             review_count = None
         return rating, review_count
 
+    @staticmethod
+    def _has_seller_data(records: Optional[List[Dict[str, Any]]]) -> bool:
+        """
+        True se ao menos um registro carrega o dado de buy box.
+
+        Distingue "a página devolveu cards" de "a página devolveu quem vence a
+        oferta". O parser de DOM zera ``Buy Box Seller`` de propósito (a vitrine
+        não expõe ``sellers[]``), então uma lista cheia de registros pode não
+        ter nenhum dado de competição — que é o que a coleta busca.
+
+        Args:
+            records: registros já normalizados por ``_build_record``, ou None.
+
+        Returns:
+            True se algum registro tem ``Buy Box Seller`` preenchido.
+        """
+        if not records:
+            return False
+        return any(rec.get("Buy Box Seller") for rec in records)
+
+    #: Campos de competição que a API traz e o DOM não.
+    _SELLER_FIELDS = ("Buy Box Seller", "Qtd Sellers", "Tipo Seller",
+                      "Reputação Seller", "Seller / Vendedor")
+
+    #: Valor que o DOM grava em `Seller / Vendedor` quando não achou vendedor
+    #: nenhum. Não é informação — é o nome da casa como chute. Precisa ceder
+    #: ao vendedor real da API, senão uma oferta 3P fica com o vendedor
+    #: contradizendo a própria buy box no mesmo registro.
+    _SELLER_PLACEHOLDER = "casas bahia"
+
+    @staticmethod
+    def _extract_dom_url(item: Tag) -> Optional[str]:
+        """URL do produto no card do DOM (âncora do card)."""
+        for sel in ("a[href*='/produto/']", "a[href^='/']", "a[href^='http']"):
+            anchor = item.select_one(sel)
+            if anchor and anchor.get("href"):
+                href = anchor["href"].strip()
+                if href.startswith("/"):
+                    return f"https://www.casasbahia.com.br{href}"
+                return href
+        return None
+
+    @staticmethod
+    def _extract_api_url(prod: Dict[str, Any]) -> Optional[str]:
+        """URL do produto no payload VTEX (`link` ou `linkText`)."""
+        link = prod.get("link") or prod.get("url")
+        if link:
+            link = str(link).strip()
+            if link.startswith("/"):
+                return f"https://www.casasbahia.com.br{link}"
+            return link
+        slug = prod.get("linkText") or prod.get("link_text")
+        if slug:
+            return f"https://www.casasbahia.com.br/{str(slug).strip()}/p"
+        return None
+
+    @staticmethod
+    def _product_key(record: Dict[str, Any]) -> Optional[str]:
+        """
+        Chave de casamento entre um registro do DOM e um da API.
+
+        Usa o **slug** da URL, não a URL inteira. A vitrine renderiza o link
+        completo com o id de catálogo (``/slug/p/12345678``), enquanto o
+        payload VTEX expõe só ``linkText`` (``/slug/p``) — comparar as URLs
+        cruas nunca casaria, e o merge cairia silenciosamente para zero
+        acertos, desfazendo na prática a correção que ele implementa. O slug
+        é a parte que as duas fontes têm em comum.
+
+        Args:
+            record: registro normalizado por ``_build_record``.
+
+        Returns:
+            Slug do produto em minúsculas, ou o SKU normalizado como último
+            recurso, ou None.
+
+        Example:
+            >>> k = CasasBahiaScraper._product_key
+            >>> k({"URL Produto": "https://www.casasbahia.com.br/ar-x/p/12345"})
+            'ar-x'
+        """
+        url = (record.get("URL Produto") or "").split("?")[0].strip()
+        if url:
+            partes = [p for p in url.split("/") if p]
+            # Descarta esquema e host quando a URL é absoluta.
+            if partes and partes[0].endswith(":"):
+                partes = partes[2:]
+            elif partes and "." in partes[0] and len(partes) > 1:
+                partes = partes[1:]
+            # O slug é o segmento imediatamente antes do marcador "/p".
+            if "p" in partes:
+                idx = partes.index("p")
+                if idx > 0:
+                    return partes[idx - 1].lower()
+            if partes:
+                return partes[-1].lower()
+
+        sku = record.get("Produto / SKU")
+        return str(sku).strip().lower() if sku else None
+
+    @classmethod
+    def _merge_seller_fields(
+        cls,
+        dom_records: List[Dict[str, Any]],
+        api_records: List[Dict[str, Any]],
+    ) -> int:
+        """
+        Copia os campos de seller da API para os registros do DOM.
+
+        Enriquecer em vez de substituir preserva a cobertura da página: o
+        recorte da API (``_from``/``_to`` sobre o catálogo) e a vitrine
+        renderizada não devolvem sempre o mesmo conjunto — SKUs indisponíveis
+        são filtrados e a ordenação pode divergir. Numa troca integral, os
+        cards que só existiam no DOM sumiriam da coleta levando junto preço e
+        posição, que estavam corretos. A posição do DOM também é a que o
+        usuário de fato viu na busca orgânica, então é ela que deve prevalecer.
+
+        Args:
+            dom_records: registros do DOM; alterados no lugar.
+            api_records: registros da API, com ``sellers[]`` resolvido.
+
+        Returns:
+            Quantos registros do DOM foram enriquecidos.
+        """
+        index = {}
+        for rec in api_records:
+            key = cls._product_key(rec)
+            if key and rec.get("Buy Box Seller"):
+                index.setdefault(key, rec)
+
+        enriquecidos = 0
+        for rec in dom_records:
+            match = index.get(cls._product_key(rec) or "")
+            if not match:
+                continue
+            for campo in cls._SELLER_FIELDS:
+                valor = match.get(campo)
+                if valor is None:
+                    continue
+                atual = rec.get(campo)
+                # Vazio cede; e `Seller / Vendedor` == "Casas Bahia" também,
+                # porque ali é o chute do DOM, não um vendedor observado —
+                # mantê-lo deixaria a oferta 3P com vendedor contradizendo a
+                # buy box dentro do mesmo registro.
+                placeholder = (
+                    campo == "Seller / Vendedor"
+                    and str(atual).strip().lower() == cls._SELLER_PLACEHOLDER
+                )
+                if not atual or placeholder:
+                    rec[campo] = valor
+            enriquecidos += 1
+        return enriquecidos
+
     def _parse_api_products(
         self,
         keyword: str,
@@ -837,6 +989,7 @@ class CasasBahiaScraper(BaseScraper):
                 qtd_sellers=sellers_info["qtd_sellers"],
                 tipo_seller=sellers_info["tipo_seller"],
                 is_fulfillment=False,
+                url_produto=self._extract_api_url(prod),
                 rating=rating,
                 review_count=review_count,
                 tag_destaque=None,
@@ -1112,6 +1265,8 @@ class CasasBahiaScraper(BaseScraper):
             seller_el = item.select_one(_SELECTORS["seller"])
             seller    = seller_el.get_text(strip=True) if seller_el else "Casas Bahia"
 
+            url_produto = self._extract_dom_url(item)
+
             rating_el    = item.select_one(_SELECTORS["rating"])
             reviews_el   = item.select_one(_SELECTORS["review_count"])
             tag_el       = item.select_one(_SELECTORS["tag_destaque"])
@@ -1129,6 +1284,7 @@ class CasasBahiaScraper(BaseScraper):
                 rating=parse_rating(rating_el.get_text() if rating_el else None),
                 review_count=parse_review_count(reviews_el.get_text() if reviews_el else None),
                 tag_destaque=tag_el.get_text(strip=True) if tag_el else None,
+                url_produto=url_produto,
             )
             # DOM não expõe o array sellers[]: não sabemos quem vence a buy box
             # nem 1P/3P. Não marcar "Casas Bahia" como vencedor (vitória fantasma
@@ -1565,14 +1721,49 @@ class CasasBahiaScraper(BaseScraper):
                     break
                 records = browser_records
 
-                # 3) Fallback rico: API VTEX via fetch same-origin (raramente
-                #    responde na CB, mas mantém a chance quando o catalog libera).
-                if not records:
+                # 3) Fallback rico: API VTEX via fetch same-origin.
+                #    O gatilho NÃO é "0 registros": o DOM quase sempre devolve
+                #    cards (com preço), e por isso esta etapa nunca era
+                #    alcançada — o resultado media 0% de `Buy Box Seller` e
+                #    `Qtd Sellers` no banco (10/08/2026), justamente os campos
+                #    que são o foco da coleta desde Mai/2026. O DOM da vitrine
+                #    não expõe `sellers[]`, então "tem registro" e "tem buy box"
+                #    são coisas diferentes: buscar a API quando falta o dado de
+                #    seller é o que destrava o campo.
+                if not self._has_seller_data(records):
                     products = self._vtex_fetch_in_page(keyword, page)
                     if products:
-                        records = self._parse_api_products(
+                        api_records = self._parse_api_products(
                             keyword, keyword_category_map, offset, products=products
                         )
+                        # Só aproveita se a API de fato trouxe seller — senão
+                        # mantém os registros do DOM (que ao menos têm preço,
+                        # posição e título) em vez de regredir a coleta.
+                        if self._has_seller_data(api_records):
+                            enriquecidos = self._merge_seller_fields(
+                                records, api_records
+                            )
+                            if enriquecidos:
+                                # Caminho normal: DOM mantém posição/preço e
+                                # ganha a buy box da API.
+                                logger.info(
+                                    f"[{self.platform_name}] Buy box recuperada "
+                                    f"via API VTEX — {enriquecidos}/{len(records)} "
+                                    f"registros do DOM enriquecidos (pág {page})"
+                                )
+                            else:
+                                # Nenhum casou por URL/SKU: os dois conjuntos
+                                # divergiram. Aí a API é a melhor fonte, porque
+                                # ter buy box é o objetivo da coleta.
+                                logger.warning(
+                                    f"[{self.platform_name}] Nenhum registro do "
+                                    f"DOM casou com a API (pág {page}) — usando "
+                                    f"os {len(api_records)} da API no lugar dos "
+                                    f"{len(records)} do DOM"
+                                )
+                                records = api_records
+                        elif api_records and not records:
+                            records = api_records
 
                 # 4) Último recurso: curl_cffi (provável bloqueio, mas tenta)
                 if not records:

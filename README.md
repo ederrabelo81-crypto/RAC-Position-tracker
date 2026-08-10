@@ -111,7 +111,7 @@ cobertura de campos de insight com alerta de regressão).
 | Plataforma | Status | Canal | Observações |
 |------------|--------|-------|-------------|
 | Mercado Livre | ✅ | **PC local** (Task Scheduler 10:00/21:00) | Buy box ✓; avaliação/patrocinado/Loja Oficial **corrigidos em Jun/2026** (estavam 0% — ver `docs/DIAGNOSTICO_COLETA_JUN2026.md`). Removido da VM (IP de datacenter bloqueado pelo ML). Complemento opcional `--platforms ml_api` (API oficial OAuth) preenche `reputacao_seller` |
-| Amazon | ✅ | VM / GH Actions | Buy box via "Vendido por"; `Qtd Sellers` de "X ofertas"; 1P vs 3P |
+| Amazon | ✅ | VM / GH Actions | `Qtd Sellers` de "X ofertas"; 1P vs 3P. **Buy box exige PDP** — a SERP não traz "Vendido por", então o campo fica vazio por padrão (0% em 10/08/2026) em vez de virar vitória 1P fantasma. Resolução opcional via PDP + cache: `RAC_AMAZON_PDP_BUYBOX=1` (ver `.env.example`) |
 | Leroy Merlin | ✅ | VM / GH Actions | Algolia API; 1P vs 3P marketplace |
 | Magalu | ✅ | **PC local** (primário, 09:00/20:00), VM best-effort | Akamai: Chrome comum + perfil dedicado, ataque via CDP (`rebrowser-playwright`) + busca orgânica + circuit breaker (aborta após 5 keywords 100% bloqueadas) |
 | Casas Bahia | ✅ | **PC local** (primário, 09:00/20:00), VM best-effort | VTEX Intelligent Search (`sellers[]` → buy box); IP datacenter também destrava via warm-up Akamai, mas o PC (IP residencial) é mais estável |

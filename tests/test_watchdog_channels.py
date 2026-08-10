@@ -1,0 +1,230 @@
+"""
+tests/test_watchdog_channels.py — canal offline × plataforma quebrada.
+
+Regressão de 10/08/2026: o watchdog acumulou 16 execuções seguidas vermelhas.
+Não estava quebrado — ele saía com exit 1 sempre que uma plataforma crítica
+vinha zerada, e ML/Magalu/Shopee/Casas Bahia rodam no PC local, que fica
+desligado nos fins de semana. Alerta que é vermelho todo dia deixa de alertar.
+
+A regra coberta aqui: se TODAS as plataformas de um canal vieram zeradas, o
+diagnóstico é "canal offline" (WARN, não conta no exit code). Se ao menos uma
+coletou, a máquina rodou — e quem veio zerada quebrou de verdade (FAIL crítico).
+
+Rode: pytest tests/test_watchdog_channels.py
+"""
+import sys
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.daily_status_check import (  # noqa: E402
+    CHANNEL_ACTIONS,
+    CHANNEL_LOCAL,
+    _build_report,
+    _format_telegram,
+    _offline_channels,
+    _turno_window_closed,
+)
+
+TODAS = [
+    "Mercado Livre", "Amazon", "Magalu",
+    "Leroy Merlin", "Casas Bahia", "Shopee", "Google Shopping",
+]
+
+
+def _counts(turno: str, **por_plataforma: int) -> dict:
+    return {(plat, turno): n for plat, n in por_plataforma.items()}
+
+
+class TestOfflineChannels:
+    def test_pc_local_desligado_e_detectado(self):
+        """Fim de semana real: só Actions coletou."""
+        counts = _counts(
+            "Abertura",
+            **{"Amazon": 2351, "Leroy Merlin": 1068, "Google Shopping": 0},
+        )
+        offline = _offline_channels(counts, "Abertura", TODAS)
+        assert offline == {CHANNEL_LOCAL}
+
+    def test_tudo_coletando_nenhum_canal_offline(self):
+        counts = _counts(
+            "Abertura",
+            **{"Amazon": 2000, "Leroy Merlin": 1000, "Google Shopping": 300,
+               "Mercado Livre": 3000, "Magalu": 1800,
+               "Shopee": 2400, "Casas Bahia": 900},
+        )
+        assert _offline_channels(counts, "Abertura", TODAS) == set()
+
+    def test_uma_plataforma_viva_prova_canal_de_pe(self):
+        """Google Shopping zerado com Amazon/Leroy OK = scraper quebrado."""
+        counts = _counts(
+            "Abertura",
+            **{"Amazon": 2000, "Leroy Merlin": 1000, "Google Shopping": 0,
+               "Mercado Livre": 3000, "Magalu": 1800,
+               "Shopee": 2400, "Casas Bahia": 900},
+        )
+        assert CHANNEL_ACTIONS not in _offline_channels(counts, "Abertura", TODAS)
+
+    def test_apagao_total_nao_e_canal_offline(self):
+        """
+        Nenhum canal é "offline" quando TODOS vieram zerados.
+
+        Esta asserção já esteve invertida aqui: eu tinha escrito que o dia sem
+        nenhuma coleta marcava os dois canais como offline. O efeito era que
+        toda falha crítica virava WARN e o watchdog saía com exit 0 — ou seja,
+        o alerta silenciava exatamente no caso mais grave, um apagão total de
+        coleta ou de upload. "Máquina desligada" só é diagnóstico plausível
+        quando ALGUM canal produziu dado; sem isso, o que houve foi apagão.
+        """
+        assert _offline_channels({}, "Abertura", TODAS) == set()
+
+    def test_apagao_total_mantem_falha_critica_no_exit_code(self):
+        rows, summary = _build_report("2026-08-10", "Abertura", {})
+        assert summary["critical_fail"] > 0, (
+            "apagão total precisa gritar — é o caso mais grave, não o mais quieto"
+        )
+
+
+class TestBuildReportExitCode:
+    def test_canal_offline_nao_gera_falha_critica(self):
+        """O caso do fim de semana: nada quebrou, exit code deve ficar limpo."""
+        counts = _counts(
+            "Abertura",
+            **{"Amazon": 2351, "Leroy Merlin": 1068, "Google Shopping": 300},
+        )
+        rows, summary = _build_report("2026-08-09", "Abertura", counts)
+        assert summary["critical_fail"] == 0
+        assert summary["offline_names"] == [CHANNEL_LOCAL]
+
+        ml = next(r for r in rows if r["platform"] == "Mercado Livre")
+        assert ml["status"] == "WARN"
+        assert ml["critical"] is False
+        assert "canal offline" in ml["desc"]
+
+    def test_plataforma_quebrada_com_canal_de_pe_continua_critica(self):
+        """Magalu zerado enquanto ML e Shopee coletam = quebra real."""
+        counts = _counts(
+            "Abertura",
+            **{"Amazon": 2000, "Leroy Merlin": 1000, "Google Shopping": 300,
+               "Mercado Livre": 3000, "Magalu": 0,
+               "Shopee": 2400, "Casas Bahia": 900},
+        )
+        rows, summary = _build_report("2026-08-10", "Abertura", counts)
+        assert summary["critical_fail"] >= 1
+        assert summary["offline_names"] == []
+
+        magalu = next(r for r in rows if r["platform"] == "Magalu")
+        assert magalu["status"] == "FAIL"
+        assert magalu["critical"] is True
+
+
+class TestTelegramAgrupaCanalOffline:
+    """
+    Um canal offline é UM fato, não N plataformas quietas.
+
+    O alerta tinha virado ruído — 16 runs vermelhos seguidos. Rebaixar o
+    status sem agrupar a mensagem trocaria "N linhas vermelhas" por "N linhas
+    amarelas", o que não resolve o problema que motivou a mudança.
+    """
+
+    def _msg(self):
+        counts = _counts(
+            "Abertura",
+            **{"Amazon": 2351, "Leroy Merlin": 1068, "Google Shopping": 300},
+        )
+        rows, summary = _build_report("2026-08-09", "Abertura", counts)
+        return _format_telegram("2026-08-09", "Abertura", rows, summary)
+
+    def test_uma_linha_por_canal(self):
+        msg = self._msg()
+        assert msg.count("Canal offline") == 1
+
+    def test_nomeia_o_canal_e_conta_as_plataformas(self):
+        msg = self._msg()
+        assert CHANNEL_LOCAL in msg
+        assert "plataforma(s) sem coleta" in msg
+
+    def test_plataformas_do_canal_nao_ganham_linha_propria(self):
+        msg = self._msg()
+        for plataforma in ("Mercado Livre", "Magalu", "Shopee"):
+            assert f"<code>{plataforma}</code>: 0 reg" not in msg
+
+    def test_plataformas_que_coletaram_seguem_visiveis(self):
+        msg = self._msg()
+        assert "Amazon" in msg and "2351" in msg
+
+
+class TestJanelaDeColeta:
+    """
+    Apagão total só é apagão depois que a coleta deveria ter rodado.
+
+    O watchdog agendado roda 20:30 BRT e avalia OS DOIS turnos — inclusive o
+    Fechamento, cuja coleta é às 21:00. Escalar "todos os canais zerados" para
+    crítico sem olhar a hora tornaria o run vermelho TODO DIA, recriando com
+    precisão o ruído que este watchdog existe para eliminar. Foi uma regressão
+    real introduzida ao corrigir o apagão silencioso; estes testes prendem os
+    dois lados.
+    """
+
+    HOJE = "2026-08-10"
+
+    def _as(self, hora, minuto=0):
+        return datetime(2026, 8, 10, hora, minuto)
+
+    # --- watchdog agendado (20:30), que roda ANTES da coleta das 21:00 ---
+
+    def test_fechamento_as_2030_ainda_esta_na_janela(self):
+        assert _turno_window_closed(
+            "Fechamento", self.HOJE, self._as(20, 30)
+        ) is False
+
+    def test_abertura_as_2030_ja_fechou(self):
+        assert _turno_window_closed(
+            "Abertura", self.HOJE, self._as(20, 30)
+        ) is True
+
+    # --- verificação pós-coleta, disparada pelos próprios scripts ---
+    # `collect_noite_linux.sh` chama --turno Fechamento logo após a coleta;
+    # `collect_manha_linux.sh` idem para Abertura. Nesses horários, zero em
+    # todos os canais é falha real e PRECISA escalar: uma margem larga
+    # (o primeiro palpite foi 23h) rebaixava justamente o caso mais grave.
+
+    def test_check_pos_coleta_da_noite_ja_conta_como_fechado(self):
+        for hora, minuto in ((21, 30), (22, 0), (22, 30)):
+            assert _turno_window_closed(
+                "Fechamento", self.HOJE, self._as(hora, minuto)
+            ) is True, f"{hora}:{minuto:02d} deveria contar como janela fechada"
+
+    def test_check_pos_coleta_da_manha_ja_conta_como_fechado(self):
+        for hora, minuto in ((10, 30), (11, 0), (12, 0)):
+            assert _turno_window_closed(
+                "Abertura", self.HOJE, self._as(hora, minuto)
+            ) is True
+
+    def test_fechamento_as_2100_em_ponto_ainda_esta_na_janela(self):
+        """A coleta acabou de começar — ainda não deu tempo de subir nada."""
+        assert _turno_window_closed(
+            "Fechamento", self.HOJE, self._as(21, 0)
+        ) is False
+
+    def test_abertura_as_9_ainda_esta_na_janela(self):
+        assert _turno_window_closed("Abertura", self.HOJE, self._as(9)) is False
+
+    def test_dia_passado_sempre_fechado(self):
+        assert _turno_window_closed("Fechamento", "2026-08-01", self._as(8)) is True
+
+    def test_dia_futuro_nunca_fechado(self):
+        assert _turno_window_closed("Abertura", "2026-08-20", self._as(20)) is False
+
+    def test_data_ilegivel_nao_suprime_alerta(self):
+        assert _turno_window_closed("Abertura", "não-é-data", self._as(20)) is True
+
+    def test_dentro_da_janela_nao_escala_para_critico(self):
+        """O caso das 20:30: Fechamento vazio é o estado correto."""
+        offline = _offline_channels({}, "Fechamento", TODAS, janela_fechada=False)
+        assert offline == {CHANNEL_ACTIONS, CHANNEL_LOCAL}
+
+    def test_fora_da_janela_escala_para_critico(self):
+        offline = _offline_channels({}, "Fechamento", TODAS, janela_fechada=True)
+        assert offline == set()

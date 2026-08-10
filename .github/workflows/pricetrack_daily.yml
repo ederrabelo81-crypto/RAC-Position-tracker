@@ -56,7 +56,28 @@ jobs:
   import:
     name: Import PriceTrack → Supabase
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # INVARIANTE: este teto precisa ser MAIOR que a soma dos
+    # `timeout-minutes` de TODOS os passos de import, mais folga para
+    # checkout/deps/upload. Hoje: 50 (import) + 60 (heal) = 110 < 120 ✓
+    #
+    # Cuidado ao raciocinar por `PRICETRACK_POLL_TIMEOUT_SECONDS`: ele é o
+    # timeout de UM export (`pricetrack_api/config.py: poll_timeout_seconds`),
+    # não do passo. Com `max_concurrent_exports = 3`, um passo com N exports
+    # custa, no pior caso, ceil(N/3) × poll_timeout — e o `Heal recent gaps`
+    # varre até 14 datas, ou seja ceil(14/3) = 5 lotes ≈ 3h45 se cada lote
+    # esgotar o limite. Somar os polls dos passos, como esta nota fazia antes,
+    # subestima o pior caso e deixa o job estourar de novo.
+    #
+    # Por isso o teto real de cada passo é o `timeout-minutes` do passo, que o
+    # GitHub impõe independentemente de quantos exports rodaram. O teto do job
+    # protege o resto do workflow.
+    #
+    # Estava em 60min sem teto por passo: o import consumia o orçamento e o
+    # `Heal recent gaps` era morto pelo runner no meio do voo — runs de 08, 09
+    # e 10/08/2026 cancelados exatamente aos 60min, deixando `pricetrack_daily`
+    # parada em 06/08. Pior, o job morto no meio é a própria causa dos exports
+    # órfãos que travam os 3 slots da organização.
+    timeout-minutes: 120
 
     steps:
       # ── 1. Checkout ────────────────────────────────────────────────────────
@@ -112,15 +133,26 @@ jobs:
 
       # ── 5. Import PriceTrack → Supabase ────────────────────────────────────
       - name: Run PriceTrack API import
+        # Teto imposto pelo runner, independente de quantos exports rodaram.
+        # `PRICETRACK_POLL_TIMEOUT_SECONDS` limita UM export, não o passo.
+        timeout-minutes: 50
         env:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # Menor que o `timeout-minutes: 60` do job, de propósito: se o
-          # cliente esperar mais que o job vive, o runner é morto NO MEIO do
-          # voo e os exports criados ficam órfãos segurando os 3 slots da
-          # organização. Foi assim que a importação toda travou em 08/08/2026.
-          PRICETRACK_POLL_TIMEOUT_SECONDS: "2700"
+          # 40min POR EXPORT (não pelo passo — quem limita o passo é o
+          # `timeout-minutes: 50` acima). Serve para um export travado não
+          # segurar sozinho o passo inteiro.
+          # INVARIANTE: RUN_BUDGET >= POLL_TIMEOUT. Com o orçamento menor que
+          # o timeout de um export, `_budget_exhausted()` dá True na primeira
+          # iteração e o passo termina sem submeter NADA — o config valida
+          # isso e falha alto, mas a ordem certa dos números mora aqui:
+          #   poll 2400s <= budget 2700s < teto de parede 3000s (50min)
+          PRICETRACK_POLL_TIMEOUT_SECONDS: "2400"
+          # 45min de orçamento sob o teto de parede de 50min: o cliente para
+          # de submeter export que não caberia e sai limpo, em vez de ser
+          # morto pelo runner deixando exports órfãos nos 3 slots.
+          PRICETRACK_RUN_BUDGET_SECONDS: "2700"
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
@@ -136,14 +168,30 @@ jobs:
       # (ex.: 14/01, 18-20/02, 05/05, 08/05 — gaps detectados em 02/06/2026).
       - name: Heal recent gaps
         if: github.event_name == 'schedule'
+        # Varre até 14 datas em lotes de 3 (`max_concurrent_exports`), então o
+        # pior caso por poll seria ceil(14/3) x 45min ≈ 3h45 — muito além do
+        # job. Quem segura o passo é o par abaixo:
+        #   • `timeout-minutes` — teto de parede imposto pelo runner;
+        #   • `PRICETRACK_RUN_BUDGET_SECONDS` — orçamento que o cliente
+        #     respeita, parando de SUBMETER exports que não caberiam. Fica
+        #     abaixo do teto de parede de propósito: o cliente sai sozinho e
+        #     limpo, antes de o runner matar o processo no meio de um lote em
+        #     voo (export morto no meio fica órfão segurando um dos 3 slots).
+        # Sem `continue-on-error`: um heal que falha de verdade (401/429,
+        # crash) precisa pintar o run de vermelho, senão a coleta fica com
+        # buracos e nada avisa — o oposto do que este PR quer. O truncamento
+        # por orçamento não é falha: o cliente devolve o lote incompleto e sai
+        # com sucesso, e o run seguinte retoma os buracos.
+        timeout-minutes: 60
         env:
+          # 50min de orçamento dentro de um teto de parede de 60min.
+          PRICETRACK_RUN_BUDGET_SECONDS: "3000"
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # Menor que o `timeout-minutes: 60` do job, de propósito: se o
-          # cliente esperar mais que o job vive, o runner é morto NO MEIO do
-          # voo e os exports criados ficam órfãos segurando os 3 slots da
-          # organização. Foi assim que a importação toda travou em 08/08/2026.
+          # 45min POR EXPORT; o teto do passo é o `timeout-minutes: 60`.
+          # Era este o passo cancelado pelo runner nos runs de 08-10/08/2026,
+          # porque o import anterior já tinha gasto o orçamento de 60min do job.
           PRICETRACK_POLL_TIMEOUT_SECONDS: "2700"
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}

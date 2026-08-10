@@ -120,6 +120,10 @@ class ExportManager:
         o restante do lote.
         """
         dest_fn = dest_fn or self._default_dest
+        # Marco zero do orçamento total (ver `run_budget_seconds`): a partir
+        # daqui o manager recusa SUBMETER export que não caberia no tempo
+        # restante, para não ser interrompido no meio de um lote em voo.
+        self._run_started = self._clock()
         pending: deque[tuple[int, ExportRequest]] = deque(enumerate(requests_))
         in_flight: Dict[str, _InFlight] = {}
         self._index: Dict[str, int] = {}
@@ -187,9 +191,39 @@ class ExportManager:
             return self._client.create_offers_export(request)
         return self._client.create_shipping_export(request)
 
+    def _budget_exhausted(self) -> bool:
+        """
+        True se não há tempo para mais um export dentro do orçamento.
+
+        Submeter um export que o relógio de parede não deixa terminar é o pior
+        dos mundos: o processo morre no meio, e o export criado fica órfão
+        segurando um dos 3 slots da organização — que é o que faz o import
+        seguinte levar 429. Melhor devolver o lote incompleto: os buracos
+        restantes o próximo run tenta de novo.
+        """
+        budget = getattr(self._client.settings, "run_budget_seconds", 0.0) or 0.0
+        if budget <= 0:
+            return False
+        decorrido = self._clock() - getattr(self, "_run_started", self._clock())
+        restante = budget - decorrido
+        return restante < self._client.settings.poll_timeout_seconds
+
     def _fill_slots(self, pending, in_flight, dest_fn, outcomes):
         """Cria exports até encher os slots. Retorna (hit_429, wait_sugerido)."""
         while pending and len(in_flight) < self._max_concurrent:
+            if self._budget_exhausted():
+                logger.warning(
+                    f"PriceTrack: orçamento da execução esgotado — "
+                    f"{len(pending)} export(s) não submetido(s) para não "
+                    f"morrerem órfãos. O próximo run retoma."
+                )
+                while pending:
+                    idx, request = pending.popleft()
+                    outcomes[idx] = ExportOutcome(
+                        request=request, status=OUTCOME_ERROR,
+                        error="não submetido: orçamento da execução esgotado",
+                    )
+                return False, None
             idx, request = pending[0]
             try:
                 job = self._create(request)
