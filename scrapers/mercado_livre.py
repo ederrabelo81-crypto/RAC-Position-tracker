@@ -1248,8 +1248,9 @@ class MLScraper(BaseScraper):
         cov = cursor.coverage
         resumo = " ".join(
             f"{name}={cov.get(name, 0)}/{total}"
-            for name in ("title", "price", "url", "seller", "rating",
-                         "review_count", "fulfillment", "oficial", "sponsored", "tag")
+            for name in ("title", "price", "url", "seller", "qtd_sellers",
+                         "rating", "review_count", "fulfillment", "oficial",
+                         "sponsored", "tag")
         )
         logger.info(f"[{self.platform_name}] cobertura '{keyword}': {resumo}")
 

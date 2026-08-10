@@ -277,8 +277,52 @@ PLATFORM_CHANNEL: Dict[str, str] = {
 }
 
 
+#: Hora BRT em que a coleta de cada turno já deveria ter terminado e subido.
+#: A coleta roda 10:00 (Abertura) e 21:00 (Fechamento); a margem cobre a
+#: duração da coleta e o upload.
+_TURNO_DEADLINE_BRT = {"Abertura": 12, "Fechamento": 23}
+
+
+def _turno_window_closed(
+    turno: str, data_str: str, agora: Optional[datetime] = None
+) -> bool:
+    """
+    True se a janela de coleta do turno já fechou.
+
+    O watchdog agendado roda 20:30 BRT e avalia OS DOIS turnos — ou seja,
+    avalia "Fechamento" antes das 21:00, quando é normal e esperado que não
+    exista nenhum registro ainda. Sem esta checagem, um turno que ainda nem
+    começou seria lido como apagão total e o alerta voltaria a ser vermelho
+    todo santo dia, que é justamente o problema que este watchdog está
+    tentando resolver.
+
+    Args:
+        turno: "Abertura" ou "Fechamento".
+        data_str: data avaliada (YYYY-MM-DD).
+        agora: instante de referência; default ``now_brt()`` (injetável em teste).
+
+    Returns:
+        True se a coleta daquele turno já deveria ter acontecido.
+    """
+    agora = agora or now_brt()
+    try:
+        dia = datetime.strptime(data_str, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return True  # data ilegível: não é motivo para suprimir alerta
+
+    if dia < agora.date():
+        return True   # dia passado: a janela fechou de qualquer forma
+    if dia > agora.date():
+        return False  # dia futuro: nada era esperado ainda
+
+    return agora.hour >= _TURNO_DEADLINE_BRT.get(turno, 0)
+
+
 def _offline_channels(
-    counts: Dict[Tuple[str, str], int], turno: str, expected: List[str]
+    counts: Dict[Tuple[str, str], int],
+    turno: str,
+    expected: List[str],
+    janela_fechada: bool = True,
 ) -> set:
     """
     Identifica canais sem NENHUM registro no turno — máquina offline.
@@ -311,6 +355,14 @@ def _offline_channels(
     # quando mais precisa gritar, então nenhum canal é considerado offline e
     # todas as falhas críticas voltam a contar para o exit code.
     if offline and len(offline) == len(por_canal):
+        if not janela_fechada:
+            # O turno ainda nem rodou (o watchdog agendado às 20:30 avalia o
+            # Fechamento das 21:00). Zero aqui é o estado correto, não apagão.
+            logger.info(
+                f"[Watchdog] Turno '{turno}' ainda dentro da janela de coleta — "
+                "zero registros é esperado, sem escalar para crítico."
+            )
+            return offline
         logger.error(
             "[Watchdog] TODOS os canais zerados — apagão total de coleta/upload, "
             "não é máquina desligada. Falhas críticas mantidas."
@@ -850,7 +902,10 @@ def _build_report(
     offline_vistos: set = set()
 
     for turno in turnos:
-        offline = _offline_channels(counts, turno, expected)
+        offline = _offline_channels(
+            counts, turno, expected,
+            janela_fechada=_turno_window_closed(turno, data_str),
+        )
         offline_vistos |= offline
 
         for platform in expected:

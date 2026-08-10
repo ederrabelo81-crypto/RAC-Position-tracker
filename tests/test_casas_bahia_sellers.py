@@ -224,3 +224,85 @@ class TestMergeSellerFields:
         api = [{"URL Produto": "https://cb.com/p/1", "Buy Box Seller": None}]
         assert CasasBahiaScraper._merge_seller_fields(dom, api) == 0
         assert dom[0]["Buy Box Seller"] is None
+
+
+class TestChaveDeCasamentoReal:
+    """
+    A chave só funciona se `URL Produto` existir de verdade.
+
+    A primeira versão do merge casava por `URL Produto`, mas nem `_parse_dom`
+    nem `_parse_api_products` passavam `url_produto` ao `_build_record` — o
+    campo era sempre None em produção e a chave caía no fallback por título
+    normalizado, que diverge entre DOM (img[alt]) e API (productName). Os
+    testes não pegaram porque usavam registros fictícios com a URL preenchida:
+    provavam a função, não o fluxo. Aqui a extração é exercitada a partir da
+    forma real de cada fonte.
+    """
+
+    def test_url_extraida_do_card_do_dom(self):
+        from bs4 import BeautifulSoup
+        card = BeautifulSoup(
+            '<div><a href="/ar-condicionado-midea/p/123">x</a></div>',
+            "html.parser",
+        ).div
+        url = CasasBahiaScraper._extract_dom_url(card)
+        assert url == "https://www.casasbahia.com.br/ar-condicionado-midea/p/123"
+
+    def test_url_absoluta_no_dom_e_preservada(self):
+        from bs4 import BeautifulSoup
+        card = BeautifulSoup(
+            '<div><a href="https://www.casasbahia.com.br/x/p/9">x</a></div>',
+            "html.parser",
+        ).div
+        assert CasasBahiaScraper._extract_dom_url(card).endswith("/x/p/9")
+
+    def test_url_do_payload_vtex_por_link(self):
+        url = CasasBahiaScraper._extract_api_url({"link": "/ar-cond/p/1"})
+        assert url == "https://www.casasbahia.com.br/ar-cond/p/1"
+
+    def test_url_do_payload_vtex_por_linktext(self):
+        url = CasasBahiaScraper._extract_api_url({"linkText": "ar-cond-midea"})
+        assert url == "https://www.casasbahia.com.br/ar-cond-midea/p"
+
+    def test_payload_sem_url_devolve_none(self):
+        assert CasasBahiaScraper._extract_api_url({"productName": "x"}) is None
+
+    def test_dom_e_api_casam_pela_url_normalizada(self):
+        """DOM com query string, API sem: precisam bater."""
+        dom = [{"URL Produto": "https://www.casasbahia.com.br/x/p/1?utm=busca",
+                "Buy Box Seller": None, "Seller / Vendedor": "Casas Bahia"}]
+        api = [{"URL Produto": "https://www.casasbahia.com.br/x/p/1",
+                "Buy Box Seller": "LojaX", "Seller / Vendedor": "LojaX"}]
+        assert CasasBahiaScraper._merge_seller_fields(dom, api) == 1
+
+
+class TestPlaceholderDoSellerCede:
+    """
+    "Casas Bahia" no `Seller / Vendedor` do DOM é chute, não observação.
+
+    O DOM usa o nome da casa como fallback quando não acha vendedor nenhum.
+    Se esse valor sobrevivesse ao merge, uma oferta 3P ficaria com
+    `Seller / Vendedor = Casas Bahia` e `Buy Box Seller = LojaX` no MESMO
+    registro — o relatório se contradizendo sozinho.
+    """
+
+    def test_placeholder_cede_ao_vendedor_da_api(self):
+        dom = [{"URL Produto": "https://cb.com/p/1",
+                "Seller / Vendedor": "Casas Bahia", "Buy Box Seller": None}]
+        api = [{"URL Produto": "https://cb.com/p/1",
+                "Seller / Vendedor": "LojaX", "Buy Box Seller": "LojaX"}]
+
+        CasasBahiaScraper._merge_seller_fields(dom, api)
+
+        assert dom[0]["Seller / Vendedor"] == "LojaX"
+        assert dom[0]["Buy Box Seller"] == "LojaX"
+
+    def test_vendedor_real_do_dom_nao_e_sobrescrito(self):
+        dom = [{"URL Produto": "https://cb.com/p/1",
+                "Seller / Vendedor": "LojaObservada", "Buy Box Seller": None}]
+        api = [{"URL Produto": "https://cb.com/p/1",
+                "Seller / Vendedor": "LojaAPI", "Buy Box Seller": "LojaAPI"}]
+
+        CasasBahiaScraper._merge_seller_fields(dom, api)
+
+        assert dom[0]["Seller / Vendedor"] == "LojaObservada"

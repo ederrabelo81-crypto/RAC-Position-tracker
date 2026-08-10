@@ -146,6 +146,10 @@ jobs:
           # o passo vive, o processo é morto NO MEIO do voo e os exports
           # criados ficam órfãos segurando os 3 slots da organização.
           PRICETRACK_POLL_TIMEOUT_SECONDS: "2700"
+          # 40min de orçamento sob o teto de parede de 50min: o cliente para de
+          # submeter export que não caberia e sai limpo, em vez de ser morto
+          # pelo runner deixando exports órfãos nos 3 slots da organização.
+          PRICETRACK_RUN_BUDGET_SECONDS: "2400"
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
@@ -163,12 +167,22 @@ jobs:
         if: github.event_name == 'schedule'
         # Varre até 14 datas em lotes de 3 (`max_concurrent_exports`), então o
         # pior caso por poll seria ceil(14/3) x 45min ≈ 3h45 — muito além do
-        # job. Este teto é o que realmente segura o passo. Um heal truncado
-        # apenas adia buracos para o run seguinte, que volta a tentá-los;
-        # estourar o job, não: mata o import inteiro e deixa exports órfãos.
+        # job. Quem segura o passo é o par abaixo:
+        #   • `timeout-minutes` — teto de parede imposto pelo runner;
+        #   • `PRICETRACK_RUN_BUDGET_SECONDS` — orçamento que o cliente
+        #     respeita, parando de SUBMETER exports que não caberiam. Fica
+        #     abaixo do teto de parede de propósito: o cliente sai sozinho e
+        #     limpo, antes de o runner matar o processo no meio de um lote em
+        #     voo (export morto no meio fica órfão segurando um dos 3 slots).
+        # Sem `continue-on-error`: um heal que falha de verdade (401/429,
+        # crash) precisa pintar o run de vermelho, senão a coleta fica com
+        # buracos e nada avisa — o oposto do que este PR quer. O truncamento
+        # por orçamento não é falha: o cliente devolve o lote incompleto e sai
+        # com sucesso, e o run seguinte retoma os buracos.
         timeout-minutes: 60
-        continue-on-error: true
         env:
+          # 50min de orçamento dentro de um teto de parede de 60min.
+          PRICETRACK_RUN_BUDGET_SECONDS: "3000"
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

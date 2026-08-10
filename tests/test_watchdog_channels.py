@@ -13,6 +13,7 @@ coletou, a máquina rodou — e quem veio zerada quebrou de verdade (FAIL críti
 Rode: pytest tests/test_watchdog_channels.py
 """
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -23,6 +24,7 @@ from scripts.daily_status_check import (  # noqa: E402
     _build_report,
     _format_telegram,
     _offline_channels,
+    _turno_window_closed,
 )
 
 TODAS = [
@@ -151,3 +153,51 @@ class TestTelegramAgrupaCanalOffline:
     def test_plataformas_que_coletaram_seguem_visiveis(self):
         msg = self._msg()
         assert "Amazon" in msg and "2351" in msg
+
+
+class TestJanelaDeColeta:
+    """
+    Apagão total só é apagão depois que a coleta deveria ter rodado.
+
+    O watchdog agendado roda 20:30 BRT e avalia OS DOIS turnos — inclusive o
+    Fechamento, cuja coleta é às 21:00. Escalar "todos os canais zerados" para
+    crítico sem olhar a hora tornaria o run vermelho TODO DIA, recriando com
+    precisão o ruído que este watchdog existe para eliminar. Foi uma regressão
+    real introduzida ao corrigir o apagão silencioso; estes testes prendem os
+    dois lados.
+    """
+
+    HOJE = "2026-08-10"
+
+    def _as(self, hora):
+        return datetime(2026, 8, 10, hora, 0)
+
+    def test_fechamento_as_2030_ainda_esta_na_janela(self):
+        assert _turno_window_closed("Fechamento", self.HOJE, self._as(20)) is False
+
+    def test_fechamento_depois_das_23_ja_fechou(self):
+        assert _turno_window_closed("Fechamento", self.HOJE, self._as(23)) is True
+
+    def test_abertura_as_2030_ja_fechou(self):
+        assert _turno_window_closed("Abertura", self.HOJE, self._as(20)) is True
+
+    def test_abertura_as_9_ainda_esta_na_janela(self):
+        assert _turno_window_closed("Abertura", self.HOJE, self._as(9)) is False
+
+    def test_dia_passado_sempre_fechado(self):
+        assert _turno_window_closed("Fechamento", "2026-08-01", self._as(8)) is True
+
+    def test_dia_futuro_nunca_fechado(self):
+        assert _turno_window_closed("Abertura", "2026-08-20", self._as(20)) is False
+
+    def test_data_ilegivel_nao_suprime_alerta(self):
+        assert _turno_window_closed("Abertura", "não-é-data", self._as(20)) is True
+
+    def test_dentro_da_janela_nao_escala_para_critico(self):
+        """O caso das 20:30: Fechamento vazio é o estado correto."""
+        offline = _offline_channels({}, "Fechamento", TODAS, janela_fechada=False)
+        assert offline == {CHANNEL_ACTIONS, CHANNEL_LOCAL}
+
+    def test_fora_da_janela_escala_para_critico(self):
+        offline = _offline_channels({}, "Fechamento", TODAS, janela_fechada=True)
+        assert offline == set()

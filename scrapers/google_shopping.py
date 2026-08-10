@@ -461,10 +461,15 @@ class GoogleShoppingScraper(BaseScraper):
 
     #: Marcadores que só valem quando aparecem no <title> ou numa URL de
     #: redirect — lá são estruturais, no corpo seriam só um link de rodapé.
+    # Só marcadores específicos de cada tipo de página de controle. "erro" e
+    # "entrar" já estiveram aqui e são genéricos demais: qualquer página de
+    # erro comum do Google mandaria o operador atrás de proxy residencial, e
+    # "entrar" aparece em botão de SERP normal. Marcador ambíguo devolve
+    # `layout`, que manda olhar o HTML — barato — em vez de trocar de IP.
     _CAUSAS_POR_TITULO = (
-        ("challenge", ("sorry", "unusual traffic", "erro")),
+        ("challenge", ("sorry", "unusual traffic", "tráfego incomum")),
         ("consent", ("before you continue", "antes de continuar", "consent")),
-        ("login", ("sign in", "fazer login", "entrar")),
+        ("login", ("sign in", "fazer login", "iniciar sessão")),
     )
 
     @staticmethod

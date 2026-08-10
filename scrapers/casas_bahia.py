@@ -819,6 +819,38 @@ class CasasBahiaScraper(BaseScraper):
     _SELLER_FIELDS = ("Buy Box Seller", "Qtd Sellers", "Tipo Seller",
                       "Reputação Seller", "Seller / Vendedor")
 
+    #: Valor que o DOM grava em `Seller / Vendedor` quando não achou vendedor
+    #: nenhum. Não é informação — é o nome da casa como chute. Precisa ceder
+    #: ao vendedor real da API, senão uma oferta 3P fica com o vendedor
+    #: contradizendo a própria buy box no mesmo registro.
+    _SELLER_PLACEHOLDER = "casas bahia"
+
+    @staticmethod
+    def _extract_dom_url(item: Tag) -> Optional[str]:
+        """URL do produto no card do DOM (âncora do card)."""
+        for sel in ("a[href*='/produto/']", "a[href^='/']", "a[href^='http']"):
+            anchor = item.select_one(sel)
+            if anchor and anchor.get("href"):
+                href = anchor["href"].strip()
+                if href.startswith("/"):
+                    return f"https://www.casasbahia.com.br{href}"
+                return href
+        return None
+
+    @staticmethod
+    def _extract_api_url(prod: Dict[str, Any]) -> Optional[str]:
+        """URL do produto no payload VTEX (`link` ou `linkText`)."""
+        link = prod.get("link") or prod.get("url")
+        if link:
+            link = str(link).strip()
+            if link.startswith("/"):
+                return f"https://www.casasbahia.com.br{link}"
+            return link
+        slug = prod.get("linkText") or prod.get("link_text")
+        if slug:
+            return f"https://www.casasbahia.com.br/{str(slug).strip()}/p"
+        return None
+
     @staticmethod
     def _product_key(record: Dict[str, Any]) -> Optional[str]:
         """Chave de casamento entre um registro do DOM e um da API."""
@@ -865,7 +897,18 @@ class CasasBahiaScraper(BaseScraper):
                 continue
             for campo in cls._SELLER_FIELDS:
                 valor = match.get(campo)
-                if valor is not None and not rec.get(campo):
+                if valor is None:
+                    continue
+                atual = rec.get(campo)
+                # Vazio cede; e `Seller / Vendedor` == "Casas Bahia" também,
+                # porque ali é o chute do DOM, não um vendedor observado —
+                # mantê-lo deixaria a oferta 3P com vendedor contradizendo a
+                # buy box dentro do mesmo registro.
+                placeholder = (
+                    campo == "Seller / Vendedor"
+                    and str(atual).strip().lower() == cls._SELLER_PLACEHOLDER
+                )
+                if not atual or placeholder:
                     rec[campo] = valor
             enriquecidos += 1
         return enriquecidos
@@ -912,6 +955,7 @@ class CasasBahiaScraper(BaseScraper):
                 qtd_sellers=sellers_info["qtd_sellers"],
                 tipo_seller=sellers_info["tipo_seller"],
                 is_fulfillment=False,
+                url_produto=self._extract_api_url(prod),
                 rating=rating,
                 review_count=review_count,
                 tag_destaque=None,
@@ -1187,6 +1231,8 @@ class CasasBahiaScraper(BaseScraper):
             seller_el = item.select_one(_SELECTORS["seller"])
             seller    = seller_el.get_text(strip=True) if seller_el else "Casas Bahia"
 
+            url_produto = self._extract_dom_url(item)
+
             rating_el    = item.select_one(_SELECTORS["rating"])
             reviews_el   = item.select_one(_SELECTORS["review_count"])
             tag_el       = item.select_one(_SELECTORS["tag_destaque"])
@@ -1204,6 +1250,7 @@ class CasasBahiaScraper(BaseScraper):
                 rating=parse_rating(rating_el.get_text() if rating_el else None),
                 review_count=parse_review_count(reviews_el.get_text() if reviews_el else None),
                 tag_destaque=tag_el.get_text(strip=True) if tag_el else None,
+                url_produto=url_produto,
             )
             # DOM não expõe o array sellers[]: não sabemos quem vence a buy box
             # nem 1P/3P. Não marcar "Casas Bahia" como vencedor (vitória fantasma

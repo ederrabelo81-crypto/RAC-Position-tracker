@@ -46,6 +46,14 @@ class PriceTrackSettings:
     max_concurrent_exports: int = 3          # limite da API por organização
     poll_interval_seconds: float = 30.0
     poll_timeout_seconds: float = 7200.0     # 2h por export
+    # Orçamento TOTAL da execução (0 = sem limite). Diferente do acima, que é
+    # por export: com `max_concurrent_exports = 3`, um lote de N exports custa
+    # ceil(N/3) x poll_timeout, então um passo de CI com teto de parede pode
+    # ser morto no meio de um lote já submetido — e export morto no meio fica
+    # órfão segurando um dos 3 slots da organização, bloqueando os próximos
+    # imports com 429. Com o orçamento definido, o manager para de SUBMETER
+    # lote que não caberia no tempo restante, em vez de ser interrompido.
+    run_budget_seconds: float = 0.0
     # Margem de segurança sobre o TTL de 1h da downloadUrl: renova aos 50min.
     download_url_ttl_seconds: float = 3000.0
 
