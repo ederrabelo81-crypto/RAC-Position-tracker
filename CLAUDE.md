@@ -32,6 +32,25 @@ python main.py --platforms magalu --pages 2        # curl_cffi/browser
 python utils/session_grabber.py --site shopee
 ```
 
+### Mais Vendidos — a única variável de RESULTADO (Ago/2026)
+
+A coleta acima mede oferta, preço, posição e buy box; ela **não contém volume
+de venda**. As listas "Mais Vendidos" dos varejistas são a única variável de
+resultado disponível no nível do SKU, e alimentam as análises diárias,
+semanais e mensais de ganho/perda de share de topo de ranking.
+
+```bash
+python scripts/collect_bestsellers.py                    # coleta do dia + brief
+python scripts/collect_bestsellers.py --relatorio semanal  # evolução (não coleta)
+python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6
+```
+
+Código em `bestsellers/`, doc em `docs/BESTSELLERS.md`, tabela `bestsellers`
+(migração `docs/migrations/011_bestsellers_diario.sql`). Cadência obrigatória:
+todo dia útil entre 9h e 10h — o ranking da Amazon é recalculado de hora em
+hora. **Regra dura: ranking é ORDINAL** — não soma entre plataformas e nunca
+vira share de mercado (isso vem de GfK/Neotrust).
+
 ### Magalu — automatizado (não mais via extensão Chrome)
 `scrapers/magalu.py` (curl_cffi + browser persistente, Akamai bypass) é o
 caminho oficial. Roda sem intervenção via `python main.py --platforms magalu`.

@@ -48,6 +48,14 @@
 2. Each guide has the extraction prompt + the "Economia de tokens" section
 3. Prefer the automated path above when the CDP Chrome is available
 
+### "I need to measure sales / share gain or loss (Mais Vendidos)"
+1. Load `docs/BESTSELLERS.md` (KPI, regras duras, portões de validação)
+2. Entry point: `python scripts/collect_bestsellers.py`
+3. Key files: `bestsellers/config.py` (registro das listas),
+   `bestsellers/metrics.py` (KPI e séries diária/semanal/mensal),
+   `bestsellers/sources/` (um coletor por varejista)
+4. Regra dura: ranking é ORDINAL — nunca vira share de mercado
+
 ### "I need to work with PriceTrack data (price source of truth)"
 1. Load `docs/PRICETRACK_INSIGHTS.md` (pipeline + insight/improvement roadmap)
 2. Key files: `pricetrack_api/` (typed API client — see `pricetrack_api/README.md`),
