@@ -111,22 +111,43 @@ class LeroyMerlinBestSellers(BestSellerSource):
     # Parsing
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _titulo(hit: Dict[str, Any]) -> Optional[str]:
+        """
+        Título do hit, normalizado — ou None quando não há título de verdade.
+
+        A normalização não é cosmética: `"   "` e `"\\xa0"` são TRUTHY em
+        Python, então um título só de espaço passaria pelo filtro de descarte,
+        gastaria orçamento de PDP com um produto que não entra na série e
+        ainda gravaria uma linha sem título nela. O espaço inquebrável vem do
+        HTML e sobrevive ao `strip()` padrão em algumas origens, por isso é
+        trocado antes.
+        """
+        for chave in ("name", "shortName", "title", "productName"):
+            valor = hit.get(chave)
+            if not isinstance(valor, str):
+                continue
+            valor = valor.replace("\xa0", " ").strip()
+            if valor:
+                return valor
+        return None
+
     def _parse(self, hits: List[Dict[str, Any]], offset: int) -> List[BestSellerItem]:
+        # Hits sem título são descartados ANTES da classificação: o orçamento
+        # de PDP é por execução, e gastá-lo com um produto que nem vai entrar
+        # na série deixaria produtos válidos mais adiante sem seller.
+        aproveitaveis = [(hit, self._titulo(hit)) for hit in hits]
+        aproveitaveis = [(hit, titulo) for hit, titulo in aproveitaveis if titulo]
+
         # Passada 1: classifica sem tocar na rede e junta os IDs pendentes.
-        classificados = [(hit, self._leroy._classify_hit_seller(hit)) for hit in hits]
-        self._resolver_pendentes(classificados)
+        classificados = [
+            (hit, titulo, self._leroy._classify_hit_seller(hit))
+            for hit, titulo in aproveitaveis
+        ]
+        self._resolver_pendentes([(hit, info) for hit, _, info in classificados])
 
         itens: List[BestSellerItem] = []
-        for hit, info in classificados:
-            titulo = (
-                hit.get("name")
-                or hit.get("shortName")
-                or hit.get("title")
-                or hit.get("productName")
-            )
-            if not titulo:
-                continue
-
+        for hit, titulo, info in classificados:
             itens.append(BestSellerItem(
                 rank=offset + len(itens) + 1,
                 titulo=titulo,

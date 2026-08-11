@@ -200,11 +200,16 @@ class BestSellerSource(ABC):
         sozinho colapsaria variantes legítimas (mesmo modelo, BTU diferente,
         quando o BTU não está no título).
 
-        A ORDEM DE APARIÇÃO é preservada: o item fica onde foi encontrado e
-        apenas herda o menor `rank` entre suas ocorrências. Reordenar pela
-        posição — quando dois blocos independentes da página numeram cada um
-        a partir de 1 — promoveria um card do segundo bloco à frente de um
-        card que veio antes dele na página.
+        Duas coisas ao mesmo tempo:
+
+        * a POSIÇÃO na lista de saída é a da primeira aparição — reordenar
+          pelo rank, quando dois blocos independentes da página numeram cada
+          um a partir de 1, promoveria um card do segundo bloco à frente de
+          um card que veio antes dele;
+        * o REGISTRO mantido é o da melhor (menor) posição, inteiro. Copiar
+          só o `rank` para o card de primeira aparição atribuiria à melhor
+          posição o preço, o `vendidos` e o `patrocinado` do card pior — a
+          leitura do topo do ranking sairia do card errado.
         """
         vistos: Dict[str, BestSellerItem] = {}
         ordem: List[str] = []
@@ -214,10 +219,10 @@ class BestSellerSource(ABC):
                 continue
             anterior = vistos.get(chave)
             if anterior is None:
-                vistos[chave] = item
                 ordem.append(chave)
+                vistos[chave] = item
             elif item.rank < anterior.rank:
-                anterior.rank = item.rank
+                vistos[chave] = item
         return [vistos[chave] for chave in ordem]
 
     def _normalizar_ranks(self, itens: List[BestSellerItem]) -> List[BestSellerItem]:
