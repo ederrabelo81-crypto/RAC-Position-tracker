@@ -717,3 +717,35 @@ class TestLeroyOrcamentoDePdp:
         assert len(itens) == 1
         assert "aaa" not in pedidos      # não gastou PDP com o descartado
         assert "bbb" in pedidos
+
+    @pytest.mark.parametrize("titulo", ["   ", "\xa0", "\n\t", "\xa0 \xa0"])
+    def test_titulo_so_de_espaco_nao_gasta_pdp(self, fonte, monkeypatch, titulo):
+        """
+        `"   "` e `"\\xa0"` são TRUTHY em Python: sem normalizar, o hit passa
+        pelo filtro de descarte, queima orçamento de PDP e ainda grava uma
+        linha sem título na série.
+        """
+        pedidos = {}
+
+        def _resolver(pendentes):
+            pedidos.update(pendentes)
+            return {}
+
+        monkeypatch.setattr(fonte._leroy, "_resolve_pending_sellers", _resolver)
+        hits = [
+            {"objectID": "VAZIO", "name": titulo, "marketplaceSellers": ["aaa"], "linkText": "x"},
+            {
+                "objectID": "OK",
+                "name": "Ar Condicionado Split Midea 12000 BTUs",
+                "marketplaceSellers": ["bbb"],
+                "linkText": "y",
+            },
+        ]
+        itens = fonte._parse(hits, offset=0)
+        assert len(itens) == 1
+        assert "aaa" not in pedidos
+        assert "bbb" in pedidos
+
+    def test_titulo_e_normalizado(self, fonte):
+        hits = [{"objectID": "A1", "name": "\xa0Ar Condicionado Split Midea 12000\xa0"}]
+        assert fonte._parse(hits, offset=0)[0].titulo == "Ar Condicionado Split Midea 12000"

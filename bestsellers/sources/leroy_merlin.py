@@ -113,12 +113,24 @@ class LeroyMerlinBestSellers(BestSellerSource):
 
     @staticmethod
     def _titulo(hit: Dict[str, Any]) -> Optional[str]:
-        return (
-            hit.get("name")
-            or hit.get("shortName")
-            or hit.get("title")
-            or hit.get("productName")
-        )
+        """
+        Título do hit, normalizado — ou None quando não há título de verdade.
+
+        A normalização não é cosmética: `"   "` e `"\\xa0"` são TRUTHY em
+        Python, então um título só de espaço passaria pelo filtro de descarte,
+        gastaria orçamento de PDP com um produto que não entra na série e
+        ainda gravaria uma linha sem título nela. O espaço inquebrável vem do
+        HTML e sobrevive ao `strip()` padrão em algumas origens, por isso é
+        trocado antes.
+        """
+        for chave in ("name", "shortName", "title", "productName"):
+            valor = hit.get(chave)
+            if not isinstance(valor, str):
+                continue
+            valor = valor.replace("\xa0", " ").strip()
+            if valor:
+                return valor
+        return None
 
     def _parse(self, hits: List[Dict[str, Any]], offset: int) -> List[BestSellerItem]:
         # Hits sem título são descartados ANTES da classificação: o orçamento
