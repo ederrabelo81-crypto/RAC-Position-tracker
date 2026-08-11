@@ -67,10 +67,45 @@ hora — comparar sábado 22h com segunda 9h é ruído. Coletar sempre as seis
 plataformas: faltou uma, o brief registra a ausência em vez de comparar bases
 desiguais.
 
+### Agendamento oficial: PC coletor Windows (Ago/2026)
+
+A tarefa `RAC_Bestsellers` do Task Scheduler é **o** agendamento da rotina —
+09:30, segunda a sexta, mais catch-up no logon. Roda no notebook porque é lá
+que ficam o IP residencial e o Chrome logado: Amazon e Mercado Livre entram
+pelas listas via browser e a Shopee só devolve lista com a sessão autenticada.
+Em IP de datacenter (VM/Actions) a Amazon cai em CAPTCHA e a Shopee some — o
+dia registraria ausência em duas das seis listas.
+
+```powershell
+# instala/atualiza as 3 tarefas (RAC_Local_Manha, RAC_Local_Noite, RAC_Bestsellers)
+PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1
+
+Start-ScheduledTask -TaskName "RAC_Bestsellers"   # testar agora
+PowerShell -ExecutionPolicy Bypass -File scripts\check_local_scheduler.ps1
+```
+
+Guardas (em `scripts\local_scheduled_collect.bat`, slot `bestsellers`):
+
+| Guarda | Regra | Por quê |
+|---|---|---|
+| Dia útil | domingo e sábado são pulados | fim de semana tem calendário promocional próprio e o motor só compara mesmo dia da semana — a leitura extra não entra em delta nenhum |
+| Janela | coleta de 9h a 11h; acima de 10h avisa no log | catch-up de logon não pode custar o dia inteiro, mas o deslocamento tem que aparecer no log |
+| Marcador | `logs\coleta_bestsellers_<data>.done`, gravado só no sucesso | o gatilho de logon dispara várias vezes ao dia; a segunda coleta **substituiria** a leitura do dia (idempotência por `data`+`plataforma`), trocando a foto das 9h pela das 11h |
+
+**Uma execução por dia, e só uma.** Se o cron da VM abaixo também estiver
+instalado, os dois agendamentos colidem: não duplicam linha (a chave é
+`data`+`plataforma`), mas o último a rodar sobrescreve a leitura do dia — e aí
+a série mistura horários sem que nada no dado denuncie. Escolha um.
+
 ```bash
-# cron (Oracle VM, BRT)
+# cron (Oracle VM, BRT) — alternativa; NÃO usar junto com a tarefa do Windows
 30 9 * * 1-5 cd ~/rac-position-tracker && ./venv/bin/python scripts/collect_bestsellers.py --notificar
 ```
+
+**Pré-requisito de credencial:** a tabela `bestsellers` é a única com RLS
+**ligada** e sem policy — só a chave `service_role` escreve nela. Com a chave
+`anon` no `.env`, a coleta roda, o CSV e o master saem, e só o banco fica para
+trás. `scripts\check_local_scheduler.ps1` verifica o papel da chave.
 
 ---
 

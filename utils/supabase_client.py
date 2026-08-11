@@ -16,7 +16,9 @@ REQUISITOS:
         SUPABASE_KEY=eyJ...
 """
 
+import base64
 import ipaddress
+import json
 import os
 import math
 import re
@@ -119,6 +121,107 @@ def _looks_like_placeholder(value: str) -> bool:
     """True se o valor parece um placeholder de documentação, não a credencial."""
     lowered = value.lower()
     return any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
+
+
+# Papel Postgres que a chave carrega, e o `statement_timeout` que o projeto dá
+# a cada um (`ALTER ROLE ... SET statement_timeout`, migration 007):
+#
+#     anon           3s   — RLS aplicada
+#     authenticated  8s   — RLS aplicada
+#     service_role   120s — ignora RLS
+#
+# A diferença é invisível na coleta: `coletas` está sem RLS, então uma chave
+# anon insere os registros normalmente e o log diz "✓ Conexão estabelecida".
+# O que quebra vem depois e em silêncio — as etapas pesadas da Automação ADMIN
+# estouram 57014 no teto de 3s (`seed_depara` gasta ~2,4s só nos dois
+# anti-joins), e toda tabela COM RLS e sem policy (ex.: `bestsellers`) recusa a
+# escrita. Sem esta linha no log, o sintoma aparece como "timeout do banco".
+_ROLE_TIMEOUTS = {"anon": "3s", "authenticated": "8s", "service_role": "120s"}
+
+# Chaves do formato novo (2025+) não são JWT: o papel está no prefixo.
+_KEY_PREFIX_ROLES = (("sb_secret_", "service_role"), ("sb_publishable_", "anon"))
+
+# Log do papel uma vez por processo — `_get_client()` é chamado a cada etapa
+# (a coleta abre o client meia dúzia de vezes) e repetir o aviso viraria ruído.
+_KEY_ROLE_LOGGED = False
+
+
+def _key_role(key: str) -> Optional[str]:
+    """
+    Descobre o papel Postgres embutido na SUPABASE_KEY, sem chamar a API.
+
+    Aceita os dois formatos que o Supabase emite: a chave nova
+    (``sb_secret_…`` / ``sb_publishable_…``, papel no prefixo) e o JWT legado
+    (``eyJ…``, papel na claim ``role`` do payload).
+
+    Args:
+        key: valor de SUPABASE_KEY.
+
+    Returns:
+        "service_role", "anon", "authenticated"… ou None quando o formato não
+        é reconhecido (nesse caso não afirmamos nada — chave de self-hosted
+        ou formato futuro).
+
+    Example:
+        >>> _key_role("sb_publishable_abc123")
+        'anon'
+    """
+    if not key:
+        return None
+
+    lowered = key.strip().lower()
+    for prefix, role in _KEY_PREFIX_ROLES:
+        if lowered.startswith(prefix):
+            return role
+
+    parts = key.strip().split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        # base64url do JWT vem sem padding; `b64decode` exige múltiplo de 4.
+        payload = parts[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+    except Exception:
+        return None
+
+    role = claims.get("role")
+    return role.strip() if isinstance(role, str) and role.strip() else None
+
+
+def _log_key_role(key: str) -> Optional[str]:
+    """
+    Registra no log qual papel a chave carrega (uma vez por processo).
+
+    Returns:
+        O papel detectado, ou None se o formato da chave não for reconhecido.
+    """
+    global _KEY_ROLE_LOGGED
+
+    role = _key_role(key)
+    if _KEY_ROLE_LOGGED:
+        return role
+    _KEY_ROLE_LOGGED = True
+
+    if role == "service_role":
+        logger.info(
+            f"[Supabase] Chave: service_role (statement_timeout "
+            f"{_ROLE_TIMEOUTS['service_role']}, ignora RLS)."
+        )
+    elif role in _ROLE_TIMEOUTS:
+        logger.warning(
+            f"[Supabase] ⚠ SUPABASE_KEY é a chave '{role}' — "
+            f"statement_timeout {_ROLE_TIMEOUTS[role]} e RLS aplicada.\n"
+            "    A coleta ainda insere em `coletas` (tabela sem RLS), mas:\n"
+            "      • as etapas pesadas da Automação ADMIN (seed_depara, "
+            "resolver, refresh) estouram o teto e falham com 57014;\n"
+            "      • tabelas COM RLS (ex.: `bestsellers`) recusam a escrita.\n"
+            "    Corrija com a chave service_role: Supabase → Project Settings "
+            "→ API Keys (nunca versione essa chave)."
+        )
+    elif role:
+        logger.info(f"[Supabase] Chave com papel '{role}'.")
+    return role
 
 
 def _url_host(url: str) -> Optional[str]:
@@ -244,6 +347,7 @@ def _get_client() -> Optional["Client"]:
         return None
 
     logger.info(f"[Supabase] Conectando em: {url[:40]}...")
+    _log_key_role(key)
     try:
         client = create_client(url, key)
         logger.info("[Supabase] ✓ Conexão estabelecida.")

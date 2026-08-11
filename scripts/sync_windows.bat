@@ -36,7 +36,7 @@ echo.
 echo [%DATE% %TIME%] === Iniciando sync Windows === >> "%LOG%"
 
 :: ── 1. Git pull ─────────────────────────────────────────────────────────────
-echo [1/6] Atualizando repositorio via git pull...
+echo [1/7] Atualizando repositorio via git pull...
 git pull origin main >> "%LOG%" 2>&1
 if %ERRORLEVEL% neq 0 (
     echo       AVISO: git pull falhou ^(sem internet?^). Continuando com codigo local.
@@ -50,7 +50,7 @@ if %ERRORLEVEL% neq 0 (
 
 :: ── 2. Ambiente virtual Python ───────────────────────────────────────────────
 echo.
-echo [2/6] Verificando ambiente virtual Python (.venv)...
+echo [2/7] Verificando ambiente virtual Python (.venv)...
 if exist ".venv\Scripts\activate.bat" (
     echo       .venv ja existe.
 ) else if exist "venv\Scripts\activate.bat" (
@@ -71,7 +71,7 @@ if exist ".venv\Scripts\activate.bat" (
 :: que "atualizei na mao" e "a tarefa atualizou sozinha" nunca divirjam. Ele
 :: tambem grava o hash do requirements.txt, poupando a proxima execucao.
 echo.
-echo [3/6] Instalando/atualizando dependencias Python (pode demorar)...
+echo [3/7] Instalando/atualizando dependencias Python (pode demorar)...
 call "%BASE_DIR%\scripts\ensure_deps.bat" --force >> "%LOG%" 2>&1
 if %ERRORLEVEL% neq 0 (
     echo       AVISO: dependencias Python com erro. Veja %LOG%
@@ -83,7 +83,7 @@ if %ERRORLEVEL% neq 0 (
 
 :: ── 4. Verificação dos imports ───────────────────────────────────────────────
 echo.
-echo [4/6] Verificando imports Python...
+echo [4/7] Verificando imports Python...
 
 set "PYEXE=python"
 if exist "venv\Scripts\python.exe" set "PYEXE=venv\Scripts\python.exe"
@@ -101,7 +101,7 @@ if %ERRORLEVEL% neq 0 echo       ERRO: imports Python falharam. Veja %LOG%
 :: script, e o passo do Node (fallback da Shopee) nao pode atrasa-la nem
 :: esconde-la quando falha.
 echo.
-echo [5/6] Verificando o destino do historico (Google Drive)...
+echo [5/7] Verificando o destino do historico (Google Drive)...
 if not exist ".env" (
     echo       ERRO: .env nao existe. Copie o .env.example e preencha.
     goto :drive_help
@@ -143,13 +143,38 @@ echo       Passo a passo: docs\HISTORICO_DRIVE.md
 echo [%DATE% %TIME%] WARN: Drive nao configurado/validado >> "%LOG%"
 
 :node
-:: ── 6. Dependências Node.js (magalu_shopee) ──────────────────────────────────
+:: -- 6. Login do Chrome dedicado (por MAQUINA) --------------------------------
+:: O login mora em data\chrome_profile, que e local e gitignorado: cada PC
+:: coletor precisa logar uma vez. Um notebook deslogado NAO falha a coleta -
+:: ela roda anonima e entrega menos (Shopee sem lista, ML mais sujeito a gate),
+:: o que no log parece "dia fraco" e nao "maquina sem login". Por isso a
+:: verificacao vive aqui, no comando de catch-up da maquina.
+echo.
+echo [6/7] Verificando o login do Chrome dedicado (perfil do projeto)...
+if not exist "data\chrome_profile" (
+    echo       AVISO: perfil dedicado ainda nao existe nesta maquina.
+    echo              Rode uma vez: python scripts\setup_local_profile.py --site todos
+    echo [%DATE% %TIME%] WARN: perfil chrome_profile ausente >> "%LOG%"
+) else (
+    "%PYEXE%" scripts\setup_local_profile.py --site todos --check
+    if !ERRORLEVEL! neq 0 (
+        echo       AVISO: ha site DESLOGADO no perfil desta maquina.
+        echo              Logue uma vez ^(abre o Chrome e espera voce entrar^):
+        echo                python scripts\setup_local_profile.py --site todos
+        echo              Shopee sem login nao devolve lista; ML deslogado cai
+        echo              em gate com mais frequencia.
+        echo [%DATE% %TIME%] WARN: perfil com site deslogado >> "%LOG%"
+    ) else (
+        echo       Login OK nos sites verificados.
+    )
+)
+:: ── 7. Dependências Node.js (magalu_shopee) ──────────────────────────────────
 :: `call npm`: npm no Windows e npm.cmd, e chamar um .cmd de dentro de um .bat
 :: SEM `call` transfere o controle de vez - quando o npm termina, este script
 :: termina com ele. Era por isso que o sync morria aqui e os passos seguintes
 :: (inclusive a verificacao do Drive) nunca rodavam, sem erro nenhum na tela.
 echo.
-echo [6/6] Instalando/atualizando dependencias Node.js (magalu_shopee)...
+echo [7/7] Instalando/atualizando dependencias Node.js (magalu_shopee)...
 if not exist "magalu_shopee\package.json" (
     echo       AVISO: magalu_shopee\package.json nao encontrado. Pulando Node.js.
 ) else (

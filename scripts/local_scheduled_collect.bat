@@ -17,9 +17,16 @@
 ::   - Alerta Telegram quando a coleta agendada falha (exit != 0), via
 ::     utils\n8n_notify.py (usa TELEGRAM_BOT_TOKEN/N8N_* do .env).
 ::
+:: O slot "bestsellers" e a coleta de MAIS VENDIDOS (scripts\collect_bestsellers
+:: .bat) - variavel de RESULTADO, separada da coleta de oferta/posicao. Regras
+:: proprias, vindas de docs\BESTSELLERS.md: so em dia util e na janela da manha,
+:: porque o ranking da Amazon e recalculado de hora em hora e a serie so e
+:: comparavel se as leituras sairem sempre no mesmo horario.
+::
 :: Uso:
 ::   scripts\local_scheduled_collect.bat manha              (2 pgs, alta+media)
 ::   scripts\local_scheduled_collect.bat noite              (1 pg, alta)
+::   scripts\local_scheduled_collect.bat bestsellers        (mais vendidos, dia util)
 ::   scripts\local_scheduled_collect.bat <pages> [prio...]  (legado: repassa)
 :: -----------------------------------------------------------------------------
 
@@ -35,12 +42,17 @@ set "MODE=%~1"
 :: do Windows; PowerShell e estavel. (Hora local do notebook = BRT.)
 set "HOUR="
 set "TODAY="
+set "DOW="
 for /f %%H in ('powershell -NoProfile -Command "(Get-Date).Hour" 2^>nul') do set "HOUR=%%H"
 for /f %%D in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd" 2^>nul') do set "TODAY=%%D"
+:: Dia da semana como numero (0=domingo ... 6=sabado) - o nome muda com a
+:: localizacao do Windows, o numero nao.
+for /f %%W in ('powershell -NoProfile -Command "[int]((Get-Date).DayOfWeek)" 2^>nul') do set "DOW=%%W"
 if not defined TODAY set "TODAY=00000000"
 
 if /i "%MODE%"=="manha" goto :slot_manha
 if /i "%MODE%"=="noite" goto :slot_noite
+if /i "%MODE%"=="bestsellers" goto :slot_bestsellers
 goto :legacy
 
 :slot_manha
@@ -58,6 +70,65 @@ set "PRIORITY=alta"
 set "WIN_MIN=20"
 set "WIN_MAX=23"
 goto :guarded_run
+
+:slot_bestsellers
+set "SLOT=bestsellers"
+set "WIN_MIN=9"
+set "WIN_MAX=10"
+if exist "logs\coleta_bestsellers_%TODAY%.done" (
+    echo [%DATE% %TIME%] [bestsellers] ja coletado hoje - nada a fazer
+    exit /b 0
+)
+:: Dia util apenas. Sabado/domingo tem calendario promocional proprio: uma
+:: leitura de fim de semana entra na serie como se fosse movimento competitivo
+:: e contamina o delta da segunda-feira (o motor so compara mesmo dia da
+:: semana, entao a leitura extra nao ajuda nem e usada).
+:: Comparacao com ASPAS (e nao EQU): se o PowerShell falhar, DOW fica vazio e
+:: `if %DOW% EQU 0` viraria `if  EQU 0` - erro de SINTAXE, que mata o .bat
+:: inteiro em vez de pular a guarda. Com aspas, vazio simplesmente nao casa.
+if not defined DOW echo [%DATE% %TIME%] [bestsellers] AVISO: nao obtive o dia da semana - seguindo sem a guarda
+if "%DOW%"=="0" (
+    echo [%DATE% %TIME%] [bestsellers] domingo - fora do dia util, pulando
+    exit /b 0
+)
+if "%DOW%"=="6" (
+    echo [%DATE% %TIME%] [bestsellers] sabado - fora do dia util, pulando
+    exit /b 0
+)
+if not defined HOUR (
+    echo [%DATE% %TIME%] [bestsellers] AVISO: nao obtive a hora - coletando sem guarda de janela
+    goto :run_bestsellers
+)
+if %HOUR% LSS %WIN_MIN% (
+    echo [%DATE% %TIME%] [bestsellers] fora da janela - hora=%HOUR%, janela=%WIN_MIN%-%WIN_MAX%h - pulando
+    exit /b 0
+)
+:: Ate 11h ainda coleta, mas avisa: a janela canonica e 9-10h (ranking da
+:: Amazon recalculado de hora em hora). Perder o dia inteiro por causa de um
+:: logon as 10h05 seria pior que uma leitura com uma hora de deslocamento -
+:: o buraco na serie nao se recupera, o ruido de uma hora se le no brief.
+if %HOUR% GTR 11 (
+    echo [%DATE% %TIME%] [bestsellers] fora da janela - hora=%HOUR%, janela=%WIN_MIN%-%WIN_MAX%h - pulando
+    exit /b 0
+)
+if %HOUR% GTR %WIN_MAX% (
+    echo [%DATE% %TIME%] [bestsellers] AVISO: hora=%HOUR% fora da janela canonica %WIN_MIN%-%WIN_MAX%h - leitura com deslocamento
+)
+
+:run_bestsellers
+if exist "%~dp0ensure_deps.bat" (
+    echo [%DATE% %TIME%] [bestsellers] verificando dependencias Python
+    call "%~dp0ensure_deps.bat"
+    if errorlevel 1 echo [%DATE% %TIME%] [bestsellers] AVISO: ensure_deps falhou - seguindo com a venv atual
+)
+echo [%DATE% %TIME%] [bestsellers] coleta de mais vendidos (6 listas)
+call "%~dp0collect_bestsellers.bat"
+set "RC=%ERRORLEVEL%"
+echo [%DATE% %TIME%] [bestsellers] coleta finalizada [exit=%RC%]
+if not "%RC%"=="0" goto :failed
+del /q "logs\coleta_bestsellers_*.done" 2>nul
+echo ok> "logs\coleta_bestsellers_%TODAY%.done"
+exit /b 0
 
 :guarded_run
 if exist "logs\coleta_%SLOT%_%TODAY%.done" (

@@ -51,6 +51,13 @@ todo dia útil entre 9h e 10h — o ranking da Amazon é recalculado de hora em
 hora. **Regra dura: ranking é ORDINAL** — não soma entre plataformas e nunca
 vira share de mercado (isso vem de GfK/Neotrust).
 
+Agendado no PC coletor Windows pela tarefa **`RAC_Bestsellers`** (09:30 seg-sex
++ catch-up no logon), registrada por `scripts\setup_local_scheduler.ps1` junto
+com as duas da coleta principal. Roda lá porque Amazon/ML precisam de browser e
+a Shopee, da sessão logada — em IP de datacenter duas das seis listas somem.
+Uma execução por dia: recoletar **substitui** a leitura do dia (idempotência
+por `data`+`plataforma`), então não ligue também o cron da VM.
+
 ### Magalu — automatizado (não mais via extensão Chrome)
 `scrapers/magalu.py` (curl_cffi + browser persistente, Akamai bypass) é o
 caminho oficial. Roda sem intervenção via `python main.py --platforms magalu`.

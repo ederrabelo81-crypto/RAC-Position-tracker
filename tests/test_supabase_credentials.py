@@ -11,7 +11,12 @@ Rode: pytest tests/test_supabase_credentials.py
 """
 import pytest
 
-from utils.supabase_client import _looks_like_placeholder, _validate_credentials
+from utils.supabase_client import (
+    _key_role,
+    _log_key_role,
+    _looks_like_placeholder,
+    _validate_credentials,
+)
 
 _URL_OK = "https://abcdefghijkl.supabase.co"
 _KEY_OK = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fake-service-role"
@@ -99,3 +104,61 @@ class TestValidateCredentials:
     def test_url_http_local_aprovada(self):
         """Supabase self-hosted em dev roda em http — não pode ser barrado."""
         assert _validate_credentials("http://localhost:54321", _KEY_OK) is True
+
+
+# ---------------------------------------------------------------------------
+# Papel embutido na chave (anon x service_role)
+# ---------------------------------------------------------------------------
+#
+# Motivação (11/08/2026): a coleta do notebook Windows subiu 2.921 registros
+# sem um erro, e logo depois a etapa `seed_depara` da Automação ADMIN morreu
+# com `57014 canceling statement due to statement timeout` em 3,1s. Os dois
+# anti-joins do seed levam ~2,4s medidos em produção: cabem nos 120s do
+# service_role e estouram nos 3s do anon. Como `coletas` está sem RLS, a chave
+# anon insere normalmente — nada no log dizia qual chave estava em uso.
+
+def _jwt(role: str) -> str:
+    """JWT sintético (base64url SEM padding, como o Supabase emite)."""
+    import base64
+    import json
+
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"iss": "supabase", "role": role}).encode()
+    ).decode().rstrip("=")
+    return f"eyJhbGciOiJIUzI1NiJ9.{payload}.assinatura-falsa"
+
+
+class TestKeyRole:
+    @pytest.mark.parametrize("role", ["anon", "authenticated", "service_role"])
+    def test_jwt_legado(self, role):
+        assert _key_role(_jwt(role)) == role
+
+    def test_chave_nova_secret_e_service_role(self):
+        assert _key_role("sb_secret_1a2b3c4d5e6f") == "service_role"
+
+    def test_chave_nova_publishable_e_anon(self):
+        assert _key_role("sb_publishable_1a2b3c4d5e6f") == "anon"
+
+    @pytest.mark.parametrize("valor", ["", "   ", "chave-opaca", "a.b", "a.b.c"])
+    def test_formato_desconhecido_nao_afirma_nada(self, valor):
+        """Sem formato reconhecido não inventamos papel — None é a resposta."""
+        assert _key_role(valor) is None
+
+    def test_jwt_sem_claim_role(self):
+        import base64
+        import json
+
+        payload = base64.urlsafe_b64encode(json.dumps({"iss": "x"}).encode()).decode()
+        assert _key_role(f"eyJ0eXAiOiJKV1QifQ.{payload}.sig") is None
+
+
+class TestLogKeyRole:
+    def test_avisa_uma_vez_por_processo(self, monkeypatch):
+        """O client é criado várias vezes por run — o aviso não pode repetir."""
+        import utils.supabase_client as sc
+
+        monkeypatch.setattr(sc, "_KEY_ROLE_LOGGED", False)
+        assert sc._log_key_role(_jwt("anon")) == "anon"
+        assert sc._KEY_ROLE_LOGGED is True
+        # 2ª chamada continua devolvendo o papel (sem logar de novo)
+        assert sc._log_key_role(_jwt("anon")) == "anon"
