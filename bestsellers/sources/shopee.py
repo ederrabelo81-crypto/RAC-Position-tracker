@@ -160,17 +160,35 @@ class ShopeeBestSellers(BestSellerSource):
             # com a que rende MAIS itens, em vez de assumir que a 1ª é a boa.
             melhor: List[BestSellerItem] = []
             brutos_melhor: List[dict] = []
+            alguma_com_itens = False
             for dados in capturadas:
                 brutos = dados.get("items") or []
                 if not brutos:
                     continue
+                alguma_com_itens = True
                 novos = self._parse(brutos, offset=len(itens))
                 if len(novos) > len(melhor):
                     melhor, brutos_melhor = novos, brutos
 
-            if not melhor:
+            if not alguma_com_itens:
+                # Nenhuma resposta trouxe item: a lista acabou de verdade.
                 logger.info(f"[{self.nome}] Sem mais resultados (pág {pagina + 1}).")
                 break
+
+            if not melhor:
+                # Itens presentes e nada parseou = a Shopee trocou o invólucro.
+                # Este é o caminho PRINCIPAL de produção; tratar isso como
+                # "acabou a lista" gravaria uma série curta em silêncio — a
+                # perda de dado exata que os portões existem para pegar. Mesmo
+                # tratamento do caminho de API.
+                primeira = next(
+                    (d for d in capturadas if d.get("items")), capturadas[0]
+                )
+                shopee._dump_debug_response(_KEYWORD, pagina, primeira)
+                raise RuntimeError(
+                    "search_items respondeu com itens mas nenhum parseou — a "
+                    "Shopee trocou a estrutura do wrapper (dump em logs/)."
+                )
             itens.extend(melhor)
             logger.info(
                 f"[{self.nome}] Pág {pagina + 1}: {len(melhor)} produtos "

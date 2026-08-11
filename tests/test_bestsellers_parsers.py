@@ -276,6 +276,29 @@ class TestNormalizacao:
         assert coletados[0].sku_plataforma == "A1"
         assert coletados[0].rank == 1
 
+    def test_dedup_guarda_o_registro_da_melhor_posicao(self):
+        """
+        Quando a ocorrência PIOR aparece primeiro (card patrocinado no topo da
+        página, orgânico mais abaixo), copiar só o `rank` para o primeiro
+        registro atribuiria à melhor posição o preço e as flags do card pior —
+        a leitura do topo do ranking sairia do card errado.
+        """
+        itens = [
+            BestSellerItem(rank=7, titulo="Split Midea 12000", sku_plataforma="A1",
+                           preco=2400.0, patrocinado=True),
+            BestSellerItem(rank=2, titulo="Split LG 9000", sku_plataforma="A2",
+                           preco=2100.0),
+            BestSellerItem(rank=1, titulo="Split Midea 12000", sku_plataforma="A1",
+                           preco=1899.0, patrocinado=False),
+        ]
+        coletados = _FonteFalsa(itens).coletar()
+        assert len(coletados) == 2
+        # Posição da PRIMEIRA aparição, dados da MELHOR posição.
+        assert coletados[0].sku_plataforma == "A1"
+        assert coletados[0].rank == 1
+        assert coletados[0].preco == 1899.0
+        assert coletados[0].patrocinado is False
+
     def test_dedup_cai_no_titulo_sem_sku(self):
         itens = [
             BestSellerItem(rank=1, titulo="Split Midea 12000"),
@@ -601,3 +624,96 @@ class TestShopeeCamposSensiveis:
         fonte._coletar_via_browser = _via_browser
         assert fonte._coletar(2) == []
         assert chamou["paginas"] == 2
+
+
+class TestShopeeMudancaDeEstrutura:
+    """
+    O caminho de browser local é a rota PRINCIPAL de produção. Uma troca de
+    invólucro da API precisa falhar alto ali também — tratar "itens presentes,
+    nada parseou" como "acabou a lista" gravaria uma série curta em silêncio.
+    """
+
+    @pytest.fixture
+    def fonte(self):
+        from scrapers.shopee import ShopeeScraper
+
+        fonte = ShopeeBestSellers()
+        fonte._shopee = ShopeeScraper()
+        fonte._shopee._local_active = True
+        fonte._shopee._page = object()
+        fonte._shopee._local_browser = None
+        return fonte
+
+    def _preparar(self, fonte, capturadas, monkeypatch):
+        shopee = fonte._shopee
+        monkeypatch.setattr(shopee, "_await_captured", lambda timeout_s: capturadas)
+        monkeypatch.setattr(shopee, "_dump_debug_response", lambda *a, **k: None)
+
+        class _Pagina:
+            def goto(self, *_a, **_k):
+                return None
+
+        shopee._page = _Pagina()
+
+    def test_itens_sem_parse_levantam_erro(self, fonte, monkeypatch):
+        # `items` presente, mas o invólucro não é reconhecido por nenhum parser.
+        capturadas = [{"items": [{"formato_novo": {"id": 1}}]}]
+        self._preparar(fonte, capturadas, monkeypatch)
+        with pytest.raises(RuntimeError, match="nenhum parseou"):
+            fonte._coletar_via_browser(1)
+
+    def test_lista_sem_itens_apenas_termina(self, fonte, monkeypatch):
+        """Nenhuma resposta com item = a lista acabou; não é regressão."""
+        self._preparar(fonte, [{"items": []}], monkeypatch)
+        assert fonte._coletar_via_browser(1) == []
+
+    def test_url_do_browser_carrega_a_ordenacao(self, fonte, monkeypatch):
+        """Sem `sortBy=sales` a página serve relevância — outro universo."""
+        urls = []
+
+        class _Pagina:
+            def goto(self, url, **_k):
+                urls.append(url)
+
+        fonte._shopee._page = _Pagina()
+        monkeypatch.setattr(fonte._shopee, "_await_captured", lambda timeout_s: [{"items": []}])
+        fonte._coletar_via_browser(1)
+        assert "sortBy=sales" in urls[0]
+
+
+class TestLeroyOrcamentoDePdp:
+    @pytest.fixture
+    def fonte(self):
+        from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers
+        from scrapers.leroy_merlin import LeroyMerlinScraper
+
+        fonte = LeroyMerlinBestSellers()
+        fonte._leroy = LeroyMerlinScraper()
+        return fonte
+
+    def test_hit_sem_titulo_nao_gasta_pdp(self, fonte, monkeypatch):
+        """
+        O orçamento de PDP é por execução. Gastá-lo com um hit que vai ser
+        descartado por falta de título deixa produtos válidos mais adiante
+        sem seller.
+        """
+        pedidos = {}
+
+        def _resolver(pendentes):
+            pedidos.update(pendentes)
+            return {}
+
+        monkeypatch.setattr(fonte._leroy, "_resolve_pending_sellers", _resolver)
+        hits = [
+            {"objectID": "SEM_TITULO", "marketplaceSellers": ["aaa"], "linkText": "x"},
+            {
+                "objectID": "COM_TITULO",
+                "name": "Ar Condicionado Split Midea 12000 BTUs",
+                "marketplaceSellers": ["bbb"],
+                "linkText": "y",
+            },
+        ]
+        itens = fonte._parse(hits, offset=0)
+        assert len(itens) == 1
+        assert "aaa" not in pedidos      # não gastou PDP com o descartado
+        assert "bbb" in pedidos

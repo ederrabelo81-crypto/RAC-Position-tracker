@@ -309,7 +309,11 @@ def _data_iso(valor: str) -> str:
         argparse.ArgumentTypeError: quando o valor não é YYYY-MM-DD válido.
     """
     try:
-        return datetime.strptime(valor, "%Y-%m-%d").strftime("%Y-%m-%d")
+        data = datetime.strptime(valor, "%Y-%m-%d")
+        # `strftime("%Y")` NÃO preenche com zero à esquerda: um ano abaixo de
+        # 1000 sairia como "1-01-01" — exatamente a chave malformada que esta
+        # validação existe para impedir.
+        return f"{data.year:04d}-{data.month:02d}-{data.day:02d}"
     except ValueError:
         raise argparse.ArgumentTypeError(
             f"data inválida: {valor!r}. Use o formato YYYY-MM-DD (ex: 2026-08-10)."

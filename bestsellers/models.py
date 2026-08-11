@@ -70,7 +70,11 @@ _RE_NUCLEO_AC = re.compile(
 # na frente do título com frequência: "Bomba de Calor 12000 BTUs Midea Split".
 # Sem esta exceção, o split reversível inteiro sairia do KPI — exatamente o
 # erro assimétrico que a classificação posicional existe para evitar.
-_RE_FALSOS_ACESSORIOS = re.compile(r"\bBOMBA\s+DE\s+CALOR\b|\bCICLO\s+REVERSO\b")
+#
+# Só entram aqui frases que contenham de fato um termo de
+# `_ACESSORIOS_NAO_RAC`; "ciclo reverso", por exemplo, não precisa de exceção
+# porque nenhuma das duas palavras é termo de acessório.
+_RE_FALSOS_ACESSORIOS = re.compile(r"\bBOMBA\s+DE\s+CALOR\b")
 
 
 def _regex_termos(termos) -> "re.Pattern":

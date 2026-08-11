@@ -111,22 +111,31 @@ class LeroyMerlinBestSellers(BestSellerSource):
     # Parsing
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _titulo(hit: Dict[str, Any]) -> Optional[str]:
+        return (
+            hit.get("name")
+            or hit.get("shortName")
+            or hit.get("title")
+            or hit.get("productName")
+        )
+
     def _parse(self, hits: List[Dict[str, Any]], offset: int) -> List[BestSellerItem]:
+        # Hits sem título são descartados ANTES da classificação: o orçamento
+        # de PDP é por execução, e gastá-lo com um produto que nem vai entrar
+        # na série deixaria produtos válidos mais adiante sem seller.
+        aproveitaveis = [(hit, self._titulo(hit)) for hit in hits]
+        aproveitaveis = [(hit, titulo) for hit, titulo in aproveitaveis if titulo]
+
         # Passada 1: classifica sem tocar na rede e junta os IDs pendentes.
-        classificados = [(hit, self._leroy._classify_hit_seller(hit)) for hit in hits]
-        self._resolver_pendentes(classificados)
+        classificados = [
+            (hit, titulo, self._leroy._classify_hit_seller(hit))
+            for hit, titulo in aproveitaveis
+        ]
+        self._resolver_pendentes([(hit, info) for hit, _, info in classificados])
 
         itens: List[BestSellerItem] = []
-        for hit, info in classificados:
-            titulo = (
-                hit.get("name")
-                or hit.get("shortName")
-                or hit.get("title")
-                or hit.get("productName")
-            )
-            if not titulo:
-                continue
-
+        for hit, titulo, info in classificados:
             itens.append(BestSellerItem(
                 rank=offset + len(itens) + 1,
                 titulo=titulo,
