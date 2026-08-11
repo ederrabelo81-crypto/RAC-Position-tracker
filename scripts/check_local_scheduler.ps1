@@ -50,11 +50,11 @@ Write-Host " Data:    $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "==========================================================="
 
 # --- 1. Tarefas RAC_Local_* -------------------------------------------------
-Write-Sect "Tarefas agendadas (RAC_Local_Manha / RAC_Local_Noite)"
+Write-Sect "Tarefas agendadas (RAC_Local_Manha / RAC_Local_Noite / RAC_Bestsellers)"
 
 $expectedBat = Join-Path $BaseDir "scripts\run_local_scheduled.bat"
 
-foreach ($name in @("RAC_Local_Manha", "RAC_Local_Noite")) {
+foreach ($name in @("RAC_Local_Manha", "RAC_Local_Noite", "RAC_Bestsellers")) {
     $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
     if (-not $task) {
         Write-Bad "$name NAO existe - rode: PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1"
@@ -134,6 +134,7 @@ Write-Sect "Scripts e ambiente"
 foreach ($rel in @("scripts\run_local_scheduled.bat",
                    "scripts\local_scheduled_collect.bat",
                    "scripts\collect_local_authenticated.bat",
+                   "scripts\collect_bestsellers.bat",
                    "scripts\ensure_deps.bat")) {
     $p = Join-Path $BaseDir $rel
     if (Test-Path $p) { Write-Ok "$rel presente" }
@@ -193,6 +194,25 @@ if (Test-Path $envFile) {
     foreach ($key in @("SUPABASE_URL", "SUPABASE_KEY", "TELEGRAM_BOT_TOKEN", "N8N_TELEGRAM_CHAT_ID")) {
         if ($envText -match "(?m)^\s*$key\s*=\s*\S") { Write-Ok ".env tem $key" }
         else { Write-Warn ".env sem $key (upload/alerta pode nao funcionar)" }
+    }
+
+    # QUAL chave, nao so se existe. O papel define o statement_timeout do
+    # Postgres (anon 3s / authenticated 8s / service_role 120s) e se a RLS se
+    # aplica. Com a chave anon a coleta sobe normalmente (a tabela coletas nao
+    # tem RLS) e o estrago aparece depois: etapas da automacao ADMIN morrendo
+    # com 57014 e a tabela bestsellers, que TEM RLS, recusando a escrita.
+    if ($pyExe) {
+        Push-Location $BaseDir
+        $papel = & $pyExe -c "import os; from utils.supabase_client import _key_role; print(_key_role(os.getenv('SUPABASE_KEY','')) or 'desconhecido')" 2>$null
+        Pop-Location
+        $papel = ($papel | Select-Object -First 1)
+        if ($papel -eq "service_role") {
+            Write-Ok "SUPABASE_KEY e a chave service_role (timeout 120s, ignora RLS)"
+        } elseif ($papel -eq "desconhecido" -or -not $papel) {
+            Write-Info "Nao consegui identificar o papel da SUPABASE_KEY (formato nao reconhecido)"
+        } else {
+            Write-Bad "SUPABASE_KEY e a chave '$papel' - timeout de 3s/8s e RLS aplicada: a automacao ADMIN falha com 57014 e a tabela bestsellers recusa escrita. Troque pela service_role (Supabase > Project Settings > API Keys)"
+        }
     }
     # Sem GDRIVE_FOLDER_ID o backend do historico e resolvido como 'local'.
     # As credenciais tem DUAS formas validas (utils/history/backends.py):
@@ -319,9 +339,14 @@ if (Test-Path $logFile) {
 }
 
 $today = Get-Date -Format "yyyyMMdd"
-foreach ($slot in @("manha", "noite")) {
+foreach ($slot in @("manha", "noite", "bestsellers")) {
     $marker = Join-Path $BaseDir "logs\coleta_${slot}_${today}.done"
     if (Test-Path $marker) { Write-Ok "Coleta '$slot' de hoje concluida (marcador presente)" }
+    elseif ($slot -eq "bestsellers" -and ([int]((Get-Date).DayOfWeek)) -in @(0, 6)) {
+        # Mais vendidos so roda em dia util: ausencia de marcador no fim de
+        # semana e o comportamento correto, nao uma coleta perdida.
+        Write-Info "Coleta 'bestsellers': fim de semana - nao roda (so dia util, janela 9-10h)"
+    }
     else { Write-Info "Coleta '$slot' de hoje: sem marcador (ainda nao rodou/nao concluiu)" }
 }
 

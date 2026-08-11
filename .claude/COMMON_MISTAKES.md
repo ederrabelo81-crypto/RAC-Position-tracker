@@ -236,3 +236,37 @@ avisa com plataforma + keyword quando arredonda.
 **Files:** `main.py` `_to_nullable_int()`, `_dump_raw_records()`, seção
 "Exporta resultados"; `utils/text.py` `parse_review_count()`;
 `scrapers/base.py` `_coerce_count()`; `tests/test_csv_int_cast.py`
+
+## 19. Chave `anon` no `.env` — a coleta sobe, a automação morre em silêncio
+
+**Wrong:** colar em `SUPABASE_KEY` a chave `anon`/`publishable` (é a que o
+painel do Supabase mostra primeiro) e confiar no "✓ Conexão estabelecida".
+**Why:** o `statement_timeout` é por PAPEL (migration 007: anon 3s ·
+authenticated 8s · service_role 120s) e a RLS só é ignorada pelo `service_role`.
+Como `coletas` está SEM RLS, a chave anon insere os 2.921 registros sem um
+arranhão — o estrago aparece depois e sem relação aparente: `seed_depara`
+morrendo com `57014 canceling statement due to statement timeout` em 3,1s
+(os dois anti-joins do seed levam ~2,4s medidos: cabem em 120s, estouram em 3s)
+e **`bestsellers`, a única tabela com RLS ligada e sem policy, recusando toda
+escrita**. Lido de fora, parece "banco lento" — e leva a mexer em índice.
+**Right:** `service_role` no `.env` de cada máquina. O papel agora é logado a
+cada run (`[Supabase] Chave: service_role...` ou o aviso), o 57014 imprime a
+causa provável, e `scripts\check_local_scheduler.ps1` reprova a chave errada.
+**Files:** `utils/supabase_client.py` `_key_role()`, `_log_key_role()`;
+`utils/admin_automation.py` `_log_timeout_hint()`;
+`scripts/check_local_scheduler.ps1`
+
+## 20. Afirmar "3P" quando o card do ML não diz quem vende
+
+**Wrong:** `tipo_seller = "Loja Oficial" if evidence else "3P"`.
+**Why:** o ML só imprime `.poly-component__seller` quando quer mostrar a loja —
+na prática, quase sempre loja oficial. Na coleta de 11/08/2026 a cobertura de
+`seller` bateu EXATAMENTE a de `oficial` em todas as keywords (35/60, 53/60,
+59/60): todo card sem nome de vendedor também não tinha selo. O `else "3P"`
+carimbava esses 40% da SERP como marketplace terceiro sem nenhuma evidência —
+o mesmo erro que já tinha feito `buy_box_seller` cair para "Mercado Livre" e o
+próprio ML aparecer como 2º maior buy box seller da categoria.
+**Right:** `"Loja Oficial"` com selo, `"3P"` com seller nomeado e sem selo,
+`None` quando o card não informa. Ausência de dado é dado ausente, não 3P.
+**Files:** `scrapers/mercado_livre.py` `_detect_tipo_seller()`;
+`tests/test_ml_parse.py::TestDetectTipoSeller`

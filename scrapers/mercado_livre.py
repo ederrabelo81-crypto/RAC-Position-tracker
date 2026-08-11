@@ -332,6 +332,9 @@ class MLScraper(BaseScraper):
     _run_items: int = 0
     _run_sponsored: int = 0
     _run_review_counts: int = 0
+    _run_qtd_sellers: int = 0
+    _run_sellers: int = 0
+    _run_oficial: int = 0
     _warmed: bool = False
     _last_gate_reason: Optional[str] = None
     _gate_failures: int = 0
@@ -357,6 +360,9 @@ class MLScraper(BaseScraper):
         self._run_items = 0
         self._run_sponsored = 0
         self._run_review_counts = 0
+        self._run_qtd_sellers = 0
+        self._run_sellers = 0
+        self._run_oficial = 0
         # Estado do gate: motivo da última checagem, keywords perdidas na run e
         # se o roteiro de conserto já foi impresso (uma vez por run).
         self._last_gate_reason = None
@@ -923,14 +929,25 @@ class MLScraper(BaseScraper):
         return None
 
     @staticmethod
-    def _detect_tipo_seller(item: Tag, seller: Optional[str]) -> str:
+    def _detect_tipo_seller(item: Tag, seller: Optional[str]) -> Optional[str]:
         """
-        Classifica o seller do card como "Loja Oficial" ou "3P".
+        Classifica o seller do card como "Loja Oficial", "3P" ou desconhecido.
+
+        O card só ganha a linha `.poly-component__seller` quando o ML decide
+        mostrar a loja — na prática, quase sempre loja oficial (na coleta de
+        11/08/2026 a cobertura de `seller` e a de `oficial` bateram exatamente
+        em todas as keywords). Num card SEM nome de seller e SEM selo, não há
+        evidência de nada: devolver "3P" ali carimbava metade da SERP como
+        marketplace terceiro só porque o ML não imprimiu o vendedor — o mesmo
+        erro que já custou o `buy_box_seller` virar "Mercado Livre" por default.
 
         Returns:
-            "Loja Oficial" quando há sinal explícito; "3P" caso contrário.
+            "Loja Oficial" com sinal explícito; "3P" quando há seller nomeado
+            sem selo; None quando o card não informa o vendedor.
         """
-        return "Loja Oficial" if MLScraper._official_store_evidence(item, seller) else "3P"
+        if MLScraper._official_store_evidence(item, seller):
+            return "Loja Oficial"
+        return "3P" if seller else None
 
     # ------------------------------------------------------------------
     # Extração de URL do produto
@@ -1158,8 +1175,11 @@ class MLScraper(BaseScraper):
             url_produto = self._extract_url(item)
 
             # --- tipo de seller: Loja Oficial vs 3P (sinal explícito) ---
-            evidence   = self._official_store_evidence(item, seller)
-            tipo_seller = "Loja Oficial" if evidence else "3P"
+            # A evidência é lida aqui (o histograma de camadas depende dela) e
+            # a classificação sai de `_detect_tipo_seller` — fonte única, senão
+            # o parser e o helper testado divergem com o tempo.
+            evidence    = self._official_store_evidence(item, seller)
+            tipo_seller = self._detect_tipo_seller(item, seller)
 
             # --- fulfillment ---
             fulfillment = self._is_fulfillment(item)
@@ -1254,14 +1274,22 @@ class MLScraper(BaseScraper):
         )
         logger.info(f"[{self.platform_name}] cobertura '{keyword}': {resumo}")
 
+        # INFO, não DEBUG: esta é a única auditoria de COMO cada card virou
+        # "Loja Oficial". A coleta agendada roda em INFO, então o histograma
+        # ficava invisível justamente onde ele é necessário — quando `oficial`
+        # empata com `seller` em todas as keywords é aqui que se vê se a
+        # classificação veio de selo real ou de um proxy que passou a mentir.
         camadas = {k.split("::", 1)[1]: v for k, v in cov.items() if k.startswith("oficial::")}
         if camadas:
-            logger.debug(f"[{self.platform_name}] Loja Oficial por camada: {camadas}")
+            logger.info(f"[{self.platform_name}] Loja Oficial por camada: {camadas}")
 
         self._run_keywords += 1
         self._run_items += total
         self._run_sponsored += cov.get("sponsored", 0)
         self._run_review_counts += cov.get("review_count", 0)
+        self._run_qtd_sellers += cov.get("qtd_sellers", 0)
+        self._run_sellers += cov.get("seller", 0)
+        self._run_oficial += cov.get("oficial", 0)
 
         zerados = [f for f in _CRITICAL_FIELDS if not cov.get(f)]
         if not zerados:
@@ -1304,6 +1332,30 @@ class MLScraper(BaseScraper):
                 f"{self._run_items} cards — esperado enquanto o ML servir o "
                 "widget compacto (estrela + nota, sem contagem)."
             )
+        # `Qtd Sellers` zerado na run inteira NÃO é regressão: a SERP em grid
+        # do ML não imprime "outras opções de compra" (o único texto de onde
+        # `parse_offer_count` tira competição). Dizer isso aqui evita que a
+        # próxima leitura do log trate 0/60 como parser quebrado — a competição
+        # por buy box do ML só é observável no PDP/catálogo.
+        if self._run_items and not self._run_qtd_sellers:
+            logger.info(
+                f"[{self.platform_name}] Qtd de sellers ausente em todos os "
+                f"{self._run_items} cards — a SERP em grid não expõe contagem "
+                "de ofertas; competição por buy box no ML exige PDP/catálogo."
+            )
+
+        # Empate exato entre `seller` e `oficial` = o ML só nomeou quem vende
+        # nos cards de loja oficial. O restante da SERP fica com buy box sem
+        # dono — o número que interessa para dimensionar essa cegueira.
+        if self._run_sellers and self._run_sellers == self._run_oficial:
+            sem_nome = self._run_items - self._run_sellers
+            logger.info(
+                f"[{self.platform_name}] Seller nomeado só em cards de Loja "
+                f"Oficial ({self._run_sellers}/{self._run_items}); "
+                f"{sem_nome} cards ficaram sem buy box identificado "
+                "(Tipo Seller vazio, não '3P')."
+            )
+
         if self._run_items and not self._run_sponsored:
             logger.warning(
                 f"[{self.platform_name}] ZERO patrocinados em "

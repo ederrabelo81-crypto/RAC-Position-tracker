@@ -232,8 +232,16 @@ class TestDetectTipoSeller:
     def test_cockade_poly(self):
         assert MLScraper._detect_tipo_seller(_item(CARD_COCKADE), "Midea") == "Loja Oficial"
 
-    def test_card_vazio(self):
-        assert MLScraper._detect_tipo_seller(_item(CARD_BARE), None) == "3P"
+    def test_card_sem_seller_fica_sem_classificacao(self):
+        # Card que não nomeia vendedor e não traz selo: não há evidência de
+        # NADA. Classificar como "3P" carimbava metade da SERP do ML como
+        # marketplace terceiro só porque o card omitiu a loja.
+        assert MLScraper._detect_tipo_seller(_item(CARD_BARE), None) is None
+
+    def test_seller_nomeado_sem_selo_e_3p(self):
+        # Com nome de vendedor e nenhum sinal de loja oficial, "3P" é uma
+        # afirmação apoiada em evidência — e continua valendo.
+        assert MLScraper._detect_tipo_seller(_item(CARD_BARE), "KARZEN ELETRO") == "3P"
 
 
 # ---------------------------------------------------------------------------

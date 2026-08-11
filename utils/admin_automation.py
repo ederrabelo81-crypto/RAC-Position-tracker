@@ -122,6 +122,39 @@ class StepResult:
         }
 
 
+def _log_timeout_hint(step: str, exc: Exception) -> None:
+    """
+    Traduz um 57014 (statement timeout) para a causa mais provável: a chave.
+
+    O teto de tempo é POR PAPEL (migration 007: anon 3s · authenticated 8s ·
+    service_role 120s). As etapas pesadas cabem folgadamente nos 120s do
+    service_role e estouram nos 3s do anon — mas o erro que o Postgres devolve
+    é o mesmo nos dois casos, e sem esta linha a leitura natural é "o banco
+    está lento" (o que levaria a mexer em índice, não na credencial).
+    """
+    texto = str(exc)
+    if "57014" not in texto and "statement timeout" not in texto.lower():
+        return
+
+    from utils.supabase_client import _key_role
+
+    papel = _key_role(os.getenv("SUPABASE_KEY", "")) or "não identificado"
+    if papel == "service_role":
+        logger.warning(
+            f"[AdminAuto] {step}: timeout com a chave service_role (teto 120s) — "
+            "aqui a causa é volume/plano de query, não credencial. Revise os "
+            "índices em docs/migrations/007_admin_automation_perf.sql."
+        )
+        return
+
+    logger.warning(
+        f"[AdminAuto] {step}: timeout (57014) com a chave '{papel}' — este papel "
+        "tem teto de 3s (anon) ou 8s (authenticated); só o service_role tem 120s. "
+        "Troque SUPABASE_KEY pela chave service_role no .env desta máquina "
+        "(Supabase → Project Settings → API Keys) e a etapa volta a fechar."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Etapas 1-6 — manutenção da tabela coletas (reusa supabase_maintenance)
 # ---------------------------------------------------------------------------
@@ -1120,6 +1153,7 @@ def run_admin_automation(
             except Exception as exc:
                 result = StepResult(name, ok=False, summary="falhou", error=str(exc))
                 logger.error(f"[AdminAuto] Etapa {name} falhou: {exc}")
+                _log_timeout_hint(name, exc)
             result.duration_s = time.time() - t_step
             results.append(result)
             log = logger.success if result.ok else logger.warning

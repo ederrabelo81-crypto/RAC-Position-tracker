@@ -4,10 +4,18 @@
 # Coleta Magalu + Shopee + Casas Bahia com o Chrome real logado (perfil
 # dedicado data\chrome_profile), IP residencial, SEM CDP e SEM porta de debug.
 #
-# Cria 2 tarefas (nao precisa mais da tarefa de "abrir Chrome CDP no logon" -
+# Cria 3 tarefas (nao precisa mais da tarefa de "abrir Chrome CDP no logon" -
 # o proprio Python abre o Chrome quando a coleta roda):
-#   1. RAC_Local_Manha  - 09:00 diario + catch-up no logon (janela 9-12h)
-#   2. RAC_Local_Noite  - 20:00 diario + catch-up no logon (janela 20-23h)
+#   1. RAC_Local_Manha   - 09:00 diario + catch-up no logon (janela 9-12h)
+#   2. RAC_Local_Noite   - 20:00 diario + catch-up no logon (janela 20-23h)
+#   3. RAC_Bestsellers   - 09:30 dia util + catch-up no logon (janela 9-10h)
+#
+# A terceira e a coleta de MAIS VENDIDOS (docs\BESTSELLERS.md). Ela e uma
+# tarefa separada, e nao um passo da coleta da manha, por tres motivos: mede
+# outra coisa (resultado/venda, nao oferta e posicao), tem cadencia propria
+# (dia util, janela de 1h, porque o ranking da Amazon e recalculado de hora em
+# hora) e nao pode herdar o destino da coleta principal - se a coleta da manha
+# falhar ou atrasar, a serie de mais vendidos do dia nao pode cair junto.
 #
 # A ACTION das tarefas e o proprio run_local_scheduled.bat, com argumento so
 # "manha"/"noite" - SEM "cmd.exe /c" e SEM redirect ">> log". Motivo (causa
@@ -103,7 +111,7 @@ if ([string]::IsNullOrWhiteSpace($TaskUser)) {
     $TaskUser = "$env:USERDOMAIN\$env:USERNAME"
 }
 
-$Tasks       = @("RAC_Local_Manha", "RAC_Local_Noite")
+$Tasks       = @("RAC_Local_Manha", "RAC_Local_Noite", "RAC_Bestsellers")
 # Tarefas antigas (CDP / perfil copiado) substituidas por esta versao
 $LegacyTasks = @(
     "RAC_Autenticada_Manha", "RAC_Autenticada_Noite", "RAC_Chrome_CDP_Startup",
@@ -191,6 +199,24 @@ Register-ScheduledTask -TaskName "RAC_Local_Noite" `
     -Description "Coleta local autenticada (Magalu+Shopee+CB) - Fechamento, janela 20-23h" `
     -Force | Out-Null
 
+Write-Host "Registrando: RAC_Bestsellers (09:30 dia util + catch-up no logon)" -ForegroundColor Cyan
+# Semanal seg-sex em vez de diario: a serie de mais vendidos so compara mesmo
+# dia da semana, entao leitura de sabado/domingo nao entra em delta nenhum -
+# e o calendario promocional do fim de semana a tornaria enganosa. O gatilho de
+# logon tambem dispara no fim de semana; quem barra ali e o estagio B (guarda
+# de dia util), que chega atualizado pelo git pull do estagio A.
+$triggers = @(
+    (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At "9:30AM"),
+    (New-RacLogonTrigger)
+)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 5) `
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+Register-ScheduledTask -TaskName "RAC_Bestsellers" `
+    -Action (New-RacAction "bestsellers") -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
+    -Description "Mais Vendidos RAC (6 listas por vendas) - dia util, janela 9-10h" `
+    -Force | Out-Null
+
 Write-Host ""
 Write-Host "===========================================================" -ForegroundColor Green
 Write-Host "  Tarefas registradas!" -ForegroundColor Green
@@ -203,9 +229,13 @@ Write-Host "IMPORTANTE:" -ForegroundColor Yellow
 Write-Host "  1. Faca login na Shopee 1x: python scripts\setup_local_profile.py" -ForegroundColor Yellow
 Write-Host "  1b. Drive (destino do historico e dos CSVs) - sem isto o dado fica" -ForegroundColor Yellow
 Write-Host "      so nesta maquina: python scripts\gdrive_setup.py --check" -ForegroundColor Yellow
+Write-Host "  1c. Chave do Supabase: use a service_role. Com a chave anon o" -ForegroundColor Yellow
+Write-Host "      teto de tempo cai para 3s (etapas da automacao ADMIN falham" -ForegroundColor Yellow
+Write-Host "      com 57014) e a tabela bestsellers, que tem RLS, recusa a" -ForegroundColor Yellow
+Write-Host "      escrita. A coleta agora diz no log qual chave esta em uso." -ForegroundColor Yellow
 Write-Host "  2. O notebook precisa estar LIGADO e com voce logado no Windows" -ForegroundColor Yellow
 Write-Host "     nos horarios (o Chrome abre na sua sessao de UI). Se estiver" -ForegroundColor Yellow
 Write-Host "     desligado, a coleta roda no proximo LOGON dentro da janela" -ForegroundColor Yellow
-Write-Host "     (manha 9-12h / noite 20-23h)." -ForegroundColor Yellow
+Write-Host "     (manha 9-12h / noite 20-23h / mais vendidos 9-10h em dia util)." -ForegroundColor Yellow
 Write-Host ""
 Wait-Key
