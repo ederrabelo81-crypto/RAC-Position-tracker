@@ -3,14 +3,12 @@ name: midea-rac-bestsellers-diario
 description: >
   Roda e interpreta a coleta diaria de listas "Mais Vendidos" de ar condicionado nos varejistas
   brasileiros (Amazon, Mercado Livre, Magazine Luiza, Shopee, Leroy Merlin, Casas Bahia). Use SEMPRE
-  no pedido: rodar o mais vendidos, coleta de bestsellers, brief diario de mais vendidos, ranking do
+  no pedido: rodar o mais vendidos, coleta de bestsellers, brief diario de bestsellers, ranking do
   dia, quem esta vendendo mais online, ganho ou perda de share de topo de ranking, evolucao semanal
   ou mensal do ranking, checar se a coleta veio certa, comparar com ontem. Tambem quando chegarem
-  planilhas xlsx de mais vendidos exportadas do Web Scraper (padrao varejista-AAAA-MM-DD.xlsx), que
-  entram como backfill do historico. Entrega: KPI de percentual do top 10 da Midea por plataforma,
-  delta em pontos percentuais entre periodos, validacao (quarentena por ordenacao errada,
-  contaminacao de categoria, drift de parser), unidades por mes declaradas, movimento de piso 9K/12K
-  e estabilidade do ranking. REGRA DURA: ranking e ordinal, nunca vira share de mercado; campo sem
+  planilhas xlsx de mais vendidos do Web Scraper, que entram como backfill do historico. Entrega o
+  KPI de percentual do top 10 da Midea por plataforma, o delta em pontos percentuais entre periodos
+  e a validacao da coleta. REGRA DURA: ranking e ordinal, nunca vira share de mercado; campo sem
   dado fica vazio. NAO usar para relatorio semanal de sell-out (midea-rac-weekly-report) nem para
   dealer, co-op ou campanha (midea-digital-trade-marketing).
 ---
