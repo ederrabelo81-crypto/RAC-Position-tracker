@@ -240,29 +240,69 @@ _LOGIN_DISMISS_SELECTORS = (
     'button[aria-label*="echar"]',
 )
 
-# ── Parser de DOM (Ago/2026) ─────────────────────────────────────────────
+# ── Parser de DOM (Ago/2026, atualizado Dez/2026) ────────────────────────
 # Fallback para quando o payload JSON não está mais no HTML (migração pro
 # App Router do Next.js remove o <script id="__NEXT_DATA__"> e serializa o
 # estado como RSC flight em `self.__next_f.push`). Seletores confirmados em
 # produção pelo scraper Node (`magalu_shopee/src/config/selectors.ts`).
+#
+# ATUALIZADO: Dez/2026 - Magalu mudou layout dos cards na SERP.
+# Novos seletores adicionados para cobrir variações do layout.
 _DOM_CARD_SELECTORS = (
+    # Seletores primários (data-testid - preferenciais)
     'a[data-testid="product-card-container"]',
     'li[data-testid="product-card"] a[href*="/p/"]',
     '[data-testid="product-card"] a[href*="/p/"]',
     '[data-testid="product-list"] a[href*="/p/"]',
+    
+    # Seletores secundários (estrutura semântica - fallback)
+    'article a[href*="/p/"]',
+    'div[class*="ProductCard"] a[href*="/p/"]',
+    'div[class*="product-card"] a[href*="/p/"]',
+    'div[class*="Card"] a[href*="/p/"]',
+    
+    # Seletores terciários (lista de produtos - último recurso)
+    'ul[class*="ProductList"] li a[href*="/p/"]',
+    'div[class*="ProductList"] a[href*="/p/"]',
+    'section[class*="Products"] a[href*="/p/"]',
 )
-_DOM_TITLE_SELECTORS = ('[data-testid="product-title"]', "h2", "h3")
+
+_DOM_TITLE_SELECTORS = (
+    # Prioridade: data-testid
+    '[data-testid="product-title"]',
+    # Secundário: headings semânticos
+    'h2', 'h3', 'h4',
+    # Terciário: classes comuns
+    '[class*="ProductTitle"]',
+    '[class*="product-name"]',
+    '[class*="ProductName"]',
+    '[class*="title"]',
+)
+
 _DOM_PRICE_SELECTORS = (
+    # Prioridade: data-testid
     '[data-testid="price-value"]',
     '[data-testid="price-best"]',
     '[data-testid="best-price"]',
     '[data-testid="current-price"]',
     '[data-testid="price"]',
+    # Secundário: classes comuns
+    '[class*="PriceValue"]',
+    '[class*="price-value"]',
+    '[class*="Price"]',
+    '[class*="price"]',
 )
+
 _DOM_RATING_SELECTOR = '[data-testid="review"]'
+
 _DOM_SELLER_SELECTORS = (
+    # Prioridade: data-testid
     '[data-testid="seller-name"]',
     '[data-testid="product-seller"]',
+    # Secundário: classes comuns
+    '[class*="SellerName"]',
+    '[class*="seller-name"]',
+    '[class*="Seller"]',
 )
 _DOM_SPONSORED_PATTERNS = ("patrocinado", "patrocinada", "anúncio", "anuncio", "publicidade")
 
@@ -1051,10 +1091,22 @@ class MagaluScraper(BaseScraper):
         """True se o HTML tem cards de produto renderizados (SERP de verdade)."""
         if not html:
             return False
-        return (
+        
+        # Verifica por data-testid (padrão Magalu)
+        has_testid = (
             'data-testid="product-card' in html
             or 'data-testid="product-title"' in html
         )
+        
+        # Verifica por estrutura semântica alternativa (layout novo)
+        has_semantic = (
+            '<article' in html and '/p/' in html
+            or 'class="ProductCard' in html
+            or 'class="product-card' in html
+            or 'class="ProductList' in html
+        )
+        
+        return has_testid or has_semantic
 
     @classmethod
     def _looks_like_login_wall(cls, html: str, url: str = "") -> bool:
@@ -1780,7 +1832,15 @@ class MagaluScraper(BaseScraper):
         """True se o elemento delimita UM produto (e não a lista inteira)."""
         try:
             testid = node.get("data-testid") or ""
-            return node.name == "li" or "product-card" in testid
+            class_attr = node.get("class", [])
+            class_str = " ".join(class_attr) if isinstance(class_attr, list) else str(class_attr)
+            
+            return (
+                node.name == "li" 
+                or "product-card" in testid
+                or "ProductCard" in class_str
+                or "product-card" in class_str
+            )
         except Exception:
             return False
 
