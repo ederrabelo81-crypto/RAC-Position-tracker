@@ -270,3 +270,49 @@ próprio ML aparecer como 2º maior buy box seller da categoria.
 `None` quando o card não informa. Ausência de dado é dado ausente, não 3P.
 **Files:** `scrapers/mercado_livre.py` `_detect_tipo_seller()`;
 `tests/test_ml_parse.py::TestDetectTipoSeller`
+
+## 21. Dois `sync_playwright()` vivos na mesma thread (14/08/2026)
+
+**Wrong:** cada módulo dando o seu `sync_playwright().start()` —
+`BaseScraper._launch`, `LocalBrowser.launch`, `magalu._open_persistent_browser`,
+`casas_bahia._launch` (CDP).
+**Why:** a API SÍNCRONA do Playwright roda um event loop asyncio dentro de um
+greenlet da thread. Enquanto um handle está vivo, `asyncio.get_running_loop()`
+devolve esse loop e o `start()` seguinte morre com *"It looks like you are using
+Playwright Sync API inside the asyncio loop"*. Não incomodava enquanto cada
+scraper abria e fechava o seu; passou a incomodar quando o `RAC_LOCAL_CHROME`
+manteve UM handle aberto pela coleta inteira. A partir daí, **todo scraper de
+browser próprio morria no `_launch`** — Amazon, Google Shopping, Leroy, Dealers,
+os `PlainBrowser` do `bestsellers/` e os fallbacks de ML/Magalu/Casas Bahia. No
+log é uma linha só, e ela some no meio de centenas:
+`ERROR | Mercado Livre: falhou com erro inesperado — It looks like you are using
+Playwright Sync API inside the asyncio loop.`
+**Right:** `scrapers/playwright_runtime.acquire()/release()` — **um handle por
+thread**, com contagem de referências; ele só para quando o último usuário
+solta. Nunca chamar `stop()` direto num handle que outro módulo pode estar
+usando.
+**Files:** `scrapers/playwright_runtime.py`; `scrapers/base.py` `_launch()`/
+`_close()`; `scrapers/local_browser.py`; `scrapers/magalu.py`;
+`scrapers/casas_bahia.py`; `tests/test_playwright_runtime.py`
+
+## 22. Chrome compartilhado morto tratado como bloqueio (14/08/2026)
+
+**Wrong:** guardar `LocalBrowser.context` e reusá-lo pelo resto da run
+(`if _LOCAL_BROWSER.context is not None: return _LOCAL_BROWSER`); no scraper,
+tratar a falha como fim da keyword.
+**Why:** o Chrome do `RAC_LOCAL_CHROME` é a janela do USUÁRIO — fechá-la, ou um
+update do Chrome, mata o CDP. O contexto guardado continua "não-None" mas
+inutilizável, então cada keyword seguinte vira
+`BrowserContext.new_page: Target page, context or browser has been closed` e
+volta com 0 produto. Na coleta de 14/08 a Casas Bahia perdeu as 5 últimas
+keywords **com as APIs VTEX funcionando o tempo todo**.
+**Right:** três camadas — (1) `LocalBrowser.is_alive()` (`browser.is_connected()`)
+e `reconnect()`; (2) `get_local_browser()` cura o singleton e devolve `None`
+quando não dá mais, em vez de servir contexto morto; (3) o scraper reabre a aba
+e, se não der, **degrada** (Casas Bahia → APIs VTEX, Shopee → curl_cffi, ML →
+browser próprio → API oficial). Browser morto ≠ bloqueio anti-bot: bloqueio
+encerra a keyword, browser morto troca de caminho.
+**Files:** `scrapers/local_browser.py` `is_alive()`/`reconnect()`/`new_page()`;
+`scrapers/casas_bahia.py` `_revive_page()`/`_degrade_to_http()`;
+`scrapers/shopee.py` `_ensure_browser_page()`/`_degrade_to_http()`;
+`scrapers/mercado_livre.py` `_ensure_page()`; `tests/test_browser_degradation.py`

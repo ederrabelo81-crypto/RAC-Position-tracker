@@ -36,8 +36,10 @@ from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import MAX_PAGES, LOGS_DIR, PAGE_TIMEOUT
+from scrapers import playwright_runtime
 from scrapers.base import BaseScraper
 from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
+from scrapers.playwright_runtime import is_target_closed as _browser_died
 from utils.text import parse_price, parse_rating, parse_review_count
 
 _ITEMS_PER_PAGE = 24
@@ -189,6 +191,9 @@ class CasasBahiaScraper(BaseScraper):
         self._akamai_blocked: bool = False       # bloqueio na keyword atual
         self._blocked_keyword_streak: int = 0
         self.collection_aborted: bool = False
+        # Browser real morreu no meio da run (janela fechada, crash) e não
+        # voltou — a keyword atual segue pelas APIs VTEX.
+        self._browser_lost: bool = False
 
         # Warm-up CDP feito 1x por execução: visita a home e espera o sensor.js
         # do Akamai validar o _abck (vira "~0~"). Sem isso, um goto direto pra
@@ -259,14 +264,12 @@ class CasasBahiaScraper(BaseScraper):
 
         # rebrowser-playwright oculta o Runtime.enable do sensor.js (mesmo
         # requisito do magalu.py — o import seta REBROWSER_PATCHES_RUNTIME_FIX_MODE)
-        from scrapers.magalu import _import_sync_playwright
-        sync_playwright, flavor = _import_sync_playwright()
-        if sync_playwright is None:
+        self._playwright, flavor = playwright_runtime.acquire(prefer_rebrowser=True)
+        if self._playwright is None:
             super()._launch()
             return
 
         try:
-            self._playwright = sync_playwright().start()
             self._browser = self._playwright.chromium.connect_over_cdp(
                 cdp_url, timeout=10_000
             )
@@ -286,12 +289,7 @@ class CasasBahiaScraper(BaseScraper):
                 f"[{self.platform_name}] CDP indisponível ({exc}) — "
                 "abrindo browser próprio (fallback, Akamai pode bloquear)"
             )
-            try:
-                if self._playwright:
-                    self._playwright.stop()
-            except Exception:
-                pass
-            self._playwright = None
+            self._release_pw_handle()
             self._browser = None
             self._context = None
             self._page = None
@@ -327,16 +325,23 @@ class CasasBahiaScraper(BaseScraper):
                 self._browser.close()  # close() em CDP-browser apenas desconecta
         except Exception:
             pass
-        try:
-            if self._playwright:
-                self._playwright.stop()
-        except Exception:
-            pass
         self._page = None
         self._context = None
         self._browser = None
-        self._playwright = None
         self._cdp_active = False
+        self._release_pw_handle()
+
+    def _release_pw_handle(self) -> None:
+        """Devolve a referência do handle compartilhado do Playwright.
+
+        Nunca ``stop()`` direto: o handle é da thread (ver
+        scrapers/playwright_runtime) e pode estar sustentando o Chrome local
+        dos outros scrapers.
+        """
+        if self._playwright is None:
+            return
+        self._playwright = None
+        playwright_runtime.release()
 
     # ------------------------------------------------------------------
     # URL
@@ -1543,6 +1548,105 @@ class CasasBahiaScraper(BaseScraper):
             )
             return False
 
+    def _has_browser(self) -> bool:
+        """True enquanto existe aba/contexto para tentar o caminho de browser."""
+        return self._page is not None or self._context is not None
+
+    def _page_html(self) -> Optional[str]:
+        """
+        HTML da página atual, ou None se o browser morreu no meio da leitura.
+
+        ``page.content()`` estoura quando o Chrome compartilhado é fechado
+        durante a coleta. Sem esta captura a exceção subia até o ``main.py``,
+        que a registrava como "Falha em '<keyword>'" — mensagem que não diz
+        que o browser sumiu nem permite degradar para as APIs VTEX.
+        """
+        try:
+            return self._page.content()
+        except Exception as exc:
+            if _browser_died(exc):
+                logger.warning(
+                    f"[{self.platform_name}] Browser fechou durante a leitura "
+                    f"da página: {exc}"
+                )
+                self._browser_lost = True
+            else:
+                logger.warning(
+                    f"[{self.platform_name}] Falha ao ler o HTML da página: {exc}"
+                )
+            return None
+
+    def _revive_page(self) -> bool:
+        """
+        Reabre a aba de coleta quando ela é fechada no meio da run.
+
+        No modo Chrome local, quem reabre é o ``LocalBrowser`` — ele reconecta
+        o CDP se a janela inteira tiver sumido. Pedir a aba ao contexto antigo
+        (o que este método fazia antes) devolvia
+        ``Target page, context or browser has been closed`` para SEMPRE, e a
+        coleta seguia gastando keywords contra um browser morto.
+
+        Returns:
+            True se há aba utilizável. False marca ``_browser_lost`` — sinal
+            para o ``search()`` degradar para as APIs VTEX.
+        """
+        try:
+            page = None
+            if self._local_active:
+                # `get_local_browser()` e não o handle guardado: o singleton
+                # pode ter sido recriado (Chrome novo) desde o `_launch`.
+                lb = get_local_browser() or self._local_browser
+                page = lb.new_page() if lb is not None else None
+                if page is not None:
+                    self._local_browser = lb
+                    self._context = lb.context
+            elif self._context is not None:
+                page = self._context.new_page()
+
+            if page is None:
+                raise RuntimeError("nenhuma aba disponível")
+
+            self._page = page
+            self._page.set_default_timeout(PAGE_TIMEOUT)
+            self._setup_xhr_intercept()
+            logger.warning(
+                f"[{self.platform_name}] Aba de coleta foi fechada — "
+                "nova aba criada"
+            )
+            # Aba nova = sessão fria para o Akamai. Reaquece já: ir direto para
+            # /busca com o _abck não validado é bloqueio na certa, e a keyword
+            # recuperada voltaria vazia do mesmo jeito.
+            self._cdp_warmed = False
+            self._warmup_cdp_session()
+            return True
+        except Exception as exc:
+            logger.warning(f"[{self.platform_name}] Browser indisponível: {exc}")
+            self._browser_lost = True
+            return False
+
+    def _degrade_to_http(self) -> None:
+        """
+        Desliga o modo browser real e segue pelas APIs VTEX (curl_cffi).
+
+        Sem isso, cada keyword restante repetia a tentativa contra um browser
+        morto e voltava vazia — foi o que zerou as últimas keywords da coleta
+        de 14/08/2026 mesmo com as APIs VTEX disponíveis.
+        """
+        if not self._real_browser_active:
+            return
+        self._local_active = False
+        self._cdp_active = False
+        self._page = None
+        self._xhr_page = None
+        # O contexto também morreu com a janela: mantê-lo faria as estratégias
+        # 2/3 tentarem `new_page()` nele a cada página, só para falhar de novo.
+        self._context = None
+        logger.warning(
+            f"[{self.platform_name}] Chrome real perdido — seguindo pelas APIs "
+            "VTEX (curl_cffi). Buy box pode ficar incompleta; reabra o Chrome "
+            "do perfil dedicado para recuperar o caminho rico."
+        )
+
     def _browser_search_page(
         self,
         keyword: str,
@@ -1579,20 +1683,8 @@ class CasasBahiaScraper(BaseScraper):
                 pass
 
         # Revive: no CDP o usuário pode fechar a aba/janela no meio da coleta
-        if self._page is None or self._page.is_closed():
-            try:
-                self._page = self._context.new_page()
-                self._page.set_default_timeout(PAGE_TIMEOUT)
-                self._setup_xhr_intercept()
-                logger.warning(
-                    f"[{self.platform_name}] Aba de coleta foi fechada — "
-                    "nova aba criada"
-                )
-            except Exception as exc:
-                logger.warning(
-                    f"[{self.platform_name}] Browser indisponível: {exc}"
-                )
-                return None
+        if (self._page is None or self._page.is_closed()) and not self._revive_page():
+            return None
 
         # Navegação: na 1ª página, tenta busca ORGÂNICA (digitar no campo +
         # Enter) — reduz o sinal de bot do goto direto a /busca, que é o que
@@ -1607,14 +1699,23 @@ class CasasBahiaScraper(BaseScraper):
             try:
                 self._page.goto(url, wait_until="domcontentloaded", timeout=40_000)
             except Exception as exc:
-                logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
+                if _browser_died(exc):
+                    logger.warning(
+                        f"[{self.platform_name}] Browser fechou durante a "
+                        f"navegação: {exc}"
+                    )
+                    self._browser_lost = True
+                else:
+                    logger.warning(f"[{self.platform_name}] Timeout no goto: {exc}")
                 return None
 
         self._wait_for_products(timeout_ms=4_000)
 
         # Fail-fast: checa bloqueio ANTES dos waits caros (network idle +
         # delay + scroll somavam ~20s extras por keyword já bloqueada).
-        html = self._page.content()
+        html = self._page_html()
+        if html is None:
+            return None
         if self._check_blocked(html):
             self._dump_debug(html, page, keyword)
             self._akamai_blocked = True
@@ -1625,7 +1726,9 @@ class CasasBahiaScraper(BaseScraper):
         self._human_scroll(steps=10, step_px=300)
         time.sleep(1.5)
 
-        html = self._page.content()
+        html = self._page_html()
+        if html is None:
+            return None
         if self._check_blocked(html):
             self._dump_debug(html, page, keyword)
             self._akamai_blocked = True
@@ -1692,6 +1795,7 @@ class CasasBahiaScraper(BaseScraper):
         all_records: List[Dict[str, Any]] = []
         self._setup_xhr_intercept()
         self._akamai_blocked = False
+        self._browser_lost = False
 
         for page in range(1, page_limit + 1):
             url = self._build_url(keyword, page)
@@ -1717,62 +1821,82 @@ class CasasBahiaScraper(BaseScraper):
                 browser_records = self._browser_search_page(
                     keyword, keyword_category_map, page, offset
                 )
-                if browser_records is None:
-                    break
-                records = browser_records
+                if browser_records is None and not self._browser_lost:
+                    break  # bloqueio/timeout: parar a keyword é o certo
 
-                # 3) Fallback rico: API VTEX via fetch same-origin.
-                #    O gatilho NÃO é "0 registros": o DOM quase sempre devolve
-                #    cards (com preço), e por isso esta etapa nunca era
-                #    alcançada — o resultado media 0% de `Buy Box Seller` e
-                #    `Qtd Sellers` no banco (10/08/2026), justamente os campos
-                #    que são o foco da coleta desde Mai/2026. O DOM da vitrine
-                #    não expõe `sellers[]`, então "tem registro" e "tem buy box"
-                #    são coisas diferentes: buscar a API quando falta o dado de
-                #    seller é o que destrava o campo.
-                if not self._has_seller_data(records):
-                    products = self._vtex_fetch_in_page(keyword, page)
-                    if products:
-                        api_records = self._parse_api_products(
-                            keyword, keyword_category_map, offset, products=products
-                        )
-                        # Só aproveita se a API de fato trouxe seller — senão
-                        # mantém os registros do DOM (que ao menos têm preço,
-                        # posição e título) em vez de regredir a coleta.
-                        if self._has_seller_data(api_records):
-                            enriquecidos = self._merge_seller_fields(
-                                records, api_records
+                # Browser morto ≠ bloqueio: as APIs VTEX seguem respondendo.
+                # Degrada o modo e deixa ESTA página cair no caminho HTTP
+                # abaixo (o `if not self._real_browser_active`), em vez de
+                # queimar a keyword — e as seguintes — contra um Chrome que
+                # não existe mais.
+                if self._browser_lost:
+                    self._degrade_to_http()
+                else:
+                    records = browser_records
+
+                    # 3) Fallback rico: API VTEX via fetch same-origin.
+                    #    O gatilho NÃO é "0 registros": o DOM quase sempre
+                    #    devolve cards (com preço), e por isso esta etapa nunca
+                    #    era alcançada — o resultado media 0% de `Buy Box
+                    #    Seller` e `Qtd Sellers` no banco (10/08/2026),
+                    #    justamente os campos que são o foco da coleta desde
+                    #    Mai/2026. O DOM da vitrine não expõe `sellers[]`,
+                    #    então "tem registro" e "tem buy box" são coisas
+                    #    diferentes: buscar a API quando falta o dado de seller
+                    #    é o que destrava o campo.
+                    if not self._has_seller_data(records):
+                        products = self._vtex_fetch_in_page(keyword, page)
+                        if products:
+                            api_records = self._parse_api_products(
+                                keyword, keyword_category_map, offset,
+                                products=products,
                             )
-                            if enriquecidos:
-                                # Caminho normal: DOM mantém posição/preço e
-                                # ganha a buy box da API.
-                                logger.info(
-                                    f"[{self.platform_name}] Buy box recuperada "
-                                    f"via API VTEX — {enriquecidos}/{len(records)} "
-                                    f"registros do DOM enriquecidos (pág {page})"
+                            # Só aproveita se a API de fato trouxe seller —
+                            # senão mantém os registros do DOM (que ao menos
+                            # têm preço, posição e título) em vez de regredir
+                            # a coleta.
+                            if self._has_seller_data(api_records):
+                                enriquecidos = self._merge_seller_fields(
+                                    records, api_records
                                 )
-                            else:
-                                # Nenhum casou por URL/SKU: os dois conjuntos
-                                # divergiram. Aí a API é a melhor fonte, porque
-                                # ter buy box é o objetivo da coleta.
-                                logger.warning(
-                                    f"[{self.platform_name}] Nenhum registro do "
-                                    f"DOM casou com a API (pág {page}) — usando "
-                                    f"os {len(api_records)} da API no lugar dos "
-                                    f"{len(records)} do DOM"
-                                )
+                                if enriquecidos:
+                                    # Caminho normal: DOM mantém posição/preço
+                                    # e ganha a buy box da API.
+                                    logger.info(
+                                        f"[{self.platform_name}] Buy box "
+                                        "recuperada via API VTEX — "
+                                        f"{enriquecidos}/{len(records)} "
+                                        f"registros do DOM enriquecidos "
+                                        f"(pág {page})"
+                                    )
+                                else:
+                                    # Nenhum casou por URL/SKU: os dois
+                                    # conjuntos divergiram. Aí a API é a melhor
+                                    # fonte, porque ter buy box é o objetivo da
+                                    # coleta.
+                                    logger.warning(
+                                        f"[{self.platform_name}] Nenhum "
+                                        "registro do DOM casou com a API "
+                                        f"(pág {page}) — usando os "
+                                        f"{len(api_records)} da API no lugar "
+                                        f"dos {len(records)} do DOM"
+                                    )
+                                    records = api_records
+                            elif api_records and not records:
                                 records = api_records
-                        elif api_records and not records:
-                            records = api_records
 
-                # 4) Último recurso: curl_cffi (provável bloqueio, mas tenta)
-                if not records:
-                    records = self._vtex_cffi_search(
-                        keyword, keyword_category_map, page, offset
-                    ) or self._vtex_api_search(
-                        keyword, keyword_category_map, page, offset
-                    )
-            else:
+                    # 4) Último recurso: curl_cffi (provável bloqueio, mas tenta)
+                    if not records:
+                        records = self._vtex_cffi_search(
+                            keyword, keyword_category_map, page, offset
+                        ) or self._vtex_api_search(
+                            keyword, keyword_category_map, page, offset
+                        )
+
+            # `if` e não `else`: o bloco acima pode ter degradado o modo no meio
+            # da página (Chrome morto), e aí ESTA página ainda é coletada aqui
+            # pelas APIs — sem perder a keyword.
+            if not self._real_browser_active:
                 # --- Estratégia 0: VTEX API via curl_cffi (TLS Chrome real) ---
                 records = self._vtex_cffi_search(
                     keyword, keyword_category_map, page, offset
@@ -1785,7 +1909,10 @@ class CasasBahiaScraper(BaseScraper):
                     )
 
                 # --- Estratégias 2/3: Browser + sessão salva + XHR + DOM ---
-                if not records:
+                # `_has_browser()`: depois de o Chrome compartilhado morrer não
+                # há aba nem contexto — tentar o caminho de browser aqui só
+                # repetiria "Browser indisponível" a cada página.
+                if not records and self._has_browser():
                     browser_records = self._browser_search_page(
                         keyword, keyword_category_map, page, offset
                     )

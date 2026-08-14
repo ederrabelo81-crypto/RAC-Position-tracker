@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from bs4 import BeautifulSoup
 from loguru import logger
-from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Page, Playwright
 
 from config import (
     ANALYST_NAME,
@@ -34,6 +34,7 @@ from config import (
     SCREENSHOTS_VIEWPORT,
     USER_AGENTS,
 )
+from scrapers import playwright_runtime
 from utils.brands import extract_brand
 from utils.text import (
     MAX_COUNT_SANE,
@@ -145,8 +146,21 @@ class BaseScraper(ABC):
     """
 
     def _launch(self) -> None:
-        """Inicia o Playwright, o browser e o contexto com configurações stealth."""
-        self._playwright = sync_playwright().start()
+        """Inicia o Playwright, o browser e o contexto com configurações stealth.
+
+        O handle do Playwright vem do runtime compartilhado
+        (``scrapers/playwright_runtime``), NUNCA de um ``sync_playwright()``
+        próprio: com o Chrome local ligado (``RAC_LOCAL_CHROME``) já existe um
+        handle vivo na thread, e um segundo estoura "Sync API inside the
+        asyncio loop" — o que derrubava Amazon, Google Shopping, Leroy e
+        Dealers inteiros na coleta de 14/08/2026.
+        """
+        self._playwright, _ = playwright_runtime.acquire()
+        if self._playwright is None:
+            raise RuntimeError(
+                "Playwright indisponível. Execute: pip install playwright && "
+                "python -m playwright install chromium"
+            )
 
         # Tenta Chrome real primeiro (menos detectável que Chromium headless).
         # Chrome real tem TLS fingerprint diferente — Shopee e Akamai aceitam melhor.
@@ -173,14 +187,11 @@ class BaseScraper(ABC):
                 continue
 
         if self._browser is None:
-            # Para o Playwright antes de lançar a exceção — sem isso o event
-            # loop interno fica aberto e o próximo scraper recebe
+            # Solta a referência antes de lançar — sem isso o handle fica
+            # pendurado até o fim do processo e o próximo scraper recebe
             # "Sync API inside asyncio loop".
-            try:
-                self._playwright.stop()
-            except Exception:
-                pass
             self._playwright = None
+            playwright_runtime.release()
             raise RuntimeError(
                 "Não foi possível iniciar nenhum browser (chrome/msedge/chromium). "
                 "Execute: python -m playwright install chromium"
@@ -210,6 +221,7 @@ class BaseScraper(ABC):
 
     def _close(self) -> None:
         """Encerra browser e playwright de forma limpa."""
+        had_handle = self._playwright is not None
         try:
             if self._page:
                 self._page.close()
@@ -217,8 +229,6 @@ class BaseScraper(ABC):
                 self._context.close()
             if self._browser:
                 self._browser.close()
-            if self._playwright:
-                self._playwright.stop()
         except Exception as exc:
             logger.warning(f"[{self.platform_name}] Erro ao fechar browser: {exc}")
         finally:
@@ -226,6 +236,10 @@ class BaseScraper(ABC):
             self._context = None
             self._browser = None
             self._playwright = None
+            # O handle é compartilhado: só devolvemos a referência. Ele só para
+            # de fato quando o último usuário (ex.: o Chrome local) soltar.
+            if had_handle:
+                playwright_runtime.release()
 
     def _rotate_browser(self) -> None:
         """

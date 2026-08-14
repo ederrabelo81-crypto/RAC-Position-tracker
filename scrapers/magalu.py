@@ -88,6 +88,7 @@ except ImportError:
     _HAS_CURL_CFFI = False
 
 from config import MAX_PAGES, LOGS_DIR
+from scrapers import playwright_runtime
 from scrapers.base import BaseScraper
 from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
 from utils.text import parse_price
@@ -440,6 +441,10 @@ class MagaluScraper(BaseScraper):
                 "python -m rebrowser_playwright install chromium"
             )
             return False
+        if playwright_runtime.is_active():
+            # Já há handle vivo na thread (Chrome local/outro scraper): é ele
+            # que vamos usar — anunciar outro flavor confundiria o diagnóstico.
+            pw_flavor = playwright_runtime.active_flavor()
         if pw_flavor == "rebrowser-playwright":
             logger.info(
                 "[Magalu] Playwright: rebrowser-playwright "
@@ -468,7 +473,7 @@ class MagaluScraper(BaseScraper):
         profile_is_fresh = False
         if not cdp_url and is_local_chrome_enabled():
             lb = get_local_browser()
-            if lb is not None and lb.context is not None:
+            if lb is not None and lb.is_alive():
                 self._pw_context = lb.context
                 self._local_browser = lb
                 self._is_local = True
@@ -484,10 +489,10 @@ class MagaluScraper(BaseScraper):
                 )
 
         if not self._is_local:
-            try:
-                self._pw_handle = sync_playwright().start()
-            except Exception as exc:
-                logger.error(f"[Magalu] Falha ao iniciar Playwright: {exc}")
+            # Handle compartilhado por thread — ver scrapers/playwright_runtime.
+            self._pw_handle, _ = playwright_runtime.acquire(prefer_rebrowser=True)
+            if self._pw_handle is None:
+                logger.error("[Magalu] Falha ao iniciar Playwright.")
                 return False
 
         # ── Modo CDP: conecta ao Chrome real do usuário via DevTools Protocol ──
@@ -801,15 +806,10 @@ class MagaluScraper(BaseScraper):
                     self._pw_browser.close()  # close() em CDP-browser apenas desconecta
             except Exception:
                 pass
-            try:
-                if self._pw_handle:
-                    self._pw_handle.stop()
-            except Exception:
-                pass
             self._pw_page = None
             self._pw_context = None
             self._pw_browser = None
-            self._pw_handle = None
+            self._release_pw_handle()
             self._is_cdp = False
             return
 
@@ -828,15 +828,22 @@ class MagaluScraper(BaseScraper):
                 self._pw_browser.close()
         except Exception:
             pass
-        try:
-            if self._pw_handle:
-                self._pw_handle.stop()
-        except Exception:
-            pass
         self._pw_page = None
         self._pw_context = None
         self._pw_browser = None
+        self._release_pw_handle()
+
+    def _release_pw_handle(self) -> None:
+        """Devolve a referência do handle compartilhado do Playwright.
+
+        Nunca chama ``stop()`` direto: o handle é da thread, não deste
+        scraper — pará-lo com o Chrome local ainda conectado invalidaria as
+        abas dos outros scrapers.
+        """
+        if self._pw_handle is None:
+            return
         self._pw_handle = None
+        playwright_runtime.release()
 
     def _safe_content(self, page: Any = None) -> str:
         """
@@ -904,6 +911,26 @@ class MagaluScraper(BaseScraper):
         except Exception as exc:
             logger.debug(f"[{self.platform_name}] new_page falhou: {exc}")
 
+        # 1.5) Chrome local compartilhado: pede a aba ao LocalBrowser, que
+        #      reconecta (ou reabre) a janela quando ela morreu por inteiro —
+        #      o contexto guardado aqui já está morto nesse caso.
+        if self._is_local:
+            lb = get_local_browser()
+            page = lb.new_page() if lb is not None else None
+            if page is not None:
+                self._local_browser = lb
+                self._pw_context = lb.context
+                self._pw_page = page
+                self._pw_page.set_default_timeout(45_000)
+                logger.warning(
+                    f"[{self.platform_name}] Chrome compartilhado reaberto — "
+                    "nova aba de coleta"
+                )
+                return True
+            self._is_local = False
+            self._pw_context = None
+            self._local_browser = None
+
         # 2) Modo CDP: reconecta ao Chrome (janela pode ter sido reaberta)
         cdp_url = os.getenv("MAGALU_CDP_URL", "").strip()
         if self._is_cdp and cdp_url and self._pw_handle is not None:
@@ -924,7 +951,8 @@ class MagaluScraper(BaseScraper):
         self._pw_page = None
         logger.warning(
             f"[{self.platform_name}] Browser indisponível — seguindo só com "
-            "curl_cffi (fallback). Reabra o Chrome CDP: scripts/start_chrome_cdp.bat"
+            "curl_cffi (fallback). Reabra o Chrome do perfil dedicado: "
+            "python scripts/setup_local_profile.py --site magalu"
         )
         return False
 
