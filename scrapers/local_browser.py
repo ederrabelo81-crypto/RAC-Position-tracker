@@ -73,7 +73,12 @@ _DEFAULT_CDP_PORT = 9222
 # desistir. Fechar a janela no meio da coleta é acidente comum (e recuperável);
 # cair sempre é sintoma de ambiente quebrado — aí insistir só custa 20s por
 # tentativa e atrasa a degradação para o caminho alternativo.
+#
+# O orçamento é da RUN (módulo), não da instância: quando o singleton morre e é
+# substituído, um contador por instância zeraria e o teto anunciado viraria
+# ficção — o Chrome poderia ser relançado indefinidamente.
 _MAX_RECONNECTS = 3
+_RECONNECTS_USED = 0
 
 # Idem para o singleton: depois de N falhas de abertura no processo, para de
 # tentar (o Chrome não existe / a porta está tomada) e deixa os scrapers
@@ -275,8 +280,6 @@ class LocalBrowser:
         self._spawned: Optional[subprocess.Popen] = None
         # Domínios já aquecidos nesta sessão (evita repetir warm-up por scraper).
         self._warmed_hosts: set = set()
-        # Reconexões já gastas nesta instância (ver _MAX_RECONNECTS).
-        self._reconnects: int = 0
 
     # ------------------------------------------------------------------
     # Ciclo de vida
@@ -286,6 +289,19 @@ class LocalBrowser:
         """Garante o Chrome comum + conecta via CDP. True se pronto para uso."""
         if self.is_alive():
             return True
+
+        # Único ponto do projeto que abre Chrome — é aqui que a desistência tem
+        # que valer. Enquanto o teto era conferido só no `reconnect()` e no
+        # `get_local_browser()`, quem tivesse guardado uma instância (a Magalu
+        # guarda) relançava o browser por dentro do `new_page()` e o modo local
+        # "desligado" voltava sozinho.
+        if _LOCAL_MODE_DISABLED:
+            logger.debug(
+                "[LocalBrowser] Modo local desligado nesta run — não abrindo "
+                "Chrome."
+            )
+            return False
+
         # Estado parcial de uma tentativa anterior (conexão caiu, contexto
         # morto): solta tudo antes de reconectar, senão o handle órfão do
         # Playwright segura o event loop da thread e o próximo
@@ -330,6 +346,7 @@ class LocalBrowser:
                     f"[LocalBrowser] Chrome não expôs a porta de debug {self.port} "
                     "em 20s. Feche Chromes abertos nesse perfil e tente de novo."
                 )
+                self._abandon_spawned()
                 self._release_handle()
                 return False
         else:
@@ -347,6 +364,7 @@ class LocalBrowser:
                 f"[LocalBrowser] Falha ao conectar CDP em {endpoint}: {exc}"
             )
             self._browser = None
+            self._abandon_spawned()
             self._release_handle()
             return False
 
@@ -399,18 +417,22 @@ class LocalBrowser:
             run (:data:`_MAX_RECONNECTS`) já foi gasto — aí os scrapers devem
             cair para o caminho alternativo em vez de insistir.
         """
-        if self._reconnects >= _MAX_RECONNECTS:
-            logger.error(
-                f"[LocalBrowser] Chrome local caiu {self._reconnects}x nesta "
-                "run — desistindo de reconectar. Os scrapers seguem pelo "
-                "caminho alternativo (HTTP/browser próprio)."
+        global _RECONNECTS_USED
+
+        if _RECONNECTS_USED >= _MAX_RECONNECTS:
+            # Desliga o modo local de vez: sem isso o `get_local_browser()`
+            # apenas descartava o singleton e abria OUTRO Chrome do zero, e o
+            # teto não segurava nada — o coletor ficava relançando browser em
+            # vez de degradar.
+            _disable_local_mode(
+                f"o Chrome local caiu {_RECONNECTS_USED}x nesta run"
             )
             return False
 
-        self._reconnects += 1
+        _RECONNECTS_USED += 1
         logger.warning(
             f"[LocalBrowser] Conexão com o Chrome caiu — reconectando "
-            f"({self._reconnects}/{_MAX_RECONNECTS})..."
+            f"({_RECONNECTS_USED}/{_MAX_RECONNECTS})..."
         )
         self._disconnect()
         if self.launch():
@@ -433,14 +455,7 @@ class LocalBrowser:
     def close(self) -> None:
         """Desconecta o CDP. Mantém o Chrome aberto (a menos que KEEP=0)."""
         self._disconnect()
-
-        # Só encerra o Chrome se ESTE processo o abriu E o usuário pediu.
-        if self._spawned is not None and not _keep_chrome_open():
-            try:
-                self._spawned.terminate()
-            except Exception:
-                pass
-        self._spawned = None
+        self._abandon_spawned()
 
     def _release_handle(self) -> None:
         """Devolve a referência do handle compartilhado do Playwright."""
@@ -449,6 +464,27 @@ class LocalBrowser:
         self._pw_handle = None
         self.flavor = ""
         playwright_runtime.release()
+
+    def _abandon_spawned(self) -> None:
+        """
+        Larga o Chrome que ESTE processo abriu — no fim da coleta ou no erro.
+
+        Único lugar onde a regra do ``RAC_LOCAL_CHROME_KEEP`` mora. Com KEEP
+        ligado (padrão) o processo fica de pé de propósito: no caminho de erro
+        ele pode estar só lento para abrir a porta, e a tentativa seguinte o
+        reaproveita em vez de abrir um segundo Chrome no mesmo perfil. Chamar
+        isto no erro também importa porque a instância é descartada pelo
+        ``get_local_browser`` — sem ele, ninguém mais teria a referência do
+        processo e KEEP=0 deixaria de valer justamente ali.
+        """
+        if self._spawned is None:
+            return
+        if not _keep_chrome_open():
+            try:
+                self._spawned.terminate()
+            except Exception:
+                pass
+        self._spawned = None
 
     def new_page(self) -> Optional[Any]:
         """
@@ -476,7 +512,6 @@ class LocalBrowser:
                         continue
                 logger.error(f"[LocalBrowser] Falha ao abrir aba: {exc}")
                 return None
-        return None
 
     # ------------------------------------------------------------------
     # Warm-up genérico (Akamai / sensor.js)
@@ -551,6 +586,25 @@ class LocalBrowser:
 _LOCAL_BROWSER: Optional[LocalBrowser] = None
 _ATEXIT_REGISTERED = False
 _LAUNCH_FAILURES = 0
+# Modo local desligado para o resto do processo: o Chrome provou não parar de
+# pé. Um único estado de desistência para as duas formas de esgotamento
+# (reconexões e aberturas) — enquanto era só um contador por caminho, cada um
+# ignorava o teto do outro.
+_LOCAL_MODE_DISABLED = False
+
+
+def _disable_local_mode(motivo: str) -> None:
+    """Desiste do Chrome compartilhado até o fim do processo."""
+    global _LOCAL_MODE_DISABLED
+    if _LOCAL_MODE_DISABLED:
+        return
+    _LOCAL_MODE_DISABLED = True
+    logger.error(
+        f"[LocalBrowser] Modo Chrome local DESLIGADO — {motivo}. O resto da "
+        "coleta segue pelo caminho alternativo (HTTP/browser próprio), sujeito "
+        "a Akamai/login gate. Confira o Chrome e o perfil dedicado: "
+        "python scripts/setup_local_profile.py --site magalu"
+    )
 
 
 def get_local_browser() -> Optional[LocalBrowser]:
@@ -581,23 +635,24 @@ def get_local_browser() -> Optional[LocalBrowser]:
         # O próximo scraper tenta do zero (novo Chrome), até o teto de falhas.
         close_local_browser()
 
-    if _LAUNCH_FAILURES >= _MAX_LAUNCH_FAILURES:
-        logger.debug(
-            "[LocalBrowser] Teto de falhas de abertura atingido — seguindo "
-            "sem Chrome local."
+    # Depois de desistir, desistiu: vale tanto para o teto de reconexões quanto
+    # para o de aberturas. O teto de reconexões é conferido AQUI também, e não
+    # só dentro do `reconnect()`: abrir um LocalBrowser novo é a mesma coisa que
+    # reconectar, do ponto de vista de quem está esperando a coleta andar.
+    if _RECONNECTS_USED >= _MAX_RECONNECTS:
+        _disable_local_mode(
+            f"o Chrome local caiu {_RECONNECTS_USED}x nesta run"
         )
+    if _LOCAL_MODE_DISABLED:
+        logger.debug("[LocalBrowser] Modo local desligado — seguindo sem ele.")
         return None
 
     lb = LocalBrowser()
     if not lb.launch():
         _LAUNCH_FAILURES += 1
         if _LAUNCH_FAILURES >= _MAX_LAUNCH_FAILURES:
-            logger.error(
-                "[LocalBrowser] Chrome local indisponível após "
-                f"{_LAUNCH_FAILURES} tentativas — o resto da coleta segue pelo "
-                "caminho alternativo (HTTP/browser próprio), sujeito a "
-                "Akamai/login gate. Confira o Chrome e o perfil dedicado: "
-                "python scripts/setup_local_profile.py --site magalu"
+            _disable_local_mode(
+                f"o Chrome não abriu em {_LAUNCH_FAILURES} tentativas"
             )
         return None
 

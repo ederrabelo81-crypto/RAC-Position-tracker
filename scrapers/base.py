@@ -203,34 +203,52 @@ class BaseScraper(ABC):
         else:
             vp_w, vp_h = 1366, 768
 
-        self._context = self._browser.new_context(
-            user_agent=self._user_agent,
-            viewport={"width": vp_w, "height": vp_h},
-            locale="pt-BR",
-            timezone_id="America/Sao_Paulo",
-            accept_downloads=False,
-        )
+        # Daqui pra baixo já existe browser: qualquer falha tem que devolver o
+        # browser E a referência do handle. `__exit__` NÃO roda quando
+        # `__enter__` levanta, então sem este cleanup um `new_context()` que
+        # falhasse deixava um Chromium órfão e o handle preso até o fim do
+        # processo — e o `main.py` seguiria para o próximo scraper assim.
+        try:
+            self._context = self._browser.new_context(
+                user_agent=self._user_agent,
+                viewport={"width": vp_w, "height": vp_h},
+                locale="pt-BR",
+                timezone_id="America/Sao_Paulo",
+                accept_downloads=False,
+            )
 
-        self._context.add_init_script(self._STEALTH_JS)
+            self._context.add_init_script(self._STEALTH_JS)
 
-        self._page = self._context.new_page()
-        self._page.set_default_timeout(PAGE_TIMEOUT)
+            self._page = self._context.new_page()
+            self._page.set_default_timeout(PAGE_TIMEOUT)
+        except Exception:
+            BaseScraper._close(self)
+            raise
+
         logger.info(
             f"[{self.platform_name}] Browser iniciado ({used_channel}) | UA: {self._user_agent[:60]}..."
         )
 
     def _close(self) -> None:
-        """Encerra browser e playwright de forma limpa."""
+        """Encerra browser e playwright de forma limpa.
+
+        Cada nível é fechado por conta própria: encadeados num único ``try``, um
+        ``page.close()`` que falhasse pulava o ``browser.close()`` e deixava um
+        Chromium órfão — logo no caminho de limpeza, que só roda quando algo já
+        deu errado.
+        """
         had_handle = self._playwright is not None
         try:
-            if self._page:
-                self._page.close()
-            if self._context:
-                self._context.close()
-            if self._browser:
-                self._browser.close()
-        except Exception as exc:
-            logger.warning(f"[{self.platform_name}] Erro ao fechar browser: {exc}")
+            for nivel in (self._page, self._context, self._browser):
+                if nivel is None:
+                    continue
+                try:
+                    nivel.close()
+                except Exception as exc:
+                    logger.warning(
+                        f"[{self.platform_name}] Erro ao fechar "
+                        f"{type(nivel).__name__}: {exc}"
+                    )
         finally:
             self._page = None
             self._context = None

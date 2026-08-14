@@ -47,6 +47,7 @@ import requests as _std_requests
 from config import MAX_PAGES
 from scrapers.base import BaseScraper
 from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
+from scrapers.playwright_runtime import is_target_closed
 
 _SHOPEE_BASE = "https://shopee.com.br"
 _SHOPEE_API = f"{_SHOPEE_BASE}/api/v4/search/search_items"
@@ -120,6 +121,8 @@ class ShopeeScraper(BaseScraper):
         self._local_active: bool = False
         self._captured_search: List[dict] = []
         self._xhr_page: Optional[Any] = None
+        # Chrome fechou no meio da keyword (≠ bloqueio): refaz pelo HTTP.
+        self._browser_lost: bool = False
 
     # ------------------------------------------------------------------
     # Context manager — modo browser local (preferido) ou sessão HTTP
@@ -219,17 +222,22 @@ class ShopeeScraper(BaseScraper):
         checagem, todas as keywords seguintes navegavam numa aba morta e
         voltavam vazias sem sequer marcar bloqueio.
         """
-        try:
-            if self._page is not None and not self._page.is_closed():
-                return True
-        except Exception:
-            pass  # aba tão morta que nem responde: trata como fechada
-
-        # `get_local_browser()` e não o handle guardado: o singleton pode ter
-        # sido recriado (Chrome novo) desde que este scraper abriu a aba.
-        lb = get_local_browser() or self._local_browser
+        # SEMPRE o singleton, nunca o handle guardado: ele pode ter sido
+        # recriado (Chrome novo) desde o `_launch`, e uma instância já
+        # descartada relançaria Chrome por fora do teto de tentativas.
+        lb = get_local_browser()
         if lb is None:
             return False
+
+        # A aba só serve se o browser que a hospeda ainda responde — daí o
+        # `is_alive()` junto do `is_closed()`.
+        if lb is self._local_browser and lb.is_alive():
+            try:
+                if self._page is not None and not self._page.is_closed():
+                    return True
+            except Exception:
+                pass  # aba tão morta que nem responde: trata como fechada
+
         page = lb.new_page()
         if page is None:
             return False
@@ -309,21 +317,44 @@ class ShopeeScraper(BaseScraper):
             try:
                 self._page.goto(url, wait_until="domcontentloaded", timeout=45_000)
             except Exception as exc:
-                logger.warning(
-                    f"[{self.platform_name}] goto busca '{keyword}' p{page+1} falhou: {exc}"
-                )
+                if is_target_closed(exc):
+                    # Chrome fechou no meio da keyword: não é bloqueio, é
+                    # acidente — o `search()` degrada e refaz a keyword.
+                    logger.warning(
+                        f"[{self.platform_name}] Chrome fechou durante "
+                        f"'{keyword}' p{page+1}: {exc}"
+                    )
+                    self._browser_lost = True
+                else:
+                    logger.warning(
+                        f"[{self.platform_name}] goto busca '{keyword}' "
+                        f"p{page+1} falhou: {exc}"
+                    )
                 break
 
             # A SERP dispara search_items no load; scroll ajuda a garantir.
             captured = self._await_captured(timeout_s=12.0)
-            if not captured:
+            if not captured and not self._browser_lost:
                 try:
                     for _ in range(4):
                         self._page.mouse.wheel(0, 700)
                         time.sleep(random.uniform(0.4, 0.9))
-                except Exception:
-                    pass
-                captured = self._await_captured(timeout_s=8.0)
+                except Exception as exc:
+                    if is_target_closed(exc):
+                        self._browser_lost = True
+                if not self._browser_lost:
+                    captured = self._await_captured(timeout_s=8.0)
+
+            # Ordem importa: browser morto é checado ANTES de declarar bloqueio.
+            # Sem isso, fechar a janela durante a espera virava "nenhuma
+            # resposta capturada" → `_hard_blocked` → circuit breaker abortava a
+            # Shopee inteira culpando o anti-fraude.
+            if self._browser_lost:
+                logger.warning(
+                    f"[{self.platform_name}] Chrome fechou durante '{keyword}' "
+                    f"p{page+1} — keyword será refeita pelo caminho HTTP"
+                )
+                break
 
             if not captured:
                 logger.warning(
@@ -385,7 +416,15 @@ class ShopeeScraper(BaseScraper):
         return all_records
 
     def _await_captured(self, timeout_s: float) -> List[dict]:
-        """Espera (até timeout) a interceptação de ao menos 1 search_items."""
+        """
+        Espera (até timeout) a interceptação de ao menos 1 search_items.
+
+        Se o Chrome fechar durante a espera, sai na hora marcando
+        ``_browser_lost``: continuar o laço só gastaria o timeout inteiro para
+        no fim declarar "nenhuma resposta capturada" — que o chamador leria
+        como bloqueio/CAPTCHA e contaria no circuit breaker. Janela fechada não
+        é anti-fraude.
+        """
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if self._captured_search:
@@ -394,7 +433,10 @@ class ShopeeScraper(BaseScraper):
                 return list(self._captured_search)
             try:
                 self._page.wait_for_timeout(300)
-            except Exception:
+            except Exception as exc:
+                if is_target_closed(exc):
+                    self._browser_lost = True
+                    break
                 time.sleep(0.3)
         return list(self._captured_search)
 
@@ -947,13 +989,26 @@ class ShopeeScraper(BaseScraper):
         self._hard_blocked = False
 
         # ── Caminho preferido: Chrome real logado (intercepta a API nativa) ──
+        self._browser_lost = False
         if self._local_active:
             if self._ensure_browser_page():
                 all_records = self._search_via_browser(
                     keyword, keyword_category_map, page_limit
                 )
-                self._update_circuit_breaker(all_records)
-                return all_records
+                # Chrome morto no meio da keyword: degrada e refaz a keyword
+                # pelo HTTP em vez de entregar meia coleta como final. Sem
+                # registro algum também não conta como bloqueio — o
+                # `_hard_blocked` fica False e o circuit breaker não pune um
+                # acidente de janela fechada.
+                if not self._browser_lost:
+                    self._update_circuit_breaker(all_records)
+                    return all_records
+                if all_records:
+                    logger.warning(
+                        f"[{self.platform_name}] '{keyword}' interrompida pelo "
+                        f"fim do Chrome com {len(all_records)} registros — "
+                        "refazendo pelo caminho HTTP"
+                    )
             self._degrade_to_http()
 
         if not _HAS_CURL_CFFI:

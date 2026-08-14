@@ -312,6 +312,14 @@ quando não dá mais, em vez de servir contexto morto; (3) o scraper reabre a ab
 e, se não der, **degrada** (Casas Bahia → APIs VTEX, Shopee → curl_cffi, ML →
 browser próprio → API oficial). Browser morto ≠ bloqueio anti-bot: bloqueio
 encerra a keyword, browser morto troca de caminho.
+**Cuidado ao recuperar:** peça a aba SEMPRE a `get_local_browser()`, nunca a um
+`self._local_browser` guardado (`get_local_browser() or self._local_browser` é
+armadilha): a instância descartada relança Chrome por fora do teto de tentativas
+e com um handle do Playwright que o `close_local_browser()` não fecha mais. Pelo
+mesmo motivo o orçamento de reconexão é do MÓDULO (`_RECONNECTS_USED`), não da
+instância — senão trocar o singleton zera o teto. E aba nova = sessão FRIA:
+zere o cache de warm-up (`_warmed`, `_cdp_warmed`) em toda revivência, inclusive
+quando a queda foi para o browser próprio.
 **Files:** `scrapers/local_browser.py` `is_alive()`/`reconnect()`/`new_page()`;
 `scrapers/casas_bahia.py` `_revive_page()`/`_degrade_to_http()`;
 `scrapers/shopee.py` `_ensure_browser_page()`/`_degrade_to_http()`;

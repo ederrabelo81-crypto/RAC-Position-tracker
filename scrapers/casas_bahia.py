@@ -1593,9 +1593,12 @@ class CasasBahiaScraper(BaseScraper):
         try:
             page = None
             if self._local_active:
-                # `get_local_browser()` e não o handle guardado: o singleton
-                # pode ter sido recriado (Chrome novo) desde o `_launch`.
-                lb = get_local_browser() or self._local_browser
+                # SEMPRE o singleton, nunca o handle guardado: ele pode ter
+                # sido recriado (Chrome novo) desde o `_launch`, e uma
+                # instância já descartada relançaria Chrome por fora do teto de
+                # tentativas — com um handle do Playwright que o
+                # `close_local_browser()` não fecharia mais.
+                lb = get_local_browser()
                 page = lb.new_page() if lb is not None else None
                 if page is not None:
                     self._local_browser = lb
@@ -1634,6 +1637,7 @@ class CasasBahiaScraper(BaseScraper):
         """
         if not self._real_browser_active:
             return
+        era_cdp = self._cdp_active
         self._local_active = False
         self._cdp_active = False
         self._page = None
@@ -1641,6 +1645,17 @@ class CasasBahiaScraper(BaseScraper):
         # O contexto também morreu com a janela: mantê-lo faria as estratégias
         # 2/3 tentarem `new_page()` nele a cada página, só para falhar de novo.
         self._context = None
+        # Modo CDP: o browser conectado e o handle são NOSSOS (no modo local
+        # pertencem ao LocalBrowser). Soltar aqui, e não só no `_close`, evita
+        # arrastar uma conexão inútil pelo resto da coleta.
+        if era_cdp:
+            try:
+                if self._browser is not None:
+                    self._browser.close()  # em CDP, close() apenas desconecta
+            except Exception:
+                pass
+            self._browser = None
+            self._release_pw_handle()
         logger.warning(
             f"[{self.platform_name}] Chrome real perdido — seguindo pelas APIs "
             "VTEX (curl_cffi). Buy box pode ficar incompleta; reabra o Chrome "
