@@ -253,6 +253,23 @@ class TestNewPage:
         assert inst.new_page() is None
         assert spawns == [], "abriu Chrome com o modo local desligado"
 
+    def test_desistir_tambem_solta_o_que_sobrou(self, monkeypatch):
+        """
+        Sair pela trava tem que soltar como todo outro retorno anormal.
+
+        A instância pode estar segurando um CDP morto e uma referência do
+        handle compartilhado; sair sem devolver os dois é o vazamento que o
+        `playwright_runtime` existe para evitar.
+        """
+        monkeypatch.setattr(lb, "_LOCAL_MODE_DISABLED", True)
+        inst = _browser_conectado(monkeypatch, connected=False)
+        soltos = []
+        monkeypatch.setattr(inst, "_release_handle", lambda: soltos.append(1))
+
+        assert inst.launch() is False
+        assert inst._browser is None and inst.context is None
+        assert soltos == [1], "handle compartilhado não foi devolvido"
+
     def test_teto_de_reconexoes_por_run(self, monkeypatch):
         monkeypatch.setattr(lb, "_RECONNECTS_USED", lb._MAX_RECONNECTS)
         inst = _browser_conectado(monkeypatch)

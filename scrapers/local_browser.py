@@ -300,6 +300,11 @@ class LocalBrowser:
                 "[LocalBrowser] Modo local desligado nesta run — não abrindo "
                 "Chrome."
             )
+            # Como todo retorno anormal daqui: solta o que sobrou. A instância
+            # ainda pode estar segurando um CDP morto e uma referência do
+            # handle compartilhado — e sair sem devolvê-la é o bug que este
+            # arquivo inteiro existe para não repetir.
+            self._disconnect()
             return False
 
         # Estado parcial de uma tentativa anterior (conexão caiu, contexto
