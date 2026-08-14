@@ -2,7 +2,7 @@
 
 Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ✅ Produção — arquitetura híbrida Supabase + Drive | **Última atualização:** 8 de Agosto de 2026 (v4.7)
+**Status:** ✅ Produção — arquitetura híbrida Supabase + Drive | **Última atualização:** 14 de Agosto de 2026 (v4.8)
 
 > ### 🗄️ As duas bases, e o que cada uma faz
 >
@@ -67,10 +67,10 @@ Dados → CSV → **histórico Parquet (Drive)** + Supabase (`coletas` +
 
 ---
 
-## 🏗️ Arquitetura de Coleta — 3 canais + PriceTrack
+## 🏗️ Arquitetura de Coleta — 4 canais (+ Bestsellers + PriceTrack)
 
 ```
-Oracle Cloud VM (Brazil East — São Paulo)              [canal primário]
+Oracle Cloud VM (Brazil East — São Paulo)              [canal primário: coleta oferta]
   ├─ Cron 10:00 BRT → plataformas ativas (sem ML), alta+media, 2 páginas
   ├─ Cron 21:00 BRT → plataformas ativas (sem ML), alta, 1 página
   └─ Cron 06:00 BRT → import PriceTrack (D-1) — espelho do GH Actions
@@ -80,18 +80,22 @@ GitHub Actions                                          [backup agendado]
   │                         (sem ML — IPs do GitHub bloqueados; Magalu via xvfb)
   └─ pricetrack_daily.yml → cron 09:00 UTC (06:00 BRT) + auto-heal de gaps (14d)
 
-PC pessoal Windows (IP residencial)                     [ML + coleta autenticada]
-  ├─ Task Scheduler 09:00/20:00 + catch-up no logon (RAC_Local_Manha/Noite)
-  │    → run_local_scheduled.bat (git pull self-update)
-  │    → local_scheduled_collect.bat (janela de turno 9-12h/20-23h + marcador
-  │      diário + alerta Telegram em falha) → collect_local_authenticated.bat
+PC pessoal Windows (IP residencial)                     [3 canais paralelos]
+  ├─ Task 09:00/20:00 (RAC_Bestsellers) — coleta de MAIS VENDIDOS seg-sex
+  │    → collect_bestsellers.bat (6 plataformas: ML + Amazon + Magalu + CB + Shopee + Leroy)
+  │    → Análise diária/semanal/mensal + relatório Telegram
+  │    Setup: scripts\setup_local_scheduler.ps1 · Script: scripts/collect_bestsellers.py
+  │    Docs: docs/BESTSELLS.md
+  ├─ Task 09:00/20:00 (RAC_Local_Manha/Noite) — coleta de OFERTA (autenticada)
+  │    → local_scheduled_collect.bat (janela de turno 9-12h/20-23h + marcador diário)
+  │    → collect_local_authenticated.bat
   │    Chrome COMUM logado (perfil dedicado, RAC_LOCAL_CHROME=1) → ataque via CDP
-  │    → coleta Magalu + Shopee + Casas Bahia → upload
+  │    → Magalu + Shopee + Casas Bahia → upload
   │    Setup: scripts\setup_local_scheduler.ps1 · Diagnóstico: check_local_scheduler.ps1
   │    Detalhes: docs/COLETA_LOCAL_AUTENTICADA.md
-  └─ Task Scheduler 10:00/21:00 (RAC_Coleta_Manha/Tarde) → collect_manha.bat / collect_tarde.bat
-       → coleta Mercado Livre (IP de datacenter da VM é bloqueado pelo ML)
-       + Shopee de reforço, se houver sessão capturada → upload
+  └─ Task 10:00/21:00 (RAC_Coleta_Manha/Tarde) — coleta MERCADO LIVRE (+ Shopee reforço)
+       → collect_manha.bat / collect_tarde.bat
+       → IP residencial (datacenter bloqueado pelo ML)
        Setup: scripts\install_tasks.bat
 ```
 
@@ -144,6 +148,57 @@ categoria AR CONDICIONADO → tabela `pricetrack_daily`.
 - **Env:** `PRICETRACK_API_KEY` no `.env` / GitHub Secrets
 
 📄 Insights e roadmap de melhorias: `docs/PRICETRACK_INSIGHTS.md`
+
+---
+
+## 📊 Bestsellers (Mais Vendidos) — Rankings Diário/Semanal/Mensal
+
+**Desde Ago/2026:** ranking de **Mais Vendidos** em 6 plataformas é a única
+variável de **resultado** (volume de venda) disponível no nível do SKU. Analisa
+ganho/perda de posição, share de topo 10, movimentação de Midea vs concorrentes.
+
+> **Regra dura:** ranking é ordinal — nunca soma entre plataformas, nunca vira
+> share de mercado (isso vem de GfK/Neotrust).
+
+**Plataformas (6):**
+- Amazon, Mercado Livre, Magalu, Casas Bahia, Shopee, Leroy Merlin
+
+**Coleta:**
+
+```bash
+# Coleta do dia + relatório automático (Telegram)
+python scripts/collect_bestsellers.py
+
+# Análise semanal (não coleta; usa histórico)
+python scripts/collect_bestsellers.py --relatorio semanal
+
+# Análise mensal com últimos N períodos
+python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6
+```
+
+**Agendamento Windows (09:30 seg-sex):**
+
+```powershell
+# Setup (1x): Task Scheduler + coleta automática + relatório Telegram
+PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1
+
+# Manual (debug)
+scripts\collect_bestsellers.bat
+```
+
+**Modo operação:**
+- Idempotente por `(data, plataforma)` — recoleta **substitui** a entrada do dia
+- Migration: `docs/migrations/011_bestsellers_diario.sql` (tabela `bestsellers`)
+- Validação anti-spam: título vazio, duplicado, marca fora do escopo, etc.
+- Backfill via XLSX: `python scripts/collect_bestsellers.py --import arquivo.xlsx`
+
+**Relatórios incluem:**
+- KPI % de Midea no top 10 por plataforma
+- Delta em pontos percentuais vs ontem/semana passada
+- Ranking diário de keywords estratégicas
+- Ganhos/perdas por marca
+
+📄 Documentação completa: `docs/BESTSELLS.md`
 
 ---
 
@@ -420,9 +475,11 @@ rac-position-tracker/
 │
 ├── scrapers/
 │   ├── base.py                   # BaseScraper ABC (Playwright, stealth, _build_record)
+│   ├── local_browser.py          # 🆕 LocalBrowser (gerenciador de browser local + CDP + fallback)
+│   ├── playwright_runtime.py     # 🆕 PlaywrightRuntime (singleton do Playwright, sincronização)
 │   ├── mercado_livre.py          # MLScraper (browser; fix campos de insight Jun/2026)
 │   ├── mercado_livre_api.py      # MLAPIScraper (API oficial OAuth — reputação; opt-in)
-│   ├── amazon.py                 # AmazonScraper
+│   ├── amazon.py                 # AmazonScraper (melhorado: sellers, PDP)
 │   ├── magalu.py                 # MagaluScraper (CDP/persistente, rebrowser-playwright)
 │   ├── casas_bahia.py            # CasasBahiaScraper (VTEX IS + warm-up Akamai)
 │   ├── shopee.py                 # ShopeeScraper (API v4 + sessão curl_cffi)
@@ -431,16 +488,36 @@ rac-position-tracker/
 │   ├── dealers.py                # DealerScraper (⏸️ fora do foco)
 │   └── fast_shop.py              # ⏸️ PerimeterX
 │
-├── pricetrack_api/               # Cliente tipado da API PriceTrack (client/collector/exports/store) 🆕
+├── bestsellers/                  # 🆕 Módulo de Mais Vendidos (ranking = única variável de resultado)
+│   ├── __init__.py               # Orquestração e CLI
+│   ├── base.py                   # BaseBestsellerSource ABC
+│   ├── config.py                 # Plataformas, períodos, regex de validação
+│   ├── models.py                 # Dataclasses (Bestseller, Metric, Report)
+│   ├── metrics.py                # KPIs (ranking, delta, share top 10 Midea, etc.)
+│   ├── report.py                 # Renderização de relatórios (texto + Telegram)
+│   ├── storage.py                # Supabase + arquivo JSON para tracking
+│   ├── validate.py               # Filtros anti-spam (SKU duplicado, título vazio, etc.)
+│   ├── importer_xlsx.py          # Backfill via arquivo XLSX (WebScraper)
+│   └── sources/                  # Scrapers por plataforma
+│       ├── amazon.py             # Amazon bestseller + parser
+│       ├── casas_bahia.py        # Casas Bahia bestseller (Tray API)
+│       ├── leroy_merlin.py       # Leroy Merlin bestseller (Algolia + DOM)
+│       ├── magalu.py             # Magalu bestseller (App Router)
+│       ├── mercado_livre.py      # Mercado Livre bestseller (Poly)
+│       └── shopee.py             # Shopee bestseller (API v4)
+│
+├── pricetrack_api/               # Cliente tipado da API PriceTrack (client/collector/exports/store)
 ├── pricetrack_importer/          # Importador md/xlsx (parser/validator/seller_map)
 ├── scripts/
+│   ├── collect_bestsellers.py    # 🆕 Orquestrador de coleta + relatório diário/semanal/mensal
+│   ├── collect_bestsellers.bat   # 🆕 Agendador Windows (09:30 seg-sex)
 │   ├── pricetrack_api_import.py  # Import diário via API PriceTrack
-│   ├── setup_local_profile.py    # Login 1x na Shopee (Chrome comum, perfil dedicado) 🆕
-│   ├── collect_local_authenticated.bat  # Magalu+Shopee+CB no PC (Chrome comum+CDP) 🆕
-│   ├── run_local_scheduled.bat   # Estágio A agendado (estável): git pull + estágio B 🆕
-│   ├── local_scheduled_collect.bat # Estágio B: janela de turno + marcador + alerta 🆕
-│   ├── setup_local_scheduler.ps1 # Task Scheduler 09:00/20:00 + logon (Magalu+Shopee+CB) 🆕
-│   ├── check_local_scheduler.ps1 # Diagnóstico: por que a tarefa não rodou? 🆕
+│   ├── setup_local_profile.py    # Login 1x na Shopee (Chrome comum, perfil dedicado)
+│   ├── collect_local_authenticated.bat  # Magalu+Shopee+CB no PC (Chrome comum+CDP)
+│   ├── run_local_scheduled.bat   # Estágio A agendado (estável): git pull + estágio B
+│   ├── local_scheduled_collect.bat # Estágio B: janela de turno + marcador + alerta
+│   ├── setup_local_scheduler.ps1 # Task Scheduler 09:00/20:00 + logon (todas as 3 tarefas)
+│   ├── check_local_scheduler.ps1 # Diagnóstico: por que a tarefa não rodou?
 │   ├── collect_manha.bat / collect_tarde.bat  # Coleta ML (+Shopee) no PC, 10:00/21:00
 │   ├── install_tasks.bat         # Task Scheduler p/ collect_manha/tarde.bat (ML)
 │   ├── daily_status_check.py     # Watchdog PASS/FAIL + cobertura de campos
@@ -455,13 +532,17 @@ rac-position-tracker/
 │   ├── normalize_product.py      # normalização v1 + v2 (SKU-anchored)
 │   ├── session_grabber.py        # Captura manual de sessões (fallback)
 │   ├── supabase_client.py        # Upload (manutenção em supabase_maintenance.py)
-│   ├── history/                  # 🆕 Histórico frio em Parquet (Drive/disco)
+│   ├── amazon_sellers.py         # 🆕 Cache de sellers Amazon (PDP)
+│   ├── history/                  # Histórico frio em Parquet (Drive/disco)
 │   │   ├── backends.py           #    LocalBackend + GoogleDriveBackend
 │   │   └── store.py              #    Partições por dia, cache, união frio+quente
 │   └── n8n_notify.py             # Telegram (API direta)
 │
-├── tests/                        # pytest (parser ML, de-para, normalização v2)
-├── migrations/ + docs/migrations/ # SQL: pricetrack, buy box, índices, depara
+├── skills/                       # 🆕 Skills de IA
+│   └── midea-rac-bestsellers-diario/  # Skill para análise de Mais Vendidos
+│
+├── tests/                        # pytest: 60+ testes novos de bestsellers + browser local
+├── migrations/ + docs/migrations/ # SQL: pricetrack, buy box, bestsells (011), índices
 ├── .github/workflows/            # collect.yml + pricetrack_daily.yml
 ├── magalu_shopee/                # Sub-projeto Node/TS (fallback Shopee)
 ├── docs/                         # Documentação técnica (ver docs/INDEX.md)
@@ -794,4 +875,4 @@ agendados executando (`collect.yml` 2×/dia, `pricetrack_daily.yml`).
 
 **Stack:** Python · Playwright/rebrowser · curl_cffi · BeautifulSoup · Pandas · Streamlit · Supabase · Claude API · Oracle Cloud · GitHub Actions
 
-**Versão:** 4.6 | **Última atualização:** 25 de Julho de 2026 | @ederrabelo
+**Versão:** 4.8 | **Última atualização:** 14 de Agosto de 2026 | @ederrabelo

@@ -32,44 +32,74 @@ python main.py --platforms magalu --pages 2        # curl_cffi/browser
 python utils/session_grabber.py --site shopee
 ```
 
-### Mais Vendidos — a única variável de RESULTADO (Ago/2026)
+### Mais Vendidos — a única variável de RESULTADO (Ago/2026) 🆕
 
-A coleta acima mede oferta, preço, posição e buy box; ela **não contém volume
-de venda**. As listas "Mais Vendidos" dos varejistas são a única variável de
-resultado disponível no nível do SKU, e alimentam as análises diárias,
-semanais e mensais de ganho/perda de share de topo de ranking.
+A coleta de OFERTA mede preço, posição e buy box; ela **não contém volume de
+venda**. As listas "Mais Vendidos" dos varejistas são a **única variável de
+resultado** disponível no nível do SKU, alimentando análises diárias, semanais
+e mensais de **ganho/perda de share de topo de ranking**.
+
+**Módulo:** `bestsellers/` com 6 sources (Amazon, ML, Magalu, Casas Bahia, Shopee, Leroy Merlin)
 
 ```bash
-python scripts/collect_bestsellers.py                    # coleta do dia + brief
+python scripts/collect_bestsellers.py                    # coleta do dia + brief diário
 python scripts/collect_bestsellers.py --relatorio semanal  # evolução (não coleta)
 python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6
+python scripts/collect_bestsellers.py --import arquivo.xlsx # backfill
 ```
 
-Código em `bestsellers/`, doc em `docs/BESTSELLERS.md`, tabela `bestsellers`
-(migração `docs/migrations/011_bestsellers_diario.sql`). Cadência obrigatória:
-todo dia útil entre 9h e 10h — o ranking da Amazon é recalculado de hora em
-hora. **Regra dura: ranking é ORDINAL** — não soma entre plataformas e nunca
-vira share de mercado (isso vem de GfK/Neotrust).
+Tabela `bestsellers` com migração `docs/migrations/011_bestsellers_diario.sql`.
+Cadência obrigatória: todo dia útil **09:30 BRT** (Amazon recalcula ranking de hora em hora).
 
-Agendado no PC coletor Windows pela tarefa **`RAC_Bestsellers`** (09:30 seg-sex
-+ catch-up no logon), registrada por `scripts\setup_local_scheduler.ps1` junto
-com as duas da coleta principal. Roda lá porque Amazon/ML precisam de browser e
-a Shopee, da sessão logada — em IP de datacenter duas das seis listas somem.
-Uma execução por dia: recoletar **substitui** a leitura do dia (idempotência
-por `data`+`plataforma`), então não ligue também o cron da VM.
+**Regra dura:** ranking é ORDINAL — nunca soma entre plataformas, nunca vira
+share de mercado (isso vem de GfK/Neotrust). KPI: % Midea no top 10 por
+plataforma + delta vs período anterior.
 
-### Magalu — automatizado (não mais via extensão Chrome)
+**Agendamento Windows (Task Scheduler):** `RAC_Bestsellers` 09:30 seg-sex +
+catch-up no logon. Roda no PC porque Amazon/ML/Shopee precisam de browser real
+e sessão logada — em IP de datacenter do Oracle/GitHub, 2–3 das 6 listas somem.
+Uma execução por dia: recoletar **substitui** a entrada do dia (idempotência),
+então **não ligue cron da VM**. Setup: `scripts\setup_local_scheduler.ps1`
+(registra as 3 tarefas em paralelo: Bestsellers + Local Autenticada + ML).
+
+**Valição:** Filtros anti-spam (título vazio, caracteres proibidos, duplicado
+entre SKUs, marca fora do escopo). Parser por plataforma em `bestsellers/sources/`.
+Relatório Telegram + resumo JSON em `logs/bestsellers_*.json`.
+
+### Magalu — automatizado (não mais via extensão Chrome) 🆕 Local Browser + Playwright Runtime
+
 `scrapers/magalu.py` (curl_cffi + browser persistente, Akamai bypass) é o
 caminho oficial. Roda sem intervenção via `python main.py --platforms magalu`.
 
+**Novo (Ago/2026):** `scrapers/local_browser.py` gerencia o browser local (CDP via
+`rebrowser-playwright`) com **auto-recuperação** e fallback inteligente:
+
+1. **LocalBrowser singleton:** uma única instância do Chrome+CDP reutilizável
+2. **Auto-recuperação:** Se o CDP morre, reconecta automaticamente
+3. **Handle compartilhado:** um único handle Playwright para toda a sessão
+4. **Fallback automático:** CDP bloqueado → curl_cffi; curl_cffi bloqueado → HTTP 403 silencioso
+5. **PlaywrightRuntime:** sincronização de acesso ao sync_playwright em ambiente multi-thread
+
 Como funciona o `scrapers/magalu.py`:
-1. `curl_cffi` com `impersonate="chrome124"` (replica TLS handshake do Chrome real)
-2. Warm-up na home pra Akamai emitir cookies frescos
-3. Extrai BUILD_ID do Next.js do `__NEXT_DATA__`
-4. Bate em `_next/data/{BUILD_ID}/busca/{slug}.json` — JSON puro
-5. Fallback: scraping de HTML + extração de `__NEXT_DATA__` embutido
+1. Tenta via **LocalBrowser (Chrome+CDP)** para máxima compatibilidade
+2. Se bloqueado: `curl_cffi` com `impersonate="chrome124"` (TLS handshake real)
+3. Warm-up na home → Akamai emite cookies frescos
+4. Extrai BUILD_ID do Next.js (`__NEXT_DATA__`)
+5. Bate em `_next/data/{BUILD_ID}/busca/{slug}.json` — JSON puro
+6. Fallback HTML: scraping + extração de `__NEXT_DATA__` embutido
 
 Detecção de bloqueio fail-fast: HTTP 403, response <1KB, ou strings Akamai.
+Circuit breaker: aborta após 5 keywords 100% bloqueadas (evita spin).
+
+**Setup Windows:**
+```powershell
+python scripts\setup_local_profile.py  # Lança o Chrome do perfil dedicado
+PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1
+```
+
+**Troubleshooting:**
+- Chrome fechou? Diagnóstico: `scripts\check_local_scheduler.ps1`
+- Mode local falha de forma consistente? Prefira IP residencial + curl_cffi
 
 ---
 
@@ -242,30 +272,50 @@ See `.claude/COMMON_MISTAKES.md` for critical examples:
 rac-position-tracker/
 ├── config.py                    # Central configuration: keywords, platforms, brands
 ├── main.py                      # CLI entry point, orchestration, CSV export
-├── app.py                       # Streamlit dashboard (6 pages + CI with Claude)
+├── app.py                       # Streamlit dashboard (19 pages + CI with Claude)
 ├── diagnostico.py               # Debug utilities
 ├── requirements.txt             # Python dependencies
 │
 ├── magalu_shopee/               # Sub-projeto Node.js/TS — Magalu & Shopee (Puppeteer)
 │   └── src/index.ts             # Entry point: ts-node src/index.ts --platforms magalu
 │
+├── bestsellers/                 # 🆕 Módulo de Mais Vendidos (rankings por plataforma)
+│   ├── __init__.py              # Orquestração CLI
+│   ├── base.py                  # BaseBestsellerSource ABC
+│   ├── config.py                # Plataformas, regex de validação
+│   ├── models.py                # Dataclasses (Bestseller, Metric, Report)
+│   ├── metrics.py               # KPIs (rank delta, share top 10, etc.)
+│   ├── report.py                # Renderização HTML + Telegram
+│   ├── storage.py               # Supabase + JSON persistence
+│   ├── validate.py              # Filtros anti-spam
+│   ├── importer_xlsx.py         # Backfill via XLSX
+│   └── sources/                 # Scrapers por plataforma
+│       ├── amazon.py, casas_bahia.py, leroy_merlin.py
+│       ├── magalu.py, mercado_livre.py, shopee.py
+│
 ├── scrapers/
 │   ├── __init__.py
 │   ├── base.py                  # BaseScraper ABC (Playwright lifecycle, stealth)
-│   ├── mercado_livre.py         # MLScraper
-│   ├── amazon.py                # AmazonScraper
+│   ├── local_browser.py         # 🆕 LocalBrowser singleton + auto-recovery + CDP
+│   ├── playwright_runtime.py    # 🆕 PlaywrightRuntime (sync, singleton)
+│   ├── mercado_livre.py         # MLScraper (browser + fallback)
+│   ├── amazon.py                # AmazonScraper (+ PDP sellers cache)
 │   ├── google_shopping.py       # GoogleShoppingScraper
 │   ├── leroy_merlin.py          # LeroyMerlinScraper (Algolia API)
-│   ├── dealers.py               # DealerScraper (13+ dealers, JSON-LD, VTEX)
-│   └── [casas_bahia, fast_shop].py  # Stand-by
+│   ├── magalu.py                # MagaluScraper (LocalBrowser + curl_cffi fallback)
+│   ├── casas_bahia.py           # CasasBahiaScraper (VTEX IS)
+│   ├── shopee.py                # ShopeeScraper (API v4 + sessão)
+│   ├── dealers.py               # DealerScraper (⏸️ fora do foco)
+│   └── fast_shop.py             # ⏸️ PerimeterX
 │
 ├── utils/
 │   ├── text.py                  # parse_price, parse_rating, now_brt(), normalize
 │   ├── brands.py                # extract_brand() regex matching
 │   ├── session_grabber.py       # Auth session capture
 │   ├── supabase_client.py       # Upload, cleanup, maintenance
+│   ├── amazon_sellers.py        # 🆕 Cache de sellers Amazon (PDP)
 │   ├── admin_automation.py      # Motor da automação ADMIN (zero interação)
-│   └── n8n_notify.py            # Telegram notifications (N8N + fallback)
+│   └── n8n_notify.py            # Telegram notifications (API direta)
 │
 ├── scripts/
 │   ├── oracle_setup.sh          # VM setup script
@@ -472,6 +522,17 @@ Preferência do mantenedor (Jun/2026) — vale para todas as sessões.
 ---
 
 ## Testing Requirements
+
+### Cobertura Atual (Ago/2026)
+
+**948 testes** incluindo:
+- 60+ novos testes de bestsellers (parsers, metrics, pipeline, validate)
+- 40+ testes de browser local (LocalBrowser, PlaywrightRuntime, fallback chain)
+- 20+ testes de Amazon sellers (cache, PDP)
+- Testes de watchdog channels (Telegram alert routing)
+- Testes de orçamento PriceTrack
+
+Rodando: `pytest tests/ pricetrack_api/tests pricetrack_importer/tests -q`
 
 ### Testing Pyramid
 
@@ -757,6 +818,12 @@ python main.py --platforms dealers --pages 2      # All dealers
 python main.py --platforms all --pages 1          # All active platforms
 python main.py --no-headless --platforms ml       # Visible browser (debug)
 
+# Bestsellers (Mais Vendidos) — rankings diário/semanal/mensal
+python scripts/collect_bestsellers.py              # Coleta do dia + relatório Telegram
+python scripts/collect_bestsellers.py --relatorio semanal  # Evolução da semana
+python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6  # Últimos 6 meses
+python scripts/collect_bestsellers.py --import arquivo.xlsx  # Backfill histórico
+
 # Dashboard
 streamlit run app.py
 
@@ -817,7 +884,8 @@ fica instável (re-capturar sessão com `session_grabber.py --site shopee`).
 | Notebook sem lib nova do `requirements.txt` | `scripts\ensure_deps.bat --force` (a coleta agendada já roda isso a cada run) |
 | Telegram notification fails | Test token: `curl https://api.telegram.org/bot<TOKEN>/getMe` |
 | `Sync API inside the asyncio loop` | Alguém abriu um 2º `sync_playwright()` na thread. Use `scrapers/playwright_runtime.acquire()/release()` — nunca `sync_playwright().start()` direto (ver COMMON_MISTAKES #21) |
-| `Target page, context or browser has been closed` em série | A janela do Chrome do `RAC_LOCAL_CHROME` foi fechada. A coleta reconecta sozinha e, se não der, degrada (VTEX/curl_cffi/API). Reabra o perfil: `python scripts/setup_local_profile.py --site magalu` |
+| `Target page, context or browser has been closed` em série | A janela do Chrome do `RAC_LOCAL_CHROME` foi fechada. LocalBrowser reconecta sozinha (Ago/2026). Se persiste: reabra o perfil: `python scripts/setup_local_profile.py --site magalu` |
+| Chrome CDP morto / reconexão infinita | LocalBrowser detecta e aborta (Ago/2026); fallback automático para curl_cffi. Se curl_cffi também bloqueado, retorna 0 produtos (circuit breaker após 5 keywords bloqueadas) |
 | Shopee 403 em todas as keywords | Sessão vencida (>24h, agora avisada como WARNING no log): `python utils/session_grabber.py --site shopee` — ou rode com `RAC_LOCAL_CHROME=1` |
 
 ### CSV Output Columns
@@ -875,5 +943,6 @@ Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto
 
 ---
 
-*Last updated: April 2026 (v3.1)*  
+*Last updated: August 14, 2026 (v4.8)*  
+*Latest changes: Bestsellers module (6 scrapers), LocalBrowser + PlaywrightRuntime for auto-recovery, improved browser fallback chain*  
 *Maintained by: RAC Position Tracker Team*
