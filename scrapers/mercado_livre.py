@@ -1673,6 +1673,80 @@ class MLScraper(BaseScraper):
             self._api_scraper = False
             return None
 
+    def _page_is_usable(self) -> bool:
+        """True enquanto a aba de coleta existe e não foi fechada."""
+        page = self._page
+        if page is None:
+            return False
+        try:
+            return not page.is_closed()
+        except Exception:
+            return False
+
+    def _ensure_page(self) -> bool:
+        """
+        Garante uma aba viva antes de cada keyword.
+
+        O Chrome compartilhado (``RAC_LOCAL_CHROME``) é a janela do usuário e
+        some no meio da coleta com facilidade — fechar a janela basta. Antes
+        desta checagem, a aba morta seguia sendo usada e cada keyword estourava
+        ``Target page, context or browser has been closed``.
+
+        Ordem de recuperação: aba nova no Chrome compartilhado (o
+        ``LocalBrowser`` reconecta sozinho) → browser próprio do Playwright →
+        desiste (o ``search`` cai na API oficial).
+
+        Returns:
+            True se há aba utilizável.
+        """
+        if self._page_is_usable():
+            return True
+
+        if self._local_active:
+            lb = get_local_browser()
+            page = lb.new_page() if lb is not None else None
+            if page is not None:
+                self._context = lb.context
+                self._page = page
+                self._page.set_default_timeout(PAGE_TIMEOUT)
+                self._warmed = False  # aba nova = sessão fria, reaquece
+                logger.warning(
+                    f"[{self.platform_name}] Aba fechada — nova aba no Chrome "
+                    "compartilhado"
+                )
+                return True
+            logger.warning(
+                f"[{self.platform_name}] Chrome local indisponível — abrindo "
+                "browser próprio (Playwright) para seguir a coleta"
+            )
+            self._local_active = False
+            self._context = None
+        elif self._context is not None:
+            try:
+                self._page = self._context.new_page()
+                self._page.set_default_timeout(PAGE_TIMEOUT)
+                self._warmed = False
+                logger.warning(f"[{self.platform_name}] Aba fechada — nova aba")
+                return True
+            except Exception as exc:
+                logger.warning(
+                    f"[{self.platform_name}] Contexto morto ({exc}) — "
+                    "relançando o browser"
+                )
+                # `BaseScraper._close` de propósito: solta browser + referência
+                # do runtime sem passar pelo `_close` do ML (que fecharia o
+                # scraper de API e imprimiria o resumo da run no meio dela).
+                BaseScraper._close(self)
+
+        try:
+            self._launch()
+        except Exception as exc:
+            logger.error(
+                f"[{self.platform_name}] Não foi possível reabrir o browser: {exc}"
+            )
+            return False
+        return self._page is not None
+
     def _api_fallback_search(
         self,
         keyword: str,
@@ -1730,6 +1804,15 @@ class MLScraper(BaseScraper):
         cursor = _SerpCursor()
         sample_card: Optional[Tag] = None
         gated = False
+
+        # Browser morto não é motivo para perder a keyword: sem aba utilizável
+        # a API oficial ainda coleta (quando ML_APP_ID/ML_APP_SECRET existem).
+        if not self._ensure_page():
+            all_records = self._api_fallback_search(
+                keyword, keyword_category_map, page_limit
+            )
+            self._log_search_result(keyword, len(all_records))
+            return all_records
 
         self._warm_session()
 

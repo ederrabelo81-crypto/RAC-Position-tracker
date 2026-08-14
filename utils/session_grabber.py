@@ -26,11 +26,16 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from loguru import logger
+
+# Import TOLERANTE: os scrapers importam este módulo só para ler a sessão salva
+# (`load_session_meta`), que é JSON puro. O `sys.exit(1)` que estava aqui
+# derrubava a coleta INTEIRA no import quando o Playwright faltava, em vez de
+# falhar apenas na captura interativa — que é a única parte que usa browser.
 try:
     from playwright.sync_api import sync_playwright
 except ImportError:
-    print("ERRO: Playwright não instalado. Execute: pip install playwright")
-    sys.exit(1)
+    sync_playwright = None
 
 # Diretório para salvar sessões
 SESSIONS_DIR = Path(__file__).parent / "sessions"
@@ -102,6 +107,10 @@ def grab_session(site: str, headless: bool = False) -> bool:
 
     Retorna True se sessão salva com sucesso.
     """
+    if sync_playwright is None:
+        print("ERRO: Playwright não instalado. Execute: pip install playwright")
+        return False
+
     if site not in SITE_CONFIG:
         print(f"ERRO: site '{site}' não suportado. Opções: {list(SITE_CONFIG.keys())}")
         return False
@@ -321,6 +330,12 @@ def load_session_meta(site: str) -> dict:
     """
     Carrega o payload COMPLETO da sessão salva (cookies + userAgent + storages).
     Retorna {} se não existir ou expirada (>24h).
+
+    Note:
+        Roda DENTRO da coleta, então avisa pelo `logger` e não por `print`:
+        sessão expirada é a causa raiz de 403 em série (Shopee, 14/08/2026 —
+        59 dias de sessão vencida) e precisa aparecer no log do dia e no grep
+        de WARNING do monitoramento.
     """
     session_path = SESSIONS_DIR / f"{site}.json"
     if not session_path.exists():
@@ -330,12 +345,15 @@ def load_session_meta(site: str) -> dict:
         saved_at = datetime.fromisoformat(data["saved_at"])
         age_hours = (datetime.now() - saved_at).total_seconds() / 3600
         if age_hours > 24:
-            print(f"[session_grabber] Sessão de {site} expirada ({age_hours:.1f}h). "
-                  f"Execute: python utils/session_grabber.py --site {site}")
+            logger.warning(
+                f"[session_grabber] Sessão de {site} expirada "
+                f"({age_hours:.1f}h > 24h). Recapture: "
+                f"python utils/session_grabber.py --site {site}"
+            )
             return {}
         return data
     except Exception as e:
-        print(f"[session_grabber] Erro ao carregar sessão {site}: {e}")
+        logger.warning(f"[session_grabber] Erro ao carregar sessão {site}: {e}")
         return {}
 
 
@@ -359,7 +377,7 @@ def apply_session_to_context(site: str, context) -> bool:
         context.add_cookies(cookies)
         return True
     except Exception as e:
-        print(f"[session_grabber] Erro ao aplicar cookies: {e}")
+        logger.warning(f"[session_grabber] Erro ao aplicar cookies: {e}")
         return False
 
 

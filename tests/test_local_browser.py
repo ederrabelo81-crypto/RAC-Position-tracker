@@ -125,3 +125,174 @@ class TestGetLocalBrowserGuard:
         """Sem RAC_LOCAL_CHROME não deve tentar abrir browser algum."""
         monkeypatch.setenv("RAC_LOCAL_CHROME", "0")
         assert lb.get_local_browser() is None
+
+
+# ---------------------------------------------------------------------------
+# Auto-recuperação (14/08/2026)
+#
+# O Chrome compartilhado é a janela do usuário: fechá-la no meio da coleta
+# bastava para o singleton passar a servir um contexto morto pelo resto da run
+# — "BrowserContext.new_page: Target page, context or browser has been closed"
+# em TODA keyword seguinte, em todos os scrapers que o usam.
+# ---------------------------------------------------------------------------
+
+
+class _FakeBrowser:
+    def __init__(self, connected: bool = True) -> None:
+        self.connected = connected
+        self.closed = False
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakePage:
+    def __init__(self) -> None:
+        self.timeout = None
+
+    def set_default_timeout(self, ms) -> None:
+        self.timeout = ms
+
+
+class _FakeContext:
+    """Contexto que pode estar morto (como o de um Chrome fechado)."""
+
+    def __init__(self, morto: bool = False) -> None:
+        self.morto = morto
+        self.paginas = 0
+
+    def new_page(self):
+        if self.morto:
+            raise RuntimeError(
+                "BrowserContext.new_page: Target page, context or browser "
+                "has been closed"
+            )
+        self.paginas += 1
+        return _FakePage()
+
+    def set_default_timeout(self, ms) -> None:
+        pass
+
+
+def _browser_conectado(monkeypatch, *, connected=True, morto=False):
+    """LocalBrowser já "conectado" a um CDP falso, sem tocar em Chrome real."""
+    inst = lb.LocalBrowser()
+    inst._browser = _FakeBrowser(connected=connected)
+    inst.context = _FakeContext(morto=morto)
+    inst._pw_handle = object()      # referência do runtime (fake)
+    monkeypatch.setattr(inst, "_release_handle", lambda: None)
+    return inst
+
+
+class TestIsAlive:
+    def test_sem_conexao_nao_esta_vivo(self):
+        assert lb.LocalBrowser().is_alive() is False
+
+    def test_browser_desconectado_nao_esta_vivo(self, monkeypatch):
+        inst = _browser_conectado(monkeypatch, connected=False)
+        assert inst.is_alive() is False
+
+    def test_conectado_esta_vivo(self, monkeypatch):
+        assert _browser_conectado(monkeypatch).is_alive() is True
+
+    def test_is_connected_que_explode_conta_como_morto(self, monkeypatch):
+        inst = _browser_conectado(monkeypatch)
+        monkeypatch.setattr(
+            inst._browser, "is_connected",
+            lambda: (_ for _ in ()).throw(RuntimeError("conexão caiu")),
+        )
+        assert inst.is_alive() is False
+
+
+class TestNewPage:
+    def test_aba_normal(self, monkeypatch):
+        inst = _browser_conectado(monkeypatch)
+        assert inst.new_page() is not None
+
+    def test_falha_dispara_reconexao_e_retry(self, monkeypatch):
+        """1ª tentativa falha (contexto morto) → reconecta → 2ª entrega a aba."""
+        inst = _browser_conectado(monkeypatch, morto=True)
+        tentativas = []
+
+        def _reconecta():
+            tentativas.append(1)
+            inst.context = _FakeContext()
+            return True
+
+        monkeypatch.setattr(inst, "reconnect", _reconecta)
+        assert inst.new_page() is not None
+        assert tentativas == [1]
+
+    def test_desiste_quando_a_reconexao_falha(self, monkeypatch):
+        inst = _browser_conectado(monkeypatch, morto=True)
+        monkeypatch.setattr(inst, "reconnect", lambda: False)
+        assert inst.new_page() is None
+
+    def test_teto_de_reconexoes_por_run(self, monkeypatch):
+        inst = _browser_conectado(monkeypatch)
+        inst._reconnects = lb._MAX_RECONNECTS
+        monkeypatch.setattr(inst, "launch", lambda: False)
+        assert inst.reconnect() is False
+
+
+class _FakeLocalBrowser:
+    """Dublê do singleton: controla vivo/reconexão sem Chrome real."""
+
+    def __init__(self, vivo: bool, reconecta: bool = False) -> None:
+        self.vivo = vivo
+        self.reconecta = reconecta
+        self.tentou_reconectar = False
+        self.fechado = False
+
+    def is_alive(self) -> bool:
+        return self.vivo
+
+    def reconnect(self) -> bool:
+        self.tentou_reconectar = True
+        self.vivo = self.reconecta
+        return self.reconecta
+
+    def close(self) -> None:
+        self.fechado = True
+
+
+class TestGetLocalBrowserAutoCura:
+    @pytest.fixture(autouse=True)
+    def _ligado(self, monkeypatch):
+        monkeypatch.setenv("RAC_LOCAL_CHROME", "1")
+        monkeypatch.setattr(lb, "_LOCAL_BROWSER", None)
+        monkeypatch.setattr(lb, "_LAUNCH_FAILURES", 0)
+
+    def test_singleton_vivo_e_reaproveitado(self, monkeypatch):
+        vivo = _FakeLocalBrowser(vivo=True)
+        monkeypatch.setattr(lb, "_LOCAL_BROWSER", vivo)
+        assert lb.get_local_browser() is vivo
+        assert vivo.tentou_reconectar is False
+
+    def test_singleton_morto_reconecta(self, monkeypatch):
+        morto = _FakeLocalBrowser(vivo=False, reconecta=True)
+        monkeypatch.setattr(lb, "_LOCAL_BROWSER", morto)
+        assert lb.get_local_browser() is morto
+        assert morto.tentou_reconectar is True
+
+    def test_sem_reconexao_derruba_o_singleton(self, monkeypatch):
+        """Devolver None é o contrato que faz os scrapers degradarem."""
+        morto = _FakeLocalBrowser(vivo=False, reconecta=False)
+        monkeypatch.setattr(lb, "_LOCAL_BROWSER", morto)
+        monkeypatch.setattr(lb.LocalBrowser, "launch", lambda self: False)
+        assert lb.get_local_browser() is None
+        assert morto.fechado is True
+        assert lb._LOCAL_BROWSER is None
+
+    def test_teto_de_falhas_para_de_tentar(self, monkeypatch):
+        tentativas = []
+        monkeypatch.setattr(
+            lb.LocalBrowser, "launch",
+            lambda self: tentativas.append(1) or False,
+        )
+        for _ in range(lb._MAX_LAUNCH_FAILURES + 3):
+            assert lb.get_local_browser() is None
+        assert len(tentativas) == lb._MAX_LAUNCH_FAILURES

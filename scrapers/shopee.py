@@ -146,6 +146,16 @@ class ShopeeScraper(BaseScraper):
                 "não abriu — caindo para curl_cffi (provável 403 sem login/proxy)"
             )
 
+        self._start_http_session()
+
+    def _start_http_session(self) -> None:
+        """Abre a sessão HTTP (curl_cffi) e carrega os cookies capturados.
+
+        Extraído do ``_launch`` porque o modo browser local também precisa
+        dele: quando o Chrome compartilhado morre no meio da run, a Shopee
+        degrada para este caminho em vez de devolver 0 em todas as keywords
+        restantes.
+        """
         if _HAS_CURL_CFFI:
             self._session = _cffi_requests.Session()
             flavor = "curl_cffi (chrome124)"
@@ -199,6 +209,50 @@ class ShopeeScraper(BaseScraper):
     # ------------------------------------------------------------------
     # Modo browser local — navega a busca e intercepta a API v4 nativa
     # ------------------------------------------------------------------
+
+    def _ensure_browser_page(self) -> bool:
+        """
+        Garante uma aba viva no Chrome compartilhado antes de cada keyword.
+
+        O Chrome é do usuário e pode ser fechado no meio da coleta; o
+        ``LocalBrowser`` reconecta (ou reabre) quando isso acontece. Sem esta
+        checagem, todas as keywords seguintes navegavam numa aba morta e
+        voltavam vazias sem sequer marcar bloqueio.
+        """
+        try:
+            if self._page is not None and not self._page.is_closed():
+                return True
+        except Exception:
+            pass  # aba tão morta que nem responde: trata como fechada
+
+        # `get_local_browser()` e não o handle guardado: o singleton pode ter
+        # sido recriado (Chrome novo) desde que este scraper abriu a aba.
+        lb = get_local_browser() or self._local_browser
+        if lb is None:
+            return False
+        page = lb.new_page()
+        if page is None:
+            return False
+        self._local_browser = lb
+        self._page = page
+        self._setup_xhr_intercept()
+        return True
+
+    def _degrade_to_http(self) -> None:
+        """Perdeu o Chrome logado: segue via curl_cffi (best-effort)."""
+        if not self._local_active:
+            return
+        self._local_active = False
+        self._page = None
+        self._xhr_page = None
+        self._local_browser = None
+        logger.warning(
+            f"[{self.platform_name}] Chrome local perdido — tentando via "
+            "curl_cffi (sem o header anti-fraude nativo, 403 é provável). "
+            "Reabra o Chrome do perfil dedicado: "
+            "python scripts/setup_local_profile.py --site shopee"
+        )
+        self._start_http_session()
 
     def _setup_xhr_intercept(self) -> None:
         """Registra 1 handler que captura as respostas de ``search_items``."""
@@ -893,12 +947,14 @@ class ShopeeScraper(BaseScraper):
         self._hard_blocked = False
 
         # ── Caminho preferido: Chrome real logado (intercepta a API nativa) ──
-        if self._local_active and self._page is not None:
-            all_records = self._search_via_browser(
-                keyword, keyword_category_map, page_limit
-            )
-            self._update_circuit_breaker(all_records)
-            return all_records
+        if self._local_active:
+            if self._ensure_browser_page():
+                all_records = self._search_via_browser(
+                    keyword, keyword_category_map, page_limit
+                )
+                self._update_circuit_breaker(all_records)
+                return all_records
+            self._degrade_to_http()
 
         if not _HAS_CURL_CFFI:
             logger.warning(

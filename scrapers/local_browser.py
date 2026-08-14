@@ -53,6 +53,8 @@ from typing import Any, Optional, Tuple
 
 from loguru import logger
 
+from scrapers import playwright_runtime
+
 # O patch de runtime do rebrowser precisa ser setado ANTES do import dele
 # (mesmo requisito do scrapers/magalu.py). `addBinding` obtém o execution
 # context sem ligar o domínio Runtime do CDP, que o Akamai detecta.
@@ -66,6 +68,17 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROFILE_DIR = _PROJECT_ROOT / "data" / "chrome_profile"
 
 _DEFAULT_CDP_PORT = 9222
+
+# Quantas vezes uma run tenta ressuscitar o Chrome compartilhado antes de
+# desistir. Fechar a janela no meio da coleta é acidente comum (e recuperável);
+# cair sempre é sintoma de ambiente quebrado — aí insistir só custa 20s por
+# tentativa e atrasa a degradação para o caminho alternativo.
+_MAX_RECONNECTS = 3
+
+# Idem para o singleton: depois de N falhas de abertura no processo, para de
+# tentar (o Chrome não existe / a porta está tomada) e deixa os scrapers
+# seguirem pelo caminho antigo.
+_MAX_LAUNCH_FAILURES = 2
 
 # Args do Chrome COMUM (sem NADA de automação). --remote-allow-origins=* é
 # obrigatório para o connect_over_cdp funcionar no Chrome 111+.
@@ -233,17 +246,13 @@ def spawn_chrome(
 
 
 def _import_sync_playwright() -> Tuple[Optional[Any], str]:
-    """Resolve ``sync_playwright``, preferindo o fork rebrowser-playwright."""
-    try:
-        from rebrowser_playwright.sync_api import sync_playwright
-        return sync_playwright, "rebrowser-playwright"
-    except ImportError:
-        pass
-    try:
-        from playwright.sync_api import sync_playwright
-        return sync_playwright, "playwright"
-    except ImportError:
-        return None, ""
+    """Resolve ``sync_playwright``, preferindo o fork rebrowser-playwright.
+
+    Mantido para os scripts de setup (``scripts/setup_local_profile.py``), que
+    rodam em processo próprio. Na coleta, quem inicia o Playwright é o
+    ``scrapers/playwright_runtime`` — handle único por thread.
+    """
+    return playwright_runtime._import_sync_playwright(prefer_rebrowser=True)
 
 
 class LocalBrowser:
@@ -266,6 +275,8 @@ class LocalBrowser:
         self._spawned: Optional[subprocess.Popen] = None
         # Domínios já aquecidos nesta sessão (evita repetir warm-up por scraper).
         self._warmed_hosts: set = set()
+        # Reconexões já gastas nesta instância (ver _MAX_RECONNECTS).
+        self._reconnects: int = 0
 
     # ------------------------------------------------------------------
     # Ciclo de vida
@@ -273,11 +284,18 @@ class LocalBrowser:
 
     def launch(self) -> bool:
         """Garante o Chrome comum + conecta via CDP. True se pronto para uso."""
-        if self.context is not None:
+        if self.is_alive():
             return True
+        # Estado parcial de uma tentativa anterior (conexão caiu, contexto
+        # morto): solta tudo antes de reconectar, senão o handle órfão do
+        # Playwright segura o event loop da thread e o próximo
+        # `sync_playwright().start()` — o dos scrapers com browser próprio —
+        # morre com "Sync API inside the asyncio loop".
+        if self._browser is not None or self.context is not None:
+            self._disconnect()
 
-        sync_playwright, flavor = _import_sync_playwright()
-        if sync_playwright is None:
+        self._pw_handle, flavor = playwright_runtime.acquire(prefer_rebrowser=True)
+        if self._pw_handle is None:
             logger.error(
                 "[LocalBrowser] Playwright não instalado. Execute: "
                 "pip install rebrowser-playwright && "
@@ -285,7 +303,7 @@ class LocalBrowser:
             )
             return False
         self.flavor = flavor
-        if flavor != "rebrowser-playwright":
+        if flavor != playwright_runtime.FLAVOR_REBROWSER:
             logger.warning(
                 "[LocalBrowser] ⚠️  Playwright STOCK detectado — o Runtime.enable "
                 "do CDP é visível pro sensor.js do Akamai (Magalu/Casas Bahia "
@@ -300,6 +318,7 @@ class LocalBrowser:
             # 2) Não: abre um Chrome comum e espera a porta subir.
             self._spawned = spawn_chrome(self.port, self.profile_dir)
             if self._spawned is None:
+                self._release_handle()
                 return False
             for _ in range(40):  # ~20s
                 time.sleep(0.5)
@@ -311,6 +330,7 @@ class LocalBrowser:
                     f"[LocalBrowser] Chrome não expôs a porta de debug {self.port} "
                     "em 20s. Feche Chromes abertos nesse perfil e tente de novo."
                 )
+                self._release_handle()
                 return False
         else:
             logger.info(
@@ -319,7 +339,6 @@ class LocalBrowser:
 
         # 3) Ataca via CDP (rebrowser oculta o Runtime.enable).
         try:
-            self._pw_handle = sync_playwright().start()
             self._browser = self._pw_handle.chromium.connect_over_cdp(
                 endpoint, timeout=15_000
             )
@@ -327,19 +346,21 @@ class LocalBrowser:
             logger.error(
                 f"[LocalBrowser] Falha ao conectar CDP em {endpoint}: {exc}"
             )
-            self._safe_stop_handle()
+            self._browser = None
+            self._release_handle()
             return False
 
-        if not self._browser.contexts:
-            logger.error("[LocalBrowser] Chrome sem contexto — abrindo aba nova")
-            try:
+        try:
+            if not self._browser.contexts:
+                logger.error("[LocalBrowser] Chrome sem contexto — abrindo aba nova")
                 self.context = self._browser.new_context()
-            except Exception:
-                self._safe_stop_handle()
-                return False
-        else:
-            self.context = self._browser.contexts[0]
-        self.context.set_default_timeout(45_000)
+            else:
+                self.context = self._browser.contexts[0]
+            self.context.set_default_timeout(45_000)
+        except Exception as exc:
+            logger.error(f"[LocalBrowser] Contexto CDP indisponível: {exc}")
+            self._disconnect()
+            return False
 
         logger.info(
             f"[LocalBrowser] Conectado via CDP ({flavor}) em {endpoint} — "
@@ -347,20 +368,58 @@ class LocalBrowser:
         )
         return True
 
-    def new_page(self) -> Optional[Any]:
-        """Abre uma aba dedicada para um scraper. None se o browser não abriu."""
-        if self.context is None and not self.launch():
-            return None
-        try:
-            page = self.context.new_page()
-            page.set_default_timeout(45_000)
-            return page
-        except Exception as exc:
-            logger.error(f"[LocalBrowser] Falha ao abrir aba: {exc}")
-            return None
+    def is_alive(self) -> bool:
+        """
+        True quando o CDP ainda responde — ou seja, dá pra abrir aba.
 
-    def close(self) -> None:
-        """Desconecta o CDP. Mantém o Chrome aberto (a menos que KEEP=0)."""
+        O Chrome compartilhado é do usuário e some no meio da coleta com uma
+        facilidade banal: janela fechada, update do Chrome, crash da aba. Antes
+        desta checagem o singleton continuava entregando um contexto morto pelo
+        resto da run, e cada keyword virava
+        ``BrowserContext.new_page: Target page, context or browser has been
+        closed`` (log de 14/08/2026, 5 keywords da Casas Bahia perdidas).
+        """
+        if self._browser is None or self.context is None:
+            return False
+        try:
+            return bool(self._browser.is_connected())
+        except Exception:
+            return False
+
+    def reconnect(self) -> bool:
+        """
+        Reata o CDP depois de a conexão cair (o Chrome pode ter sido fechado).
+
+        Solta a conexão morta e refaz o ``launch()``: se o Chrome ainda estiver
+        de pé, reconecta nele (perfil quente preservado); se tiver morrido,
+        ``launch()`` abre um novo no mesmo perfil dedicado.
+
+        Returns:
+            True se voltou utilizável. False quando o limite de tentativas da
+            run (:data:`_MAX_RECONNECTS`) já foi gasto — aí os scrapers devem
+            cair para o caminho alternativo em vez de insistir.
+        """
+        if self._reconnects >= _MAX_RECONNECTS:
+            logger.error(
+                f"[LocalBrowser] Chrome local caiu {self._reconnects}x nesta "
+                "run — desistindo de reconectar. Os scrapers seguem pelo "
+                "caminho alternativo (HTTP/browser próprio)."
+            )
+            return False
+
+        self._reconnects += 1
+        logger.warning(
+            f"[LocalBrowser] Conexão com o Chrome caiu — reconectando "
+            f"({self._reconnects}/{_MAX_RECONNECTS})..."
+        )
+        self._disconnect()
+        if self.launch():
+            logger.success("[LocalBrowser] Chrome local reconectado ✓")
+            return True
+        return False
+
+    def _disconnect(self) -> None:
+        """Solta CDP + handle do Playwright, mantendo o processo do Chrome."""
         try:
             if self._browser is not None:
                 self._browser.close()  # em CDP, close() apenas DESCONECTA
@@ -368,8 +427,12 @@ class LocalBrowser:
             pass
         self._browser = None
         self.context = None
-        self._safe_stop_handle()
         self._warmed_hosts.clear()
+        self._release_handle()
+
+    def close(self) -> None:
+        """Desconecta o CDP. Mantém o Chrome aberto (a menos que KEEP=0)."""
+        self._disconnect()
 
         # Só encerra o Chrome se ESTE processo o abriu E o usuário pediu.
         if self._spawned is not None and not _keep_chrome_open():
@@ -379,13 +442,41 @@ class LocalBrowser:
                 pass
         self._spawned = None
 
-    def _safe_stop_handle(self) -> None:
-        try:
-            if self._pw_handle is not None:
-                self._pw_handle.stop()
-        except Exception:
-            pass
+    def _release_handle(self) -> None:
+        """Devolve a referência do handle compartilhado do Playwright."""
+        if self._pw_handle is None:
+            return
         self._pw_handle = None
+        self.flavor = ""
+        playwright_runtime.release()
+
+    def new_page(self) -> Optional[Any]:
+        """
+        Abre uma aba dedicada para um scraper. None se o browser não abriu.
+
+        Uma falha aqui quase nunca é "aba demais": é o Chrome compartilhado
+        que morreu. Por isso a primeira falha dispara uma reconexão e uma nova
+        tentativa, em vez de condenar o scraper (e todos os seguintes) a um
+        contexto fechado.
+        """
+        for attempt in (1, 2):
+            if not self.is_alive() and not self.launch():
+                return None
+            try:
+                page = self.context.new_page()
+                page.set_default_timeout(45_000)
+                return page
+            except Exception as exc:
+                if attempt == 1:
+                    logger.warning(
+                        f"[LocalBrowser] Aba não abriu ({exc}) — o Chrome "
+                        "compartilhado provavelmente foi fechado."
+                    )
+                    if self.reconnect():
+                        continue
+                logger.error(f"[LocalBrowser] Falha ao abrir aba: {exc}")
+                return None
+        return None
 
     # ------------------------------------------------------------------
     # Warm-up genérico (Akamai / sensor.js)
@@ -459,27 +550,58 @@ class LocalBrowser:
 
 _LOCAL_BROWSER: Optional[LocalBrowser] = None
 _ATEXIT_REGISTERED = False
+_LAUNCH_FAILURES = 0
 
 
 def get_local_browser() -> Optional[LocalBrowser]:
     """
     Retorna o Chrome local compartilhado, abrindo/atacando-o na primeira chamada.
 
+    Auto-cura: se o Chrome da run anterior/atual morreu (janela fechada, update,
+    crash), reconecta antes de devolver. Quando nem isso resolve, devolve None
+    — que é o contrato que os scrapers já tratam, caindo para curl_cffi ou
+    browser próprio. Devolver um handle morto, como antes, transformava um
+    acidente recuperável em coleta zerada.
+
     Returns:
         O ``LocalBrowser`` pronto, ou None se desabilitado / falha ao abrir.
     """
-    global _LOCAL_BROWSER, _ATEXIT_REGISTERED
+    global _LOCAL_BROWSER, _ATEXIT_REGISTERED, _LAUNCH_FAILURES
 
     if not is_local_chrome_enabled():
         return None
 
-    if _LOCAL_BROWSER is not None and _LOCAL_BROWSER.context is not None:
-        return _LOCAL_BROWSER
+    lb = _LOCAL_BROWSER
+    if lb is not None:
+        if lb.is_alive():
+            return lb
+        if lb.reconnect():
+            return lb
+        # Não voltou: derruba o singleton para não servir contexto morto.
+        # O próximo scraper tenta do zero (novo Chrome), até o teto de falhas.
+        close_local_browser()
+
+    if _LAUNCH_FAILURES >= _MAX_LAUNCH_FAILURES:
+        logger.debug(
+            "[LocalBrowser] Teto de falhas de abertura atingido — seguindo "
+            "sem Chrome local."
+        )
+        return None
 
     lb = LocalBrowser()
     if not lb.launch():
+        _LAUNCH_FAILURES += 1
+        if _LAUNCH_FAILURES >= _MAX_LAUNCH_FAILURES:
+            logger.error(
+                "[LocalBrowser] Chrome local indisponível após "
+                f"{_LAUNCH_FAILURES} tentativas — o resto da coleta segue pelo "
+                "caminho alternativo (HTTP/browser próprio), sujeito a "
+                "Akamai/login gate. Confira o Chrome e o perfil dedicado: "
+                "python scripts/setup_local_profile.py --site magalu"
+            )
         return None
 
+    _LAUNCH_FAILURES = 0
     _LOCAL_BROWSER = lb
     if not _ATEXIT_REGISTERED:
         atexit.register(close_local_browser)

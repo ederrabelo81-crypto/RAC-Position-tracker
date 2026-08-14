@@ -13,6 +13,8 @@ RAC-Position-tracker/
 ├── scrapers/
 │   ├── __init__.py
 │   ├── base.py                # BaseScraper ABC (Playwright lifecycle, stealth, _build_record)
+│   ├── playwright_runtime.py  # Handle ÚNICO do Playwright por thread (acquire/release)
+│   ├── local_browser.py       # Chrome real compartilhado via CDP (RAC_LOCAL_CHROME) + auto-reconexão
 │   ├── mercado_livre.py       # MLScraper — Mercado Livre
 │   ├── amazon.py              # AmazonScraper — Amazon BR
 │   ├── magalu.py              # MagaluScraper — Magazine Luiza (nm-* design + Radware)
@@ -64,9 +66,20 @@ all_records → DataFrame → CSV (output/)
 
 ## Key Classes & Methods
 
+### playwright_runtime (scrapers/playwright_runtime.py)
+- `acquire(prefer_rebrowser=False)` / `release()` — **um** `sync_playwright()`
+  por thread, com contagem de referências. Dois handles vivos na mesma thread
+  estouram "Sync API inside the asyncio loop" (COMMON_MISTAKES #21)
+- `is_target_closed(exc)` — distingue browser morto de timeout/bloqueio
+
+### LocalBrowser (scrapers/local_browser.py)
+- `get_local_browser()` — singleton do Chrome real; auto-cura antes de devolver
+- `is_alive()` / `reconnect()` / `new_page()` — a janela é do usuário e pode
+  ser fechada no meio da run (COMMON_MISTAKES #22)
+
 ### BaseScraper (scrapers/base.py)
-- `_launch()` — Playwright start, Chrome→msedge→Chromium fallback, stealth JS
-- `_close()` — Clean browser shutdown
+- `_launch()` — handle via `playwright_runtime.acquire()`, Chrome→msedge→Chromium, stealth JS
+- `_close()` — Clean browser shutdown + `playwright_runtime.release()`
 - `_rotate_browser()` — Close + relaunch with new User-Agent (Radware mitigation)
 - `_build_record()` — Standardized dict for DataFrame row. Foco Mai/2026:
   campos de insight `buy_box_seller`, `qtd_sellers`, `tipo_seller`,

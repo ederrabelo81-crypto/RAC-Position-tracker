@@ -816,6 +816,9 @@ fica instável (re-capturar sessão com `session_grabber.py --site shopee`).
 | Log diz `[Histórico] … → local:C:\...` | `.env` daquele host sem `GDRIVE_*` — `python scripts/gdrive_setup.py --client-secrets CAMINHO.json` (caminho real do JSON do OAuth) |
 | Notebook sem lib nova do `requirements.txt` | `scripts\ensure_deps.bat --force` (a coleta agendada já roda isso a cada run) |
 | Telegram notification fails | Test token: `curl https://api.telegram.org/bot<TOKEN>/getMe` |
+| `Sync API inside the asyncio loop` | Alguém abriu um 2º `sync_playwright()` na thread. Use `scrapers/playwright_runtime.acquire()/release()` — nunca `sync_playwright().start()` direto (ver COMMON_MISTAKES #21) |
+| `Target page, context or browser has been closed` em série | A janela do Chrome do `RAC_LOCAL_CHROME` foi fechada. A coleta reconecta sozinha e, se não der, degrada (VTEX/curl_cffi/API). Reabra o perfil: `python scripts/setup_local_profile.py --site magalu` |
+| Shopee 403 em todas as keywords | Sessão vencida (>24h, agora avisada como WARNING no log): `python utils/session_grabber.py --site shopee` — ou rode com `RAC_LOCAL_CHROME=1` |
 
 ### CSV Output Columns
 

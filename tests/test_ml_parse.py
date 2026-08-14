@@ -756,6 +756,11 @@ class _FakePage:
         self.url = "https://lista.mercadolivre.com.br/kw"
         self.gotos = []
         self.checagens = 0
+        self.fechada = False
+
+    def is_closed(self):
+        """Parte do contrato de `Page` — o `search()` checa antes de navegar."""
+        return self.fechada
 
     def content(self):
         self.checagens += 1
