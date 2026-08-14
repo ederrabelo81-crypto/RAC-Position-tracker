@@ -265,18 +265,34 @@ _DOM_CARD_SELECTORS = (
     'ul[class*="ProductList"] li a[href*="/p/"]',
     'div[class*="ProductList"] a[href*="/p/"]',
     'section[class*="Products"] a[href*="/p/"]',
+    
+    # NOVOS: Seletores adicionais para layout 2026 (mobile-first)
+    'div[data-testid="product-item"] a[href*="/p/"]',
+    'div[class*="product-item"] a[href*="/p/"]',
+    'div[class*="ProductItem"] a[href*="/p/"]',
+    'a[href*="/p/"][class*="card"]',
+    'a[href*="/p/"][class*="Card"]',
+    'div[class*="SearchResults"] a[href*="/p/"]',
+    'div[class*="search-results"] a[href*="/p/"]',
+    'main a[href*="/p/"]',
+    'div[role="listitem"] a[href*="/p/"]',
+    'article[class*="product"] a[href*="/p/"]',
+    'article[class*="Product"] a[href*="/p/"]',
 )
 
 _DOM_TITLE_SELECTORS = (
     # Prioridade: data-testid
     '[data-testid="product-title"]',
+    '[data-testid="title"]',
     # Secundário: headings semânticos
-    'h2', 'h3', 'h4',
+    'h2', 'h3', 'h4', 'h5',
     # Terciário: classes comuns
     '[class*="ProductTitle"]',
     '[class*="product-name"]',
     '[class*="ProductName"]',
     '[class*="title"]',
+    '[class*="name"]',
+    '[class*="Name"]',
 )
 
 _DOM_PRICE_SELECTORS = (
@@ -291,6 +307,8 @@ _DOM_PRICE_SELECTORS = (
     '[class*="price-value"]',
     '[class*="Price"]',
     '[class*="price"]',
+    '[class*="PriceDisplay"]',
+    '[class*="price-display"]',
 )
 
 _DOM_RATING_SELECTOR = '[data-testid="review"]'
@@ -1113,6 +1131,8 @@ class MagaluScraper(BaseScraper):
         has_testid = (
             'data-testid="product-card' in html
             or 'data-testid="product-title"' in html
+            or 'data-testid="product-item"' in html
+            or 'data-testid="price-value"' in html
         )
         
         # Verifica por estrutura semântica alternativa (layout novo)
@@ -1121,9 +1141,16 @@ class MagaluScraper(BaseScraper):
             or 'class="ProductCard' in html
             or 'class="product-card' in html
             or 'class="ProductList' in html
+            or 'class="product-item' in html
+            or 'class="ProductItem' in html
+            or 'class="SearchResults' in html
+            or 'role="listitem"' in html and '/p/' in html
         )
         
-        return has_testid or has_semantic
+        # Fallback: procura links de produto no HTML
+        has_product_links = html.count('/p/') >= 2
+        
+        return has_testid or has_semantic or has_product_links
 
     @classmethod
     def _looks_like_login_wall(cls, html: str, url: str = "") -> bool:
@@ -1265,23 +1292,29 @@ class MagaluScraper(BaseScraper):
                     continue
 
             # Espera produtos aparecerem (sinal de página renderizada com sucesso).
+            # Seletores atualizados para o layout 2026 da Magalu
             try:
                 self._pw_page.wait_for_selector(
-                    'a[href*="/p/"], [data-testid="product-card"]',
-                    timeout=12_000,
+                    'a[href*="/p/"], [data-testid="product-card"], [data-testid="product-item"], main a[href*="/p/"]',
+                    timeout=15_000,
                 )
             except Exception:
                 pass
 
-            # Scroll pra carregar lazy items
+            # Scroll pra carregar lazy items - mais agressivo pra garantir renderização
             try:
-                for _ in range(3):
-                    self._pw_page.mouse.wheel(0, 600)
-                    time.sleep(random.uniform(0.3, 0.8))
+                for _ in range(5):
+                    self._pw_page.mouse.wheel(0, 800)
+                    time.sleep(random.uniform(0.4, 0.9))
+                # Scroll total até o fim e volta
+                self._pw_page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                time.sleep(random.uniform(0.8, 1.5))
+                self._pw_page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(random.uniform(0.5, 1.0))
             except Exception:
                 pass
 
-            time.sleep(random.uniform(0.8, 1.5))
+            time.sleep(random.uniform(1.5, 2.5))
 
             html = self._safe_content()
             if not html:
@@ -1881,21 +1914,34 @@ class MagaluScraper(BaseScraper):
             logger.debug(f"[{self.platform_name}] DOM parse falhou: {exc}")
             return []
 
-        cards: List[Any] = []
+        # Estratégia: tenta CADA seletor individualmente e acumula os cards
+        # encontrados. Magalu 2026 usa múltiplos tipos de card na mesma página.
+        all_cards: List[Any] = []
+        seen_elements: set = set()
+        
         for selector in _DOM_CARD_SELECTORS:
             try:
-                cards = soup.select(selector)
+                matches = soup.select(selector)
+                for match in matches:
+                    # Evita duplicatas usando o hash do elemento
+                    elem_id = id(match)
+                    if elem_id not in seen_elements:
+                        seen_elements.add(elem_id)
+                        all_cards.append(match)
             except Exception:
                 continue
-            if cards:
-                break
-        if not cards:
-            return []
-
+        
+        if not all_cards:
+            # Fallback: busca QUALQUER link /p/ no HTML
+            logger.debug(f"[{self.platform_name}] Nenhum card com seletores conhecidos, tentando fallback genérico")
+            all_cards = soup.select('a[href*="/p/"]')
+            if not all_cards:
+                return []
+        
         products: List[Dict[str, Any]] = []
         seen_hrefs: set = set()
 
-        for card in cards:
+        for card in all_cards:
             href = card.get("href") or ""
             if "/p/" not in href:
                 continue
@@ -1916,6 +1962,9 @@ class MagaluScraper(BaseScraper):
             if not title:
                 title = (card.get("title") or "").strip() or None
             if not title:
+                # Tenta pegar o texto do próprio elemento <a> como último recurso
+                title = card.get_text(" ", strip=True)
+            if not title or len(title) < 3:
                 continue
 
             card_text = scope.get_text(" ", strip=True)
