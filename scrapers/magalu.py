@@ -518,6 +518,10 @@ class MagaluScraper(BaseScraper):
                 self._local_browser = lb
                 self._is_local = True
                 channel_used = "local-shared"
+                # NÃO adquire handle próprio — o LocalBrowser já gerencia o
+                # handle compartilhado via playwright_runtime. Adquirir aqui
+                # cria referência duplicada e causa "session closed" quando
+                # um dos módulos libera o handle antes do outro.
                 logger.info(
                     "[Magalu] Chrome local compartilhado (perfil logado) — "
                     "sem CDP/porta de debug"
@@ -528,8 +532,9 @@ class MagaluScraper(BaseScraper):
                     "abriu — caindo para launch próprio"
                 )
 
+        # Handle compartilhado por thread — ver scrapers/playwright_runtime.
+        # SÓ adquire se NÃO estiver usando Chrome local (ele já tem o handle).
         if not self._is_local:
-            # Handle compartilhado por thread — ver scrapers/playwright_runtime.
             self._pw_handle, _ = playwright_runtime.acquire(prefer_rebrowser=True)
             if self._pw_handle is None:
                 logger.error("[Magalu] Falha ao iniciar Playwright.")
@@ -830,7 +835,9 @@ class MagaluScraper(BaseScraper):
         é o Chrome do usuário, deixa aberto pra próximo run.
         """
         # Modo local compartilhado: fecha SÓ a aba dedicada. O contexto (janela)
-        # é compartilhado com Shopee/CB e fechado no fim da coleta.
+        # é compartilhado com Shopee/CB e fechado no fim da coleta pelo
+        # LocalBrowser. NÃO zeramos _is_local aqui — ele é usado no
+        # _release_pw_handle() pra saber se deve liberar o handle.
         if self._is_local:
             try:
                 if self._pw_page and not self._pw_page.is_closed():
@@ -840,7 +847,8 @@ class MagaluScraper(BaseScraper):
             self._pw_page = None
             self._pw_context = None
             self._local_browser = None
-            self._is_local = False
+            # _is_local permanece True até o fim do __exit__ — assim o
+            # _release_pw_handle() sabe que NÃO deve chamar playwright_runtime.release()
             return
 
         if self._is_cdp:
@@ -889,8 +897,16 @@ class MagaluScraper(BaseScraper):
         Nunca chama ``stop()`` direto: o handle é da thread, não deste
         scraper — pará-lo com o Chrome local ainda conectado invalidaria as
         abas dos outros scrapers.
+
+        No modo local (_is_local=True), NÃO libera o handle — ele pertence ao
+        LocalBrowser e será liberado no fim da coleta por ele. Liberar aqui
+        causa "session closed" nos outros scrapers que compartilham o browser.
         """
         if self._pw_handle is None:
+            return
+        # Modo local: o handle é gerenciado pelo LocalBrowser, não por nós.
+        if self._is_local:
+            self._pw_handle = None
             return
         self._pw_handle = None
         playwright_runtime.release()
@@ -977,7 +993,8 @@ class MagaluScraper(BaseScraper):
                     "nova aba de coleta"
                 )
                 return True
-            self._is_local = False
+            # LocalBrowser não abriu — cai pro fallback curl_cffi, mas mantém
+            # _is_local=True pra não tentar liberar handle que nunca tivemos.
             self._pw_context = None
             self._local_browser = None
 
