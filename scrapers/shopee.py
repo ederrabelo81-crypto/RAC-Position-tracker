@@ -334,14 +334,27 @@ class ShopeeScraper(BaseScraper):
 
             # A SERP dispara search_items no load; scroll ajuda a garantir.
             captured = self._await_captured(timeout_s=12.0)
-            if not captured:
+            if not captured and not self._browser_lost:
                 try:
                     for _ in range(4):
                         self._page.mouse.wheel(0, 700)
                         time.sleep(random.uniform(0.4, 0.9))
-                except Exception:
-                    pass
-                captured = self._await_captured(timeout_s=8.0)
+                except Exception as exc:
+                    if is_target_closed(exc):
+                        self._browser_lost = True
+                if not self._browser_lost:
+                    captured = self._await_captured(timeout_s=8.0)
+
+            # Ordem importa: browser morto é checado ANTES de declarar bloqueio.
+            # Sem isso, fechar a janela durante a espera virava "nenhuma
+            # resposta capturada" → `_hard_blocked` → circuit breaker abortava a
+            # Shopee inteira culpando o anti-fraude.
+            if self._browser_lost:
+                logger.warning(
+                    f"[{self.platform_name}] Chrome fechou durante '{keyword}' "
+                    f"p{page+1} — keyword será refeita pelo caminho HTTP"
+                )
+                break
 
             if not captured:
                 logger.warning(
@@ -403,7 +416,15 @@ class ShopeeScraper(BaseScraper):
         return all_records
 
     def _await_captured(self, timeout_s: float) -> List[dict]:
-        """Espera (até timeout) a interceptação de ao menos 1 search_items."""
+        """
+        Espera (até timeout) a interceptação de ao menos 1 search_items.
+
+        Se o Chrome fechar durante a espera, sai na hora marcando
+        ``_browser_lost``: continuar o laço só gastaria o timeout inteiro para
+        no fim declarar "nenhuma resposta capturada" — que o chamador leria
+        como bloqueio/CAPTCHA e contaria no circuit breaker. Janela fechada não
+        é anti-fraude.
+        """
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if self._captured_search:
@@ -412,7 +433,10 @@ class ShopeeScraper(BaseScraper):
                 return list(self._captured_search)
             try:
                 self._page.wait_for_timeout(300)
-            except Exception:
+            except Exception as exc:
+                if is_target_closed(exc):
+                    self._browser_lost = True
+                    break
                 time.sleep(0.3)
         return list(self._captured_search)
 

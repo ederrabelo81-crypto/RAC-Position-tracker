@@ -319,6 +319,8 @@ class TestGetLocalBrowserAutoCura:
         monkeypatch.setenv("RAC_LOCAL_CHROME", "1")
         monkeypatch.setattr(lb, "_LOCAL_BROWSER", None)
         monkeypatch.setattr(lb, "_LAUNCH_FAILURES", 0)
+        monkeypatch.setattr(lb, "_LOCAL_MODE_DISABLED", False)
+        monkeypatch.setattr(lb, "_RECONNECTS_USED", 0)
 
     def test_singleton_vivo_e_reaproveitado(self, monkeypatch):
         vivo = _FakeLocalBrowser(vivo=True)
@@ -350,3 +352,26 @@ class TestGetLocalBrowserAutoCura:
         for _ in range(lb._MAX_LAUNCH_FAILURES + 3):
             assert lb.get_local_browser() is None
         assert len(tentativas) == lb._MAX_LAUNCH_FAILURES
+
+    def test_teto_de_reconexoes_tambem_impede_relancar_do_zero(self, monkeypatch):
+        """
+        Desistir de reconectar tem que desistir do modo local, ponto.
+
+        Antes, o teto só barrava o `reconnect()`: o singleton era descartado e
+        um LocalBrowser NOVO era aberto em seguida — o coletor ficava
+        relançando Chrome em vez de degradar.
+        """
+        monkeypatch.setattr(lb, "_RECONNECTS_USED", lb._MAX_RECONNECTS)
+        lancamentos = []
+        monkeypatch.setattr(
+            lb.LocalBrowser, "launch",
+            lambda self: lancamentos.append(1) or True,
+        )
+        morto = _FakeLocalBrowser(vivo=False, reconecta=False)
+        monkeypatch.setattr(lb, "_LOCAL_BROWSER", morto)
+
+        assert lb.get_local_browser() is None
+        assert lancamentos == [], "abriu um Chrome novo depois de desistir"
+        # e continua desistindo nas chamadas seguintes
+        assert lb.get_local_browser() is None
+        assert lancamentos == []

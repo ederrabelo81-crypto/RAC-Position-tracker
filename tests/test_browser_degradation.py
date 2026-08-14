@@ -234,6 +234,29 @@ class TestShopeeDegrada:
         assert s._ensure_browser_page() is True
         assert lb.abas == 1
 
+    def test_morte_durante_a_espera_nao_vira_bloqueio(self, monkeypatch):
+        """
+        Chrome fechado durante a espera pela API ≠ CAPTCHA.
+
+        `_await_captured` e o scroll engoliam o erro de target fechado, então a
+        keyword terminava em "nenhuma resposta capturada" → `_hard_blocked` →
+        circuit breaker abortava a Shopee inteira culpando o anti-fraude.
+        """
+        s = self._scraper()
+        s._page = _PaginaMorta()
+        s._captured_search = []
+
+        def _wait(_ms):
+            raise RuntimeError(
+                "Page.wait_for_timeout: Target page, context or browser has "
+                "been closed"
+            )
+
+        s._page.wait_for_timeout = _wait
+        assert s._await_captured(timeout_s=5.0) == []
+        assert s._browser_lost is True
+        assert s._hard_blocked is False, "morte do browser contada como bloqueio"
+
     def test_chrome_morto_no_meio_da_keyword_refaz_pelo_http(self, monkeypatch):
         """Meia coleta não é resultado final: degrada e repete a keyword."""
         s = self._scraper()
@@ -278,6 +301,13 @@ class TestMercadoLivreDegrada:
         assert s._warmed is False, "aba nova precisa reaquecer a sessão"
 
     def test_sem_chrome_local_abre_browser_proprio(self, monkeypatch):
+        """
+        E o browser próprio também nasce com a sessão FRIA.
+
+        Com `_warmed=True` sobrando do modo local, o `search()` pularia o
+        `_warm_session()` (que roda 1x por run) e mandaria o browser recém-
+        aberto direto para a SERP — o gatilho conhecido do login gate do ML.
+        """
         s = self._scraper()
 
         def _launch(self_inner):
@@ -286,22 +316,6 @@ class TestMercadoLivreDegrada:
         monkeypatch.setattr(MLScraper, "_launch", _launch)
         assert s._ensure_page() is True
         assert s._local_active is False
-
-    def test_browser_proprio_tambem_reaquece_a_sessao(self, monkeypatch):
-        """
-        Browser novo = sessão fria, venha do Chrome compartilhado ou não.
-
-        Com `_warmed=True` sobrando do modo local, o `search()` pularia o
-        `_warm_session()` (que roda 1x por run) e mandaria o browser recém-
-        aberto direto para a SERP — o gatilho conhecido do login gate do ML.
-        """
-        s = self._scraper()
-        monkeypatch.setattr(
-            MLScraper, "_launch", lambda self_inner: setattr(
-                self_inner, "_page", _PaginaViva()
-            )
-        )
-        assert s._ensure_page() is True
         assert s._warmed is False
 
     def test_sem_browser_algum_a_keyword_vai_para_a_api(self, monkeypatch):
