@@ -289,6 +289,19 @@ class LocalBrowser:
         """Garante o Chrome comum + conecta via CDP. True se pronto para uso."""
         if self.is_alive():
             return True
+
+        # Único ponto do projeto que abre Chrome — é aqui que a desistência tem
+        # que valer. Enquanto o teto era conferido só no `reconnect()` e no
+        # `get_local_browser()`, quem tivesse guardado uma instância (a Magalu
+        # guarda) relançava o browser por dentro do `new_page()` e o modo local
+        # "desligado" voltava sozinho.
+        if _LOCAL_MODE_DISABLED:
+            logger.debug(
+                "[LocalBrowser] Modo local desligado nesta run — não abrindo "
+                "Chrome."
+            )
+            return False
+
         # Estado parcial de uma tentativa anterior (conexão caiu, contexto
         # morto): solta tudo antes de reconectar, senão o handle órfão do
         # Playwright segura o event loop da thread e o próximo

@@ -231,6 +231,28 @@ class TestNewPage:
         monkeypatch.setattr(inst, "reconnect", lambda: False)
         assert inst.new_page() is None
 
+    def test_instancia_guardada_nao_relanca_apos_desistir(self, monkeypatch):
+        """
+        Quem guardou um LocalBrowser (a Magalu guarda) não pode ressuscitá-lo.
+
+        `new_page()` chama `launch()` sozinho; com o teto conferido apenas no
+        `reconnect()`/`get_local_browser()`, o modo local "desligado" voltava
+        por essa porta e o Chrome era relançado.
+        """
+        monkeypatch.setattr(lb, "_LOCAL_MODE_DISABLED", True)
+        spawns = []
+        monkeypatch.setattr(
+            lb, "spawn_chrome", lambda *a, **k: spawns.append(1) or None
+        )
+        # Nenhum Chrome ouvindo: sem a trava, o launch() partiria para o spawn.
+        monkeypatch.setattr(lb, "cdp_endpoint_if_up", lambda _port: None)
+
+        # Instância guardada cujo CDP já caiu (is_alive() False).
+        inst = _browser_conectado(monkeypatch, connected=False)
+
+        assert inst.new_page() is None
+        assert spawns == [], "abriu Chrome com o modo local desligado"
+
     def test_teto_de_reconexoes_por_run(self, monkeypatch):
         monkeypatch.setattr(lb, "_RECONNECTS_USED", lb._MAX_RECONNECTS)
         inst = _browser_conectado(monkeypatch)
