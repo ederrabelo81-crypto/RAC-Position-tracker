@@ -203,18 +203,28 @@ class BaseScraper(ABC):
         else:
             vp_w, vp_h = 1366, 768
 
-        self._context = self._browser.new_context(
-            user_agent=self._user_agent,
-            viewport={"width": vp_w, "height": vp_h},
-            locale="pt-BR",
-            timezone_id="America/Sao_Paulo",
-            accept_downloads=False,
-        )
+        # Daqui pra baixo já existe browser: qualquer falha tem que devolver o
+        # browser E a referência do handle. `__exit__` NÃO roda quando
+        # `__enter__` levanta, então sem este cleanup um `new_context()` que
+        # falhasse deixava um Chromium órfão e o handle preso até o fim do
+        # processo — e o `main.py` seguiria para o próximo scraper assim.
+        try:
+            self._context = self._browser.new_context(
+                user_agent=self._user_agent,
+                viewport={"width": vp_w, "height": vp_h},
+                locale="pt-BR",
+                timezone_id="America/Sao_Paulo",
+                accept_downloads=False,
+            )
 
-        self._context.add_init_script(self._STEALTH_JS)
+            self._context.add_init_script(self._STEALTH_JS)
 
-        self._page = self._context.new_page()
-        self._page.set_default_timeout(PAGE_TIMEOUT)
+            self._page = self._context.new_page()
+            self._page.set_default_timeout(PAGE_TIMEOUT)
+        except Exception:
+            BaseScraper._close(self)
+            raise
+
         logger.info(
             f"[{self.platform_name}] Browser iniciado ({used_channel}) | UA: {self._user_agent[:60]}..."
         )

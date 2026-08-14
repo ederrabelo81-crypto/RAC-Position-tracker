@@ -10,9 +10,33 @@ de zerar.
 
 Rode: pytest tests/test_browser_degradation.py
 """
+import pytest
+
 from scrapers.casas_bahia import CasasBahiaScraper
 from scrapers.mercado_livre import MLScraper
 from scrapers.shopee import ShopeeScraper
+
+
+@pytest.fixture(autouse=True)
+def sem_chrome_de_verdade(monkeypatch):
+    """
+    Nenhum teste aqui pode abrir Chrome — nem na máquina do coletor.
+
+    `get_local_browser()` respeita `RAC_LOCAL_CHROME`, e a variável está ligada
+    no PC que coleta. Sem este stub, rodar a suíte lá lançaria um Chrome real
+    no meio dos testes e inverteria o resultado dos casos de "browser morto".
+    Quem precisa de um browser injeta o seu com `_usa_local_browser`.
+    """
+    monkeypatch.setenv("RAC_LOCAL_CHROME", "0")
+    for modulo in ("casas_bahia", "shopee", "mercado_livre"):
+        monkeypatch.setattr(
+            f"scrapers.{modulo}.get_local_browser", lambda: None
+        )
+
+
+def _usa_local_browser(monkeypatch, modulo: str, browser) -> None:
+    """Injeta um LocalBrowser de mentira no scraper indicado."""
+    monkeypatch.setattr(f"scrapers.{modulo}.get_local_browser", lambda: browser)
 
 
 class _PaginaMorta:
@@ -28,6 +52,22 @@ class _PaginaViva:
 
     def set_default_timeout(self, ms) -> None:
         pass
+
+
+class _LocalBrowserFalso:
+    """Dublê do Chrome compartilhado — conta as abas que foi obrigado a abrir."""
+
+    def __init__(self, vivo: bool = True) -> None:
+        self.vivo = vivo
+        self.abas = 0
+        self.context = object()
+
+    def is_alive(self) -> bool:
+        return self.vivo
+
+    def new_page(self):
+        self.abas += 1
+        return _PaginaViva()
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +139,33 @@ class TestCasasBahiaDegrada:
         assert s._revive_page() is False
         assert s._browser_lost is True
 
+    def test_revive_nao_reusa_instancia_descartada(self, monkeypatch):
+        """
+        Singleton derrubado = fim da linha, mesmo com um handle antigo guardado.
+
+        Relançar a instância descartada abriria Chrome por fora do teto de
+        tentativas e com um handle do Playwright que o `close_local_browser()`
+        já não conhece.
+        """
+        s = self._scraper()
+        descartado = _LocalBrowserFalso()
+        s._local_browser = descartado          # handle de antes da queda
+        # a fixture já faz get_local_browser() devolver None (singleton morto)
+        assert s._revive_page() is False
+        assert descartado.abas == 0
+        assert s._browser_lost is True
+
+    def test_revive_usa_o_singleton_atual(self, monkeypatch):
+        s = self._scraper()
+        antigo, novo = _LocalBrowserFalso(), _LocalBrowserFalso()
+        s._local_browser = antigo
+        _usa_local_browser(monkeypatch, "casas_bahia", novo)
+        s._warmup_cdp_session = lambda: None
+
+        assert s._revive_page() is True
+        assert s._local_browser is novo
+        assert antigo.abas == 0 and novo.abas == 1
+
 
 # ---------------------------------------------------------------------------
 # Shopee — degrada para curl_cffi
@@ -132,25 +199,61 @@ class TestShopeeDegrada:
         assert s._local_active is False
         assert chamou_http == [1], "não abriu a sessão HTTP ao degradar"
 
-    def test_aba_morta_e_reaberta_pelo_chrome_compartilhado(self):
+    def test_aba_morta_e_reaberta_pelo_chrome_compartilhado(self, monkeypatch):
         s = self._scraper()
-
-        class _LB:
-            def new_page(self_inner):
-                return _PaginaViva()
-
-        s._local_browser = _LB()
+        lb = _LocalBrowserFalso()
+        _usa_local_browser(monkeypatch, "shopee", lb)
         s._setup_xhr_intercept = lambda: None
+
         assert s._ensure_browser_page() is True
         assert s._local_active is True
         assert isinstance(s._page, _PaginaViva)
+        assert s._local_browser is lb
 
-    def test_aba_viva_nao_reabre(self):
+    def test_aba_viva_nao_reabre(self, monkeypatch):
         s = self._scraper()
+        lb = _LocalBrowserFalso()
+        _usa_local_browser(monkeypatch, "shopee", lb)
         viva = _PaginaViva()
         s._page = viva
+        s._local_browser = lb
+
         assert s._ensure_browser_page() is True
         assert s._page is viva
+        assert lb.abas == 0, "abriu aba nova com o browser saudável"
+
+    def test_aba_aberta_mas_browser_desconectado_reabre(self, monkeypatch):
+        """`is_closed()` pode mentir se o CDP caiu — a liveness decide."""
+        s = self._scraper()
+        lb = _LocalBrowserFalso(vivo=False)
+        _usa_local_browser(monkeypatch, "shopee", lb)
+        s._page = _PaginaViva()
+        s._local_browser = lb
+        s._setup_xhr_intercept = lambda: None
+
+        assert s._ensure_browser_page() is True
+        assert lb.abas == 1
+
+    def test_chrome_morto_no_meio_da_keyword_refaz_pelo_http(self, monkeypatch):
+        """Meia coleta não é resultado final: degrada e repete a keyword."""
+        s = self._scraper()
+        lb = _LocalBrowserFalso()
+        _usa_local_browser(monkeypatch, "shopee", lb)
+        s._setup_xhr_intercept = lambda: None
+        s._start_http_session = lambda: None
+
+        def _busca_no_browser(*_a, **_k):
+            s._browser_lost = True
+            return [{"Produto / SKU": "parcial"}]
+
+        s._search_via_browser = _busca_no_browser
+        registro_http = {"Produto / SKU": "completo"}
+        s._fetch_page = lambda *a, **k: {"items": [{}]}
+        s._parse_items = lambda *a, **k: [registro_http]
+        s._maybe_dump_hollow_parse = lambda *a, **k: None
+
+        assert s.search("ar condicionado", {}, page_limit=1) == [registro_http]
+        assert s._local_active is False
 
 
 # ---------------------------------------------------------------------------
@@ -170,24 +273,12 @@ class TestMercadoLivreDegrada:
 
     def test_aba_morta_vira_aba_nova_no_chrome_compartilhado(self, monkeypatch):
         s = self._scraper()
-
-        class _LB:
-            context = object()
-
-            def new_page(self_inner):
-                return _PaginaViva()
-
-        monkeypatch.setattr(
-            "scrapers.mercado_livre.get_local_browser", lambda: _LB()
-        )
+        _usa_local_browser(monkeypatch, "mercado_livre", _LocalBrowserFalso())
         assert s._ensure_page() is True
         assert s._warmed is False, "aba nova precisa reaquecer a sessão"
 
     def test_sem_chrome_local_abre_browser_proprio(self, monkeypatch):
         s = self._scraper()
-        monkeypatch.setattr(
-            "scrapers.mercado_livre.get_local_browser", lambda: None
-        )
 
         def _launch(self_inner):
             self_inner._page = _PaginaViva()
@@ -196,12 +287,26 @@ class TestMercadoLivreDegrada:
         assert s._ensure_page() is True
         assert s._local_active is False
 
+    def test_browser_proprio_tambem_reaquece_a_sessao(self, monkeypatch):
+        """
+        Browser novo = sessão fria, venha do Chrome compartilhado ou não.
+
+        Com `_warmed=True` sobrando do modo local, o `search()` pularia o
+        `_warm_session()` (que roda 1x por run) e mandaria o browser recém-
+        aberto direto para a SERP — o gatilho conhecido do login gate do ML.
+        """
+        s = self._scraper()
+        monkeypatch.setattr(
+            MLScraper, "_launch", lambda self_inner: setattr(
+                self_inner, "_page", _PaginaViva()
+            )
+        )
+        assert s._ensure_page() is True
+        assert s._warmed is False
+
     def test_sem_browser_algum_a_keyword_vai_para_a_api(self, monkeypatch):
         s = self._scraper()
         s._log_search_result = lambda *a, **k: None
-        monkeypatch.setattr(
-            "scrapers.mercado_livre.get_local_browser", lambda: None
-        )
 
         def _launch(self_inner):
             raise RuntimeError("Playwright indisponível")

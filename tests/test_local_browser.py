@@ -232,10 +232,64 @@ class TestNewPage:
         assert inst.new_page() is None
 
     def test_teto_de_reconexoes_por_run(self, monkeypatch):
+        monkeypatch.setattr(lb, "_RECONNECTS_USED", lb._MAX_RECONNECTS)
         inst = _browser_conectado(monkeypatch)
-        inst._reconnects = lb._MAX_RECONNECTS
         monkeypatch.setattr(inst, "launch", lambda: False)
         assert inst.reconnect() is False
+
+    def test_orcamento_de_reconexao_e_da_run_nao_da_instancia(self, monkeypatch):
+        """
+        Trocar o singleton não pode zerar o teto.
+
+        Com o contador por instância, um Chrome que caísse em série era
+        relançado indefinidamente: a cada substituição do singleton o
+        orçamento voltava do zero e a degradação para HTTP/browser próprio
+        nunca chegava.
+        """
+        monkeypatch.setattr(lb, "_RECONNECTS_USED", 0)
+        monkeypatch.setattr(lb.LocalBrowser, "launch", lambda self: True)
+
+        gastas = 0
+        for _ in range(lb._MAX_RECONNECTS + 2):
+            # instância NOVA a cada volta, como faz o get_local_browser()
+            if lb.LocalBrowser().reconnect():
+                gastas += 1
+
+        assert gastas == lb._MAX_RECONNECTS
+        assert lb._RECONNECTS_USED == lb._MAX_RECONNECTS
+
+
+class TestSpawnAbandonado:
+    """
+    Chrome que subiu mas não abriu a porta de debug: a instância é descartada
+    pelo `get_local_browser`, então ninguém mais tem a referência do processo.
+    """
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.terminado = False
+
+        def terminate(self) -> None:
+            self.terminado = True
+
+    def test_keep_zero_encerra_o_chrome_orfao(self, monkeypatch):
+        monkeypatch.setenv("RAC_LOCAL_CHROME_KEEP", "0")
+        inst = lb.LocalBrowser()
+        inst._spawned = self._Proc()
+        proc = inst._spawned
+        inst._abandon_spawned()
+        assert proc.terminado is True
+        assert inst._spawned is None
+
+    def test_keep_padrao_deixa_o_processo_de_pe(self, monkeypatch):
+        """Pode estar só lento — a próxima tentativa reaproveita a porta."""
+        monkeypatch.delenv("RAC_LOCAL_CHROME_KEEP", raising=False)
+        inst = lb.LocalBrowser()
+        inst._spawned = self._Proc()
+        proc = inst._spawned
+        inst._abandon_spawned()
+        assert proc.terminado is False
+        assert inst._spawned is None
 
 
 class _FakeLocalBrowser:

@@ -1702,6 +1702,13 @@ class MLScraper(BaseScraper):
         if self._page_is_usable():
             return True
 
+        # Qualquer caminho daqui pra baixo entrega uma aba NOVA — de aba nova a
+        # sessão é fria em todos eles, inclusive quando caímos para o browser
+        # próprio. Sem zerar aqui, o `search()` pulava o `_warm_session()`
+        # (que só roda uma vez por run) e mandava o browser recém-aberto direto
+        # para a SERP, que é exatamente o que aciona o login gate do ML.
+        self._warmed = False
+
         if self._local_active:
             lb = get_local_browser()
             page = lb.new_page() if lb is not None else None
@@ -1709,7 +1716,6 @@ class MLScraper(BaseScraper):
                 self._context = lb.context
                 self._page = page
                 self._page.set_default_timeout(PAGE_TIMEOUT)
-                self._warmed = False  # aba nova = sessão fria, reaquece
                 logger.warning(
                     f"[{self.platform_name}] Aba fechada — nova aba no Chrome "
                     "compartilhado"
@@ -1725,7 +1731,6 @@ class MLScraper(BaseScraper):
             try:
                 self._page = self._context.new_page()
                 self._page.set_default_timeout(PAGE_TIMEOUT)
-                self._warmed = False
                 logger.warning(f"[{self.platform_name}] Aba fechada — nova aba")
                 return True
             except Exception as exc:

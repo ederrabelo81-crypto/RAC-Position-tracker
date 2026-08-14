@@ -193,6 +193,87 @@ class TestIsTargetClosed:
         assert pr.is_target_closed(TargetClosedError("qualquer coisa")) is True
 
 
+class TestBaseScraperDevolveAReferencia:
+    """
+    `__enter__` que levanta nunca chama `__exit__`.
+
+    Sem cleanup dentro do `_launch`, um `new_context()` que falhasse deixava o
+    Chromium órfão E a referência do handle presa — e o `main.py` seguia para o
+    próximo scraper como se nada tivesse acontecido.
+    """
+
+    def _scraper(self, monkeypatch, browser):
+        from scrapers.base import BaseScraper
+
+        class _Scraper(BaseScraper):
+            platform_name = "Teste"
+
+            def search(self, *a, **k):
+                return []
+
+        s = _Scraper.__new__(_Scraper)
+        s.platform_name = "Teste"
+        s.headless = True
+        s._user_agent = "UA"
+        s.screenshot_manager = None
+        s._playwright = None
+        s._browser = None
+        s._context = None
+        s._page = None
+
+        class _Chromium:
+            def launch(self_inner, **_k):
+                if browser is None:
+                    raise RuntimeError("sem browser")
+                return browser
+
+        class _Handle:
+            chromium = _Chromium()
+
+        monkeypatch.setattr(
+            pr, "_import_sync_playwright",
+            lambda prefer_rebrowser: ((lambda: _Ctx(_Handle())), pr.FLAVOR_STOCK),
+        )
+        return s
+
+    def test_falha_no_contexto_solta_handle_e_browser(self, monkeypatch):
+        class _Browser:
+            def __init__(self) -> None:
+                self.fechado = False
+
+            def new_context(self_inner, **_k):
+                raise RuntimeError("contexto recusado")
+
+            def close(self_inner) -> None:
+                self_inner.fechado = True
+
+        browser = _Browser()
+        s = self._scraper(monkeypatch, browser)
+
+        with pytest.raises(RuntimeError, match="contexto recusado"):
+            s._launch()
+
+        assert browser.fechado is True, "Chromium ficou órfão"
+        assert pr.is_active() is False, "handle do Playwright ficou preso"
+
+    def test_falha_no_launch_solta_o_handle(self, monkeypatch):
+        s = self._scraper(monkeypatch, None)
+        with pytest.raises(RuntimeError, match="nenhum browser"):
+            s._launch()
+        assert pr.is_active() is False
+
+
+class _Ctx:
+    """`sync_playwright()` de mentira: `.start()` devolve o handle dado."""
+
+    def __init__(self, handle) -> None:
+        self._handle = handle
+
+    def start(self):
+        self._handle.stop = lambda: None
+        return self._handle
+
+
 class TestComDriverReal:
     """Prova de que o contrato resolve o erro real do Playwright."""
 

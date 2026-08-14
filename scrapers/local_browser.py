@@ -73,7 +73,12 @@ _DEFAULT_CDP_PORT = 9222
 # desistir. Fechar a janela no meio da coleta é acidente comum (e recuperável);
 # cair sempre é sintoma de ambiente quebrado — aí insistir só custa 20s por
 # tentativa e atrasa a degradação para o caminho alternativo.
+#
+# O orçamento é da RUN (módulo), não da instância: quando o singleton morre e é
+# substituído, um contador por instância zeraria e o teto anunciado viraria
+# ficção — o Chrome poderia ser relançado indefinidamente.
 _MAX_RECONNECTS = 3
+_RECONNECTS_USED = 0
 
 # Idem para o singleton: depois de N falhas de abertura no processo, para de
 # tentar (o Chrome não existe / a porta está tomada) e deixa os scrapers
@@ -275,8 +280,6 @@ class LocalBrowser:
         self._spawned: Optional[subprocess.Popen] = None
         # Domínios já aquecidos nesta sessão (evita repetir warm-up por scraper).
         self._warmed_hosts: set = set()
-        # Reconexões já gastas nesta instância (ver _MAX_RECONNECTS).
-        self._reconnects: int = 0
 
     # ------------------------------------------------------------------
     # Ciclo de vida
@@ -330,6 +333,7 @@ class LocalBrowser:
                     f"[LocalBrowser] Chrome não expôs a porta de debug {self.port} "
                     "em 20s. Feche Chromes abertos nesse perfil e tente de novo."
                 )
+                self._abandon_spawned()
                 self._release_handle()
                 return False
         else:
@@ -347,6 +351,7 @@ class LocalBrowser:
                 f"[LocalBrowser] Falha ao conectar CDP em {endpoint}: {exc}"
             )
             self._browser = None
+            self._abandon_spawned()
             self._release_handle()
             return False
 
@@ -399,18 +404,20 @@ class LocalBrowser:
             run (:data:`_MAX_RECONNECTS`) já foi gasto — aí os scrapers devem
             cair para o caminho alternativo em vez de insistir.
         """
-        if self._reconnects >= _MAX_RECONNECTS:
+        global _RECONNECTS_USED
+
+        if _RECONNECTS_USED >= _MAX_RECONNECTS:
             logger.error(
-                f"[LocalBrowser] Chrome local caiu {self._reconnects}x nesta "
+                f"[LocalBrowser] Chrome local caiu {_RECONNECTS_USED}x nesta "
                 "run — desistindo de reconectar. Os scrapers seguem pelo "
                 "caminho alternativo (HTTP/browser próprio)."
             )
             return False
 
-        self._reconnects += 1
+        _RECONNECTS_USED += 1
         logger.warning(
             f"[LocalBrowser] Conexão com o Chrome caiu — reconectando "
-            f"({self._reconnects}/{_MAX_RECONNECTS})..."
+            f"({_RECONNECTS_USED}/{_MAX_RECONNECTS})..."
         )
         self._disconnect()
         if self.launch():
@@ -450,6 +457,27 @@ class LocalBrowser:
         self.flavor = ""
         playwright_runtime.release()
 
+    def _abandon_spawned(self) -> None:
+        """
+        Larga o Chrome que ESTE launch abriu e não deu certo.
+
+        A instância é descartada pelo ``get_local_browser`` depois de um launch
+        falho, então ninguém mais tem a referência do processo: sem isto,
+        ``RAC_LOCAL_CHROME_KEEP=0`` deixava de ser respeitado justamente no
+        caminho de erro. Com KEEP ligado (padrão) o processo fica de pé de
+        propósito — ele pode estar só lento para abrir a porta, e a próxima
+        tentativa o reaproveita em vez de abrir um segundo Chrome no mesmo
+        perfil.
+        """
+        if self._spawned is None:
+            return
+        if not _keep_chrome_open():
+            try:
+                self._spawned.terminate()
+            except Exception:
+                pass
+        self._spawned = None
+
     def new_page(self) -> Optional[Any]:
         """
         Abre uma aba dedicada para um scraper. None se o browser não abriu.
@@ -476,7 +504,6 @@ class LocalBrowser:
                         continue
                 logger.error(f"[LocalBrowser] Falha ao abrir aba: {exc}")
                 return None
-        return None
 
     # ------------------------------------------------------------------
     # Warm-up genérico (Akamai / sensor.js)

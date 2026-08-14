@@ -600,7 +600,17 @@ class MagaluScraper(BaseScraper):
         # uso normal do browser e das outras plataformas (Shopee/CB).
         if self._is_cdp or self._is_local:
             try:
-                self._pw_page = self._pw_context.new_page()
+                # No modo local a aba vem do LocalBrowser: ele reconecta o CDP
+                # se a janela tiver morrido entre o `is_alive()` e agora. Pedir
+                # direto ao contexto guardado abortaria a Magalu inteira num
+                # caso que o próprio projeto já sabe recuperar.
+                if self._is_local and self._local_browser is not None:
+                    self._pw_page = self._local_browser.new_page()
+                    if self._pw_page is None:
+                        raise RuntimeError("Chrome compartilhado indisponível")
+                    self._pw_context = self._local_browser.context
+                else:
+                    self._pw_page = self._pw_context.new_page()
             except Exception as exc:
                 logger.error(f"[Magalu] Falha ao abrir aba dedicada no Chrome real: {exc}")
                 self._close_persistent_browser()
