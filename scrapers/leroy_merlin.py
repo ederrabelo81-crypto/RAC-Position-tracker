@@ -1329,4 +1329,45 @@ class LeroyMerlinScraper(BaseScraper):
             "timestamp": now_brt().isoformat(),
         }, ensure_ascii=False))
         self._seller_metrics = {k: 0 for k in self._seller_metrics}
+        
+        # ------------------------------------------------------------------
+        # Sistema adaptativo: registra resultado para aprendizado contínuo
+        # ------------------------------------------------------------------
+        try:
+            from utils.adaptive_scraper import AdaptiveScraperConfig
+            
+            # Leroy Merlin usa browser-first com fallback XHR/DOM
+            strategy = "browser_first"
+            
+            duration_est = len(all_records) * 0.8  # Leroy é mais lento
+            
+            success = len(all_records) > 0
+            error_type = None
+            if not success:
+                error_type = "no_results_or_block"
+            
+            AdaptiveScraperConfig.record_result(
+                platform=self.platform_name,
+                strategy=strategy,
+                success=success,
+                items_collected=len(all_records),
+                duration_seconds=max(duration_est, 1.0),
+                error_type=error_type,
+                pages_attempted=page_limit,
+                pages_successful=(page_limit if success else 0),
+                wait_time_ms=3000,
+                notes=f"Keyword: {keyword[:50]}" if keyword else None
+            )
+            
+            # Registra evento WAF se houve bloqueio
+            if error_type == "no_results_or_block":
+                AdaptiveScraperConfig.record_waf_block(
+                    platform=self.platform_name,
+                    ip_type="residential",
+                    strategy_used=strategy,
+                    recovery_method="xhr_fallback"
+                )
+        except Exception as exc:
+            logger.debug(f"[AdaptiveScraper] Erro ao registrar resultado: {exc}")
+        
         return all_records
