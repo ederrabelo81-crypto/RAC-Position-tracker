@@ -1049,6 +1049,49 @@ class ShopeeScraper(BaseScraper):
             time.sleep(random.uniform(*_INTER_PAGE_DELAY))
 
         self._update_circuit_breaker(all_records)
+        
+        # ------------------------------------------------------------------
+        # Sistema adaptativo: registra resultado para aprendizado contínuo
+        # ------------------------------------------------------------------
+        try:
+            from utils.adaptive_scraper import AdaptiveScraperConfig
+            
+            strategy = "local_chrome" if self._local_active else "api_only"
+            success = len(all_records) > 0
+            duration_est = len(all_records) * 0.3  # Shopee API é mais rápida
+            
+            error_type = None
+            if not success:
+                if self._session_expired:
+                    error_type = "session_expired"
+                elif self._captcha_detected:
+                    error_type = "captcha"
+                else:
+                    error_type = "no_results"
+            
+            AdaptiveScraperConfig.record_result(
+                platform=self.platform_name,
+                strategy=strategy,
+                success=success,
+                items_collected=len(all_records),
+                duration_seconds=max(duration_est, 1.0),
+                error_type=error_type,
+                pages_attempted=page_limit,
+                pages_successful=(page_limit if success else 0),
+                wait_time_ms=int(random.uniform(200, 500) * 1000),
+                notes=f"Keyword: {keyword[:50]}" if keyword else None
+            )
+            
+            if error_type in ("session_expired", "captcha"):
+                AdaptiveScraperConfig.record_waf_block(
+                    platform=self.platform_name,
+                    ip_type="residential",
+                    strategy_used=strategy,
+                    recovery_method="manual_login" if self._session_expired else "captcha_solve"
+                )
+        except Exception as exc:
+            logger.debug(f"[AdaptiveScraper] Erro ao registrar resultado: {exc}")
+        
         return all_records
 
     def _update_circuit_breaker(self, all_records: List[Dict[str, Any]]) -> None:
