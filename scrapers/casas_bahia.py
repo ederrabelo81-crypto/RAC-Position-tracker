@@ -594,11 +594,19 @@ class CasasBahiaScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     def _check_blocked(self, html: str) -> bool:
-        current_url = self._page.url
-        for p in _BLOCKED_URL_PATTERNS:
-            if p in current_url:
-                logger.warning(f"[{self.platform_name}] Redirecionado para bloqueio: {current_url}")
-                return True
+        """Detecta se a página é um bloqueio WAF/Akamai ou erro de bot."""
+        if not html:
+            return False
+
+        # Verifica URL atual (se disponível) — protege contra browser morto
+        try:
+            if self._page and not self._page.is_closed():
+                current_url = self._page.url
+                if any(pat in current_url.lower() for pat in _BLOCKED_URL_PATTERNS):
+                    logger.warning(f"[{self.platform_name}] Redirecionado para bloqueio: {current_url}")
+                    return True
+        except Exception:
+            pass  # Browser morreu, não conseguimos checar URL
 
         # Detecta página de erro Akamai WAF
         # ("Ops! Algo deu errado." + CSS de novavp-a.akamaihd.net)
@@ -1347,8 +1355,12 @@ class CasasBahiaScraper(BaseScraper):
         novo após um bloqueio Akamai — search() zera o cache pra dar à sessão
         flagada a chance de revalidar o _abck antes da próxima keyword.
         """
-        if self._cdp_warmed or not self._real_browser_active or self._page is None:
-            return self._cdp_warmed
+        if not self._real_browser_active or self._page is None:
+            return False
+        
+        # Se já aquecido nesta sessão, não reaquece (a menos que tenha havido bloqueio)
+        if self._cdp_warmed:
+            return True
 
         try:
             self._page.goto(_VTEX_BASE, wait_until="domcontentloaded", timeout=40_000)
