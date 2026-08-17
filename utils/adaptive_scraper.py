@@ -86,7 +86,7 @@ STRATEGY_HYBRID = "hybrid"               # API + browser em paralelo
 STRATEGY_LOCAL_CHROME = "local_chrome"   # Chrome local logado (RAC_LOCAL_CHROME)
 
 # Plataformas suportadas
-SUPPORTED_PLATFORMS = ["Magalu", "Casas Bahia", "Shopee", "Mercado Livre"]
+SUPPORTED_PLATFORMS = ["Magalu", "Casas Bahia", "Shopee", "Mercado Livre", "Amazon", "Leroy Merlin"]
 
 
 @dataclass
