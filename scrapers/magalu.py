@@ -2684,6 +2684,60 @@ class MagaluScraper(BaseScraper):
             self._maybe_trip_circuit_breaker()
 
         self._log_search_result(keyword, len(all_records))
+        
+        # ------------------------------------------------------------------
+        # Sistema adaptativo: registra resultado para aprendizado contínuo
+        # ------------------------------------------------------------------
+        try:
+            from utils.adaptive_scraper import AdaptiveScraperConfig
+            
+            # Determina estratégia usada
+            if self._local_active:
+                strategy = "local_chrome"
+            elif self._cdp_active:
+                strategy = "browser_first"
+            else:
+                strategy = "api_only"
+            
+            # Calcula duração aproximada
+            duration_est = len(all_records) * 0.5
+            
+            success = len(all_records) > 0
+            error_type = None
+            if not success:
+                if self._login_required:
+                    error_type = "login_required"
+                elif self._last_failure_reason == _REASON_LAYOUT:
+                    error_type = "layout_changed"
+                elif self._last_failure_reason == _REASON_NETWORK:
+                    error_type = "network_error"
+                else:
+                    error_type = "akamai_block"
+            
+            AdaptiveScraperConfig.record_result(
+                platform=self.platform_name,
+                strategy=strategy,
+                success=success,
+                items_collected=len(all_records),
+                duration_seconds=max(duration_est, 1.0),
+                error_type=error_type,
+                pages_attempted=page_limit,
+                pages_successful=(page_limit if success else 0),
+                wait_time_ms=1000,
+                notes=f"Keyword: {keyword[:50]}" if keyword else None
+            )
+            
+            # Registra evento WAF se houve bloqueio
+            if error_type in ("akamai_block", "login_required"):
+                AdaptiveScraperConfig.record_waf_block(
+                    platform=self.platform_name,
+                    ip_type="residential",
+                    strategy_used=strategy,
+                    recovery_method="manual_login" if self._login_required else "session_refresh"
+                )
+        except Exception as exc:
+            logger.debug(f"[AdaptiveScraper] Erro ao registrar resultado: {exc}")
+        
         return all_records
 
     def _maybe_trip_circuit_breaker(self) -> None:

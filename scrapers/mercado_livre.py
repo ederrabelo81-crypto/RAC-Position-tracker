@@ -1888,4 +1888,47 @@ class MLScraper(BaseScraper):
             )
 
         self._log_search_result(keyword, len(all_records))
+        
+        # ------------------------------------------------------------------
+        # Sistema adaptativo: registra resultado para aprendizado contínuo
+        # ------------------------------------------------------------------
+        try:
+            from utils.adaptive_scraper import AdaptiveScraperConfig
+            
+            strategy = "local_chrome" if self._local_active else ("api_oauth" if gated else "browser_first")
+            success = len(all_records) > 0
+            duration_est = len(all_records) * 0.4
+            
+            error_type = None
+            if not success:
+                if gated:
+                    error_type = "captcha_gate"
+                elif self._blocked_keyword_streak > 0:
+                    error_type = "akamai_block"
+                else:
+                    error_type = "no_results"
+            
+            AdaptiveScraperConfig.record_result(
+                platform=self.platform_name,
+                strategy=strategy,
+                success=success,
+                items_collected=len(all_records),
+                duration_seconds=max(duration_est, 1.0),
+                error_type=error_type,
+                pages_attempted=page_limit,
+                pages_successful=(page_limit if success else 0),
+                wait_time_ms=1000,
+                notes=f"Keyword: {keyword[:50]}" if keyword else None
+            )
+            
+            if error_type == "captcha_gate":
+                AdaptiveScraperConfig.record_waf_block(
+                    platform=self.platform_name,
+                    ip_type="residential",
+                    strategy_used=strategy,
+                    recovery_method="api_oauth_fallback"
+                )
+        except Exception as exc:
+            logger.debug(f"[AdaptiveScraper] Erro ao registrar resultado: {exc}")
+        
         return all_records

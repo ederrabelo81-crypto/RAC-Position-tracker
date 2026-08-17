@@ -1987,4 +1987,59 @@ class CasasBahiaScraper(BaseScraper):
                 )
 
         self._log_search_result(keyword, len(all_records))
+        
+        # ------------------------------------------------------------------
+        # Sistema adaptativo: registra resultado para aprendizado contínuo
+        # ------------------------------------------------------------------
+        try:
+            from utils.adaptive_scraper import AdaptiveScraperConfig
+            
+            # Determina estratégia usada
+            if self._local_active:
+                strategy = "local_chrome"
+            elif self._cdp_active:
+                strategy = "browser_first"
+            elif browser_records is not None and len(browser_records) > 0:
+                strategy = "browser_first"
+            else:
+                strategy = "api_only"
+            
+            # Calcula duração aproximada (timestamp inicial não existe, usa estimativa)
+            duration_est = len(all_records) * 0.5  # ~0.5s por item coletado
+            
+            success = len(all_records) > 0
+            error_type = None
+            if not success:
+                if self._akamai_blocked:
+                    error_type = "akamai_block"
+                elif self._browser_lost:
+                    error_type = "browser_crash"
+                else:
+                    error_type = "no_results"
+            
+            AdaptiveScraperConfig.record_result(
+                platform=self.platform_name,
+                strategy=strategy,
+                success=success,
+                items_collected=len(all_records),
+                duration_seconds=max(duration_est, 1.0),
+                error_type=error_type,
+                pages_attempted=page_limit,
+                pages_successful=(page_limit if success else 0),
+                wait_time_ms=1000,  # Padrão - pode ser refinado
+                notes=f"Keyword: {keyword[:50]}" if keyword else None
+            )
+            
+            # Registra evento WAF se houve bloqueio
+            if self._akamai_blocked:
+                AdaptiveScraperConfig.record_waf_block(
+                    platform=self.platform_name,
+                    ip_type="residential",  # Roteador do celular = mobile/residential
+                    strategy_used=strategy,
+                    recovery_method="circuit_breaker" if self.collection_aborted else "session_refresh"
+                )
+        except Exception as exc:
+            # Falha no registro adaptativo NÃO quebra a coleta
+            logger.debug(f"[AdaptiveScraper] Erro ao registrar resultado: {exc}")
+        
         return all_records
