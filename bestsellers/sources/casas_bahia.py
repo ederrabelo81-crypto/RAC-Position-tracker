@@ -49,6 +49,13 @@ class CasasBahiaBestSellers(BestSellerSource):
         # True quando um Chrome real (local logado ou CDP) subiu — é o
         # fingerprint que o Akamai aceita e a via que destrava a coleta.
         self._browser_ativo: bool = False
+        # True quando `CasasBahiaScraper.__enter__` chegou a rodar — ou seja, um
+        # browser (real OU próprio) pode ter sido lançado. O cleanup é gated por
+        # ISTO, não por `_browser_ativo`: o `_launch` cai num Chromium headless
+        # próprio quando o Chrome real não sobe, e esse browser precisa ser
+        # fechado mesmo com `_browser_ativo=False`, senão vaza o handle
+        # compartilhado do Playwright pelo resto da coleta (as 6 fontes).
+        self._cb_entered: bool = False
 
     def _abrir(self) -> None:
         self._cb = CasasBahiaScraper(headless=self.headless)
@@ -64,25 +71,59 @@ class CasasBahiaBestSellers(BestSellerSource):
             or os.getenv("RAC_CDP_URL", "").strip()
             or os.getenv("MAGALU_CDP_URL", "").strip()
         )
-        if tem_chrome_real:
-            try:
-                self._cb.__enter__()
-                self._browser_ativo = self._cb._real_browser_active
-            except Exception as exc:
-                logger.warning(
-                    f"[{self.nome}] Chrome real não subiu ({exc}) — seguindo "
-                    "pela API VTEX (curl_cffi)."
-                )
-                self._browser_ativo = False
+        if not tem_chrome_real:
+            return  # curl_cffi puro — nenhum browser é lançado.
+
+        try:
+            # Marcado ANTES do `__enter__`: se ele estourar DEPOIS de já ter
+            # lançado o browser (falha de contexto/página no meio), o
+            # `_fechar_cb` do handler precisa saber que há algo a fechar —
+            # senão o browser e o handle compartilhado do Playwright vazam.
+            # `__exit__`/`_close` é no-op seguro se nada chegou a subir.
+            self._cb_entered = True
+            self._cb.__enter__()
+            self._browser_ativo = self._cb._real_browser_active
+        except Exception as exc:
+            logger.warning(
+                f"[{self.nome}] Chrome real não subiu ({exc}) — seguindo "
+                "pela API VTEX (curl_cffi)."
+            )
+            # `__enter__` pode ter lançado um browser antes de estourar; garante
+            # o fechamento em vez de vazá-lo.
+            self._fechar_cb()
+            return
+
+        # `__enter__` pode ter caído no `super()._launch()` (Chromium headless
+        # próprio) porque o Chrome real não subiu. Na coleta de mais vendidos
+        # esse browser não serve (o Akamai bloqueia o headless de IP datacenter)
+        # e a promessa é seguir por curl_cffi — então fecha já, para não arrastar
+        # um browser inútil e o handle do Playwright pelo resto da execução.
+        if not self._browser_ativo:
+            logger.warning(
+                f"[{self.nome}] Chrome real indisponível — fechando o browser "
+                "próprio e seguindo pela API VTEX (curl_cffi)."
+            )
+            self._fechar_cb()
+
+    def _fechar_cb(self) -> None:
+        """Fecha o scraper filho quando algum `__enter__` chegou a rodar.
+
+        Fecha SÓ a aba dedicada no modo Chrome real (a janela é compartilhada e
+        encerrada no fim do processo via ``close_local_browser``/atexit); no
+        fallback headless, o ``_close`` do BaseScraper encerra o browser e
+        devolve o handle do Playwright. É um no-op seguro se nada foi lançado.
+        """
+        if self._cb is None or not self._cb_entered:
+            return
+        try:
+            self._cb.__exit__()
+        except Exception as exc:
+            logger.debug(f"[{self.nome}] Erro ao fechar o browser: {exc}")
+        self._cb_entered = False
+        self._browser_ativo = False
 
     def _fechar(self) -> None:
-        if self._cb is not None and self._browser_ativo:
-            # Fecha só a aba dedicada; a janela do Chrome é compartilhada e
-            # encerrada no fim do processo (close_local_browser via atexit).
-            try:
-                self._cb.__exit__()
-            except Exception as exc:
-                logger.debug(f"[{self.nome}] Erro ao fechar aba do browser: {exc}")
+        self._fechar_cb()
         self._cb = None
         self._browser_ativo = False
 
