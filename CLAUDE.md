@@ -71,10 +71,10 @@ grupo INSIGHTS) — KPI do dia com delta contra o mesmo dia da semana, evoluçã
 semanal/mensal, ranking por plataforma, mapa competitivo, portões de validação
 e o brief. Mostra a UNIÃO de Supabase + `master_bestsellers.csv` (dedup por
 data+plataforma+rank, banco vence; CSV bruto do dia como último recurso) e diz
-quantos dias vieram de cada fonte. **Página vazia com coleta
-que rodou = RLS:** `bestsellers` é a única tabela com RLS ligada e sem policy,
-então a chave `anon` recebe `[]` com HTTP 200 — use `service_role` em
-`SUPABASE_KEY` ou aplique `docs/migrations/012_bestsellers_rls_leitura.sql`.
+quantos dias vieram de cada fonte. **RLS:** leitura pela `anon`
+liberada em 18/08/2026 (migração 012 aplicada); a **escrita** segue exigindo
+`service_role` — coleta com chave `anon` grava CSV e master e deixa o banco
+para trás em silêncio (`scripts\check_local_scheduler.ps1` confere a chave).
 
 ### Magalu — automatizado (não mais via extensão Chrome) 🆕 Local Browser + Playwright Runtime
 

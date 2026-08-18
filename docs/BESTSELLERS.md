@@ -186,18 +186,27 @@ A página **não** usa os Filtros Globais da sidebar: aqueles recortam a tabela
 gráfico soma posições entre plataformas, e todo delta compara a mesma
 plataforma contra o mesmo dia da semana.
 
-### Página vazia com coleta que rodou: é a RLS
+### RLS: leitura liberada (18/08/2026), escrita não
 
-`bestsellers` é a única tabela do projeto com RLS **ligada e sem policy**. Com
-a chave `anon`, o PostgREST devolve `[]` e HTTP 200 — sem erro, sem log.
-A coleta grava normalmente (a `service_role` ignora RLS) e o painel fica
-vazio, indistinguível de "não coletou". A página detecta o caso comparando a
-tabela com a view `bestsellers_kpi_top10` (que é do owner e continua legível)
-e diz qual dos dois é. Saídas:
+`bestsellers` nasceu como a única tabela com RLS **ligada e sem policy**. O
+efeito era um vazio-sem-erro: com a chave `anon` o PostgREST devolve `[]` e
+HTTP 200 — sem erro, sem log —, a coleta grava normalmente (a `service_role`
+ignora RLS) e o painel fica vazio, indistinguível de "não coletou". A página
+ainda detecta esse caso comparando a tabela com a view
+`bestsellers_kpi_top10` (que é do owner e continua legível), para o dia em que
+alguém apontar o painel para outro projeto.
 
-* usar a chave `service_role` em `SUPABASE_KEY` — mantém a tabela fechada; ou
-* aplicar `docs/migrations/012_bestsellers_rls_leitura.sql` — libera só o
-  SELECT para `anon`/`authenticated`, necessário no Streamlit Cloud.
+`012_bestsellers_rls_leitura.sql` foi **aplicada em 18/08/2026**: a `anon` lê a
+tabela, e o painel funciona em qualquer host, inclusive Streamlit Cloud.
+
+**A escrita continua exigindo `service_role`** — e é aí que mora a falha que
+sobra. Sem policy de INSERT, a coleta rodando com a chave `anon` gera CSV e
+master normalmente e só o banco fica para trás, em silêncio. Antes de
+investigar "sumiu dia no painel", confira o papel da chave no PC coletor:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File scripts\check_local_scheduler.ps1
+```
 
 ---
 

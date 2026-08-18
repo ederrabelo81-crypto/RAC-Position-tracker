@@ -24,6 +24,10 @@
 -- assim, prefira a opção 1 quando ela for possível: liberar SELECT expõe
 -- também o histórico consolidado, que é trabalho acumulado.
 --
+-- APLICADA no projeto RAC (ailbsczkrympslpjwwko) em 18/08/2026. Verificado na
+-- ocasião: a `anon` passou a enxergar as 161 linhas (antes, zero) e o INSERT
+-- pela `anon` continua recusado com insufficient_privilege.
+--
 -- NÃO é aplicada automaticamente por nada no repositório. Aplicação manual:
 --   psql "$SUPABASE_DB_URL" -f docs/migrations/012_bestsellers_rls_leitura.sql
 -- ou via Supabase SQL Editor / MCP apply_migration.
