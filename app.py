@@ -10530,6 +10530,19 @@ def page_bestsellers() -> None:
     datas = sorted(serie["data"].dt.date.unique())
     plataformas_disponiveis = sorted(serie["plataforma"].dropna().unique())
 
+    # Uma coleta nova (dia mais recente na série) precisa aparecer sozinha. O
+    # `st.date_input` abaixo tem `key="bs_dates"`, então o Streamlit persiste o
+    # intervalo escolhido em `session_state` e IGNORA o `value=` nas reruns
+    # seguintes. Sem este reset, o fim do período ficava travado no último dia
+    # da carga anterior: a coleta recém-feita entrava na série mas caía FORA da
+    # janela — invisível no painel, mesmo após o botão "Recarregar série" (que
+    # limpa o cache dos dados, não o filtro). Ao detectar um dia novo, apaga o
+    # valor salvo para o widget recair no `value=` (intervalo completo, já com o
+    # dia novo). Uma restrição manual de período dentro da MESMA carga persiste.
+    if st.session_state.get("bs_max_data") != datas[-1]:
+        st.session_state["bs_max_data"] = datas[-1]
+        st.session_state.pop("bs_dates", None)
+
     # ── Controles ─────────────────────────────────────────────────────────
     with st.sidebar:
         st.subheader("Filtros — Mais Vendidos")

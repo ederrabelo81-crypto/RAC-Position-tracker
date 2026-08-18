@@ -243,6 +243,45 @@ class TestShopeeParser:
         brutos = [{"item_basic": {"itemid": 5, "shopid": 9, "price": 100000000}}]
         assert fonte._parse(brutos, offset=0) == []
 
+    def test_formato_item_card_atual(self, fonte):
+        """Formato atual (Ago/2026): sem `item_basic` útil, com os dados em
+        `item_data` + `item_card_displayed_asset` IRMÃO no wrapper.
+
+        Regressão: o parser lia o asset de dentro do payload extraído (que é o
+        `item_data`), onde ele não existe — todo item caía por "sem título" e a
+        coleta abortava com "itens mas nenhum parseou". O asset tem que vir do
+        wrapper.
+        """
+        brutos = [{
+            "itemid": 58260116699,
+            "shopid": 1009975506,
+            "item_card_displayed_asset": {
+                "name": "Ar Condicionado Split Inverter Midea 12000 BTUs Frio",
+                "sold_count": {"text": "948 Vendido/Mês"},
+                "display_price": {"price": 179900000},
+            },
+            "item_data": {
+                "itemid": 58260116699,
+                "shopid": 1009975506,
+                "item_card_display_price": {"price": 179900000},
+                "item_card_display_sold_count": {
+                    "historical_sold_count_text": "948 Vendido/Mês"
+                },
+                "shop_data": {"shop_name": "Midea Oficial"},
+                "item_rating": {"rating_star": 4.9, "rating_count": [123, 1, 2, 3, 4]},
+            },
+        }]
+        itens = fonte._parse(brutos, offset=0)
+        assert len(itens) == 1
+        item = itens[0]
+        assert item.titulo == "Ar Condicionado Split Inverter Midea 12000 BTUs Frio"
+        assert item.preco == 1799.0
+        assert item.seller == "Midea Oficial"
+        assert item.sku_plataforma == "1009975506_58260116699"
+        assert item.vendidos == 948.0
+        assert item.base_vendidos == "mes"
+        assert item.rating == 4.9
+
 
 # ---------------------------------------------------------------------------
 # Normalização comum a todas as fontes
@@ -482,6 +521,44 @@ class TestCasasBahiaParser:
 
         with pytest.raises(RuntimeError, match="Akamai"):
             fonte._consultar(_Sessao(), {"query": "ar condicionado"}, 1)
+
+    def test_coleta_via_browser_quando_chrome_real(self, fonte):
+        """Com Chrome real logado, a coleta usa o fetch same-origin da IS
+        (sort=orders_desc) — que passa pelo Akamai — em vez do curl_cffi."""
+        from scrapers.casas_bahia import CasasBahiaScraper
+
+        chamadas = {}
+
+        class _CB(CasasBahiaScraper):
+            # Reusa os extratores VTEX reais; só troca as bordas de I/O.
+            _real_browser_active = True
+
+            def _warmup_cdp_session(self):
+                chamadas["warmup"] = True
+                return True
+
+            def vtex_is_in_page(self, termo, pagina, sort="orders_desc"):
+                chamadas["sort"] = sort
+                if pagina == 1:
+                    return [_produto_vtex(
+                        "1", "Ar Condicionado Split Midea 12000 BTUs",
+                        1899.0, "Casas Bahia", "1",
+                    )]
+                return []
+
+            # Nunca deve ser chamado no caminho de browser bem-sucedido.
+            def _get_warmed_session(self):
+                raise AssertionError("curl_cffi não deveria ser usado")
+
+        fonte._cb = _CB()
+        fonte._browser_ativo = True
+        itens = fonte._coletar(paginas=1)
+        assert len(itens) == 1
+        assert itens[0].titulo.startswith("Ar Condicionado Split Midea")
+        assert chamadas.get("warmup") is True
+        assert chamadas.get("sort") == "orders_desc"
+        # O endpoint registrado prova a ordenação por vendas nos dois caminhos.
+        assert "orders_desc" in fonte.endpoint
 
 
 # ---------------------------------------------------------------------------
