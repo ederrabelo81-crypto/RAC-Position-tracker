@@ -75,8 +75,13 @@ class CasasBahiaBestSellers(BestSellerSource):
             return  # curl_cffi puro — nenhum browser é lançado.
 
         try:
-            self._cb.__enter__()
+            # Marcado ANTES do `__enter__`: se ele estourar DEPOIS de já ter
+            # lançado o browser (falha de contexto/página no meio), o
+            # `_fechar_cb` do handler precisa saber que há algo a fechar —
+            # senão o browser e o handle compartilhado do Playwright vazam.
+            # `__exit__`/`_close` é no-op seguro se nada chegou a subir.
             self._cb_entered = True
+            self._cb.__enter__()
             self._browser_ativo = self._cb._real_browser_active
         except Exception as exc:
             logger.warning(
