@@ -109,7 +109,7 @@ foreach ($name in @("RAC_Local_Manha", "RAC_Local_Noite", "RAC_Bestsellers")) {
                 Write-Warn "$name nunca rodou desde o registro"
             } elseif ($isStale) {
                 Write-Info "Registrada em: $regDate (depois da ultima execucao)"
-                Write-Warn "$name: o erro acima e de ANTES do re-registro (definicao antiga) - valide a nova com: Start-ScheduledTask -TaskName '$name'"
+                Write-Warn "${name}: o erro acima e de ANTES do re-registro (definicao antiga) - valide a nova com: Start-ScheduledTask -TaskName '$name'"
             } else {
                 Write-Bad "$name terminou com erro na ultima execucao ($meaning)"
             }
