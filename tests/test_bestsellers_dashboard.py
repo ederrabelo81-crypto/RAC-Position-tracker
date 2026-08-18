@@ -216,6 +216,67 @@ def test_query_une_banco_e_disco_sem_duplicar_posicao(
     do_dia_10 = df[df["data"] == "2026-08-10"]
     assert sorted(do_dia_10["preco"]) == [1.0, 2.0], "o banco tem de vencer o CSV"
     assert "Supabase" in origem and "CSV local" in origem, origem
+    # Contagem PÓS-dedup: o disco contribuiu com 1 dia (03/08), não com os 2
+    # que o arquivo tem — 10/08 foi coberto pelo banco. Contar antes somaria
+    # 3 dias numa série de 2.
+    assert "Supabase · `bestsellers` (1 dia(s))" in origem, origem
+    assert "(1 dia(s))" in origem.split("+")[1], origem
+    assert "_fonte" not in df.columns, "coluna interna vazou para a série"
+
+
+def test_pagina_com_tudo_em_quarentena_mostra_o_detalhe() -> None:
+    """Quando nada sobra, o painel ainda tem de dizer QUAL endpoint reprovou."""
+    at = AppTest.from_function(_pagina_toda_reprovada_harness)
+    at.run(timeout=RUN_TIMEOUT)
+    assert not at.exception, f"página estourou: {[str(e.value) for e in at.exception]}"
+
+    erros = " ".join(str(e.value) for e in at.error)
+    assert "portão de ordenação" in erros, erros
+    # O detalhe é o que permite agir: sem ele resta a mensagem genérica.
+    tabelas = at.dataframe
+    assert tabelas, "faltou a tabela do que foi reprovado"
+    reprovadas = tabelas[0].value
+    assert "Endpoint chamado" in reprovadas.columns, list(reprovadas.columns)
+    assert "Shopee" in set(reprovadas["Plataforma"]), reprovadas
+
+
+def _pagina_toda_reprovada_harness() -> None:
+    """Série em que NENHUMA leitura prova a ordenação por vendas."""
+    import streamlit as st
+
+    import app
+    from bestsellers.config import SOURCES
+    from bestsellers.models import BestSellerItem
+    from bestsellers.storage import to_dataframe
+
+    spec = SOURCES["shopee"]
+    linhas = [
+        BestSellerItem(
+            rank=posicao,
+            titulo=f"Ar Condicionado Split Inverter Midea {posicao} 12000 BTUs",
+            preco=1800.0 + posicao,
+            sku_plataforma=f"shopee-{posicao}",
+        ).to_row(
+            data="2026-08-10", horario="09:30", run_id="run", spec=spec,
+            url_coleta=spec.url_publica,
+            # Busca sem `sortBy=sales`: relevância, não vendas.
+            endpoint="https://shopee.com.br/search?keyword=ar%20condicionado",
+        )
+        for posicao in range(1, 11)
+    ]
+
+    def _fake(limit: int = 0):
+        return to_dataframe(linhas), "Supabase · `bestsellers`", ""
+
+    _fake.clear = lambda: None  # type: ignore[attr-defined]
+    original = app.query_bestsellers
+    app.query_bestsellers = _fake  # type: ignore[assignment]
+    try:
+        app.page_bestsellers()
+    finally:
+        app.query_bestsellers = original
+
+    st.session_state["_out"] = {"ok": True}
 
 
 def test_quarentena_remove_leitura_sem_prova_de_ordenacao() -> None:

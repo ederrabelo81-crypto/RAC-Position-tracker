@@ -1,8 +1,12 @@
 -- Migração 012 — Policy de LEITURA para a tabela `bestsellers`.
 --
--- Contexto: a 011 criou a tabela com Row Level Security LIGADA e nenhuma
--- policy. O efeito colateral só aparece do lado de quem lê: com a chave
--- `anon`, o PostgREST responde `[]` e HTTP 200 — sem erro, sem log, sem
+-- Contexto: a 011 cria a tabela e NÃO liga RLS; no projeto de produção ela foi
+-- ligada depois, à mão, e ficou assim: RLS LIGADA e nenhuma policy. Daí os
+-- dois comandos abaixo — o ALTER cobre a instalação limpa (onde ele é o que
+-- torna a policy efetiva) e é no-op onde a RLS já estava ligada.
+--
+-- O efeito colateral de RLS sem policy só aparece do lado de quem lê: com a
+-- chave `anon`, o PostgREST responde `[]` e HTTP 200 — sem erro, sem log, sem
 -- nada. A coleta grava (a chave `service_role` ignora RLS), e o dashboard
 -- mostra uma página vazia indistinguível de "não coletou". Foi esse o
 -- sintoma que motivou a página 🥇 Mais Vendidos: o dado existia no banco e
@@ -32,12 +36,10 @@
 --   psql "$SUPABASE_DB_URL" -f docs/migrations/012_bestsellers_rls_leitura.sql
 -- ou via Supabase SQL Editor / MCP apply_migration.
 
--- A 011 cria a tabela mas NÃO liga RLS — em produção ela foi ligada depois,
--- fora de migração. Numa instalação limpa, criar policy com RLS desligada não
--- surte efeito nenhum: sem RLS o acesso cai nos GRANTs da tabela, a policy
--- fica inerte e a escrita pela `anon` continua liberada. Ligar aqui é
--- idempotente (repetir não falha) e é o que torna a promessa desta migração
--- verdadeira: leitura liberada, escrita negada por ausência de policy.
+-- Sem RLS, policy é decoração: o acesso cai nos GRANTs da tabela, a policy
+-- fica inerte e a escrita pela `anon` segue liberada. Ligar aqui é idempotente
+-- e é o que torna verdadeira a promessa desta migração — leitura liberada,
+-- escrita negada por ausência de policy.
 ALTER TABLE bestsellers ENABLE ROW LEVEL SECURITY;
 
 -- Idempotente: repetir a aplicação não falha.

@@ -10251,11 +10251,11 @@ def query_bestsellers(limit: int = _BS_LIMITE) -> tuple:
 
     partes, rotulos = [], []
     if banco is not None and len(banco):
-        partes.append(banco)
-        rotulos.append(f"Supabase · `{_BS_TABELA}` ({banco['data'].nunique()} dia(s))")
+        rotulos.append(f"Supabase · `{_BS_TABELA}`")
+        partes.append(banco.assign(_fonte=rotulos[-1]))
     if len(disco):
-        partes.append(disco)
-        rotulos.append(f"CSV local · `{caminho}` ({disco['data'].nunique()} dia(s))")
+        rotulos.append(f"CSV local · `{caminho}`")
+        partes.append(disco.assign(_fonte=rotulos[-1]))
 
     if not partes:
         return pd.DataFrame(), "", motivo
@@ -10265,7 +10265,14 @@ def query_bestsellers(limit: int = _BS_LIMITE) -> tuple:
     juntas = pd.concat(partes, ignore_index=True).drop_duplicates(
         subset=["data", "plataforma", "rank"], keep="first"
     )
-    return juntas, " + ".join(rotulos), motivo
+    # Dias contados DEPOIS da dedup: é a contribuição REAL de cada fonte para o
+    # que está na tela. Contar antes inflaria o disco com os dias que o banco
+    # já cobria e o rodapé somaria mais dias do que a série tem.
+    dias = juntas.groupby("_fonte")["data"].nunique()
+    origem = " + ".join(
+        f"{rotulo} ({int(dias.get(rotulo, 0))} dia(s))" for rotulo in rotulos
+    )
+    return juntas.drop(columns=["_fonte"]), origem, motivo
 
 
 def _bs_specs() -> dict:
@@ -10347,6 +10354,35 @@ def _bs_quarentena(serie: pd.DataFrame) -> tuple:
     if not indices:
         return serie, pd.DataFrame()
     return serie.drop(index=indices), pd.DataFrame(reprovadas)
+
+
+def _bs_tabela_quarentena(reprovadas: pd.DataFrame, specs: dict) -> None:
+    """Mostra o que a quarentena descartou: plataforma, data e endpoint.
+
+    Renderizada em dois lugares — na aba de validação e no caminho em que
+    TUDO foi reprovado, onde a página não chega a montar as abas. Sem ela
+    naquele caminho, o usuário veria "reprovado" e nenhuma pista de onde
+    olhar.
+    """
+    if not len(reprovadas):
+        return
+    detalhe = reprovadas.copy()
+    detalhe["plataforma"] = detalhe["plataforma"].map(lambda k: _bs_nome(k, specs))
+    detalhe["data"] = pd.to_datetime(detalhe["data"]).dt.strftime("%d/%m/%Y")
+    st.dataframe(
+        detalhe.rename(columns={
+            "plataforma": "Plataforma", "data": "Data",
+            "linhas": "Linhas descartadas",
+            "endpoint": "Endpoint chamado",
+            "ordenacao_exigida": "Ordenação exigida",
+        }),
+        use_container_width=True, hide_index=True,
+    )
+    st.caption(
+        "Estas leituras saíram do KPI, dos deltas e de todos os gráficos: sem "
+        "o parâmetro de ordenação no endpoint, a lista provavelmente é de "
+        "relevância — outro universo."
+    )
 
 
 def _bs_style(df: pd.DataFrame, col_grupo: str = "grupo_midea"):
@@ -10470,6 +10506,11 @@ def page_bestsellers() -> None:
             "\"mais vendidos\". Provavelmente são listas de relevância — ver "
             "`docs/BESTSELLERS.md` › Portões de validação."
         )
+        # A aba de validação não chega a existir neste caminho, então o
+        # detalhe do que foi reprovado vem aqui: sem ele, restaria a mensagem
+        # genérica e nenhuma pista de qual endpoint conferir.
+        st.subheader("Leituras reprovadas")
+        _bs_tabela_quarentena(reprovadas, _bs_specs())
         return
     if len(reprovadas):
         _detalhe = ", ".join(
@@ -10963,25 +11004,7 @@ def page_bestsellers() -> None:
 
         if len(reprovadas):
             st.subheader("Em quarentena (fora de toda a análise)")
-            detalhe = reprovadas.copy()
-            detalhe["plataforma"] = detalhe["plataforma"].map(
-                lambda k: _bs_nome(k, specs)
-            )
-            detalhe["data"] = pd.to_datetime(detalhe["data"]).dt.strftime("%d/%m/%Y")
-            st.dataframe(
-                detalhe.rename(columns={
-                    "plataforma": "Plataforma", "data": "Data",
-                    "linhas": "Linhas descartadas",
-                    "endpoint": "Endpoint chamado",
-                    "ordenacao_exigida": "Ordenação exigida",
-                }),
-                use_container_width=True, hide_index=True,
-            )
-            st.caption(
-                "Estas leituras saíram do KPI, dos deltas e de todos os "
-                "gráficos: sem o parâmetro de ordenação no endpoint, a lista "
-                "provavelmente é de relevância — outro universo."
-            )
+            _bs_tabela_quarentena(reprovadas, specs)
 
         st.subheader("Cobertura da coleta")
         cobertura = (
