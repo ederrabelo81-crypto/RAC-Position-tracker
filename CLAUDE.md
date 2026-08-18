@@ -66,6 +66,16 @@ então **não ligue cron da VM**. Setup: `scripts\setup_local_scheduler.ps1`
 entre SKUs, marca fora do escopo). Parser por plataforma em `bestsellers/sources/`.
 Relatório Telegram + resumo JSON em `logs/bestsellers_*.json`.
 
+**Leitura no dashboard:** página **🥇 Mais Vendidos** (`streamlit run app.py`,
+grupo INSIGHTS) — KPI do dia com delta contra o mesmo dia da semana, evolução
+semanal/mensal, ranking por plataforma, mapa competitivo, portões de validação
+e o brief. Mostra a UNIÃO de Supabase + `master_bestsellers.csv` (dedup por
+data+plataforma+rank, banco vence; CSV bruto do dia como último recurso) e diz
+quantos dias vieram de cada fonte. **RLS:** leitura pela `anon`
+liberada em 18/08/2026 (migração 012 aplicada); a **escrita** segue exigindo
+`service_role` — coleta com chave `anon` grava CSV e master e deixa o banco
+para trás em silêncio (`scripts\check_local_scheduler.ps1` confere a chave).
+
 ### Magalu — automatizado (não mais via extensão Chrome) 🆕 Local Browser + Playwright Runtime
 
 `scrapers/magalu.py` (curl_cffi + browser persistente, Akamai bypass) é o
@@ -272,7 +282,7 @@ See `.claude/COMMON_MISTAKES.md` for critical examples:
 rac-position-tracker/
 ├── config.py                    # Central configuration: keywords, platforms, brands
 ├── main.py                      # CLI entry point, orchestration, CSV export
-├── app.py                       # Streamlit dashboard (19 pages + CI with Claude)
+├── app.py                       # Streamlit dashboard (20 pages + CI with Claude)
 ├── diagnostico.py               # Debug utilities
 ├── requirements.txt             # Python dependencies
 │

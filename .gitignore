@@ -1,1 +1,20 @@
-Nothing needs to be added to .gitignore since only a README.md file was modified and no build artifacts, dependencies, or temporary files were detected in the changes.
+# Bytecode do Python — artefato de build, específico do interpretador
+# (cp311, cp312…). Estava fora daqui, e é por isso que o repositório acabou
+# com .pyc versionados: qualquer sessão que rodasse pytest via a árvore suja.
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches de ferramentas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Ambiente virtual
+venv/
+.venv/
+
+# Credenciais — nunca versionar (ver CLAUDE.md › Don'ts)
+.env
+.env.*
+!.env.example

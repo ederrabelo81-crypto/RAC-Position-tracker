@@ -150,6 +150,66 @@ consertar um parser substitui aquelas linhas em vez de duplicá-las.
 
 ---
 
+## Onde ver o resultado: dashboard 🥇 Mais Vendidos
+
+```bash
+streamlit run app.py   # menu INSIGHTS → 🥇 Mais Vendidos
+```
+
+A coleta grava em três destinos e a página mostra a **união** de
+**Supabase `bestsellers`** com **`data/bestsellers/master_bestsellers.csv`**
+(dedup por `data`+`plataforma`+`rank`, a mesma chave idempotente do coletor,
+com o banco tendo precedência); os CSVs brutos de
+`output/bestsellers/bestsellers_*.csv` entram só quando não há master. Unir em
+vez de escolher a primeira fonte é deliberado: o banco fica para trás sempre
+que o upload falha e o master só tem o que aquela máquina coletou — ler um só
+esconderia dias inteiros. O rodapé de origem diz quantos dias vieram de cada
+fonte, e o motivo de o banco não ter servido aparece no topo em vez de sumir:
+cair no CSV local em silêncio faria um banco mudo passar despercebido por
+semanas.
+
+Leitura reprovada no portão de ordenação entra em **quarentena antes de
+qualquer número** — sai do KPI, dos deltas e dos gráficos, e aparece
+nomeada na aba 🩺 Validação.
+
+| Aba | O que responde |
+|---|---|
+| 🎯 KPI top N | % do top N da Midea por plataforma no último dia, delta contra a base, e a série diária |
+| 📈 Evolução | agregação semanal/mensal e o ganho/perda em p.p. entre períodos (`tendencia_valida` visível) |
+| 🏁 Ranking do dia | a lista inteira de uma plataforma, com ou sem o recorte split hi-wall |
+| 🥊 Competição | quem ocupa o topo, o #1 de cada lista, marcas fora do radar, velocidade declarada e piso de preço |
+| 🩺 Validação | os portões de qualidade do dia, cobertura por plataforma, estabilidade e o endpoint que prova a ordenação |
+| 📄 Brief | o brief do dia — o arquivo gravado pela coleta ou remontado a partir da série |
+
+A página **não** usa os Filtros Globais da sidebar: aqueles recortam a tabela
+`coletas`, que é outra população. As regras duras valem igual na tela — nenhum
+gráfico soma posições entre plataformas, e todo delta compara a mesma
+plataforma contra o mesmo dia da semana.
+
+### RLS: leitura liberada (18/08/2026), escrita não
+
+`bestsellers` nasceu como a única tabela com RLS **ligada e sem policy**. O
+efeito era um vazio-sem-erro: com a chave `anon` o PostgREST devolve `[]` e
+HTTP 200 — sem erro, sem log —, a coleta grava normalmente (a `service_role`
+ignora RLS) e o painel fica vazio, indistinguível de "não coletou". A página
+ainda detecta esse caso comparando a tabela com a view
+`bestsellers_kpi_top10` (que é do owner e continua legível), para o dia em que
+alguém apontar o painel para outro projeto.
+
+`012_bestsellers_rls_leitura.sql` foi **aplicada em 18/08/2026**: a `anon` lê a
+tabela, e o painel funciona em qualquer host, inclusive Streamlit Cloud.
+
+**A escrita continua exigindo `service_role`** — e é aí que mora a falha que
+sobra. Sem policy de INSERT, a coleta rodando com a chave `anon` gera CSV e
+master normalmente e só o banco fica para trás, em silêncio. Antes de
+investigar "sumiu dia no painel", confira o papel da chave no PC coletor:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File scripts\check_local_scheduler.ps1
+```
+
+---
+
 ## As seis listas
 
 | Plataforma | Ordenação canônica | Mecânica | O que pode enganar |

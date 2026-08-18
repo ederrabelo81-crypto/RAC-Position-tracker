@@ -74,7 +74,7 @@ O projeto monitora em 7 marketplaces:
 - **Análise competitiva via IA** (Claude API) com relatório executivo
 
 Dados → CSV → **histórico Parquet (Drive)** + Supabase (`coletas` +
-`pricetrack_daily`, janela quente de 15 dias) → dashboard Streamlit (19 páginas)
+`pricetrack_daily`, janela quente de 15 dias) → dashboard Streamlit (20 páginas)
 → notificações Telegram (API direta).
 
 ---
@@ -361,7 +361,7 @@ Campos de insight (protagonistas desde Mai/2026): `Patrocinado?`,
 Migrations do banco: `migrations/` (PriceTrack: 001→004, inclui turno e RPC de
 piso por marca) + `docs/migrations/` (coletas: 001→009).
 
-### Dashboard Streamlit — 19 páginas
+### Dashboard Streamlit — 20 páginas
 
 ```bash
 streamlit run app.py
@@ -369,7 +369,7 @@ streamlit run app.py
 
 > **Filtros Globais (Jun/2026):** seletor global de **Fonte de Dados** (Coletas / PriceTrack / Combinado) + filtros enxutos no topo da sidebar — escolha uma vez e todas as páginas reagem. As páginas legadas **Run Collection** e **Competitive Intelligence** foram removidas (coleta agora é exclusivamente via cron/CLI; CI segue como camada de relatório no Overview).
 
-**INSIGHTS (13):**
+**INSIGHTS (14):**
 - **🏠 Overview** — métricas consolidadas, evolução de preços, tendências
 - **📅 Daily Price Vision** 🆕 — menor preço por marketplace consolidado por
   marca (default) / marca+capacidade / SKU, com recorte de turno **Manhã /
@@ -383,6 +383,13 @@ streamlit run app.py
 - **📊 Results** — detalhamento de coletas com filtros avançados
 - **📈 Price Evolution** — séries temporais por **SKU** com métrica selecionável (**Buy Box** [default] / Moda / Mediana / Médio), guarda "Dados limpos", flag de série congelada e modo "Comparar fontes" (Coletas × PriceTrack)
 - **📊 Market Analytics** — share de marcas, posicionamento, benchmarking
+- **🥇 Mais Vendidos** 🆕 — leitura das listas "Mais Vendidos" dos
+  varejistas (tabela `bestsellers`), a única variável de **resultado** da
+  coleta. KPI: % do top 10 ocupado pelo grupo Midea por plataforma, delta
+  contra o mesmo dia da semana, evolução semanal/mensal, ranking do dia,
+  mapa competitivo, portões de validação e o brief diário. Mostra a união de
+  Supabase + master CSV (banco vence em posição repetida) dizendo quantos dias
+  vieram de cada fonte. Ver `docs/BESTSELLERS.md`
 - **🗂️ Ficha do Produto** — SKU específico + screenshots
 - **🏆 BuyBox Position** — quem vence a posição #1 por produto/plataforma
 - **👑 Share of Buy Box** — vencedor da oferta por seller/marca/período
@@ -482,7 +489,7 @@ python scripts/daily_status_check.py --data 2026-05-14 --no-notify
 ```
 rac-position-tracker/
 ├── main.py                       # CLI (argparse, registry de scrapers, CSV, upload)
-├── app.py                        # Dashboard Streamlit (19 páginas + CI Claude)
+├── app.py                        # Dashboard Streamlit (20 páginas + CI Claude)
 ├── config.py                     # Keywords, plataformas, marcas, delays
 │
 ├── scrapers/
@@ -869,7 +876,7 @@ agendados executando (`collect.yml` 2×/dia, `pricetrack_daily.yml`).
   (`TELEGRAM_BOT_TOKEN`); orquestração via n8n descontinuada por falta de uso
   desde meados de Jun/2026
 - ✅ **Cliente `pricetrack_api/`** 🆕 — camada tipada da API Externa PriceTrack v1.2.0 (paginação/export/retry/métricas, 88 testes); `pricetrack_api_import.py` delega os exports do import diário a ela e `--concurrent` passa a valer de fato
-- ✅ **19 páginas** de dashboard (13 Insights + 4 Operações + 2 Admin) — removidas Run Collection e Competitive Intelligence
+- ✅ **20 páginas** de dashboard (14 Insights + 4 Operações + 2 Admin) — removidas Run Collection e Competitive Intelligence
 - ✅ **Daily Price Vision** — vista de menor preço por marketplace com turnos Manhã/Tarde/Diário, visual fiel ao mockup (KPIs, chips, sparkline 7d embutido como `<img>` base64, drill-down); drill-down corrigido com fonte "Coletas" isolada (schema `produto`↔`title` normalizado)
 - ✅ **PriceTrack com turnos intra-dia** (Manhã 08–12h / Tarde 18–22h) derivados do `collection_hour` + RPC de piso por marca (sparkline server-side) + índice `(collection_date, id)` eliminando statement timeout
 - ✅ **Filtros Globais enxutos** com seletor único de Fonte de Dados (Coletas / PriceTrack / Combinado); cache de preço/overview com TTL maior e chaves corrigidas para filtros globais de família/SKU (menor egress no Supabase)
