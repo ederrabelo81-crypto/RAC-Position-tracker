@@ -1,3 +1,1 @@
-(scrapers/amazon.py, scrapers/leroy_merlin.py, utils/adaptive_scraper.py are all source code files, and there are no build artifacts, dependencies, or temp files in the changes)
-
-(empty — output nothing)
+Nothing needs to be added to .gitignore since only a README.md file was modified and no build artifacts, dependencies, or temporary files were detected in the changes.
