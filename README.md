@@ -2,7 +2,19 @@
 
 Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ✅ Produção — arquitetura híbrida Supabase + Drive | **Última atualização:** 14 de Agosto de 2026 (v4.8)
+**Status:** ✅ Produção — arquitetura híbrida Supabase + Drive | **Última atualização:** 18 de Agosto de 2026 (v4.9)
+
+> ### 🆕 Última Atualização — Autocorreção Baseada em ML (PR #301)
+>
+> Em Agosto/2026 foi implementado um sistema de **autocorreção contínua baseada em aprendizado de máquina** para a coleta de dados. O sistema registra o resultado de cada coleta e usa esses dados históricos para recomendar automaticamente as melhores estratégias para cada plataforma, melhorando a resiliência contra bloqueios de anti-bot.
+>
+> - **Documentação técnica:** `.claude/COMMON_MISTAKES.md` (326 linhas de padrões de erro e soluções)
+> - **Guides de debug por dealer:** `.claude/CENTRALAR_DEBUG_GUIDE.md`, `.claude/DUFRIO_DEBUG_GUIDE.md`, `.claude/FRIGELAR_DEBUG_GUIDE.md`, `.claude/LEVEROS_DEBUG_GUIDE.md`
+> - **Arquitetura:** `.claude/ARCHITECTURE_MAP.md` — mapa completo do código e fluxo de dados
+> - **Quick Start:** `.claude/QUICK_START.md` — comandos essenciais e workflows comuns
+> - **Phase 2 Dealers:** `.claude/PHASE2_*.md` — status e readiness dos 4 dealers críticos (Frigelar, CentralAr, Leveros, Dufrio)
+>
+> A coleta agora conta com **circuit breaker adaptativo**, **degradação graceful** (browser → HTTP fallback) e **warm-up idempotente** de sessão CDP para plataformas com Akamai (Magalu, Casas Bahia).
 
 > ### 🗄️ As duas bases, e o que cada uma faz
 >
