@@ -54,7 +54,8 @@
 3. Key files: `bestsellers/config.py` (registro das listas),
    `bestsellers/metrics.py` (KPI e séries diária/semanal/mensal),
    `bestsellers/sources/` (um coletor por varejista)
-4. Regra dura: ranking é ORDINAL — nunca vira share de mercado
+4. Leitura no painel: dashboard page 🥇 Mais Vendidos (`app.py`)
+5. Regra dura: ranking é ORDINAL — nunca vira share de mercado
 
 ### "I need to work with PriceTrack data (price source of truth)"
 1. Load `docs/PRICETRACK_INSIGHTS.md` (pipeline + insight/improvement roadmap)

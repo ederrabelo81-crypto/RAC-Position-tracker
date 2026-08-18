@@ -150,6 +150,47 @@ consertar um parser substitui aquelas linhas em vez de duplicá-las.
 
 ---
 
+## Onde ver o resultado: dashboard 🥇 Mais Vendidos
+
+```bash
+streamlit run app.py   # menu INSIGHTS → 🥇 Mais Vendidos
+```
+
+A coleta grava em três destinos; a página lê o primeiro que responder, nesta
+ordem — **Supabase `bestsellers`** → **`data/bestsellers/master_bestsellers.csv`**
+→ **`output/bestsellers/bestsellers_*.csv`**. Quando o banco não serve, o
+motivo aparece no topo da página em vez de sumir: cair no CSV local em
+silêncio faria um banco mudo passar despercebido por semanas.
+
+| Aba | O que responde |
+|---|---|
+| 🎯 KPI top N | % do top N da Midea por plataforma no último dia, delta contra a base, e a série diária |
+| 📈 Evolução | agregação semanal/mensal e o ganho/perda em p.p. entre períodos (`tendencia_valida` visível) |
+| 🏁 Ranking do dia | a lista inteira de uma plataforma, com ou sem o recorte split hi-wall |
+| 🥊 Competição | quem ocupa o topo, o #1 de cada lista, marcas fora do radar, velocidade declarada e piso de preço |
+| 🩺 Validação | os portões de qualidade do dia, cobertura por plataforma, estabilidade e o endpoint que prova a ordenação |
+| 📄 Brief | o brief do dia — o arquivo gravado pela coleta ou remontado a partir da série |
+
+A página **não** usa os Filtros Globais da sidebar: aqueles recortam a tabela
+`coletas`, que é outra população. As regras duras valem igual na tela — nenhum
+gráfico soma posições entre plataformas, e todo delta compara a mesma
+plataforma contra o mesmo dia da semana.
+
+### Página vazia com coleta que rodou: é a RLS
+
+`bestsellers` é a única tabela do projeto com RLS **ligada e sem policy**. Com
+a chave `anon`, o PostgREST devolve `[]` e HTTP 200 — sem erro, sem log.
+A coleta grava normalmente (a `service_role` ignora RLS) e o painel fica
+vazio, indistinguível de "não coletou". A página detecta o caso comparando a
+tabela com a view `bestsellers_kpi_top10` (que é do owner e continua legível)
+e diz qual dos dois é. Saídas:
+
+* usar a chave `service_role` em `SUPABASE_KEY` — mantém a tabela fechada; ou
+* aplicar `docs/migrations/012_bestsellers_rls_leitura.sql` — libera só o
+  SELECT para `anon`/`authenticated`, necessário no Streamlit Cloud.
+
+---
+
 ## As seis listas
 
 | Plataforma | Ordenação canônica | Mecânica | O que pode enganar |

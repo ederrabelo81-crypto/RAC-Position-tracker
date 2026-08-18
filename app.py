@@ -10052,6 +10052,909 @@ def page_daily_vision() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 🥇 Mais Vendidos — leitura da série de rankings (tabela `bestsellers`)
+#
+# População DIFERENTE da tabela `coletas`: lá cada linha é a presença de um
+# anúncio numa SERP de busca (dirigida por keyword); aqui cada linha é uma
+# POSIÇÃO da lista ordenada por vendas do varejista. Por isso a página não usa
+# os Filtros Globais — plataforma, marca e período resolvem contra outra base —
+# e carrega a série inteira de uma vez, filtrando em memória (a série tem
+# ordem de centenas de linhas por dia).
+#
+# REGRA DURA (docs/BESTSELLERS.md, codificada em `bestsellers.metrics`):
+# ranking é ORDINAL. Nada aqui soma posições entre plataformas nem converte
+# ranking em share de mercado — isso vem de GfK/Neotrust. Todo delta compara a
+# MESMA plataforma contra o MESMO dia da semana.
+# ---------------------------------------------------------------------------
+
+_BS_TABELA = "bestsellers"
+_BS_VIEW_KPI = "bestsellers_kpi_top10"
+_BS_LIMITE = 200_000
+
+# Colunas que são IDENTIFICADOR, nunca número — mesmo motivo de
+# `bestsellers.storage._DTYPES_TEXTO`: um `sku_plataforma` só de dígitos volta
+# do CSV como "200000002.0" e o pareamento entre dias não acha item nenhum,
+# sem erro nenhum no log.
+_BS_DTYPES_TEXTO = {
+    "sku_plataforma": "string",
+    "run_id": "string",
+    "data": "string",
+    "horario": "string",
+}
+
+
+def _bs_caminhos() -> tuple:
+    """(master histórico, diretório dos CSVs do dia), em caminho absoluto."""
+    from bestsellers.config import HISTORICO_PATH, OUTPUT_DIR
+    return PROJECT_ROOT / HISTORICO_PATH, PROJECT_ROOT / OUTPUT_DIR
+
+
+def _bs_alinhar(df: pd.DataFrame) -> pd.DataFrame:
+    """Devolve o frame nas colunas canônicas de `models.COLUNAS`, nessa ordem."""
+    from bestsellers.models import COLUNAS
+    out = df.copy()
+    for coluna in COLUNAS:
+        if coluna not in out.columns:
+            out[coluna] = None
+    return out[list(COLUNAS)]
+
+
+def _bs_ler_csv(caminho: Path) -> pd.DataFrame:
+    """CSV da série no formato do coletor (`;` + UTF-8 BOM), ou frame vazio."""
+    try:
+        lido = pd.read_csv(
+            caminho, sep=";", encoding="utf-8-sig", dtype=_BS_DTYPES_TEXTO
+        )
+    except Exception:
+        return pd.DataFrame()
+    return _bs_alinhar(lido)
+
+
+def _bs_motivo_tabela_vazia(client) -> str:
+    """Explica um SELECT que voltou vazio SEM erro.
+
+    `bestsellers` é a única tabela do projeto com RLS ligada e sem policy de
+    leitura (docs/BESTSELLERS.md). Com a chave `anon` o PostgREST responde
+    `[]` com HTTP 200 — indistinguível de "não coletou", que é exatamente o
+    sintoma de uma coleta que roda e não aparece em lugar nenhum.
+
+    A view `bestsellers_kpi_top10` pertence ao owner e não é
+    `security_invoker`, então segue legível: se ela tem linha e a tabela não,
+    o dado existe e quem está barrando é a RLS.
+    """
+    try:
+        resp = client.table(_BS_VIEW_KPI).select("data").limit(1).execute()
+        view_tem_dado = bool(getattr(resp, "data", None))
+    except Exception:
+        view_tem_dado = False
+
+    if view_tem_dado:
+        return (
+            f"A tabela `{_BS_TABELA}` respondeu **vazia**, mas a view "
+            f"`{_BS_VIEW_KPI}` tem linhas — a coleta gravou e é a **leitura** "
+            "que está bloqueada. A tabela tem Row Level Security ligada e "
+            "nenhuma policy de SELECT: com a chave `anon` o PostgREST devolve "
+            "zero linhas com HTTP 200, sem erro. Saídas: usar a chave "
+            "`service_role` em `SUPABASE_KEY`, ou aplicar "
+            "`docs/migrations/012_bestsellers_rls_leitura.sql`."
+        )
+    return (
+        f"A tabela `{_BS_TABELA}` está vazia para esta credencial. Se a coleta "
+        "rodou, confira o papel da chave (`service_role` escreve e lê; `anon` "
+        "esbarra na RLS desta tabela) e o log em `logs/bestsellers_*.log`."
+    )
+
+
+def _bs_ler_supabase(limit: int) -> tuple:
+    """Série do banco. `(None, motivo)` quando o banco não pôde ser lido."""
+    client = _get_supabase()
+    if client is None:
+        return None, (
+            "Supabase não configurado — `SUPABASE_URL`/`SUPABASE_KEY` ausentes "
+            "do `.env` (ou de `st.secrets`)."
+        )
+
+    linhas: list = []
+    offset = 0
+    try:
+        while len(linhas) < limit:
+            resp = (
+                client.table(_BS_TABELA)
+                .select("*")
+                .order("data", desc=True)
+                .order("id", desc=True)
+                .range(offset, offset + _SUPABASE_PAGE - 1)
+                .execute()
+            )
+            if not resp.data:
+                break
+            linhas.extend(resp.data)
+            if len(resp.data) < _SUPABASE_PAGE:
+                break
+            offset += _SUPABASE_PAGE
+    except Exception as exc:
+        if "does not exist" in str(exc).lower() or "PGRST205" in str(exc):
+            return None, (
+                f"A tabela `{_BS_TABELA}` não existe neste projeto Supabase. "
+                "Aplique `docs/migrations/011_bestsellers_diario.sql`."
+            )
+        return None, f"Consulta à tabela `{_BS_TABELA}` falhou: {exc}"
+
+    if not linhas:
+        return pd.DataFrame(), _bs_motivo_tabela_vazia(client)
+    return _bs_alinhar(pd.DataFrame(linhas)), ""
+
+
+def _bs_rotulo_caminho(caminho: Path) -> str:
+    """Caminho relativo ao projeto quando dá; absoluto quando não dá.
+
+    `relative_to` levanta quando o arquivo está fora da árvore do projeto —
+    e um rótulo de exibição não pode derrubar a página.
+    """
+    try:
+        return str(caminho.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(caminho)
+
+
+def _bs_ler_disco() -> tuple:
+    """Série do disco: master histórico e, na falta dele, os CSVs do dia.
+
+    O coletor grava o CSV bruto ANTES de tentar o banco, justamente para que a
+    evidência sobreviva a uma falha de upload (docs/BESTSELLERS.md). Quando o
+    dashboard roda na mesma máquina do coletor, é essa cópia que impede a
+    página de ficar em branco.
+    """
+    master, saida = _bs_caminhos()
+
+    if master.exists():
+        df = _bs_ler_csv(master)
+        if len(df):
+            return df, _bs_rotulo_caminho(master)
+
+    partes = [_bs_ler_csv(p) for p in sorted(saida.glob("bestsellers_*.csv"))]
+    partes = [p for p in partes if len(p)]
+    if partes:
+        return (
+            pd.concat(partes, ignore_index=True),
+            f"{_bs_rotulo_caminho(saida)}/bestsellers_*.csv",
+        )
+    return pd.DataFrame(), ""
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def query_bestsellers(limit: int = _BS_LIMITE) -> tuple:
+    """
+    Carrega a série de mais vendidos: Supabase primeiro, disco como rede.
+
+    Args:
+        limit: teto de linhas lidas do banco.
+
+    Returns:
+        Tupla `(df, origem, aviso)`. `origem` é o rótulo da fonte que
+        respondeu (vazio quando nenhuma respondeu) e `aviso` carrega o motivo
+        de o banco não ter servido — exibido mesmo quando o disco salvou a
+        leitura. Sem esse aviso, cair no CSV local pareceria sucesso e o banco
+        seguiria mudo por semanas.
+    """
+    df, motivo = _bs_ler_supabase(limit)
+    if df is not None and len(df):
+        return df, f"Supabase · tabela `{_BS_TABELA}`", ""
+
+    disco, caminho = _bs_ler_disco()
+    if len(disco):
+        return disco, f"CSV local · `{caminho}`", motivo
+    return pd.DataFrame(), "", motivo
+
+
+def _bs_specs() -> dict:
+    """Registro das listas monitoradas, por chave de plataforma."""
+    from bestsellers.config import SOURCES
+    return dict(SOURCES)
+
+
+def _bs_nome(chave, specs: dict) -> str:
+    """Nome de exibição da plataforma (cai na própria chave se não registrada)."""
+    spec = specs.get(str(chave))
+    return spec.nome if spec is not None else str(chave)
+
+
+def _bs_marcas_monitoradas() -> tuple:
+    """Marcas do painel (`config.BRANDS`), para apontar quem aparece de fora."""
+    try:
+        from config import BRANDS
+        return tuple(BRANDS)
+    except Exception:
+        return ()
+
+
+def _bs_style(df: pd.DataFrame, col_grupo: str = "grupo_midea"):
+    """Styler que destaca as linhas do GRUPO Midea.
+
+    `_style_midea_df` destaca a marca exatamente "Midea"; aqui o corte é o do
+    GfK (Midea, Carrier, Springer, Comfee) e quem manda é o booleano
+    `grupo_midea` já gravado na série pelo coletor.
+    """
+    if col_grupo not in df.columns or df.size > _STYLE_CELL_THRESHOLD:
+        return df.style
+
+    def _linha(row):
+        if bool(row[col_grupo]):
+            return ["background-color: #eff6ff; font-weight: 700; color: #1d4ed8"] * len(row)
+        return [""] * len(row)
+
+    return df.style.apply(_linha, axis=1)
+
+
+def _bs_sem_dados(aviso: str) -> None:
+    """Painel de diagnóstico quando não há série nenhuma para exibir."""
+    st.error(
+        aviso or
+        "Nenhuma coleta de mais vendidos encontrada — nem no Supabase, nem em "
+        "`data/bestsellers/`, nem em `output/bestsellers/`.",
+        icon="🚫",
+    )
+    st.markdown(
+        "**Onde a série deveria estar** (docs/BESTSELLERS.md):\n\n"
+        "| Destino | O quê |\n|---|---|\n"
+        f"| Supabase `{_BS_TABELA}` | série validada — é o que esta página lê "
+        "primeiro |\n"
+        "| `data/bestsellers/master_bestsellers.csv` | master histórico, "
+        "fallback local |\n"
+        "| `output/bestsellers/bestsellers_<data>.csv` | evidência bruta do "
+        "dia, gravada antes de qualquer upload |\n"
+    )
+    st.markdown(
+        "**Rodar a coleta** (PC coletor Windows, dia útil 09:30 BRT — Amazon, "
+        "ML e Shopee exigem IP residencial e sessão logada):\n"
+        "```bash\n"
+        "python scripts/collect_bestsellers.py\n"
+        "python scripts/collect_bestsellers.py --plataformas amazon --no-headless\n"
+        "```"
+    )
+
+
+def _bs_cards_kpi(kpi_dia: pd.DataFrame, specs: dict, n: int) -> None:
+    """Um card por plataforma: KPI do dia e delta contra a base de comparação."""
+    if not len(kpi_dia):
+        return
+    registros = kpi_dia.to_dict("records")
+    for inicio in range(0, len(registros), 3):
+        for coluna, registro in zip(st.columns(3), registros[inicio:inicio + 3]):
+            with coluna:
+                pct = registro.get("pct_topN")
+                delta = registro.get("delta_pp")
+                melhor = registro.get("melhor_rank")
+                st.metric(
+                    label=_bs_nome(registro["plataforma"], specs),
+                    value="—" if pd.isna(pct) else f"{pct:.0f}%",
+                    delta=None if pd.isna(delta) else f"{delta:+.1f} p.p.",
+                    help=(
+                        f"% das {int(registro.get('itens_topN') or 0)} posições "
+                        f"do top {n} (split hi-wall) ocupadas pelo grupo Midea. "
+                        "Delta contra a última leitura do mesmo dia da semana."
+                    ),
+                )
+                st.caption(
+                    "melhor posição: "
+                    + ("ausente" if pd.isna(melhor) else f"#{int(melhor)}")
+                )
+
+
+def page_bestsellers() -> None:
+    """Página 🥇 Mais Vendidos — a única variável de RESULTADO da coleta.
+
+    A coleta principal (`main.py`) mede OFERTA: preço, posição e buy box. Ela
+    não contém volume de venda. As listas "Mais Vendidos" dos varejistas são a
+    única variável de resultado disponível no nível do SKU, e esta página é a
+    leitura delas.
+
+    KPI único: **% do top N ocupado pelo grupo Midea, por plataforma, por
+    dia**, no escopo split hi-wall. Todo o resto é diagnóstico de apoio.
+    """
+    from bestsellers import metrics, report, validate
+    from bestsellers.config import TIPO_ESCOPO_KPI, TOP_N, sources_ativos
+
+    st.title("🥇 Mais Vendidos")
+    st.caption(
+        "Ranking das listas ordenadas por vendas dos varejistas — a única "
+        "variável de **resultado** da coleta. Ranking é medida **ordinal**: "
+        "não soma entre plataformas e não vira share de mercado (isso vem de "
+        "GfK/Neotrust). Comparação só entre a mesma plataforma, no mesmo dia "
+        "da semana."
+    )
+
+    df_bruto, origem, aviso = query_bestsellers()
+    if not len(df_bruto):
+        _bs_sem_dados(aviso)
+        return
+    if aviso:
+        st.warning(aviso, icon="⚠️")
+
+    specs = _bs_specs()
+    serie = metrics.preparar(df_bruto)
+    if not len(serie):
+        _bs_sem_dados("A série carregou sem nenhuma data válida na coluna `data`.")
+        return
+
+    datas = sorted(serie["data"].dt.date.unique())
+    plataformas_disponiveis = sorted(serie["plataforma"].dropna().unique())
+
+    # ── Controles ─────────────────────────────────────────────────────────
+    with st.sidebar:
+        st.subheader("Filtros — Mais Vendidos")
+        st.caption(
+            "Esta página não usa os Filtros Globais: a série de mais vendidos "
+            "é outra população."
+        )
+        intervalo_sel = st.date_input(
+            "Período",
+            value=(datas[0], datas[-1]),
+            min_value=datas[0],
+            max_value=datas[-1],
+            format="DD/MM/YYYY",
+            key="bs_dates",
+        )
+        inicio = intervalo_sel[0] if len(intervalo_sel) else datas[0]
+        fim = intervalo_sel[1] if len(intervalo_sel) > 1 else datas[-1]
+
+        sel_plataformas = st.multiselect(
+            "Plataformas",
+            plataformas_disponiveis,
+            format_func=lambda k: _bs_nome(k, specs),
+            placeholder="Todas as plataformas",
+            key="bs_plataformas",
+        )
+        n = int(st.number_input(
+            "Tamanho do topo (N)", min_value=3, max_value=50, value=TOP_N, step=1,
+            help="O KPI é o % do top N ocupado pelo grupo Midea. Padrão: 10.",
+            key="bs_top_n",
+        ))
+        if st.button("🔄 Recarregar série", use_container_width=True, key="bs_reload"):
+            query_bestsellers.clear()
+            st.rerun()
+
+    if sel_plataformas:
+        serie = serie[serie["plataforma"].isin(sel_plataformas)]
+    if not len(serie):
+        st.warning("Nenhuma linha para as plataformas selecionadas.")
+        return
+
+    janela = serie[(serie["data"].dt.date >= inicio) & (serie["data"].dt.date <= fim)]
+    if not len(janela):
+        st.warning(
+            f"Sem coleta entre {inicio:%d/%m/%Y} e {fim:%d/%m/%Y}. A série "
+            f"disponível vai de {datas[0]:%d/%m/%Y} a {datas[-1]:%d/%m/%Y}."
+        )
+        return
+
+    # O dia analisado é o último DENTRO da janela; a base de comparação, ao
+    # contrário, é procurada na série INTEIRA — encurtar o período não pode
+    # inventar um "sem base" quando a leitura anterior existe.
+    dia = janela["data"].max()
+    hoje = serie[serie["data"] == dia]
+    historico = serie[serie["data"] < dia]
+    base, mesmo_dia, intervalo = metrics.escolher_base_comparacao(historico, dia)
+    tem_base = base is not None and len(base) > 0
+
+    # Endpoint diferente = outra população: o KPI do dia continua publicado,
+    # mas o delta dessas plataformas sai vazio (mesma exclusão do brief).
+    trocaram = (
+        [o.plataforma for o in validate.comparar_endpoints(hoje, base)]
+        if tem_base else []
+    )
+
+    kpi_dia = (
+        metrics.delta_diario(hoje, base, n=n, excluir=trocaram)
+        if tem_base
+        else metrics.kpi_topo(hoje, n=n).assign(delta_pp=float("nan"))
+    )
+
+    # Portões de qualidade do dia: alimentam a aba de validação e o brief.
+    # "Plataforma ausente" só faz sentido contra o que o usuário pediu — sem
+    # o recorte, filtrar a Amazon acusaria as outras cinco de sumidas.
+    esperadas = [
+        chave for chave in sources_ativos()
+        if not sel_plataformas or chave in sel_plataformas
+    ]
+    ocorrencias = validate.validar(hoje, esperadas=esperadas)
+
+    st.caption(
+        f"Fonte: {origem} · {len(serie):,} linhas".replace(",", ".")
+        + f" · {len(datas)} data(s) na série · último dia coletado: "
+        f"**{dia:%d/%m/%Y} ({metrics.nome_dia_semana(dia)})**"
+    )
+    _bs_cards_kpi(kpi_dia, specs, n)
+
+    if not tem_base:
+        st.info(
+            "Primeira leitura da série: sem base de comparação, os cards saem "
+            "sem delta. O motor compara sempre contra a última data do MESMO "
+            "dia da semana.",
+            icon="ℹ️",
+        )
+    elif not mesmo_dia:
+        st.warning(
+            f"Base de comparação: {base['data'].iloc[0]:%d/%m/%Y} "
+            f"({metrics.nome_dia_semana(base['data'].iloc[0])}, {intervalo} "
+            "dias atrás) — **dia da semana diferente**. Sábado promocional "
+            "contra segunda produz movimento de calendário, não de competição: "
+            "o delta não é comparável.",
+            icon="⚠️",
+        )
+    else:
+        st.caption(
+            f"Base de comparação: {base['data'].iloc[0]:%d/%m/%Y} "
+            f"({metrics.nome_dia_semana(base['data'].iloc[0])}, {intervalo} "
+            "dias atrás) — mesmo dia da semana."
+        )
+    if trocaram:
+        st.warning(
+            "Endpoint de coleta mudou desde a leitura anterior em: "
+            + ", ".join(_bs_nome(p, specs) for p in trocaram)
+            + ". O delta dessas plataformas fica vazio — a URL nova é outra "
+            "população, e a diferença mediria troca de amostra.",
+            icon="🔀",
+        )
+
+    st.divider()
+
+    tab_kpi, tab_evo, tab_rank, tab_comp, tab_val, tab_brief = st.tabs([
+        f"🎯 KPI top {n}", "📈 Evolução", "🏁 Ranking do dia",
+        "🥊 Competição", "🩺 Validação", "📄 Brief",
+    ])
+
+    # ── KPI do dia + série diária ─────────────────────────────────────────
+    with tab_kpi:
+        st.subheader(f"KPI do dia · {dia:%d/%m/%Y}")
+        renomear = {
+            "plataforma": "Plataforma",
+            "pct_topN": f"% top {n}",
+            "delta_pp": "Δ (p.p.)",
+            "pct_topN_anterior": f"% top {n} anterior",
+            "melhor_rank": "Melhor posição",
+            "melhor_rank_anterior": "Melhor posição anterior",
+            "n_posicoes": "Posições Midea na lista",
+            "itens_topN": f"Itens no top {n}",
+        }
+        tabela = kpi_dia.copy()
+        tabela["plataforma"] = tabela["plataforma"].map(lambda k: _bs_nome(k, specs))
+        exibir = tabela[[c for c in renomear if c in tabela.columns]].rename(
+            columns=renomear
+        )
+        st.dataframe(exibir, use_container_width=True, hide_index=True)
+        st.caption(
+            f"O denominador (**Itens no top {n}**) vem junto de propósito: numa "
+            "lista contaminada, “50%” pode ser 1 split em 2."
+        )
+        _csv_download_btn(
+            exibir, f"bestsellers_kpi_{dia:%Y-%m-%d}.csv", key="bs_kpi_csv"
+        )
+
+        st.subheader("Série diária do KPI")
+        kpi_serie = metrics.kpi_topo(janela, n=n)
+        if len(kpi_serie) and kpi_serie["data"].nunique() > 1:
+            kpi_serie = kpi_serie.assign(
+                Plataforma=kpi_serie["plataforma"].map(lambda k: _bs_nome(k, specs))
+            )
+            fig = px.line(
+                kpi_serie, x="data", y="pct_topN", color="Plataforma", markers=True,
+                labels={"data": "Data", "pct_topN": f"% do top {n}"},
+                title=f"% do top {n} ocupado pelo grupo Midea, por plataforma",
+            )
+            _apply_chart_style(fig)
+            st.plotly_chart(fig, use_container_width=True)
+
+            fig_rank = px.line(
+                kpi_serie, x="data", y="melhor_rank", color="Plataforma",
+                markers=True,
+                labels={"data": "Data", "melhor_rank": "Melhor posição Midea"},
+                title="Melhor posição do grupo Midea (eixo invertido: mais alto = melhor)",
+            )
+            fig_rank.update_yaxes(autorange="reversed")
+            _apply_chart_style(fig_rank)
+            st.plotly_chart(fig_rank, use_container_width=True)
+            st.caption(
+                "Cada linha é uma plataforma comparada **consigo mesma** ao "
+                "longo do tempo. As listas têm tamanhos e mecânicas diferentes "
+                "— cruzar as curvas entre si não significa nada."
+            )
+        else:
+            st.info(
+                "A série diária precisa de pelo menos duas datas no período. "
+                "Até lá, o número do dia é a leitura disponível.",
+                icon="ℹ️",
+            )
+
+    # ── Evolução semanal / mensal ─────────────────────────────────────────
+    with tab_evo:
+        st.subheader("Ganho e perda de share de topo de ranking")
+        periodos = {
+            "Semanal": metrics.PERIODO_SEMANAL,
+            "Mensal": metrics.PERIODO_MENSAL,
+            "Diário": metrics.PERIODO_DIARIO,
+        }
+        escolha = st.radio(
+            "Agregação", list(periodos), horizontal=True, key="bs_periodo",
+            help="A agregação é a MÉDIA das leituras do período — nunca a "
+                 "soma, que não tem significado para medida ordinal.",
+        )
+        variacao = metrics.variacao_periodo(
+            metrics.serie_agregada(janela, periodo=periodos[escolha], n=n)
+        )
+
+        if not len(variacao):
+            st.info("Sem leituras suficientes no período para agregar.", icon="ℹ️")
+        else:
+            visao = variacao.copy()
+            visao["plataforma"] = visao["plataforma"].map(lambda k: _bs_nome(k, specs))
+            # `endpoints` é tupla (o Arrow não serializa) e sua informação já
+            # chegou traduzida em direcao='endpoint mudou'.
+            visao = visao.drop(columns=[c for c in ("endpoints",) if c in visao.columns])
+            visao = visao.rename(columns={
+                "periodo": "Período",
+                "plataforma": "Plataforma",
+                "n_leituras": "Leituras",
+                "pct_topN_medio": f"% top {n} (médio)",
+                "pct_topN_min": "Mín.",
+                "pct_topN_max": "Máx.",
+                "melhor_rank": "Melhor posição",
+                "pct_topN_anterior": "Período anterior",
+                "delta_pp": "Δ (p.p.)",
+                "direcao": "Direção",
+                "tendencia_valida": "Tendência válida",
+            })
+            st.dataframe(visao, use_container_width=True, hide_index=True)
+            _csv_download_btn(
+                visao, f"bestsellers_evolucao_{escolha.lower()}.csv", key="bs_evo_csv"
+            )
+
+            com_delta = variacao[variacao["delta_pp"].notna()]
+            if len(com_delta):
+                com_delta = com_delta.assign(
+                    Plataforma=com_delta["plataforma"].map(lambda k: _bs_nome(k, specs))
+                )
+                fig_delta = px.bar(
+                    com_delta, x="periodo", y="delta_pp", color="Plataforma",
+                    barmode="group",
+                    labels={"periodo": "Período",
+                            "delta_pp": "Δ em pontos percentuais"},
+                    title=f"Δ do % do top {n} contra o período anterior",
+                )
+                _apply_chart_style(fig_delta, hovermode="closest")
+                st.plotly_chart(fig_delta, use_container_width=True)
+
+            if ("tendencia_valida" in variacao.columns
+                    and not bool(variacao["tendencia_valida"].any())):
+                st.warning(
+                    "Nenhuma linha chegou a 3 leituras no período: os números "
+                    "existem, mas **não sustentam tendência**.",
+                    icon="⚠️",
+                )
+            st.caption(
+                "Isto é share de **topo de ranking** — medida de prateleira "
+                "que antecipa share. Share de mercado vem de GfK/Neotrust."
+            )
+
+    # ── Ranking do dia ────────────────────────────────────────────────────
+    with tab_rank:
+        col_data, col_plat, col_escopo = st.columns([1, 1, 1])
+        datas_janela = sorted(janela["data"].dt.date.unique(), reverse=True)
+        with col_data:
+            data_sel = st.selectbox(
+                "Data", datas_janela,
+                format_func=lambda d: d.strftime("%d/%m/%Y"),
+                key="bs_rank_data",
+            )
+        do_dia = janela[janela["data"].dt.date == data_sel]
+        plats = sorted(do_dia["plataforma"].dropna().unique())
+        with col_plat:
+            plat_sel = st.selectbox(
+                "Plataforma", plats, format_func=lambda k: _bs_nome(k, specs),
+                key="bs_rank_plat",
+            ) if plats else None
+        with col_escopo:
+            so_escopo = st.checkbox(
+                "Somente split hi-wall (escopo do KPI)", value=True,
+                key="bs_rank_escopo",
+                help="Desmarque para ver a lista como o varejista publica — "
+                     "inclusive janela, portátil e a contaminação da categoria.",
+            )
+
+        if plat_sel is None:
+            st.info("Nenhuma plataforma coletada nesta data.", icon="ℹ️")
+        else:
+            lista = do_dia[do_dia["plataforma"] == plat_sel].sort_values("rank")
+            if so_escopo:
+                lista = lista[lista["tipo"] == TIPO_ESCOPO_KPI]
+
+            visiveis = [
+                "rank", "titulo", "marca", "grupo_midea", "btu", "tipo", "preco",
+                "vendidos", "base_vendidos", "seller", "rating", "reviews",
+                "patrocinado", "url_produto",
+            ]
+            tabela_rank = lista[[c for c in visiveis if c in lista.columns]]
+            st.dataframe(
+                _bs_style(tabela_rank),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "rank": st.column_config.NumberColumn("#", width="small"),
+                    "titulo": st.column_config.TextColumn("Produto", width="large"),
+                    "marca": st.column_config.TextColumn("Marca"),
+                    "grupo_midea": st.column_config.CheckboxColumn("Grupo Midea"),
+                    "btu": st.column_config.NumberColumn("BTU"),
+                    "tipo": st.column_config.TextColumn("Tipo"),
+                    "preco": st.column_config.NumberColumn("Preço", format="R$ %.2f"),
+                    "vendidos": st.column_config.NumberColumn("Vendidos"),
+                    "base_vendidos": st.column_config.TextColumn("Base"),
+                    "seller": st.column_config.TextColumn("Seller"),
+                    "rating": st.column_config.NumberColumn("Nota", format="%.1f"),
+                    "reviews": st.column_config.NumberColumn("Reviews"),
+                    "patrocinado": st.column_config.CheckboxColumn("Patrocinado?"),
+                    "url_produto": st.column_config.LinkColumn(
+                        "Link", display_text="Abrir ↗", width="small",
+                    ),
+                },
+            )
+            spec = specs.get(plat_sel)
+            if spec is not None:
+                st.caption(
+                    f"Ordenação: `{spec.parametro_ordenacao}` · mecânica: "
+                    f"**{spec.mecanica}** · base de `vendidos`: "
+                    f"**{spec.base_vendidos or 'não declarada'}**"
+                )
+                st.warning(spec.armadilha, icon="🪤")
+            _csv_download_btn(
+                lista, f"bestsellers_{plat_sel}_{data_sel}.csv", key="bs_rank_csv"
+            )
+
+    # ── Competição ────────────────────────────────────────────────────────
+    with tab_comp:
+        st.subheader(f"Quem ocupa o top {n} · {dia:%d/%m/%Y}")
+        presenca = metrics.presenca_por_marca(hoje, n=n)
+        if len(presenca):
+            presenca = presenca.assign(
+                Plataforma=presenca["plataforma"].map(lambda k: _bs_nome(k, specs))
+            )
+            fig_pres = px.bar(
+                presenca, x="Plataforma", y="posicoes", color="marca",
+                color_discrete_map=_brand_color_map(presenca["marca"]),
+                labels={"posicoes": f"Posições no top {n}", "marca": "Marca"},
+                title=f"Posições do top {n} por marca, em cada plataforma",
+            )
+            _apply_chart_style(fig_pres, hovermode="closest")
+            st.plotly_chart(fig_pres, use_container_width=True)
+            st.caption(
+                "Contagem por plataforma de propósito: empilhar posições de "
+                "plataformas diferentes trataria ordinal como cardinal."
+            )
+            st.dataframe(
+                _style_midea_df(
+                    presenca[["Plataforma", "marca", "posicoes", "melhor_rank"]]
+                    .rename(columns={"marca": "Marca", "posicoes": "Posições",
+                                     "melhor_rank": "Melhor posição"}),
+                    brand_col="Marca",
+                ),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("Sem itens no escopo split hi-wall nesta data.", icon="ℹ️")
+
+        st.subheader("O #1 de cada lista")
+        primeiros = metrics.lideres(hoje)
+        if len(primeiros):
+            primeiros = primeiros.assign(
+                Plataforma=primeiros["plataforma"].map(lambda k: _bs_nome(k, specs))
+            )
+            st.dataframe(
+                _style_midea_df(
+                    primeiros[["Plataforma", "marca", "btu", "preco", "titulo"]]
+                    .rename(columns={"marca": "Marca", "btu": "BTU",
+                                     "preco": "Preço (R$)", "titulo": "Produto"}),
+                    brand_col="Marca",
+                ),
+                use_container_width=True, hide_index=True,
+            )
+            entrada = primeiros[
+                primeiros["btu"].isin([9000, 12000]) & (primeiros["preco"] < 1800)
+            ]
+            if len(entrada):
+                st.info(
+                    "#1 abaixo de R$ 1.800 em 9K/12K em: "
+                    + ", ".join(entrada["Plataforma"])
+                    + ". A disputa do dia é de entrada — a linha de entrada é a "
+                    "arma, não a premium.",
+                    icon="💡",
+                )
+
+        fora = metrics.marcas_fora_do_radar(hoje, _bs_marcas_monitoradas(), n=n)
+        if fora:
+            st.subheader("Marcas fora da lista monitorada no topo")
+            st.write(", ".join(fora))
+            st.caption(
+                "Cada aparição recorrente é um pedido de inclusão no painel "
+                "(`config.BRANDS`)."
+            )
+
+        velocidade = metrics.velocidade_declarada(hoje)
+        if len(velocidade):
+            st.subheader("Velocidade declarada (unidades/mês)")
+            st.dataframe(
+                _style_midea_df(
+                    velocidade.rename(columns={
+                        "marca": "Marca", "itens": "Itens", "un_mes": "Un./mês",
+                        "preco_mediano": "Preço mediano", "pct": "% da lista",
+                    }),
+                    brand_col="Marca",
+                ),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(
+                "Agrega **somente** `base_vendidos = 'mes'` (hoje, só a Shopee). "
+                "O “+5mil vendidos” do Mercado Livre é acumulado vitalício e "
+                "somá-lo aqui produziria número sem unidade. O `%` é share "
+                "**dentro da lista capturada** — jamais share de mercado."
+            )
+
+        if tem_base:
+            movimentos = metrics.movimentos_relevantes(
+                metrics.piso_preco(hoje, base, excluir=trocaram)
+            )
+            if len(movimentos):
+                st.subheader("Movimento do piso de preço (9K e 12K)")
+                movimentos = movimentos.assign(
+                    Plataforma=movimentos["plataforma"].map(lambda k: _bs_nome(k, specs))
+                )
+                st.dataframe(
+                    _style_midea_df(
+                        movimentos[["Plataforma", "marca", "btu", "anterior",
+                                    "hoje", "delta_pct"]]
+                        .rename(columns={"marca": "Marca", "btu": "BTU",
+                                         "anterior": "Piso anterior",
+                                         "hoje": "Piso hoje",
+                                         "delta_pct": "Δ %"}),
+                        brand_col="Marca",
+                    ),
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption(
+                    "Piso = menor preço **praticado** (nunca o preço “de”). "
+                    "Movimento relevante = 2% ou mais, e só entre datas do "
+                    "mesmo dia da semana."
+                )
+
+    # ── Validação ─────────────────────────────────────────────────────────
+    with tab_val:
+        st.subheader(f"Portões de qualidade · {dia:%d/%m/%Y}")
+        if not ocorrencias:
+            st.success("Sem ocorrências: todas as plataformas passaram nos portões.")
+        else:
+            st.dataframe(
+                pd.DataFrame([{
+                    "Nível": o.nivel,
+                    "Plataforma": _bs_nome(o.plataforma, specs),
+                    "Ocorrência": o.mensagem,
+                } for o in ocorrencias]),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(
+                "**QUARENTENA** é o único nível que remove dados da análise — "
+                "sem o parâmetro de ordenação, a lista não é de mais vendidos."
+            )
+
+        st.subheader("Cobertura da coleta")
+        cobertura = (
+            janela.assign(_dia=janela["data"].dt.date)
+            .pivot_table(index="_dia", columns="plataforma", values="rank",
+                         aggfunc="count")
+            .sort_index(ascending=False)
+            .rename(columns=lambda k: _bs_nome(k, specs))
+        )
+        cobertura.index = [d.strftime("%d/%m/%Y") for d in cobertura.index]
+        cobertura.index.name = "Data"
+        st.dataframe(cobertura, use_container_width=True)
+        st.caption(
+            "Itens capturados por dia e plataforma. Célula vazia = plataforma "
+            "ausente naquele dia — lacuna fica vazia, nada é interpolado."
+        )
+
+        if tem_base:
+            st.subheader("Estabilidade do ranking")
+            estab = metrics.estabilidade(hoje, base, excluir=trocaram)
+            if len(estab):
+                estab = estab.assign(
+                    Plataforma=estab["plataforma"].map(lambda k: _bs_nome(k, specs))
+                )
+                st.dataframe(
+                    estab[["Plataforma", "itens_comuns", "permanencia_pct",
+                           "rank_inalterado_pct", "desloc_mediano", "veredito"]]
+                    .rename(columns={
+                        "itens_comuns": "Itens em comum",
+                        "permanencia_pct": "Permanência %",
+                        "rank_inalterado_pct": "Posição inalterada %",
+                        "desloc_mediano": "Deslocamento mediano",
+                        "veredito": "Veredito",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption(
+                    "Ranking de venda real se mexe. Acima de 35% dos itens "
+                    "parados entre duas leituras o veredito vira **CURADORIA "
+                    "SUSPEITA** — foi assim que a Leroy Merlin se denunciou."
+                )
+            else:
+                st.info(
+                    "Poucos itens em comum entre as duas leituras para medir "
+                    "estabilidade (mínimo de 5 por plataforma).",
+                    icon="ℹ️",
+                )
+
+        st.subheader("Evidência da ordenação")
+        evidencia = (
+            hoje.groupby("plataforma")
+            .agg(itens=("rank", "size"),
+                 endpoint=("endpoint", "first"),
+                 ordenacao=("parametro_ordenacao", "first"),
+                 mecanica=("mecanica", "first"))
+            .reset_index()
+        )
+        evidencia["plataforma"] = evidencia["plataforma"].map(lambda k: _bs_nome(k, specs))
+        st.dataframe(
+            evidencia.rename(columns={
+                "plataforma": "Plataforma", "itens": "Itens",
+                "endpoint": "Endpoint chamado", "ordenacao": "Ordenação",
+                "mecanica": "Mecânica",
+            }),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption(
+            "A prova é o **endpoint efetivamente chamado**, nunca a URL "
+            "declarada no registro."
+        )
+        with st.expander("🪤 O que engana em cada lista"):
+            for chave in sorted(hoje["plataforma"].dropna().unique()):
+                spec = specs.get(chave)
+                if spec is not None:
+                    st.markdown(f"**{spec.nome}** — {spec.armadilha}")
+
+    # ── Brief ─────────────────────────────────────────────────────────────
+    with tab_brief:
+        st.subheader(f"Brief de {dia:%d/%m/%Y}")
+        _, saida = _bs_caminhos()
+        arquivo = saida / f"brief_bestsellers_{dia:%Y-%m-%d}.md"
+        texto = ""
+        if arquivo.exists():
+            texto = arquivo.read_text(encoding="utf-8")
+            st.caption(
+                f"Brief gravado pela coleta: `{_bs_rotulo_caminho(arquivo)}`"
+            )
+        else:
+            try:
+                texto = report.brief_diario(
+                    hoje, historico, ocorrencias,
+                    marcas_monitoradas=_bs_marcas_monitoradas(), n=n,
+                )
+                st.caption(
+                    "Brief remontado agora a partir da série — o arquivo do dia "
+                    "não está nesta máquina."
+                )
+            except Exception as exc:  # tabulate ausente, série incompleta…
+                st.info(f"Não foi possível montar o brief: {exc}", icon="ℹ️")
+
+        if texto:
+            st.markdown(texto)
+            st.download_button(
+                "⬇️ Baixar brief (.md)", data=texto.encode("utf-8"),
+                file_name=f"brief_bestsellers_{dia:%Y-%m-%d}.md",
+                mime="text/markdown", key="bs_brief_dl",
+            )
+        st.caption(
+            "O script produz os números; **a leitura de negócio é do "
+            "analista**. Não entregue o markdown cru sem comentário."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Page registry & grouped navigation
 # ---------------------------------------------------------------------------
 
@@ -10062,6 +10965,7 @@ PAGES = {
     "📊 Results":                  page_results,
     "📈 Price Evolution":           page_price_evolution,
     "📊 Market Analytics":         page_market_analytics,
+    "🥇 Mais Vendidos":            page_bestsellers,
     "🗂️ Ficha do Produto":         page_product_sheet,
     "🏆 BuyBox Position":          page_buybox_position,
     "👑 Share of Buy Box":         page_share_of_buybox,
@@ -10085,6 +10989,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "📊 Results",
         "📈 Price Evolution",
         "📊 Market Analytics",
+        "🥇 Mais Vendidos",
         "🗂️ Ficha do Produto",
         "🏆 BuyBox Position",
         "👑 Share of Buy Box",
