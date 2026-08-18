@@ -560,6 +560,69 @@ class TestCasasBahiaParser:
         # O endpoint registrado prova a ordenação por vendas nos dois caminhos.
         assert "orders_desc" in fonte.endpoint
 
+    def test_abrir_fecha_browser_proprio_quando_chrome_real_falha(self, monkeypatch):
+        """Se `__enter__` cai no Chromium headless próprio (Chrome real não
+        subiu), `_abrir` fecha esse browser e segue por curl_cffi — sem vazar o
+        handle compartilhado do Playwright pelas outras fontes."""
+        import bestsellers.sources.casas_bahia as mod
+
+        eventos = {"enter": 0, "exit": 0}
+
+        class _FakeCB:
+            def __init__(self, headless=True):
+                # Simula o fallback: nenhum Chrome real ativo.
+                self._real_browser_active = False
+
+            def __enter__(self):
+                eventos["enter"] += 1
+                return self
+
+            def __exit__(self, *_a):
+                eventos["exit"] += 1
+
+        monkeypatch.setattr(mod, "CasasBahiaScraper", _FakeCB)
+        monkeypatch.setattr(mod, "is_local_chrome_enabled", lambda: True)
+
+        fonte = mod.CasasBahiaBestSellers()
+        fonte._abrir()
+        assert eventos["enter"] == 1
+        assert eventos["exit"] == 1  # o browser próprio foi fechado, não vazou
+        assert fonte._browser_ativo is False
+        assert fonte._cb_entered is False
+
+        # `_fechar` não pode fechar de novo (idempotente).
+        fonte._fechar()
+        assert eventos["exit"] == 1
+
+    def test_abrir_sem_chrome_real_nao_lanca_browser(self, monkeypatch):
+        """Sem Chrome real (RAC_LOCAL_CHROME off, sem CDP), nenhum browser é
+        lançado: a coleta segue pura por curl_cffi."""
+        import bestsellers.sources.casas_bahia as mod
+
+        eventos = {"enter": 0}
+
+        class _FakeCB:
+            def __init__(self, headless=True):
+                pass
+
+            def __enter__(self):
+                eventos["enter"] += 1
+                return self
+
+            def __exit__(self, *_a):
+                pass
+
+        monkeypatch.setattr(mod, "CasasBahiaScraper", _FakeCB)
+        monkeypatch.setattr(mod, "is_local_chrome_enabled", lambda: False)
+        monkeypatch.delenv("RAC_CDP_URL", raising=False)
+        monkeypatch.delenv("MAGALU_CDP_URL", raising=False)
+
+        fonte = mod.CasasBahiaBestSellers()
+        fonte._abrir()
+        assert eventos["enter"] == 0
+        assert fonte._cb_entered is False
+        assert fonte._browser_ativo is False
+
 
 # ---------------------------------------------------------------------------
 # Leroy Merlin (Algolia)

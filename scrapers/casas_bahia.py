@@ -1532,10 +1532,17 @@ class CasasBahiaScraper(BaseScraper):
         try:
             result = self._page.evaluate(
                 """async (u) => {
+                    // AbortController: `page.evaluate` não tem timeout no
+                    // Playwright Python; sem o abort, uma resposta que trava
+                    // (em vez de devolver o desafio Akamai) penduraria a
+                    // coleta para sempre e nunca chegaria ao fallback curl_cffi.
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), 10_000);
                     try {
                         const r = await fetch(u, {
                             headers: {'accept': 'application/json'},
                             credentials: 'include',
+                            signal: controller.signal,
                         });
                         const status = r.status;
                         const ct = r.headers.get('content-type') || '';
@@ -1549,6 +1556,8 @@ class CasasBahiaScraper(BaseScraper):
                         return {status, n: prods.length, products: prods};
                     } catch (e) {
                         return {status: -1, n: 0, products: null, error: String(e)};
+                    } finally {
+                        clearTimeout(timer);
                     }
                 }""",
                 url,
