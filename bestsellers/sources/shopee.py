@@ -212,7 +212,21 @@ class ShopeeBestSellers(BestSellerSource):
             payload = shopee._extract_item_payload(bruto)
             if not payload:
                 continue
-            asset = payload.get("item_card_displayed_asset") or {}
+            # O bloco de apresentação (`item_card_displayed_asset`) é IRMÃO do
+            # `item_data`/`item_basic` DENTRO do wrapper — não fica dentro do
+            # payload extraído. No formato atual da API (card `item_card`), o
+            # nome/preço/loja vivem nesse asset e o `item_basic` legado vem
+            # vazio; buscar o asset em `payload` devolvia {} e TODO item caía no
+            # `if not titulo: continue` → "0 parsearam" mesmo com a API
+            # respondendo itens (regressão Ago/2026). Lê-lo do wrapper (`bruto`)
+            # é o que o `scrapers/shopee.py._parse_items` já fazia.
+            asset = (
+                bruto.get("item_card_displayed_asset")
+                if isinstance(bruto, dict)
+                else None
+            )
+            if not isinstance(asset, dict):
+                asset = {}
 
             titulo = shopee._extract_name(payload, asset)
             if not titulo:

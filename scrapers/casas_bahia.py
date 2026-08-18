@@ -1492,6 +1492,86 @@ class CasasBahiaScraper(BaseScraper):
         )
         return None
 
+    def vtex_is_in_page(
+        self,
+        keyword: str,
+        page: int,
+        sort: str = "orders_desc",
+        count: int = _ITEMS_PER_PAGE,
+    ) -> Optional[List[Dict]]:
+        """
+        Chama a VTEX intelligent-search DE DENTRO da página, com um `sort` dado,
+        e devolve o array de produtos (com ``items[].sellers[]``).
+
+        É o caminho que a coleta de **mais vendidos** precisa: a lista
+        ``ordenacao=maisvendidos`` da UI é o IS com ``sort=orders_desc``, e o
+        replay via curl_cffi de IP residencial/datacenter é bloqueado pelo
+        Akamai (responde ``text/html`` em vez de JSON). O fetch same-origin com
+        ``credentials:'include'`` carrega o ``_abck`` validado do Chrome real
+        (após o warm-up da home) — o que destrava o endpoint.
+
+        Args:
+            keyword: termo de busca.
+            page: página 1-based.
+            sort: parâmetro de ordenação do IS (ex.: ``orders_desc`` = mais
+                vendidos; ``score_desc`` = relevância).
+            count: itens por página.
+
+        Returns:
+            Lista de produtos VTEX, ou None quando o endpoint não respondeu com
+            produtos (bloqueio, vazio ou browser indisponível).
+        """
+        if self._page is None:
+            return None
+        kw = quote_plus(keyword)
+        url = (
+            f"/_v/api/intelligent-search/product_search/pt/pt-BR/search"
+            f"?query={kw}&page={page}&count={count}&sort={sort}"
+            f"&hideUnavailableItems=false"
+        )
+        try:
+            result = self._page.evaluate(
+                """async (u) => {
+                    try {
+                        const r = await fetch(u, {
+                            headers: {'accept': 'application/json'},
+                            credentials: 'include',
+                        });
+                        const status = r.status;
+                        const ct = r.headers.get('content-type') || '';
+                        if (!r.ok || ct.indexOf('json') === -1)
+                            return {status, n: 0, products: null};
+                        const j = await r.json();
+                        const prods = Array.isArray(j) ? j
+                            : (j.products
+                               || (j.productSearch && j.productSearch.products)
+                               || []);
+                        return {status, n: prods.length, products: prods};
+                    } catch (e) {
+                        return {status: -1, n: 0, products: null, error: String(e)};
+                    }
+                }""",
+                url,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[{self.platform_name}] in-page VTEX IS ({sort}) erro: {exc}"
+            )
+            return None
+
+        if result and result.get("products"):
+            logger.info(
+                f"[{self.platform_name}] VTEX in-page IS {sort}: "
+                f"{len(result['products'])} produtos c/ sellers[] (pág {page})"
+            )
+            return result["products"]
+        logger.warning(
+            f"[{self.platform_name}] in-page VTEX IS {sort} sem produtos "
+            f"(pág {page}) — status "
+            f"{result.get('status') if result else '?'}"
+        )
+        return None
+
     def _find_search_input(self) -> Optional[Any]:
         """Retorna o ElementHandle do campo de busca visível, ou None."""
         if not self._page:

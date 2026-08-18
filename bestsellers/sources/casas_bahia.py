@@ -17,6 +17,7 @@ consiga medir a contaminação; o KPI os ignora. Preços "de" desta fonte são
 lixo (desconto fantasma de -79%) e por isso `preco_de` não é coletado aqui.
 """
 
+import os
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
@@ -25,6 +26,7 @@ from loguru import logger
 from bestsellers.base import BestSellerSource
 from bestsellers.models import BestSellerItem
 from scrapers.casas_bahia import CasasBahiaScraper
+from scrapers.local_browser import is_local_chrome_enabled
 
 _VTEX_IS_URL = (
     "https://www.casasbahia.com.br/_v/api/intelligent-search"
@@ -44,16 +46,95 @@ class CasasBahiaBestSellers(BestSellerSource):
     def __init__(self, headless: bool = True) -> None:
         super().__init__(headless=headless)
         self._cb: Optional[CasasBahiaScraper] = None
+        # True quando um Chrome real (local logado ou CDP) subiu — é o
+        # fingerprint que o Akamai aceita e a via que destrava a coleta.
+        self._browser_ativo: bool = False
 
     def _abrir(self) -> None:
-        # Não abre browser: só precisamos da session curl_cffi aquecida e dos
-        # extratores de seller/rating do payload VTEX.
         self._cb = CasasBahiaScraper(headless=self.headless)
+        # Sobe o browser SÓ quando há um Chrome real disponível (perfil local
+        # logado via RAC_LOCAL_CHROME, ou CDP). É o caminho que passa pelo
+        # Akamai: o fetch same-origin carrega o _abck validado que o replay
+        # curl_cffi de IP datacenter não tem — sem isso a API VTEX responde
+        # text/html (desafio Akamai) e a plataforma sai ausente. Sem Chrome
+        # real, NÃO lançamos um browser próprio (headless): mantém-se o caminho
+        # leve curl_cffi, que é o comportamento herdado.
+        tem_chrome_real = bool(
+            is_local_chrome_enabled()
+            or os.getenv("RAC_CDP_URL", "").strip()
+            or os.getenv("MAGALU_CDP_URL", "").strip()
+        )
+        if tem_chrome_real:
+            try:
+                self._cb.__enter__()
+                self._browser_ativo = self._cb._real_browser_active
+            except Exception as exc:
+                logger.warning(
+                    f"[{self.nome}] Chrome real não subiu ({exc}) — seguindo "
+                    "pela API VTEX (curl_cffi)."
+                )
+                self._browser_ativo = False
 
     def _fechar(self) -> None:
+        if self._cb is not None and self._browser_ativo:
+            # Fecha só a aba dedicada; a janela do Chrome é compartilhada e
+            # encerrada no fim do processo (close_local_browser via atexit).
+            try:
+                self._cb.__exit__()
+            except Exception as exc:
+                logger.debug(f"[{self.nome}] Erro ao fechar aba do browser: {exc}")
         self._cb = None
+        self._browser_ativo = False
 
     def _coletar(self, paginas: int) -> List[BestSellerItem]:
+        # O endpoint carrega o parâmetro de ordenação — é ele que o portão de
+        # validação inspeciona para provar que a lista é de vendas, não de
+        # relevância. Registrado igual nos dois caminhos (browser e curl_cffi).
+        params = {
+            "query": _TERMO,
+            "page": 1,
+            "count": _ITENS_POR_PAGINA,
+            "sort": _ORDENACAO,
+            "hideUnavailableItems": "false",
+        }
+        self.registrar_endpoint(f"{_VTEX_IS_URL}?{urlencode(params)}")
+
+        # Caminho preferido: Chrome real logado. O warm-up valida o _abck na
+        # home e o fetch same-origin da IS (sort=orders_desc) passa pelo Akamai.
+        if self._browser_ativo and self._cb._real_browser_active:
+            itens = self._coletar_via_browser(paginas)
+            if itens:
+                return itens
+            logger.warning(
+                f"[{self.nome}] Chrome real não retornou itens — tentando a "
+                "API VTEX (curl_cffi) como último recurso."
+            )
+
+        return self._coletar_via_api(paginas)
+
+    def _coletar_via_browser(self, paginas: int) -> List[BestSellerItem]:
+        """Coleta a lista de mais vendidos DENTRO do Chrome real logado.
+
+        Aquece a home (o sensor.js do Akamai valida o ``_abck``) e faz o fetch
+        same-origin da VTEX intelligent-search com ``sort=orders_desc`` — a
+        MESMA ordenação que ``ordenacao=maisvendidos`` dispara na UI.
+        """
+        cb = self._cb
+        # Home + emulação humana + espera do _abck (idempotente: 1x por execução).
+        cb._warmup_cdp_session()
+
+        itens: List[BestSellerItem] = []
+        for pagina in range(1, max(1, paginas) + 1):
+            produtos = cb.vtex_is_in_page(_TERMO, pagina, sort=_ORDENACAO)
+            if not produtos:
+                break
+            itens.extend(self._parse(produtos, offset=len(itens)))
+            if len(produtos) < _ITENS_POR_PAGINA:
+                break
+        return itens
+
+    def _coletar_via_api(self, paginas: int) -> List[BestSellerItem]:
+        """Replay da API VTEX via curl_cffi + warm-up de cookies Akamai."""
         sessao = self._cb._get_warmed_session()
         if sessao is None:
             raise RuntimeError(
@@ -70,8 +151,6 @@ class CasasBahiaBestSellers(BestSellerSource):
                 "sort": _ORDENACAO,
                 "hideUnavailableItems": "false",
             }
-            self.registrar_endpoint(f"{_VTEX_IS_URL}?{urlencode(params)}")
-
             produtos = self._consultar(sessao, params, pagina)
             if not produtos:
                 break
