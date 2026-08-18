@@ -185,6 +185,73 @@ def test_query_cai_no_disco_preservando_o_motivo(
     assert aviso == "RLS bloqueou", "cair no CSV em silêncio esconde o banco mudo"
 
 
+def test_query_une_banco_e_disco_sem_duplicar_posicao(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """As duas fontes divergem: a página mostra a UNIÃO, com o banco vencendo.
+
+    O banco fica para trás quando o upload falha (chave `anon`, rede, RLS) e o
+    master local só tem o que aquela máquina coletou. Ler só a primeira fonte
+    que responder esconderia dias inteiros de coleta.
+    """
+    do_banco = _linhas_csv()                       # 10/08, ranks 1 e 2
+    do_banco["preco"] = [1.0, 2.0]
+    do_disco = _linhas_csv()                       # mesmas posições, preço velho
+    do_disco["preco"] = [99.0, 99.0]
+    outro_dia = _linhas_csv()
+    outro_dia["data"] = "2026-08-03"               # só o disco tem este dia
+
+    monkeypatch.setattr(app, "_bs_ler_supabase", lambda limit: (do_banco, ""))
+    monkeypatch.setattr(
+        app, "_bs_ler_disco",
+        lambda: (pd.concat([do_disco, outro_dia], ignore_index=True), "master.csv"),
+    )
+    app.query_bestsellers.clear()
+    df, origem, _ = app.query_bestsellers()
+    app.query_bestsellers.clear()
+
+    # 2 posições do banco + 2 do dia que só existe no disco — sem duplicata.
+    assert len(df) == 4, df[["data", "plataforma", "rank"]]
+    assert sorted(df["data"].unique()) == ["2026-08-03", "2026-08-10"]
+    do_dia_10 = df[df["data"] == "2026-08-10"]
+    assert sorted(do_dia_10["preco"]) == [1.0, 2.0], "o banco tem de vencer o CSV"
+    assert "Supabase" in origem and "CSV local" in origem, origem
+
+
+def test_quarentena_remove_leitura_sem_prova_de_ordenacao() -> None:
+    """Endpoint sem o parâmetro canônico não é lista de mais vendidos."""
+    from bestsellers import metrics
+    from bestsellers.config import SOURCES
+
+    boa = _linhas_csv()
+    ruim = _linhas_csv()
+    ruim["plataforma"] = "shopee"
+    ruim["plataforma_nome"] = SOURCES["shopee"].nome
+    # URL de busca da Shopee SEM `sortBy=sales`: é relevância, não vendas.
+    ruim["endpoint"] = "https://shopee.com.br/search?keyword=ar%20condicionado"
+    ruim["url_coleta"] = ruim["endpoint"]
+
+    serie = metrics.preparar(pd.concat([boa, ruim], ignore_index=True))
+    limpa, reprovadas = app._bs_quarentena(serie)
+
+    assert set(limpa["plataforma"]) == {"amazon"}
+    assert len(reprovadas) == 1
+    assert reprovadas.iloc[0]["plataforma"] == "shopee"
+    assert reprovadas.iloc[0]["linhas"] == 2
+
+
+def test_quarentena_nao_reprova_plataforma_sem_spec() -> None:
+    """Sem spec não há parâmetro canônico para exigir — `validar` avisa, não corta."""
+    from bestsellers import metrics
+
+    desconhecida = _linhas_csv()
+    desconhecida["plataforma"] = "varejista_novo"
+    serie = metrics.preparar(desconhecida)
+
+    limpa, reprovadas = app._bs_quarentena(serie)
+    assert len(limpa) == 2 and reprovadas.empty
+
+
 def test_query_sem_nenhuma_fonte_devolve_o_motivo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -274,6 +341,70 @@ def test_pagina_renderiza_com_dados() -> None:
     assert "ordinal" in textos.lower()
 
 
+def _pagina_com_quarentena_harness() -> None:
+    """Renderiza a página com uma plataforma reprovada no portão de ordenação."""
+    import pandas as pd
+    import streamlit as st
+
+    import app
+    from bestsellers.config import SOURCES
+    from bestsellers.models import BestSellerItem
+    from bestsellers.storage import to_dataframe
+
+    linhas = []
+    for chave, endpoint in (
+        ("amazon", SOURCES["amazon"].url_publica),
+        # Busca da Shopee SEM `sortBy=sales`: relevância, não vendas.
+        ("shopee", "https://shopee.com.br/search?keyword=ar%20condicionado"),
+    ):
+        spec = SOURCES[chave]
+        for posicao, marca in enumerate(
+            ["Midea", "LG", "Gree", "Elgin", "TCL", "Philco",
+             "Samsung", "Consul", "Carrier", "Hisense"], start=1,
+        ):
+            item = BestSellerItem(
+                rank=posicao,
+                titulo=f"Ar Condicionado Split Inverter {marca} 12000 BTUs",
+                preco=1800.0 + posicao,
+                sku_plataforma=f"{chave}-{posicao}",
+            )
+            linhas.append(item.to_row(
+                data="2026-08-10", horario="09:30", run_id="run", spec=spec,
+                url_coleta=spec.url_publica, endpoint=endpoint,
+            ))
+
+    serie = to_dataframe(linhas)
+
+    def _fake(limit: int = 0):
+        return serie, "Supabase · `bestsellers`", ""
+
+    _fake.clear = lambda: None  # type: ignore[attr-defined]
+    original = app.query_bestsellers
+    app.query_bestsellers = _fake  # type: ignore[assignment]
+    try:
+        app.page_bestsellers()
+    finally:
+        app.query_bestsellers = original
+
+    st.session_state["_out"] = {"linhas": len(serie)}
+
+
+def test_pagina_poe_em_quarentena_sem_quebrar() -> None:
+    """A leitura sem prova de ordenação sai da análise E é nomeada na tela."""
+    at = AppTest.from_function(_pagina_com_quarentena_harness)
+    at.run(timeout=RUN_TIMEOUT)
+    assert not at.exception, f"página estourou: {[str(e.value) for e in at.exception]}"
+
+    avisos = " ".join(str(w.value) for w in at.warning)
+    assert "quarentena" in avisos.lower(), avisos
+    assert "Shopee" in avisos, avisos
+
+    # A plataforma reprovada não pode aparecer como card de KPI.
+    rotulos = {m.label for m in at.metric}
+    assert "Amazon" in rotulos, rotulos
+    assert "Shopee" not in rotulos, rotulos
+
+
 def _pagina_sem_dados_harness() -> None:
     """Renderiza a página com banco mudo e disco vazio."""
     import pandas as pd
@@ -283,11 +414,19 @@ def _pagina_sem_dados_harness() -> None:
 
     # Fontes zeradas na mão: o teste não pode depender de a máquina que roda a
     # suíte ter (ou não ter) um master local — no PC coletor ela tem.
+    # Restauradas no finally: o AppTest roda no MESMO interpretador da suíte, e
+    # um stub que vazasse daqui derrubaria qualquer teste posterior que fosse
+    # ler a série de verdade.
+    supabase_real, disco_real = app._bs_ler_supabase, app._bs_ler_disco
     app._bs_ler_supabase = lambda limit: (None, "Supabase não configurado")  # type: ignore[assignment]
     app._bs_ler_disco = lambda: (pd.DataFrame(), "")  # type: ignore[assignment]
     app.query_bestsellers.clear()
+    try:
+        app.page_bestsellers()
+    finally:
+        app._bs_ler_supabase, app._bs_ler_disco = supabase_real, disco_real
+        app.query_bestsellers.clear()
 
-    app.page_bestsellers()
     st.session_state["_out"] = {"ok": True}
 
 

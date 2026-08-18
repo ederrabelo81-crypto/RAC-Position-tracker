@@ -10225,26 +10225,47 @@ def _bs_ler_disco() -> tuple:
 @st.cache_data(ttl=600, show_spinner=False)
 def query_bestsellers(limit: int = _BS_LIMITE) -> tuple:
     """
-    Carrega a série de mais vendidos: Supabase primeiro, disco como rede.
+    Carrega a série de mais vendidos: UNIÃO do Supabase com o histórico local.
+
+    As duas fontes divergem na prática. O banco é a cópia compartilhada, mas
+    fica para trás sempre que o upload falha (chave `anon` na coleta, rede
+    caindo, RLS); o master local tem a série que aquela máquina coletou, e
+    nada mais. Ler só a primeira que responder esconderia dias inteiros de
+    coleta — que é justamente o que esta página existe para não deixar
+    acontecer. A união é deduplicada por `(data, plataforma, rank)`, a mesma
+    chave idempotente do coletor, com o banco tendo precedência: recoleta
+    corrigida sobe para lá e não pode perder para um CSV velho no disco.
 
     Args:
         limit: teto de linhas lidas do banco.
 
     Returns:
-        Tupla `(df, origem, aviso)`. `origem` é o rótulo da fonte que
-        respondeu (vazio quando nenhuma respondeu) e `aviso` carrega o motivo
-        de o banco não ter servido — exibido mesmo quando o disco salvou a
-        leitura. Sem esse aviso, cair no CSV local pareceria sucesso e o banco
-        seguiria mudo por semanas.
+        Tupla `(df, origem, aviso)`. `origem` diz quais fontes responderam e
+        com quantos dias cada uma — é o que denuncia um banco atrasado em vez
+        de disfarçá-lo. `aviso` carrega o motivo de o banco não ter servido,
+        exibido mesmo quando o disco salvou a leitura: sem ele, cair no CSV
+        local pareceria sucesso e o banco seguiria mudo por semanas.
     """
-    df, motivo = _bs_ler_supabase(limit)
-    if df is not None and len(df):
-        return df, f"Supabase · tabela `{_BS_TABELA}`", ""
-
+    banco, motivo = _bs_ler_supabase(limit)
     disco, caminho = _bs_ler_disco()
+
+    partes, rotulos = [], []
+    if banco is not None and len(banco):
+        partes.append(banco)
+        rotulos.append(f"Supabase · `{_BS_TABELA}` ({banco['data'].nunique()} dia(s))")
     if len(disco):
-        return disco, f"CSV local · `{caminho}`", motivo
-    return pd.DataFrame(), "", motivo
+        partes.append(disco)
+        rotulos.append(f"CSV local · `{caminho}` ({disco['data'].nunique()} dia(s))")
+
+    if not partes:
+        return pd.DataFrame(), "", motivo
+
+    # Banco primeiro na concatenação: `keep="first"` faz dele o vencedor de
+    # cada posição repetida.
+    juntas = pd.concat(partes, ignore_index=True).drop_duplicates(
+        subset=["data", "plataforma", "rank"], keep="first"
+    )
+    return juntas, " + ".join(rotulos), motivo
 
 
 def _bs_specs() -> dict:
@@ -10266,6 +10287,66 @@ def _bs_marcas_monitoradas() -> tuple:
         return tuple(BRANDS)
     except Exception:
         return ()
+
+
+def _bs_quarentena(serie: pd.DataFrame) -> tuple:
+    """Tira da análise as leituras que não provam a ordenação por vendas.
+
+    É o portão QUARENTENA de `bestsellers.validate`, o único nível que remove
+    dados — aplicado aqui à série INTEIRA, e não só ao dia. Duas razões para
+    ele não poder ficar de fora do painel: o CSV bruto do dia, que a página
+    usa como último fallback, guarda tudo o que foi coletado inclusive o que a
+    validação reprovou; e uma leitura antiga cuja URL não carrega o parâmetro
+    de ordenação mede relevância, não vendas — some do KPI, mas continuaria
+    puxando a média histórica.
+
+    A evidência é o `endpoint` efetivamente chamado, com queda para
+    `url_coleta` apenas quando não há endpoint (import do histórico manual).
+    Plataforma não registrada em `bestsellers/config.py` NÃO é reprovada aqui:
+    sem spec não há parâmetro canônico para comparar, e `validate.validar` já
+    a reporta como AVISO na aba de validação.
+
+    Args:
+        serie: série preparada por `metrics.preparar`.
+
+    Returns:
+        `(serie_limpa, reprovadas)` — `reprovadas` traz plataforma, data,
+        endpoint e nº de linhas descartadas, para a página dizer o que sumiu.
+    """
+    from bestsellers.config import SOURCES
+
+    if not len(serie) or "plataforma" not in serie.columns:
+        return serie, pd.DataFrame()
+
+    def _evidencia(grupo: pd.DataFrame) -> str:
+        for coluna in ("endpoint", "url_coleta"):
+            if coluna not in grupo.columns:
+                continue
+            valores = grupo[coluna].dropna()
+            if len(valores) and str(valores.iloc[0]).strip():
+                return str(valores.iloc[0])
+        return ""
+
+    reprovadas, indices = [], []
+    for (plataforma, data), grupo in serie.groupby(["plataforma", "data"], sort=True):
+        spec = SOURCES.get(str(plataforma))
+        if spec is None:
+            continue
+        alvo = _evidencia(grupo)
+        if spec.ordenacao_comprovada(alvo):
+            continue
+        indices.extend(grupo.index)
+        reprovadas.append({
+            "plataforma": plataforma,
+            "data": data,
+            "linhas": len(grupo),
+            "endpoint": alvo,
+            "ordenacao_exigida": spec.parametro_ordenacao,
+        })
+
+    if not indices:
+        return serie, pd.DataFrame()
+    return serie.drop(index=indices), pd.DataFrame(reprovadas)
 
 
 def _bs_style(df: pd.DataFrame, col_grupo: str = "grupo_midea"):
@@ -10372,10 +10453,38 @@ def page_bestsellers() -> None:
         st.warning(aviso, icon="⚠️")
 
     specs = _bs_specs()
-    serie = metrics.preparar(df_bruto)
-    if not len(serie):
+    serie_bruta = metrics.preparar(df_bruto)
+    if not len(serie_bruta):
         _bs_sem_dados("A série carregou sem nenhuma data válida na coluna `data`.")
         return
+
+    # Quarentena ANTES de qualquer número: leitura sem prova de ordenação por
+    # vendas não é lista de mais vendidos e não pode entrar no KPI. A série
+    # bruta continua guardada para a aba de validação — é lá que a reprovação
+    # precisa aparecer, em vez de sumir sem explicação.
+    serie, reprovadas = _bs_quarentena(serie_bruta)
+    if not len(serie):
+        _bs_sem_dados(
+            "Todas as leituras carregadas foram reprovadas no portão de "
+            "ordenação: o endpoint coletado não carrega o parâmetro que prova "
+            "\"mais vendidos\". Provavelmente são listas de relevância — ver "
+            "`docs/BESTSELLERS.md` › Portões de validação."
+        )
+        return
+    if len(reprovadas):
+        _detalhe = ", ".join(
+            f"{_bs_nome(linha['plataforma'], _bs_specs())} em "
+            f"{pd.to_datetime(linha['data']):%d/%m/%Y}"
+            for linha in reprovadas.head(5).to_dict("records")
+        )
+        st.warning(
+            f"{int(reprovadas['linhas'].sum())} linha(s) em quarentena e fora "
+            f"de toda a análise ({_detalhe}"
+            + (f" +{len(reprovadas) - 5}" if len(reprovadas) > 5 else "")
+            + "): o endpoint coletado não prova a ordenação por vendas. "
+            "Detalhe na aba 🩺 Validação.",
+            icon="🚫",
+        )
 
     datas = sorted(serie["data"].dt.date.unique())
     plataformas_disponiveis = sorted(serie["plataforma"].dropna().unique())
@@ -10451,13 +10560,19 @@ def page_bestsellers() -> None:
     )
 
     # Portões de qualidade do dia: alimentam a aba de validação e o brief.
+    # Rodam sobre a série BRUTA do dia (pré-quarentena) de propósito — se
+    # rodassem sobre a limpa, a plataforma reprovada teria sumido antes e o
+    # painel nunca mostraria por que ela saiu.
     # "Plataforma ausente" só faz sentido contra o que o usuário pediu — sem
     # o recorte, filtrar a Amazon acusaria as outras cinco de sumidas.
     esperadas = [
         chave for chave in sources_ativos()
         if not sel_plataformas or chave in sel_plataformas
     ]
-    ocorrencias = validate.validar(hoje, esperadas=esperadas)
+    hoje_bruto = serie_bruta[serie_bruta["data"] == dia]
+    if sel_plataformas:
+        hoje_bruto = hoje_bruto[hoje_bruto["plataforma"].isin(sel_plataformas)]
+    ocorrencias = validate.validar(hoje_bruto, esperadas=esperadas)
 
     st.caption(
         f"Fonte: {origem} · {len(serie):,} linhas".replace(",", ".")
@@ -10624,7 +10739,11 @@ def page_bestsellers() -> None:
                 _apply_chart_style(fig_delta, hovermode="closest")
                 st.plotly_chart(fig_delta, use_container_width=True)
 
-            if ("tendencia_valida" in variacao.columns
+            # No período diário `tendencia_valida` é False por definição (um
+            # dia não é tendência), então o aviso só cabe em semanal/mensal —
+            # senão ele apareceria sempre, inclusive com 30 leituras.
+            if (periodos[escolha] != metrics.PERIODO_DIARIO
+                    and "tendencia_valida" in variacao.columns
                     and not bool(variacao["tendencia_valida"].any())):
                 st.warning(
                     "Nenhuma linha chegou a 3 leituras no período: os números "
@@ -10840,6 +10959,28 @@ def page_bestsellers() -> None:
             st.caption(
                 "**QUARENTENA** é o único nível que remove dados da análise — "
                 "sem o parâmetro de ordenação, a lista não é de mais vendidos."
+            )
+
+        if len(reprovadas):
+            st.subheader("Em quarentena (fora de toda a análise)")
+            detalhe = reprovadas.copy()
+            detalhe["plataforma"] = detalhe["plataforma"].map(
+                lambda k: _bs_nome(k, specs)
+            )
+            detalhe["data"] = pd.to_datetime(detalhe["data"]).dt.strftime("%d/%m/%Y")
+            st.dataframe(
+                detalhe.rename(columns={
+                    "plataforma": "Plataforma", "data": "Data",
+                    "linhas": "Linhas descartadas",
+                    "endpoint": "Endpoint chamado",
+                    "ordenacao_exigida": "Ordenação exigida",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(
+                "Estas leituras saíram do KPI, dos deltas e de todos os "
+                "gráficos: sem o parâmetro de ordenação no endpoint, a lista "
+                "provavelmente é de relevância — outro universo."
             )
 
         st.subheader("Cobertura da coleta")

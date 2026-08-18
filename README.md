@@ -387,9 +387,9 @@ streamlit run app.py
   varejistas (tabela `bestsellers`), a única variável de **resultado** da
   coleta. KPI: % do top 10 ocupado pelo grupo Midea por plataforma, delta
   contra o mesmo dia da semana, evolução semanal/mensal, ranking do dia,
-  mapa competitivo, portões de validação e o brief diário. Lê Supabase →
-  master CSV → CSV do dia, dizendo qual fonte respondeu. Ver
-  `docs/BESTSELLERS.md`
+  mapa competitivo, portões de validação e o brief diário. Mostra a união de
+  Supabase + master CSV (banco vence em posição repetida) dizendo quantos dias
+  vieram de cada fonte. Ver `docs/BESTSELLERS.md`
 - **🗂️ Ficha do Produto** — SKU específico + screenshots
 - **🏆 BuyBox Position** — quem vence a posição #1 por produto/plataforma
 - **👑 Share of Buy Box** — vencedor da oferta por seller/marca/período

@@ -156,11 +156,21 @@ consertar um parser substitui aquelas linhas em vez de duplicá-las.
 streamlit run app.py   # menu INSIGHTS → 🥇 Mais Vendidos
 ```
 
-A coleta grava em três destinos; a página lê o primeiro que responder, nesta
-ordem — **Supabase `bestsellers`** → **`data/bestsellers/master_bestsellers.csv`**
-→ **`output/bestsellers/bestsellers_*.csv`**. Quando o banco não serve, o
-motivo aparece no topo da página em vez de sumir: cair no CSV local em
-silêncio faria um banco mudo passar despercebido por semanas.
+A coleta grava em três destinos e a página mostra a **união** de
+**Supabase `bestsellers`** com **`data/bestsellers/master_bestsellers.csv`**
+(dedup por `data`+`plataforma`+`rank`, a mesma chave idempotente do coletor,
+com o banco tendo precedência); os CSVs brutos de
+`output/bestsellers/bestsellers_*.csv` entram só quando não há master. Unir em
+vez de escolher a primeira fonte é deliberado: o banco fica para trás sempre
+que o upload falha e o master só tem o que aquela máquina coletou — ler um só
+esconderia dias inteiros. O rodapé de origem diz quantos dias vieram de cada
+fonte, e o motivo de o banco não ter servido aparece no topo em vez de sumir:
+cair no CSV local em silêncio faria um banco mudo passar despercebido por
+semanas.
+
+Leitura reprovada no portão de ordenação entra em **quarentena antes de
+qualquer número** — sai do KPI, dos deltas e dos gráficos, e aparece
+nomeada na aba 🩺 Validação.
 
 | Aba | O que responde |
 |---|---|

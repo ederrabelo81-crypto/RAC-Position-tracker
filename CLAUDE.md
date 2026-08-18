@@ -69,8 +69,9 @@ Relatório Telegram + resumo JSON em `logs/bestsellers_*.json`.
 **Leitura no dashboard:** página **🥇 Mais Vendidos** (`streamlit run app.py`,
 grupo INSIGHTS) — KPI do dia com delta contra o mesmo dia da semana, evolução
 semanal/mensal, ranking por plataforma, mapa competitivo, portões de validação
-e o brief. Lê Supabase → `data/bestsellers/master_bestsellers.csv` →
-`output/bestsellers/*.csv`, dizendo qual respondeu. **Página vazia com coleta
+e o brief. Mostra a UNIÃO de Supabase + `master_bestsellers.csv` (dedup por
+data+plataforma+rank, banco vence; CSV bruto do dia como último recurso) e diz
+quantos dias vieram de cada fonte. **Página vazia com coleta
 que rodou = RLS:** `bestsellers` é a única tabela com RLS ligada e sem policy,
 então a chave `anon` recebe `[]` com HTTP 200 — use `service_role` em
 `SUPABASE_KEY` ou aplique `docs/migrations/012_bestsellers_rls_leitura.sql`.

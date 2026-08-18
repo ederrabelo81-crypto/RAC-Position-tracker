@@ -28,6 +28,14 @@
 --   psql "$SUPABASE_DB_URL" -f docs/migrations/012_bestsellers_rls_leitura.sql
 -- ou via Supabase SQL Editor / MCP apply_migration.
 
+-- A 011 cria a tabela mas NÃO liga RLS — em produção ela foi ligada depois,
+-- fora de migração. Numa instalação limpa, criar policy com RLS desligada não
+-- surte efeito nenhum: sem RLS o acesso cai nos GRANTs da tabela, a policy
+-- fica inerte e a escrita pela `anon` continua liberada. Ligar aqui é
+-- idempotente (repetir não falha) e é o que torna a promessa desta migração
+-- verdadeira: leitura liberada, escrita negada por ausência de policy.
+ALTER TABLE bestsellers ENABLE ROW LEVEL SECURITY;
+
 -- Idempotente: repetir a aplicação não falha.
 DROP POLICY IF EXISTS bestsellers_leitura_publica ON bestsellers;
 
@@ -41,6 +49,11 @@ COMMENT ON POLICY bestsellers_leitura_publica ON bestsellers IS
     'Leitura para o dashboard. Escrita segue exclusiva do service_role: sem '
     'policy de INSERT/UPDATE/DELETE, a RLS nega. Ver docs/BESTSELLERS.md.';
 
--- Conferência (deve listar uma policy de SELECT):
+-- Conferência (RLS ligada + uma policy de SELECT):
+--   SELECT rowsecurity FROM pg_tables
+--    WHERE schemaname = 'public' AND tablename = 'bestsellers';
 --   SELECT polname, polcmd FROM pg_policy
 --    WHERE polrelid = 'public.bestsellers'::regclass;
+--
+-- Reversão:
+--   DROP POLICY IF EXISTS bestsellers_leitura_publica ON bestsellers;
