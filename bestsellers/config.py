@@ -155,11 +155,18 @@ SOURCES: Dict[str, SourceSpec] = {
     "leroymerlin": SourceSpec(
         key="leroymerlin",
         nome="Leroy Merlin",
-        url_publica=(
-            "https://www.leroymerlin.com.br/search?term=ar%20condicionado"
-            "&sortBy=production_products_most_sales"
-            "&searchTerm=ar%20condicionado&searchType=default"
-        ),
+        # URL pública NAVEGÁVEL para auditar a lista. O `sortBy=` antigo
+        # (`production_products_most_sales`) é o NOME DO ÍNDICE Algolia, não um
+        # parâmetro de ordenação válido do site — a página abria em erro. Este
+        # link abre de fato e mostra a MESMA prateleira (busca por "ar
+        # condicionado"), mas em ordem de RELEVÂNCIA: a UI da Leroy não expõe
+        # ordenação por vendas, então o ranking por vendas gravado na série NÃO
+        # é reproduzível na tela — ele só existe via o índice Algolia (ver
+        # `endpoint`, sempre registrado em `_coletar`). Consequência: para a
+        # Leroy a prova de ordenação (`parametros_ordenacao`) vive apenas no
+        # `endpoint`; o `url_coleta` deixou de carregá-la de propósito, para não
+        # voltar a ser um link quebrado.
+        url_publica="https://www.leroymerlin.com.br/busca?term=ar+condicionado",
         parametros_ordenacao=("production_products_most_sales",),
         mecanica=MECANICA_DECLARADO,
         base_vendidos=None,
@@ -167,9 +174,13 @@ SOURCES: Dict[str, SourceSpec] = {
         ativo=True,
         armadilha=(
             "Declarada como mais vendidos, mas 41% dos itens não mudaram de "
-            "posição em 48h (contra 12–19% nas demais). Enquanto a mecânica "
-            "não for confirmada com o varejista, não sustenta decisão de "
-            "corte de verba isoladamente."
+            "posição em 48h (contra 12–19% nas demais). Além disso a lista vem "
+            "de uma BUSCA POR TEXTO (não de uma página de categoria), então "
+            "arrasta acessório e correlato — a coleta recorta pelo classificador "
+            "de tipo antes de rankear. A ordenação por vendas só existe via o "
+            "índice Algolia; a UI do site não a reproduz. Enquanto a mecânica "
+            "não for confirmada com o varejista, não sustenta decisão de corte "
+            "de verba isoladamente."
         ),
     ),
     "casasbahia": SourceSpec(
