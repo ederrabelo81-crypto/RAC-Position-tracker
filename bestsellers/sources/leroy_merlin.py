@@ -1,24 +1,44 @@
 """
 bestsellers/sources/leroy_merlin.py — Lista "Mais Vendidos" da Leroy Merlin.
 
-Índice Algolia: `production_products_most_sales` (o mesmo que a UI usa quando
-o usuário escolhe "Mais vendidos"). A coleta bate direto no índice — sem
-browser, sem Akamai no caminho.
+Índice Algolia: `production_products_most_sales` (a mesma ordenação por vendas
+que a UI aplica). A coleta bate direto no índice — sem browser, sem Akamai no
+caminho.
 
-⚠️ MECÂNICA SOB SUSPEITA. A Leroy declara a ordenação como mais vendidos, mas
-o comportamento estatístico não confirma: em 48h, 41% dos itens não mudaram de
-posição e o deslocamento mediano foi de 1 posição, contra 12–19% parados e 3–4
-posições nas demais plataformas. Hipótese aberta: a ordenação pondera curadoria
-1P, margem ou disponibilidade. Enquanto isso não for esclarecido com o
-varejista, o número do Leroy NÃO sustenta sozinho decisão de corte de verba —
-o relatório imprime esse aviso junto do resultado (`veredito`).
+Âncora de categoria (Ago/2026)
+------------------------------
+A lista deixou de ser uma BUSCA POR TEXTO ("ar condicionado") e passou a ser
+ancorada na PRATELEIRA DE CATEGORIA que o cliente de fato navega —
+Split Inverter (`_CATEGORIA_URL`). Motivo: a busca por texto arrastava
+acessório e correlato (a Midea era observada em #33/36) e, pior, rankeava uma
+população — "tudo que casa com 'ar condicionado'" — que ninguém acessa numa
+tela; não era auditável. Agora a consulta usa `facetFilters` sobre o índice de
+vendas, recortando à categoria Split Inverter. A ordenação continua sendo por
+VENDAS (regra dura preservada); o que muda é QUEM disputa o topo do ranking:
+só o que está na prateleira Split Inverter, o mesmo recorte da URL pública.
+
+O nome do atributo de facet não é hardcoded: ele é DESCOBERTO em runtime a
+partir dos próprios hits (`_descobrir_facet`), porque a Leroy renomeia
+atributos de índice sem aviso e um nome fixo viraria falha silenciosa. Se a
+descoberta não achar um atributo de categoria compatível, a coleta CAI para o
+caminho antigo (busca por texto + recorte pelo classificador de tipo) e AVISA
+— degradar é melhor que gravar lixo ou zerar a lista.
+
+⚠️ MECÂNICA AINDA SOB SUSPEITA. Mesmo ancorada na categoria, a Leroy declara a
+ordenação como mais vendidos e o comportamento estatístico não confirma: em
+48h, 41% dos itens não mudaram de posição (contra 12–19% nas demais). Hipótese
+aberta: a ordenação pondera curadoria 1P, margem ou disponibilidade — o que
+também explica a prateleira Midea desproporcional. Enquanto isso não for
+esclarecido com o varejista, o número do Leroy NÃO sustenta sozinho decisão de
+corte de verba — o relatório imprime esse aviso junto do resultado (`veredito`).
 
 Seller: o índice devolve o lojista 3P como ObjectId opaco. A resolução
 (mapa estático → cache em disco → PDP) é do `LeroyMerlinScraper`, reaproveitada
 aqui — 1 PDP por seller novo, não por produto.
 """
 
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import requests
 from loguru import logger
@@ -42,11 +62,30 @@ _URL_ALGOLIA = (
 _TERMO = "ar condicionado"
 _HITS_POR_PAGINA = 36
 _TIMEOUT = 8
-# Teto de páginas varridas. A busca por texto arrasta muito acessório; depois
-# do recorte de escopo pode sobrar pouca coisa numa página só. Este teto deixa
-# a coleta ir atrás de mais páginas para repor os itens filtrados sem virar um
-# loop infinito (8 × 36 = até 288 hits varridos).
+# Teto de páginas varridas. Mesmo ancorada na categoria pode sobrar pouca coisa
+# numa página só depois do recorte de escopo (rede de segurança), então a
+# coleta pode ir atrás de mais páginas sem virar loop infinito (8 × 36 = até
+# 288 hits varridos).
 _MAX_PAGINAS = 8
+
+# Prateleira de categoria NAVEGÁVEL que ancora o ranking — a mesma que o cliente
+# abre. É registrada como `url_publica` no config; aqui serve de referência e de
+# origem dos tokens que a descoberta de facet procura.
+_CATEGORIA_URL = (
+    "https://www.leroymerlin.com.br/ar-condicionado-inverter/"
+    "tipo-de-ar-condicionado/Split_Inverter"
+)
+# Tokens que identificam a categoria dentro dos hits (do segmento `Split_Inverter`
+# da URL). O par split+inverter é o discriminador: um atributo de categoria cujo
+# valor contém AMBOS é a prateleira que queremos filtrar.
+_CATEGORIA_TOKENS: Tuple[str, ...] = ("split", "inverter")
+# Só atributos cujo NOME parece de categoria entram na descoberta de facet —
+# sem isto o campo `name` ("Ar Condicionado Split Inverter Midea...") casaria os
+# tokens e viraria um facet por título, retornando um único produto.
+_FACET_KEY_RE = re.compile(r"categ|tipo|type|famil|hierarch|departa|classe|segment", re.I)
+# Um rótulo de categoria é curto; uma descrição não. Corta campos de texto longo
+# que porventura tenham nome parecido com categoria mas carreguem prosa.
+_FACET_VALOR_MAX = 120
 
 
 class LeroyMerlinBestSellers(BestSellerSource):
@@ -72,22 +111,48 @@ class LeroyMerlinBestSellers(BestSellerSource):
         alvo = self.spec.itens_esperados
         minimo_paginas = max(1, paginas)
 
+        # Passo 0 — sondagem: a primeira página (busca por texto) serve para
+        # DESCOBRIR o atributo de facet de categoria a partir dos hits reais, e
+        # ainda vale como semente do fallback se a descoberta falhar. Uma
+        # chamada Algolia a mais, barata.
+        sonda = self._consultar(0, facet=None)
+        facet = self._descobrir_facet(sonda)
+
+        if facet:
+            attr, valor = facet
+            logger.info(
+                f"[{self.nome}] Âncora de categoria aplicada: "
+                f"`{attr}` = \"{valor}\" (prateleira Split Inverter) — ranking "
+                "por vendas recortado à categoria navegável."
+            )
+        else:
+            logger.warning(
+                f"[{self.nome}] Não foi possível ancorar na categoria Split "
+                "Inverter (nenhum atributo de facet compatível nos hits) — "
+                "caindo para busca por texto + recorte pelo classificador de "
+                f"tipo. Prateleira de referência: {_CATEGORIA_URL}"
+            )
+
         # Vai além do mínimo de páginas SÓ para repor o que o recorte de escopo
-        # tirou: a busca por texto traz acessório demais, e parar na página 1
-        # deixaria a lista curta o suficiente para tropeçar no piso de itens da
-        # validação. Para assim que juntar `itens_esperados` itens in-scope.
-        # Diferente das outras fontes, aqui `paginas` é um PISO, não um teto —
-        # o custo extra (até `_MAX_PAGINAS` chamadas Algolia) é registrado no
-        # log abaixo para não ficar silencioso atrás do parâmetro de páginas.
+        # tirou (rede de segurança do classificador de tipo, mantida mesmo com a
+        # âncora de categoria). Para assim que juntar `itens_esperados` itens
+        # in-scope. Diferente das outras fontes, aqui `paginas` é um PISO, não um
+        # teto — o custo extra (até `_MAX_PAGINAS` chamadas Algolia) é registrado
+        # no log abaixo para não ficar silencioso atrás do parâmetro de páginas.
         paginas_varridas = 0
         for pagina in range(_MAX_PAGINAS):
-            hits = self._consultar(pagina)
+            # A página 0 do caminho de texto já foi baixada na sondagem; sem a
+            # âncora de categoria, reaproveitá-la evita uma chamada duplicada.
+            if pagina == 0 and not facet:
+                hits = sonda
+            else:
+                hits = self._consultar(pagina, facet=facet)
             if not hits:
                 break
             paginas_varridas += 1
             itens.extend(self._parse(hits, offset=len(itens)))
             if len(hits) < _HITS_POR_PAGINA:
-                break  # última página do índice
+                break  # última página do índice / da categoria
             if pagina + 1 >= minimo_paginas and len(itens) >= alvo:
                 break
 
@@ -99,13 +164,27 @@ class LeroyMerlinBestSellers(BestSellerSource):
             )
         return itens
 
-    def _consultar(self, pagina: int) -> List[Dict[str, Any]]:
-        """Uma página do índice de mais vendidos."""
-        payload = {
-            "query": _TERMO,
+    def _consultar(
+        self, pagina: int, facet: Optional[Tuple[str, str]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Uma página do índice de mais vendidos.
+
+        Com `facet` (attr, valor), a consulta é ancorada na categoria via
+        `facetFilters` e a `query` vai vazia: o índice devolve a prateleira
+        inteira na ordem de vendas. Sem `facet`, cai na busca por texto
+        histórica (`_TERMO`), recortada depois pelo classificador de tipo.
+        """
+        payload: Dict[str, Any] = {
             "hitsPerPage": _HITS_POR_PAGINA,
             "page": pagina,  # Algolia é 0-indexed
         }
+        if facet is not None:
+            attr, valor = facet
+            payload["query"] = ""
+            payload["facetFilters"] = [[f"{attr}:{valor}"]]
+        else:
+            payload["query"] = _TERMO
         try:
             resposta = requests.post(
                 _URL_ALGOLIA, headers=_ALGOLIA_HEADERS, json=payload, timeout=_TIMEOUT
@@ -127,11 +206,62 @@ class LeroyMerlinBestSellers(BestSellerSource):
 
         hits = dados.get("hits") or []
         if hits:
+            origem = "categoria" if facet is not None else "texto"
             logger.info(
-                f"[{self.nome}] Algolia mais-vendidos: {len(hits)} hits "
-                f"(página {pagina + 1}/{dados.get('nbPages', '?')})"
+                f"[{self.nome}] Algolia mais-vendidos ({origem}): {len(hits)} "
+                f"hits (página {pagina + 1}/{dados.get('nbPages', '?')})"
             )
         return hits
+
+    # ------------------------------------------------------------------
+    # Descoberta de facet de categoria
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _valores_texto(valor: Any) -> Iterator[str]:
+        """Achata um valor de hit nas strings candidatas a rótulo de categoria."""
+        if isinstance(valor, str):
+            yield valor
+        elif isinstance(valor, (list, tuple)):
+            for item in valor:
+                if isinstance(item, str):
+                    yield item
+        elif isinstance(valor, dict):
+            # hierarchicalCategories = {"lvl0": "...", "lvl1": "...", ...}
+            for item in valor.values():
+                if isinstance(item, str):
+                    yield item
+
+    @classmethod
+    def _descobrir_facet(
+        cls, hits: List[Dict[str, Any]]
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Descobre `(atributo, valor)` de facet que recorta os hits à categoria.
+
+        Percorre os hits e retorna o primeiro atributo cujo NOME parece de
+        categoria (`_FACET_KEY_RE`) e cujo VALOR contém todos os tokens da
+        categoria-alvo (`_CATEGORIA_TOKENS`). O valor é devolvido verbatim para
+        entrar cru no `facetFilters` — o Algolia casa o valor exato armazenado.
+
+        Restringir pelo NOME do atributo é o que impede casar o título do
+        produto (que também contém "split inverter") e transformar o facet num
+        filtro de um produto só. Retorna None quando nada compatível aparece —
+        o chamador então degrada para a busca por texto.
+        """
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            for attr, valor in hit.items():
+                if not _FACET_KEY_RE.search(attr):
+                    continue
+                for texto in cls._valores_texto(valor):
+                    if len(texto) > _FACET_VALOR_MAX:
+                        continue
+                    baixo = texto.lower()
+                    if all(tok in baixo for tok in _CATEGORIA_TOKENS):
+                        return attr, texto
+        return None
 
     # ------------------------------------------------------------------
     # Parsing
