@@ -87,6 +87,17 @@ _FACET_KEY_RE = re.compile(r"categ|tipo|type|famil|hierarch|departa|classe|segme
 _FACET_VALOR_MAX = 120
 
 
+class _IndiceInexistente(RuntimeError):
+    """
+    O índice de mais vendidos não existe mais (HTTP 404).
+
+    Tipo próprio para separar a falha ESTRUTURAL (índice renomeado — que quebra
+    os dois caminhos, texto e categoria) das transitórias (timeout, conexão,
+    HTTP 400 de facet não-facetável). Só esta sobe; as demais degradam para a
+    busca por texto.
+    """
+
+
 class LeroyMerlinBestSellers(BestSellerSource):
     """Coletor do índice de mais vendidos da Leroy Merlin (Algolia)."""
 
@@ -120,11 +131,12 @@ class LeroyMerlinBestSellers(BestSellerSource):
             # A descoberta acerta o NOME e o VALOR do atributo, mas não prova que
             # ele é FACETÁVEL no índice (`attributesForFaceting`). Se não for, a
             # query com `facetFilters` volta HTTP 400 — ou zero hits, quando o
-            # valor cru não bate. Nos dois casos a coleta NÃO pode abortar nem
-            # sair vazia: `_coletar_ancorado` devolve None e caímos para o texto,
-            # reaproveitando a sondagem já baixada.
+            # valor cru não bate; e todo hit da categoria pode cair no recorte de
+            # tipo, deixando a lista vazia. Em qualquer desses casos a coleta NÃO
+            # pode abortar nem sair vazia: `if itens` (não `is not None`) manda o
+            # resultado vazio para o texto também, reaproveitando a sondagem.
             itens = self._coletar_ancorado(facet, minimo_paginas, alvo)
-            if itens is not None:
+            if itens:
                 return itens
         else:
             logger.warning(
@@ -142,43 +154,44 @@ class LeroyMerlinBestSellers(BestSellerSource):
         """
         Coleta ancorada na categoria via `facetFilters`, ou None se não pegar.
 
-        Retornar None (em vez de levantar ou devolver lista vazia) é o contrato
-        que permite ao chamador degradar para a busca por texto: um atributo que
-        casa o nome/valor mas não é facetável faz o Algolia responder HTTP 400, e
-        um valor cru que não bate devolve zero hits — nenhum dos dois pode
-        derrubar a coleta. O erro de índice inexistente (404), esse sim, sobe:
-        ele quebraria o caminho de texto do mesmo jeito.
+        Devolver None (em vez de levantar) é o contrato que permite ao chamador
+        degradar para a busca por texto. TODA a coleta ancorada — página 0 E as
+        páginas seguintes — roda sob o mesmo tratamento, porque uma falha
+        transitória (timeout, conexão, HTTP 400 de atributo não-facetável) pode
+        cair em qualquer página, não só na primeira; deixá-la escapar pelo
+        `_paginar` derrubaria a fonte inteira. A única exceção é o índice
+        inexistente (404, `_IndiceInexistente`): esse sobe, porque o caminho de
+        texto usa o mesmo índice e falharia igual.
         """
         attr, valor = facet
         try:
             primeira = self._consultar(0, facet=facet)
-        except RuntimeError:
-            raise  # 404 — índice sumiu; o texto também não salva
+            if not primeira:
+                logger.warning(
+                    f"[{self.nome}] Facet `{attr}` = \"{valor}\" não retornou "
+                    "hits — o valor cru não bate a categoria; caindo para texto."
+                )
+                return None
+            logger.info(
+                f"[{self.nome}] Âncora de categoria aplicada: `{attr}` = "
+                f"\"{valor}\" (prateleira Split Inverter) — ranking por vendas "
+                "recortado à categoria navegável."
+            )
+            return self._paginar(
+                lambda pagina: self._consultar(pagina, facet=facet),
+                primeira,
+                minimo_paginas,
+                alvo,
+            )
+        except _IndiceInexistente:
+            raise  # índice sumiu — o texto também não salva
         except Exception as exc:
             logger.warning(
-                f"[{self.nome}] Facet `{attr}` recusado pelo índice ({exc}) — "
-                "atributo provavelmente fora de `attributesForFaceting`; caindo "
-                "para busca por texto + recorte de tipo."
+                f"[{self.nome}] Coleta ancorada em `{attr}` falhou ({exc}) — "
+                "atributo provavelmente fora de `attributesForFaceting` ou falha "
+                "transitória; caindo para busca por texto + recorte de tipo."
             )
             return None
-        if not primeira:
-            logger.warning(
-                f"[{self.nome}] Facet `{attr}` = \"{valor}\" não retornou hits — "
-                "o valor cru não bate a categoria; caindo para busca por texto."
-            )
-            return None
-
-        logger.info(
-            f"[{self.nome}] Âncora de categoria aplicada: `{attr}` = \"{valor}\" "
-            "(prateleira Split Inverter) — ranking por vendas recortado à "
-            "categoria navegável."
-        )
-        return self._paginar(
-            lambda pagina: self._consultar(pagina, facet=facet),
-            primeira,
-            minimo_paginas,
-            alvo,
-        )
 
     def _coletar_texto(
         self, sonda: List[Dict[str, Any]], minimo_paginas: int, alvo: int
@@ -271,8 +284,9 @@ class LeroyMerlinBestSellers(BestSellerSource):
         if resposta.status_code == 404:
             # Índice renomeado é a falha silenciosa clássica desta fonte: a
             # coleta continuaria "funcionando" com a ordenação errada se
-            # caíssemos no índice padrão.
-            raise RuntimeError(
+            # caíssemos no índice padrão. Tipo próprio: é a única falha que a
+            # coleta ancorada NÃO degrada para texto (o texto usa o mesmo índice).
+            raise _IndiceInexistente(
                 f"índice '{_INDICE_MAIS_VENDIDOS}' não existe mais (HTTP 404). "
                 "A Leroy renomeou a ordenação — confira o parâmetro sortBy na "
                 "UI antes de trocar a constante."

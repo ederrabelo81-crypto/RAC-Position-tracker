@@ -934,8 +934,7 @@ class TestLeroyMerlinFacetCategoria:
     def test_coletar_facet_400_cai_para_texto(self, fonte, monkeypatch):
         """Atributo compatível no hit mas FORA de `attributesForFaceting`: o
         Algolia responde HTTP 400. A coleta não pode abortar — captura a falha e
-        cai para o texto. (RuntimeError, reservado ao 404 'índice sumiu', ainda
-        sobe.)"""
+        cai para o texto."""
         import requests
 
         sonda = [{
@@ -956,9 +955,101 @@ class TestLeroyMerlinFacetCategoria:
 
         assert [i.sku_plataforma for i in itens] == ["S1"]  # texto salvou a coleta
 
+    def test_coletar_facet_timeout_cai_para_texto(self, fonte, monkeypatch):
+        """Timeout/conexão na query facetada é transitório — não estrutural. Vem
+        como RuntimeError genérico ('Algolia inacessível'), distinto do 404, e
+        também degrada para o texto em vez de abortar a fonte."""
+        sonda = [{
+            "objectID": "S1",
+            "name": "Ar Condicionado Split Inverter Midea 12000",
+            "averagePromotionalPrice": 1899.0,
+            "linkText": "midea-12000",
+            "tipo-de-ar-condicionado": "Split Inverter",
+        }]
+
+        def _fake_consultar(pagina, facet=None):
+            if facet is None:
+                return sonda if pagina == 0 else []
+            raise RuntimeError("Algolia inacessível: timeout")
+
+        monkeypatch.setattr(fonte, "_consultar", _fake_consultar)
+        itens = fonte._coletar(paginas=1)
+
+        assert [i.sku_plataforma for i in itens] == ["S1"]  # texto salvou a coleta
+
+    def test_coletar_facet_tudo_fora_de_escopo_cai_para_texto(self, fonte, monkeypatch):
+        """Facet aplica e retorna hits, mas o recorte de tipo descarta todos
+        (acessório) → lista ancorada vazia. `if itens` (não `is not None`) manda
+        o resultado vazio para o texto em vez de gravar uma coleta vazia."""
+        sonda = [{
+            "objectID": "S1",
+            "name": "Ar Condicionado Split Inverter Midea 12000",
+            "averagePromotionalPrice": 1899.0,
+            "linkText": "midea-12000",
+            "tipo-de-ar-condicionado": "Split Inverter",
+        }]
+        # A página facetada só traz acessório — todo hit cai no recorte de escopo.
+        acessorio = [{
+            "objectID": "X1",
+            "name": "Suporte para Ar Condicionado Split até 30000 BTUs",
+            "averagePromotionalPrice": 79.9,
+            "linkText": "suporte",
+            "tipo-de-ar-condicionado": "Split Inverter",
+        }]
+
+        def _fake_consultar(pagina, facet=None):
+            if facet is None:
+                return sonda if pagina == 0 else []
+            return acessorio if pagina == 0 else []
+
+        monkeypatch.setattr(fonte, "_consultar", _fake_consultar)
+        itens = fonte._coletar(paginas=1)
+
+        assert [i.sku_plataforma for i in itens] == ["S1"]  # texto salvou a coleta
+
+    def test_coletar_facet_falha_pagina_posterior_cai_para_texto(self, fonte, monkeypatch):
+        """A proteção cobre a paginação INTEIRA, não só a página 0: uma falha ao
+        buscar uma página facetada posterior não pode escapar pelo `_paginar` e
+        derrubar a fonte — degrada para o texto."""
+        from bestsellers.sources import leroy_merlin as lm
+
+        # Página cheia = 1 hit → o loop não para na página 0 e vai à página 1.
+        monkeypatch.setattr(lm, "_HITS_POR_PAGINA", 1)
+
+        sonda = [{
+            "objectID": "S1",
+            "name": "Ar Condicionado Split Inverter Midea 12000",
+            "averagePromotionalPrice": 1899.0,
+            "linkText": "midea-12000",
+            "tipo-de-ar-condicionado": "Split Inverter",
+        }]
+        facet_p0 = [{
+            "objectID": "C1",
+            "name": "Ar Condicionado Split Inverter LG 9000",
+            "averagePromotionalPrice": 2199.0,
+            "linkText": "lg-9000",
+            "tipo-de-ar-condicionado": "Split Inverter",
+        }]
+
+        def _fake_consultar(pagina, facet=None):
+            if facet is None:
+                return sonda if pagina == 0 else []
+            if pagina == 0:
+                return facet_p0
+            raise RuntimeError("Algolia inacessível: conexão caiu na página 2")
+
+        monkeypatch.setattr(fonte, "_consultar", _fake_consultar)
+        itens = fonte._coletar(paginas=1)
+
+        # Falha na página 1 facetada → fallback texto (não derruba, não retorna
+        # parcial da categoria).
+        assert [i.sku_plataforma for i in itens] == ["S1"]
+
     def test_coletar_facet_404_propaga(self, fonte, monkeypatch):
         """404 (índice sumiu) não é degradável: o caminho de texto usa o mesmo
-        índice e falharia igual. O RuntimeError sobe em vez de mascarar."""
+        índice e falharia igual. `_IndiceInexistente` sobe em vez de mascarar."""
+        from bestsellers.sources.leroy_merlin import _IndiceInexistente
+
         sonda = [{
             "objectID": "S1",
             "name": "Ar Condicionado Split Inverter Midea 12000",
@@ -970,10 +1061,10 @@ class TestLeroyMerlinFacetCategoria:
         def _fake_consultar(pagina, facet=None):
             if facet is None:
                 return sonda
-            raise RuntimeError("índice 'production_products_most_sales' não existe mais")
+            raise _IndiceInexistente("índice 'production_products_most_sales' não existe mais")
 
         monkeypatch.setattr(fonte, "_consultar", _fake_consultar)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(_IndiceInexistente):
             fonte._coletar(paginas=1)
 
     def test_coletar_cai_para_texto_sem_facet(self, fonte, monkeypatch):
