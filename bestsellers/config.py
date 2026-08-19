@@ -157,10 +157,15 @@ SOURCES: Dict[str, SourceSpec] = {
         nome="Leroy Merlin",
         # URL pública NAVEGÁVEL para auditar a lista. O `sortBy=` antigo
         # (`production_products_most_sales`) é o NOME DO ÍNDICE Algolia, não um
-        # parâmetro de ordenação válido do site — a página abria em erro. A UI
-        # da Leroy não expõe ordenação por vendas na categoria; o único jeito
-        # de obter o ranking por vendas é o índice Algolia (ver `endpoint`). O
-        # link abaixo é a busca real que a coleta reproduz, e abre de fato.
+        # parâmetro de ordenação válido do site — a página abria em erro. Este
+        # link abre de fato e mostra a MESMA prateleira (busca por "ar
+        # condicionado"), mas em ordem de RELEVÂNCIA: a UI da Leroy não expõe
+        # ordenação por vendas, então o ranking por vendas gravado na série NÃO
+        # é reproduzível na tela — ele só existe via o índice Algolia (ver
+        # `endpoint`, sempre registrado em `_coletar`). Consequência: para a
+        # Leroy a prova de ordenação (`parametros_ordenacao`) vive apenas no
+        # `endpoint`; o `url_coleta` deixou de carregá-la de propósito, para não
+        # voltar a ser um link quebrado.
         url_publica="https://www.leroymerlin.com.br/busca?term=ar+condicionado",
         parametros_ordenacao=("production_products_most_sales",),
         mecanica=MECANICA_DECLARADO,

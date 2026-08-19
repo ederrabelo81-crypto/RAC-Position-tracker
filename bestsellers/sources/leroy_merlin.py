@@ -76,15 +76,27 @@ class LeroyMerlinBestSellers(BestSellerSource):
         # tirou: a busca por texto traz acessório demais, e parar na página 1
         # deixaria a lista curta o suficiente para tropeçar no piso de itens da
         # validação. Para assim que juntar `itens_esperados` itens in-scope.
+        # Diferente das outras fontes, aqui `paginas` é um PISO, não um teto —
+        # o custo extra (até `_MAX_PAGINAS` chamadas Algolia) é registrado no
+        # log abaixo para não ficar silencioso atrás do parâmetro de páginas.
+        paginas_varridas = 0
         for pagina in range(_MAX_PAGINAS):
             hits = self._consultar(pagina)
             if not hits:
                 break
+            paginas_varridas += 1
             itens.extend(self._parse(hits, offset=len(itens)))
             if len(hits) < _HITS_POR_PAGINA:
                 break  # última página do índice
             if pagina + 1 >= minimo_paginas and len(itens) >= alvo:
                 break
+
+        if paginas_varridas > minimo_paginas:
+            logger.info(
+                f"[{self.nome}] {paginas_varridas} páginas Algolia varridas "
+                f"(piso={minimo_paginas}) para repor o recorte de escopo — "
+                f"{len(itens)}/{alvo} itens in-scope."
+            )
         return itens
 
     def _consultar(self, pagina: int) -> List[Dict[str, Any]]:
