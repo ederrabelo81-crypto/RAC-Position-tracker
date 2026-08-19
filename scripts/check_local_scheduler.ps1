@@ -30,7 +30,7 @@ function Write-Sect ([string]$msg) { Write-Host ""; Write-Host "== $msg" -Foregr
 # esbarrar em comparacao Int32 vs UInt32 do hashtable)
 $ResultMap = @{
     "0"          = "sucesso"
-    "1"          = "falha generica do programa - sintoma classico da Action antiga com cmd /c + aspas (re-rode o setup)"
+    "1"          = "a coleta rodou mas retornou FALHA (ex: nenhuma plataforma produziu dados / bestsellers 0 itens) - veja logs\scheduler.log e logs\bestsellers_*.log; NAO e a Action antiga se a linha 'Action' acima ja for o .bat direto"
     "2"          = "arquivo nao encontrado"
     "267008"     = "tarefa pronta (ainda nao rodou nesta definicao)"
     "267009"     = "tarefa em execucao agora"

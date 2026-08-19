@@ -18,9 +18,11 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from config import PAGE_TIMEOUT
 from bestsellers.config import SOURCES, SourceSpec
 from bestsellers.models import BestSellerItem
 from scrapers.base import BaseScraper
+from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
 
 
 class PlainBrowser(BaseScraper):
@@ -32,11 +34,61 @@ class PlainBrowser(BaseScraper):
     Paulo, dump de HTML de debug) nas listas que só precisam de um `goto`
     numa URL fixa. `search()` é intencionalmente vazio: esta classe navega,
     quem interpreta é a fonte.
+
+    Chrome local (``RAC_LOCAL_CHROME``): quando ligado — o caso do notebook
+    coletor agendado — reusa o mesmo Chrome real e LOGADO (perfil dedicado,
+    IP residencial) compartilhado por ML/Magalu/Shopee/Casas Bahia, em vez de
+    subir um Chromium headless próprio. Um browser lançado do zero é flagado
+    pelo antibot da Amazon (CAPTCHA) e a lista de mais vendidos saía vazia; o
+    Chrome comum atacado via CDP passa com o mesmo fingerprint que as demais
+    listas já usam. Sem a env (VM / GitHub Actions) nada muda — cai no
+    ``_launch`` padrão do ``BaseScraper``.
     """
 
     def __init__(self, platform_name: str, headless: bool = True) -> None:
         self.platform_name = platform_name
         super().__init__(headless=headless)
+        # Ligado quando estamos usando a aba do Chrome compartilhado — nesse
+        # caso o ``_close`` fecha SÓ a aba, nunca o Chrome (que é dos outros
+        # coletores e é encerrado uma vez só, no fim da coleta).
+        self._local_active: bool = False
+
+    def _launch(self) -> None:
+        """Preferência: aba do Chrome real local (perfil dedicado) via CDP."""
+        if is_local_chrome_enabled():
+            lb = get_local_browser()
+            if lb is not None:
+                page = lb.new_page()
+                if page is not None:
+                    self._context = lb.context
+                    self._page = page
+                    self._page.set_default_timeout(PAGE_TIMEOUT)
+                    self._local_active = True
+                    logger.info(
+                        f"[{self.platform_name}] Chrome real local (perfil "
+                        "compartilhado) — fingerprint nativo, sem CAPTCHA"
+                    )
+                    return
+            logger.warning(
+                f"[{self.platform_name}] RAC_LOCAL_CHROME ligado mas o Chrome "
+                "local não abriu — caindo para launch próprio (Playwright)"
+            )
+        super()._launch()
+
+    def _close(self) -> None:
+        # Modo Chrome local: fecha SÓ a aba dedicada — o Chrome é compartilhado
+        # e desconectado uma única vez no fim da coleta (close_local_browser).
+        if self._local_active:
+            try:
+                if self._page is not None and not self._page.is_closed():
+                    self._page.close()
+            except Exception:
+                pass
+            self._page = None
+            self._context = None
+            self._local_active = False
+            return
+        super()._close()
 
     def search(self, *_args, **_kwargs) -> List[Dict[str, Any]]:
         """Não usado — a coleta de ranking não é dirigida por keyword."""

@@ -186,7 +186,7 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 3)
 Register-ScheduledTask -TaskName "RAC_Local_Manha" `
     -Action (New-RacAction "manha") -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
-    -Description "Coleta local autenticada (Magalu+Shopee+CB) - Abertura, janela 9-12h" `
+    -Description "Coleta local autenticada (ML+Magalu+Shopee+CB+Leroy+Amazon) - Abertura, janela 9-12h" `
     -Force | Out-Null
 
 Write-Host "Registrando: RAC_Local_Noite (20:00 diario + catch-up no logon)" -ForegroundColor Cyan
@@ -196,7 +196,7 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 Register-ScheduledTask -TaskName "RAC_Local_Noite" `
     -Action (New-RacAction "noite") -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
-    -Description "Coleta local autenticada (Magalu+Shopee+CB) - Fechamento, janela 20-23h" `
+    -Description "Coleta local autenticada (ML+Magalu+Shopee+CB+Leroy+Amazon) - Fechamento, janela 20-23h" `
     -Force | Out-Null
 
 Write-Host "Registrando: RAC_Bestsellers (09:30 dia util + catch-up no logon)" -ForegroundColor Cyan
