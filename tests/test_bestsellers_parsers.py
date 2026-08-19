@@ -797,6 +797,35 @@ class TestLeroyMerlinParser:
     def test_hit_sem_titulo_e_descartado(self, fonte):
         assert fonte._parse([{"objectID": "A9"}], offset=0) == []
 
+    def test_acessorio_fora_do_escopo_e_descartado(self, fonte):
+        """A busca por texto arrasta acessório; sem recorte ele ocupa o topo
+        do ranking e empurra o split de verdade para baixo (Midea vista em
+        #33). O recorte usa o mesmo classificador de tipo do pipeline."""
+        hits = [
+            self._hit("A1", "Suporte para Ar Condicionado Split até 30000 BTUs", 79.9),
+            self._hit("A2", "Ar Condicionado Split Inverter Midea 12000 BTUs", 1899.0),
+            self._hit("A3", "Ventilador de Coluna 40cm", 149.0),
+            self._hit("A4", "Ar Condicionado Split LG 9000 BTUs", 2199.0),
+        ]
+        itens = fonte._parse(hits, offset=0)
+        assert [i.titulo for i in itens] == [
+            "Ar Condicionado Split Inverter Midea 12000 BTUs",
+            "Ar Condicionado Split LG 9000 BTUs",
+        ]
+        # Ranking renumerado sem os buracos deixados pelo descarte.
+        assert [i.rank for i in itens] == [1, 2]
+
+    def test_offset_conta_apenas_itens_in_scope(self, fonte):
+        """O offset da paginação acompanha os itens realmente mantidos: um
+        acessório descartado na página não pode consumir uma posição."""
+        hits = [
+            self._hit("B1", "Capa para Ar Condicionado Split", 39.9),
+            self._hit("B2", "Ar Condicionado Split Gree 12000 BTUs", 1799.0),
+        ]
+        itens = fonte._parse(hits, offset=30)
+        assert len(itens) == 1
+        assert itens[0].rank == 31
+
 
 class TestShopeeCamposSensiveis:
     @pytest.fixture

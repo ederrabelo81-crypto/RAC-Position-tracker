@@ -155,11 +155,13 @@ SOURCES: Dict[str, SourceSpec] = {
     "leroymerlin": SourceSpec(
         key="leroymerlin",
         nome="Leroy Merlin",
-        url_publica=(
-            "https://www.leroymerlin.com.br/search?term=ar%20condicionado"
-            "&sortBy=production_products_most_sales"
-            "&searchTerm=ar%20condicionado&searchType=default"
-        ),
+        # URL pública NAVEGÁVEL para auditar a lista. O `sortBy=` antigo
+        # (`production_products_most_sales`) é o NOME DO ÍNDICE Algolia, não um
+        # parâmetro de ordenação válido do site — a página abria em erro. A UI
+        # da Leroy não expõe ordenação por vendas na categoria; o único jeito
+        # de obter o ranking por vendas é o índice Algolia (ver `endpoint`). O
+        # link abaixo é a busca real que a coleta reproduz, e abre de fato.
+        url_publica="https://www.leroymerlin.com.br/busca?term=ar+condicionado",
         parametros_ordenacao=("production_products_most_sales",),
         mecanica=MECANICA_DECLARADO,
         base_vendidos=None,
@@ -167,9 +169,13 @@ SOURCES: Dict[str, SourceSpec] = {
         ativo=True,
         armadilha=(
             "Declarada como mais vendidos, mas 41% dos itens não mudaram de "
-            "posição em 48h (contra 12–19% nas demais). Enquanto a mecânica "
-            "não for confirmada com o varejista, não sustenta decisão de "
-            "corte de verba isoladamente."
+            "posição em 48h (contra 12–19% nas demais). Além disso a lista vem "
+            "de uma BUSCA POR TEXTO (não de uma página de categoria), então "
+            "arrasta acessório e correlato — a coleta recorta pelo classificador "
+            "de tipo antes de rankear. A ordenação por vendas só existe via o "
+            "índice Algolia; a UI do site não a reproduz. Enquanto a mecânica "
+            "não for confirmada com o varejista, não sustenta decisão de corte "
+            "de verba isoladamente."
         ),
     ),
     "casasbahia": SourceSpec(

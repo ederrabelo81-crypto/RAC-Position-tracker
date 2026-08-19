@@ -24,7 +24,7 @@ import requests
 from loguru import logger
 
 from bestsellers.base import BestSellerSource
-from bestsellers.models import BestSellerItem
+from bestsellers.models import BestSellerItem, TIPO_FORA_ESCOPO, classificar_tipo
 from scrapers.leroy_merlin import (
     _ALGOLIA_API_KEY,
     _ALGOLIA_APP_ID,
@@ -42,6 +42,11 @@ _URL_ALGOLIA = (
 _TERMO = "ar condicionado"
 _HITS_POR_PAGINA = 36
 _TIMEOUT = 8
+# Teto de páginas varridas. A busca por texto arrasta muito acessório; depois
+# do recorte de escopo pode sobrar pouca coisa numa página só. Este teto deixa
+# a coleta ir atrás de mais páginas para repor os itens filtrados sem virar um
+# loop infinito (8 × 36 = até 288 hits varridos).
+_MAX_PAGINAS = 8
 
 
 class LeroyMerlinBestSellers(BestSellerSource):
@@ -64,12 +69,21 @@ class LeroyMerlinBestSellers(BestSellerSource):
         self.registrar_endpoint(_URL_ALGOLIA)
         itens: List[BestSellerItem] = []
 
-        for pagina in range(max(1, paginas)):
+        alvo = self.spec.itens_esperados
+        minimo_paginas = max(1, paginas)
+
+        # Vai além do mínimo de páginas SÓ para repor o que o recorte de escopo
+        # tirou: a busca por texto traz acessório demais, e parar na página 1
+        # deixaria a lista curta o suficiente para tropeçar no piso de itens da
+        # validação. Para assim que juntar `itens_esperados` itens in-scope.
+        for pagina in range(_MAX_PAGINAS):
             hits = self._consultar(pagina)
             if not hits:
                 break
             itens.extend(self._parse(hits, offset=len(itens)))
             if len(hits) < _HITS_POR_PAGINA:
+                break  # última página do índice
+            if pagina + 1 >= minimo_paginas and len(itens) >= alvo:
                 break
         return itens
 
@@ -138,6 +152,27 @@ class LeroyMerlinBestSellers(BestSellerSource):
         # na série deixaria produtos válidos mais adiante sem seller.
         aproveitaveis = [(hit, self._titulo(hit)) for hit in hits]
         aproveitaveis = [(hit, titulo) for hit, titulo in aproveitaveis if titulo]
+
+        # Recorte de escopo. Diferente das outras plataformas — que coletam de
+        # uma PÁGINA DE CATEGORIA já recortada pelo varejista — o Leroy só expõe
+        # o ranking por vendas como uma BUSCA POR TEXTO ("ar condicionado") no
+        # índice Algolia. Sem recorte, o acessório barato de alto giro (suporte,
+        # capa, controle) e o correlato (ventilador, climatizador) empurram o
+        # primeiro split de verdade para o fim da lista — a Midea foi observada
+        # em #33/36. Descartar aqui, com o MESMO classificador do resto do
+        # pipeline, corrige o ranking e ainda poupa PDP de seller de acessório.
+        antes = len(aproveitaveis)
+        aproveitaveis = [
+            (hit, titulo)
+            for hit, titulo in aproveitaveis
+            if classificar_tipo(titulo) != TIPO_FORA_ESCOPO
+        ]
+        fora = antes - len(aproveitaveis)
+        if fora:
+            logger.debug(
+                f"[{self.nome}] {fora} hit(s) fora do escopo RAC descartados "
+                "(acessório/correlato) antes de rankear."
+            )
 
         # Passada 1: classifica sem tocar na rede e junta os IDs pendentes.
         classificados = [
