@@ -827,6 +827,107 @@ class TestLeroyMerlinParser:
         assert itens[0].rank == 31
 
 
+class TestLeroyMerlinFacetCategoria:
+    """Âncora de categoria: a coleta recorta o índice de vendas à prateleira
+    Split Inverter via facet descoberto nos próprios hits, e degrada para a
+    busca por texto quando nenhum atributo de categoria compatível aparece."""
+
+    @pytest.fixture
+    def fonte(self):
+        from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers
+        from scrapers.leroy_merlin import LeroyMerlinScraper
+
+        fonte = LeroyMerlinBestSellers()
+        fonte._leroy = LeroyMerlinScraper()
+        return fonte
+
+    def test_descobre_facet_por_atributo_de_categoria(self, fonte):
+        """Um atributo cujo NOME parece de categoria e cujo VALOR carrega
+        split+inverter é o facet correto — devolvido verbatim para o filtro."""
+        hits = [{
+            "objectID": "A1",
+            "name": "Ar Condicionado Split Inverter Midea 12000 BTUs",
+            "tipo-de-ar-condicionado": "Split Inverter",
+        }]
+        assert fonte._descobrir_facet(hits) == ("tipo-de-ar-condicionado", "Split Inverter")
+
+    def test_facet_ignora_titulo_do_produto(self, fonte):
+        """O campo `name` também contém 'split inverter'; usá-lo como facet
+        retornaria um produto só. Sem atributo de categoria → None (fallback)."""
+        hits = [{
+            "objectID": "A1",
+            "name": "Ar Condicionado Split Inverter Midea 12000 BTUs",
+            "linkText": "ar-split-inverter-midea",
+        }]
+        assert fonte._descobrir_facet(hits) is None
+
+    def test_facet_em_categoria_hierarquica(self, fonte):
+        """hierarchicalCategories vem como dict lvl0..lvlN — o valor que casa os
+        tokens é o rótulo de folha da categoria."""
+        hits = [{
+            "objectID": "A1",
+            "name": "Ar Condicionado Split Midea",
+            "categories": ["Ar Condicionado Inverter", "Split Inverter"],
+        }]
+        assert fonte._descobrir_facet(hits) == ("categories", "Split Inverter")
+
+    def test_facet_descarta_valor_longo(self, fonte):
+        """Um campo com nome de categoria mas texto longo é descrição, não
+        rótulo — não vira facet."""
+        descricao = "Este ar condicionado split inverter " + "x" * 200
+        hits = [{"objectID": "A1", "categoria_descricao": descricao}]
+        assert fonte._descobrir_facet(hits) is None
+
+    def test_coletar_usa_facet_quando_descoberto(self, fonte, monkeypatch):
+        """Com facet descoberto na sondagem, as páginas seguintes são
+        consultadas COM o facet (query vazia + facetFilters)."""
+        chamadas = []
+
+        sonda = [{
+            "objectID": "S1",
+            "name": "Ar Condicionado Split Inverter Midea 12000",
+            "averagePromotionalPrice": 1899.0,
+            "linkText": "midea-12000",
+            "tipo-de-ar-condicionado": "Split Inverter",
+        }]
+
+        def _fake_consultar(pagina, facet=None):
+            chamadas.append((pagina, facet))
+            if facet is None:
+                return sonda  # sondagem inicial
+            return []  # primeira página com facet encerra o loop
+
+        monkeypatch.setattr(fonte, "_consultar", _fake_consultar)
+        fonte._coletar(paginas=1)
+
+        assert chamadas[0] == (0, None)  # sondagem
+        assert chamadas[1] == (0, ("tipo-de-ar-condicionado", "Split Inverter"))
+
+    def test_coletar_cai_para_texto_sem_facet(self, fonte, monkeypatch):
+        """Sem atributo de categoria nos hits, a coleta não pode ancorar: cai
+        para o caminho de texto e REAPROVEITA a página 0 já baixada na sonda."""
+        chamadas = []
+        sonda = [{
+            "objectID": "S1",
+            "name": "Ar Condicionado Split Midea 12000",
+            "averagePromotionalPrice": 1899.0,
+            "linkText": "midea-12000",
+        }]
+
+        def _fake_consultar(pagina, facet=None):
+            chamadas.append((pagina, facet))
+            return sonda if (pagina == 0 and facet is None) else []
+
+        monkeypatch.setattr(fonte, "_consultar", _fake_consultar)
+        itens = fonte._coletar(paginas=1)
+
+        # Só a sondagem foi chamada — a página 0 do texto foi reaproveitada,
+        # sem uma segunda chamada duplicada.
+        assert chamadas == [(0, None)]
+        assert len(itens) == 1
+        assert itens[0].titulo == "Ar Condicionado Split Midea 12000"
+
+
 class TestShopeeCamposSensiveis:
     @pytest.fixture
     def fonte(self):
