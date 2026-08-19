@@ -1993,9 +1993,18 @@ def query_price_evolution_data(
     # statement_timeout de 8s": só pulamos o coletas quando o usuário
     # NÃO trouxe nenhum filtro narrowing E o pricetrack já cobre a
     # janela inteira de datas — aí o resultado seria descartado mesmo.
+    #
+    # TODOS os filtros da barra lateral contam como narrowing — inclusive
+    # Capacidade (BTU), Tipo Produto e Tipo Plataforma. Antes ficavam de
+    # fora, então selecionar SÓ um deles com o pricetrack cobrindo toda a
+    # janela derrubava as coletas em silêncio: o filtro parecia "não
+    # funcionar" (o gráfico perdia a série das coletas e todos os SKUs que
+    # o pricetrack não cobre). Como esses filtros já recortam a consulta,
+    # não há risco de timeout ao incluí-los.
     has_narrowing_filter = bool(
         products or skus_resolvidos or familias_resolvidas
         or brands or sellers or keywords or platforms
+        or btu_filter or product_types or platform_types
     )
     full_range = {
         start_date + timedelta(days=i)
