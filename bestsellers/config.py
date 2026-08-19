@@ -90,6 +90,17 @@ class SourceSpec:
         return any(p in (alvo or "") for p in self.parametros_ordenacao)
 
 
+# Prateleira de categoria NAVEGÁVEL que ancora a lista da Leroy — a mesma que o
+# cliente abre. Definida UMA vez aqui e importada pela fonte
+# (`bestsellers/sources/leroy_merlin.py`) para que o link auditável gravado na
+# série e a referência usada na descoberta de facet não possam divergir quando a
+# prateleira for renomeada (este módulo já enviou um `url_publica` quebrado antes).
+LEROY_CATEGORIA_URL = (
+    "https://www.leroymerlin.com.br/ar-condicionado-inverter/"
+    "tipo-de-ar-condicionado/Split_Inverter"
+)
+
+
 SOURCES: Dict[str, SourceSpec] = {
     "amazon": SourceSpec(
         key="amazon",
@@ -165,10 +176,7 @@ SOURCES: Dict[str, SourceSpec] = {
         # vendas), então a prova de ordenação (`parametros_ordenacao`) segue
         # vivendo no `endpoint` — o índice `production_products_most_sales`,
         # sempre registrado em `_coletar`.
-        url_publica=(
-            "https://www.leroymerlin.com.br/ar-condicionado-inverter/"
-            "tipo-de-ar-condicionado/Split_Inverter"
-        ),
+        url_publica=LEROY_CATEGORIA_URL,
         parametros_ordenacao=("production_products_most_sales",),
         mecanica=MECANICA_DECLARADO,
         base_vendidos=None,
