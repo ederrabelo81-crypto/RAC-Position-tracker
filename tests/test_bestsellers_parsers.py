@@ -431,6 +431,119 @@ class TestLiberacaoDeRecursos:
 
 
 # ---------------------------------------------------------------------------
+# PlainBrowser — reuso do Chrome local logado (RAC_LOCAL_CHROME)
+# ---------------------------------------------------------------------------
+
+
+class _PaginaFake:
+    def __init__(self):
+        self.closed = False
+        self.timeout = None
+
+    def set_default_timeout(self, ms):
+        self.timeout = ms
+
+    def is_closed(self):
+        return self.closed
+
+    def close(self):
+        self.closed = True
+
+
+class _LocalBrowserFake:
+    """Chrome compartilhado de mentira: entrega abas e nunca é fechado aqui."""
+
+    def __init__(self):
+        self.context = object()
+        self.paginas = []
+        self.closed = False
+
+    def new_page(self):
+        page = _PaginaFake()
+        self.paginas.append(page)
+        return page
+
+    def close(self):
+        self.closed = True
+
+
+class TestPlainBrowserChromeLocal:
+    """
+    A source da Amazon (única que usa PlainBrowser) precisa entrar pelo MESMO
+    Chrome real logado das demais listas. Um Chromium headless próprio é
+    flagado pela Amazon (CAPTCHA) e a lista saía vazia — o que fazia a coleta
+    inteira terminar em "0 plataformas" (exit 1) no agendamento.
+    """
+
+    def test_usa_a_aba_do_chrome_compartilhado_quando_ligado(self, monkeypatch):
+        import bestsellers.base as base
+
+        lb = _LocalBrowserFake()
+        monkeypatch.setattr(base, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(base, "get_local_browser", lambda: lb)
+        # Se cair no launch próprio, o teste falha em vez de subir um Chromium.
+        monkeypatch.setattr(
+            base.BaseScraper, "_launch",
+            lambda self: (_ for _ in ()).throw(
+                AssertionError("não deveria lançar browser próprio")
+            ),
+        )
+
+        pb = base.PlainBrowser("Amazon")
+        pb._launch()
+
+        assert pb._local_active is True
+        assert pb._context is lb.context
+        assert pb._page is lb.paginas[0]
+
+        # Fechar SÓ solta a aba — o Chrome é dos outros coletores.
+        pb._close()
+        assert lb.paginas[0].closed is True
+        assert lb.closed is False
+        assert pb._local_active is False
+        assert pb._page is None
+
+    def test_cai_no_launch_proprio_quando_desligado(self, monkeypatch):
+        import bestsellers.base as base
+
+        monkeypatch.setattr(base, "is_local_chrome_enabled", lambda: False)
+        monkeypatch.setattr(
+            base, "get_local_browser",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("não deveria consultar o Chrome local")
+            ),
+        )
+        chamou = {"super": False}
+        monkeypatch.setattr(
+            base.BaseScraper, "_launch",
+            lambda self: chamou.__setitem__("super", True),
+        )
+
+        pb = base.PlainBrowser("Amazon")
+        pb._launch()
+
+        assert chamou["super"] is True
+        assert pb._local_active is False
+
+    def test_local_ligado_mas_chrome_indisponivel_cai_no_launch_proprio(self, monkeypatch):
+        import bestsellers.base as base
+
+        monkeypatch.setattr(base, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(base, "get_local_browser", lambda: None)
+        chamou = {"super": False}
+        monkeypatch.setattr(
+            base.BaseScraper, "_launch",
+            lambda self: chamou.__setitem__("super", True),
+        )
+
+        pb = base.PlainBrowser("Amazon")
+        pb._launch()
+
+        assert chamou["super"] is True
+        assert pb._local_active is False
+
+
+# ---------------------------------------------------------------------------
 # Casas Bahia (VTEX Intelligent Search)
 # ---------------------------------------------------------------------------
 

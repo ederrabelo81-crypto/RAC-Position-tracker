@@ -2,9 +2,11 @@
 :: -----------------------------------------------------------------------------
 :: collect_local_authenticated.bat - Coleta AUTENTICADA no notebook do usuario.
 ::
-:: Roda Mercado Livre + Magalu + Shopee + Casas Bahia usando UM Chrome real,
+:: Roda os 6 principais marketplaces - Mercado Livre + Magalu + Shopee +
+:: Casas Bahia + Leroy Merlin + Amazon. Os quatro primeiros usam UM Chrome real,
 :: persistente e LOGADO (perfil dedicado do projeto: data\chrome_profile), com
-:: o IP residencial do notebook. Substitui a coleta manual via extensao do
+:: o IP residencial do notebook; Leroy entra pela API Algolia (sem browser) e a
+:: Amazon usa o seu proprio browser. Substitui a coleta manual via extensao do
 :: Chrome (e evita o login gate do ML causado por browser automatizado).
 ::
 :: Diferente da abordagem antiga (CDP + perfil copiado), aqui:
@@ -58,7 +60,7 @@ if exist ".venv\Scripts\activate.bat" (
 ::   python scripts\setup_local_profile.py --check    (status do login)
 
 echo.
-echo === Coleta local autenticada: ml magalu shopee casasbahia - %PAGES% pagina(s) ===
+echo === Coleta local autenticada: ml magalu shopee casasbahia leroy amazon - %PAGES% pagina(s) ===
 echo.
 
 :: Ruido do driver Node do rebrowser (stderr) vai pra um arquivo, deixando o
@@ -69,9 +71,9 @@ if not exist "logs" mkdir "logs"
 set "DRIVER_LOG=logs\driver_stderr.log"
 
 if "%PRIORITY%"=="" (
-    python main.py --platforms ml magalu shopee casasbahia --pages %PAGES% 2>>"%DRIVER_LOG%"
+    python main.py --platforms ml magalu shopee casasbahia leroy amazon --pages %PAGES% 2>>"%DRIVER_LOG%"
 ) else (
-    python main.py --platforms ml magalu shopee casasbahia --pages %PAGES% --priority %PRIORITY% 2>>"%DRIVER_LOG%"
+    python main.py --platforms ml magalu shopee casasbahia leroy amazon --pages %PAGES% --priority %PRIORITY% 2>>"%DRIVER_LOG%"
 )
 set "COLLECT_EXIT=%ERRORLEVEL%"
 
