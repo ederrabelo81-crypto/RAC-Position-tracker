@@ -44,6 +44,7 @@ import requests
 from loguru import logger
 
 from bestsellers.base import BestSellerSource
+from bestsellers.config import LEROY_CATEGORIA_URL
 from bestsellers.models import BestSellerItem, TIPO_FORA_ESCOPO, classificar_tipo
 from scrapers.leroy_merlin import (
     _ALGOLIA_API_KEY,
@@ -69,12 +70,10 @@ _TIMEOUT = 8
 _MAX_PAGINAS = 8
 
 # Prateleira de categoria NAVEGÁVEL que ancora o ranking — a mesma que o cliente
-# abre. É registrada como `url_publica` no config; aqui serve de referência e de
-# origem dos tokens que a descoberta de facet procura.
-_CATEGORIA_URL = (
-    "https://www.leroymerlin.com.br/ar-condicionado-inverter/"
-    "tipo-de-ar-condicionado/Split_Inverter"
-)
+# abre e que o config grava como `url_publica`. Definida uma única vez em
+# `bestsellers.config` (importada acima) para o link auditável e a referência da
+# descoberta de facet não divergirem.
+_CATEGORIA_URL = LEROY_CATEGORIA_URL
 # Tokens que identificam a categoria dentro dos hits (do segmento `Split_Inverter`
 # da URL). O par split+inverter é o discriminador: um atributo de categoria cujo
 # valor contém AMBOS é a prateleira que queremos filtrar.
@@ -86,6 +85,17 @@ _FACET_KEY_RE = re.compile(r"categ|tipo|type|famil|hierarch|departa|classe|segme
 # Um rótulo de categoria é curto; uma descrição não. Corta campos de texto longo
 # que porventura tenham nome parecido com categoria mas carreguem prosa.
 _FACET_VALOR_MAX = 120
+
+
+class _IndiceInexistente(RuntimeError):
+    """
+    O índice de mais vendidos não existe mais (HTTP 404).
+
+    Tipo próprio para separar a falha ESTRUTURAL (índice renomeado — que quebra
+    os dois caminhos, texto e categoria) das transitórias (timeout, conexão,
+    HTTP 400 de facet não-facetável). Só esta sobe; as demais degradam para a
+    busca por texto.
+    """
 
 
 class LeroyMerlinBestSellers(BestSellerSource):
@@ -106,25 +116,28 @@ class LeroyMerlinBestSellers(BestSellerSource):
 
     def _coletar(self, paginas: int) -> List[BestSellerItem]:
         self.registrar_endpoint(_URL_ALGOLIA)
-        itens: List[BestSellerItem] = []
 
         alvo = self.spec.itens_esperados
         minimo_paginas = max(1, paginas)
 
         # Passo 0 — sondagem: a primeira página (busca por texto) serve para
         # DESCOBRIR o atributo de facet de categoria a partir dos hits reais, e
-        # ainda vale como semente do fallback se a descoberta falhar. Uma
-        # chamada Algolia a mais, barata.
+        # ainda vale como semente do fallback se a âncora não pegar. Uma chamada
+        # Algolia a mais, barata.
         sonda = self._consultar(0, facet=None)
         facet = self._descobrir_facet(sonda)
 
         if facet:
-            attr, valor = facet
-            logger.info(
-                f"[{self.nome}] Âncora de categoria aplicada: "
-                f"`{attr}` = \"{valor}\" (prateleira Split Inverter) — ranking "
-                "por vendas recortado à categoria navegável."
-            )
+            # A descoberta acerta o NOME e o VALOR do atributo, mas não prova que
+            # ele é FACETÁVEL no índice (`attributesForFaceting`). Se não for, a
+            # query com `facetFilters` volta HTTP 400 — ou zero hits, quando o
+            # valor cru não bate; e todo hit da categoria pode cair no recorte de
+            # tipo, deixando a lista vazia. Em qualquer desses casos a coleta NÃO
+            # pode abortar nem sair vazia: `if itens` (não `is not None`) manda o
+            # resultado vazio para o texto também, reaproveitando a sondagem.
+            itens = self._coletar_ancorado(facet, minimo_paginas, alvo)
+            if itens:
+                return itens
         else:
             logger.warning(
                 f"[{self.nome}] Não foi possível ancorar na categoria Split "
@@ -133,20 +146,96 @@ class LeroyMerlinBestSellers(BestSellerSource):
                 f"tipo. Prateleira de referência: {_CATEGORIA_URL}"
             )
 
-        # Vai além do mínimo de páginas SÓ para repor o que o recorte de escopo
-        # tirou (rede de segurança do classificador de tipo, mantida mesmo com a
-        # âncora de categoria). Para assim que juntar `itens_esperados` itens
-        # in-scope. Diferente das outras fontes, aqui `paginas` é um PISO, não um
-        # teto — o custo extra (até `_MAX_PAGINAS` chamadas Algolia) é registrado
-        # no log abaixo para não ficar silencioso atrás do parâmetro de páginas.
+        return self._coletar_texto(sonda, minimo_paginas, alvo)
+
+    def _coletar_ancorado(
+        self, facet: Tuple[str, str], minimo_paginas: int, alvo: int
+    ) -> Optional[List[BestSellerItem]]:
+        """
+        Coleta ancorada na categoria via `facetFilters`, ou None se não pegar.
+
+        Devolver None (em vez de levantar) é o contrato que permite ao chamador
+        degradar para a busca por texto. TODA a coleta ancorada — página 0 E as
+        páginas seguintes — roda sob o mesmo tratamento, porque uma falha
+        transitória (timeout, conexão, HTTP 400 de atributo não-facetável) pode
+        cair em qualquer página, não só na primeira; deixá-la escapar pelo
+        `_paginar` derrubaria a fonte inteira. A única exceção é o índice
+        inexistente (404, `_IndiceInexistente`): esse sobe, porque o caminho de
+        texto usa o mesmo índice e falharia igual.
+        """
+        attr, valor = facet
+        try:
+            primeira = self._consultar(0, facet=facet)
+            if not primeira:
+                logger.warning(
+                    f"[{self.nome}] Facet `{attr}` = \"{valor}\" não retornou "
+                    "hits — o valor cru não bate a categoria; caindo para texto."
+                )
+                return None
+            logger.info(
+                f"[{self.nome}] Âncora de categoria aplicada: `{attr}` = "
+                f"\"{valor}\" (prateleira Split Inverter) — ranking por vendas "
+                "recortado à categoria navegável."
+            )
+            return self._paginar(
+                lambda pagina: self._consultar(pagina, facet=facet),
+                primeira,
+                minimo_paginas,
+                alvo,
+            )
+        except _IndiceInexistente:
+            raise  # índice sumiu — o texto também não salva
+        except Exception as exc:
+            logger.warning(
+                f"[{self.nome}] Coleta ancorada em `{attr}` falhou ({exc}) — "
+                "atributo provavelmente fora de `attributesForFaceting` ou falha "
+                "transitória; caindo para busca por texto + recorte de tipo."
+            )
+            return None
+
+    def _coletar_texto(
+        self, sonda: List[Dict[str, Any]], minimo_paginas: int, alvo: int
+    ) -> List[BestSellerItem]:
+        """
+        Caminho histórico: busca por texto recortada pelo classificador de tipo.
+
+        A página 0 já veio na sondagem (`sonda`) e é reaproveitada, evitando uma
+        chamada Algolia duplicada.
+        """
+        return self._paginar(
+            lambda pagina: self._consultar(pagina, facet=None),
+            sonda,
+            minimo_paginas,
+            alvo,
+        )
+
+    def _paginar(
+        self,
+        buscar_pagina,
+        primeira_pagina: Optional[List[Dict[str, Any]]],
+        minimo_paginas: int,
+        alvo: int,
+    ) -> List[BestSellerItem]:
+        """
+        Percorre as páginas do índice, parseando e recortando o escopo.
+
+        `primeira_pagina`, quando dado, são os hits da página 0 já baixados
+        (sondagem ou primeira chamada ancorada) — evita refazer a chamada.
+
+        Vai além do mínimo de páginas SÓ para repor o que o recorte de escopo
+        tirou (rede de segurança do classificador de tipo, mantida mesmo com a
+        âncora de categoria). Para assim que juntar `itens_esperados` itens
+        in-scope. Aqui `paginas` é um PISO, não um teto — o custo extra (até
+        `_MAX_PAGINAS` chamadas Algolia) é registrado no log para não ficar
+        silencioso atrás do parâmetro de páginas.
+        """
+        itens: List[BestSellerItem] = []
         paginas_varridas = 0
         for pagina in range(_MAX_PAGINAS):
-            # A página 0 do caminho de texto já foi baixada na sondagem; sem a
-            # âncora de categoria, reaproveitá-la evita uma chamada duplicada.
-            if pagina == 0 and not facet:
-                hits = sonda
+            if pagina == 0 and primeira_pagina is not None:
+                hits = primeira_pagina
             else:
-                hits = self._consultar(pagina, facet=facet)
+                hits = buscar_pagina(pagina)
             if not hits:
                 break
             paginas_varridas += 1
@@ -195,8 +284,9 @@ class LeroyMerlinBestSellers(BestSellerSource):
         if resposta.status_code == 404:
             # Índice renomeado é a falha silenciosa clássica desta fonte: a
             # coleta continuaria "funcionando" com a ordenação errada se
-            # caíssemos no índice padrão.
-            raise RuntimeError(
+            # caíssemos no índice padrão. Tipo próprio: é a única falha que a
+            # coleta ancorada NÃO degrada para texto (o texto usa o mesmo índice).
+            raise _IndiceInexistente(
                 f"índice '{_INDICE_MAIS_VENDIDOS}' não existe mais (HTTP 404). "
                 "A Leroy renomeou a ordenação — confira o parâmetro sortBy na "
                 "UI antes de trocar a constante."
