@@ -170,7 +170,22 @@ def _style_midea_df(df: pd.DataFrame, brand_col: str = "marca"):
     Row highlighting is skipped when the frame exceeds _STYLE_CELL_THRESHOLD
     cells — at that scale every row would be highlighted or it's too large to
     render efficiently.  Float formatting is always applied.
+
+    A Pandas Styler forces Streamlit to compute a per-cell style context, which
+    Pandas hard-caps at ``styler.render.max_elements``.  Above that cap a Styler
+    cannot be rendered at all and ``st.dataframe`` raises a StreamlitAPIException
+    ("the dataframe has N cells, but the maximum ... is X").  The raw Detail dump
+    on Price Evolution can reach 600k+ rows (``pricetrack_daily`` is queried
+    uncapped), so we fall back to the plain DataFrame there — ``column_config``
+    still formats the important columns, and row highlight was already skipped at
+    that scale.
     """
+    try:
+        _max_elements = int(pd.get_option("styler.render.max_elements"))
+    except Exception:
+        _max_elements = 262_144
+    if df.size > _max_elements:
+        return df
     styler = df.style
     if df.size <= _STYLE_CELL_THRESHOLD and brand_col in df.columns:
         def _row_style(row):
@@ -6902,6 +6917,13 @@ def _query_pt_compliance(
     df["min_price"] = pd.to_numeric(df["min_price"], errors="coerce")
     df = df.dropna(subset=["min_price"])
     df = df[df["min_price"] > 0]
+    # Consolida variantes da mesma marca ("MIDEA", "MIDEA CARRIER",
+    # "SPRINGER CARRIER MIDEA" → "Midea") para o brand exibido casar com o
+    # rótulo canônico do resto do painel.
+    if "brand" in df.columns and _MARCA_TO_CANONICAL:
+        df["brand"] = df["brand"].map(
+            lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
+        )
     return df
 
 
@@ -7443,6 +7465,12 @@ def _pt_top_movers_data(
         df["collection_date"] = pd.to_datetime(df["collection_date"]).dt.date
         for col in ("min_price", "avg_price", "mode_price"):
             df[col] = pd.to_numeric(df.get(col), errors="coerce")
+        # Consolida variantes da mesma marca ("MIDEA CARRIER",
+        # "SPRINGER CARRIER MIDEA" → "Midea") no rótulo canônico do painel.
+        if "brand" in df.columns and _MARCA_TO_CANONICAL:
+            df["brand"] = df["brand"].map(
+                lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
+            )
         return df
     except Exception as exc:
         st.warning(f"Erro consultando pricetrack_daily: {exc}")
@@ -8957,6 +8985,15 @@ def _query_sparkline_7d(
         # Normaliza o nome da coluna de preço pro que o builder espera.
         if "floor_price" in df.columns:
             df = df.rename(columns={"floor_price": "min_price"})
+        # Consolida variantes da mesma marca ("MIDEA", "MIDEA CARRIER",
+        # "SPRINGER CARRIER MIDEA" → "Midea") ANTES do groupby a jusante, que
+        # re-tira o MIN por (marca, dia). Sem isso a variante "SPRINGER CARRIER
+        # MIDEA" vira "Springer Carrier Midea" no `.title()` e nunca casa com o
+        # "Midea" do pivot — o piso dessas linhas some do sparkline.
+        if "brand" in df.columns and _MARCA_TO_CANONICAL:
+            df["brand"] = df["brand"].map(
+                lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
+            )
         return df
     except Exception:
         # Falha silenciosa: sparkline é feature secundária. Sem ele a

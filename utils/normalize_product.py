@@ -30,6 +30,7 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 _BRAND_ALIASES: dict = {
+    'springer carrier midea': 'Midea',
     'springer midea':  'Midea',
     'midea carrier':   'Midea',
     'springer':        'Midea',
