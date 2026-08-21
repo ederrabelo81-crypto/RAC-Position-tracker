@@ -353,6 +353,10 @@ section[data-testid="stSidebar"] [data-testid="stTimeInput"] input,
 section[data-testid="stSidebar"] [data-testid="stTextInput"] input {
     background: #ffffff !important;
     color: #1e293b !important;
+    /* BaseWeb paints the glyphs with -webkit-text-fill-color, which wins over
+       `color`. Without this the selected date range renders light-on-white and
+       stays invisible (only the highlighted segment shows). */
+    -webkit-text-fill-color: #1e293b !important;
     border: 2px solid rgba(255, 255, 255, 0.3) !important;
     border-radius: 6px !important;
     padding: 0.5rem 0.75rem !important;
@@ -369,6 +373,7 @@ section[data-testid="stSidebar"] [data-testid="stTextInput"] input:focus {
 section[data-testid="stSidebar"] [data-testid="stNumberInput"] input {
     background: #ffffff !important;
     color: #1e293b !important;
+    -webkit-text-fill-color: #1e293b !important;
     border: 2px solid rgba(255, 255, 255, 0.3) !important;
     border-radius: 6px !important;
     padding: 0.5rem 0.75rem !important;
@@ -391,6 +396,7 @@ section[data-testid="stSidebar"] [data-testid="stSelectbox"] input,
 section[data-testid="stSidebar"] [data-testid="stMultiSelect"] input {
     background: #ffffff !important;
     color: #1e293b !important;
+    -webkit-text-fill-color: #1e293b !important;
 }
 
 /* Calendar picker in sidebar - ensure visibility */
@@ -605,6 +611,9 @@ div[data-baseweb="menu"] li[aria-selected="true"],
 /* Date input styling */
 [data-testid="stDateInput"] input {
     color: #1e293b !important;
+    /* Override BaseWeb's -webkit-text-fill-color so the selected date range is
+       actually visible (see sidebar rule above for details). */
+    -webkit-text-fill-color: #1e293b !important;
     background: #ffffff !important;
     border: 2px solid #e2e8f0 !important;
     border-radius: 8px !important;
@@ -643,6 +652,7 @@ div[data-baseweb="menu"] li[aria-selected="true"],
 /* Time input styling */
 [data-testid="stTimeInput"] input {
     color: #1e293b !important;
+    -webkit-text-fill-color: #1e293b !important;
     background: #ffffff !important;
     border: 2px solid #e2e8f0 !important;
     border-radius: 8px !important;
