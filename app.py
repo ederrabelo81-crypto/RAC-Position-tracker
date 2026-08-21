@@ -94,18 +94,63 @@ def _apply_chart_style(fig, height: int = 440, hovermode: str = "x unified") -> 
 
 _MIDEA_BRAND = "Midea"
 
+# Paleta categórica ampla e visualmente distinta para gráficos por marca.
+# Maior que `_CHART_COLORS` de propósito: uma barra empilhada de "quem ocupa o
+# top 10" chega a ~20 marcas, e um pool pequeno faz cores se repetirem.
+_BRAND_PALETTE = [
+    "#1a56db",  # azul
+    "#f97316",  # laranja
+    "#059669",  # verde
+    "#db2777",  # magenta
+    "#8b5cf6",  # violeta
+    "#0891b2",  # ciano
+    "#dc2626",  # vermelho
+    "#ca8a04",  # dourado
+    "#4d7c0f",  # oliva
+    "#be123c",  # carmim
+    "#0e7490",  # petróleo
+    "#7c3aed",  # roxo
+    "#b45309",  # âmbar-escuro
+    "#334155",  # ardósia
+]
+
+# Cor fixa por marca conhecida: garante que marcas importantes sejam sempre a
+# mesma cor entre gráficos E que pares parecidos não colidam — em especial
+# LG (magenta) × Elgin (laranja), que antes caíam em dois laranjas quase iguais.
+# Todas as cores fixas são mutuamente distintas.
+_BRAND_FIXED: dict[str, str] = {
+    "Midea":   "#1a56db",  # azul (marca principal)
+    "Elgin":   "#f97316",  # laranja
+    "LG":      "#db2777",  # magenta
+    "Gree":    "#059669",  # verde
+    "Samsung": "#8b5cf6",  # violeta
+    "TCL":     "#0891b2",  # ciano
+    "Philco":  "#dc2626",  # vermelho
+}
+
 
 def _brand_color_map(values) -> dict:
-    """Discrete color map: Midea → primary brand blue; others rotate through palette."""
+    """Mapa de cores discreto para gráficos por marca.
+
+    Marcas conhecidas recebem uma cor fixa e mutuamente distinta (Midea segue
+    no azul primário; LG e Elgin nunca caem em laranjas parecidos). As demais
+    rodam pela paleta restante, pulando as cores já usadas pelas fixas.
+    """
     unique = sorted(set(str(v) for v in values if pd.notna(v)))
-    secondary = [c for c in _CHART_COLORS if c != _CHART_COLORS[0]]
-    cmap, idx = {}, 0
+    cmap: dict = {}
+    used: set = set()
     for v in unique:
-        if v == _MIDEA_BRAND:
-            cmap[v] = _CHART_COLORS[0]
-        else:
-            cmap[v] = secondary[idx % len(secondary)]
-            idx += 1
+        fixed = _BRAND_FIXED.get(v)
+        if fixed:
+            cmap[v] = fixed
+            used.add(fixed)
+    rotation = [c for c in _BRAND_PALETTE if c not in used] or _BRAND_PALETTE
+    idx = 0
+    for v in unique:
+        if v in cmap:
+            continue
+        cmap[v] = rotation[idx % len(rotation)]
+        idx += 1
     return cmap
 
 
@@ -613,6 +658,18 @@ def _expand_brands(brands: list) -> list:
         else:
             expanded.add(b)  # unknown brand — use as-is
     return sorted(expanded)
+
+
+def _canonical_marca(marca):
+    """Nome canônico da marca para exibição/agregação.
+
+    Colapsa variantes da mesma marca usando o de-para `_MARCA_TO_CANONICAL`:
+    "Midea Carrier", "Springer Midea" e "Springer" viram "Midea". Marca
+    desconhecida (ou NaN) volta inalterada.
+    """
+    if marca is None or (isinstance(marca, float) and pd.isna(marca)):
+        return marca
+    return _MARCA_TO_CANONICAL.get(str(marca).strip(), marca)
 
 
 _SUPABASE_PAGE = 1000  # PostgREST default server-side max_rows cap
@@ -10613,6 +10670,13 @@ def page_bestsellers() -> None:
     # validação).
     serie = serie[serie["referencia"] == referencia_sel]
     serie_bruta = serie_bruta[serie_bruta["referencia"] == referencia_sel]
+
+    # Consolida variantes da mesma marca para exibição e mapa competitivo:
+    # "Midea Carrier", "Springer Midea" e "Springer" passam a contar como
+    # "Midea". O KPI de topo usa o booleano `grupo_midea` (não a string), então
+    # esta consolidação é só de rótulo — não altera nenhum número do KPI.
+    if "marca" in serie.columns:
+        serie = serie.assign(marca=serie["marca"].map(_canonical_marca))
     if not len(serie):
         st.info(
             f"Sem leituras na referência "
@@ -10963,14 +11027,14 @@ def page_bestsellers() -> None:
                     "titulo": st.column_config.TextColumn("Produto", width="large"),
                     "marca": st.column_config.TextColumn("Marca"),
                     "grupo_midea": st.column_config.CheckboxColumn("Grupo Midea"),
-                    "btu": st.column_config.NumberColumn("BTU"),
+                    "btu": st.column_config.NumberColumn("BTU", format="%d"),
                     "tipo": st.column_config.TextColumn("Tipo"),
                     "preco": st.column_config.NumberColumn("Preço", format="R$ %.2f"),
                     "vendidos": st.column_config.NumberColumn("Vendidos"),
                     "base_vendidos": st.column_config.TextColumn("Base"),
                     "seller": st.column_config.TextColumn("Seller"),
                     "rating": st.column_config.NumberColumn("Nota", format="%.1f"),
-                    "reviews": st.column_config.NumberColumn("Reviews"),
+                    "reviews": st.column_config.NumberColumn("Reviews", format="%d"),
                     "patrocinado": st.column_config.CheckboxColumn("Patrocinado?"),
                     "url_produto": st.column_config.LinkColumn(
                         "Link", display_text="Abrir ↗", width="small",
