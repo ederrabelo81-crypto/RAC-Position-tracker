@@ -33,6 +33,7 @@ from bestsellers.config import (
     LIMITE_CONTAMINACAO,
     LIMITE_COBERTURA_CAMPO,
     LIMITE_ITENS_MINIMO,
+    REFERENCIA_RELEVANCIA,
     SOURCES,
 )
 
@@ -126,12 +127,26 @@ def _validar_plataforma(plataforma: str, grupo: pd.DataFrame) -> List[Ocorrencia
         # do histórico manual, onde a URL veio do próprio export).
         alvo = _texto(grupo["endpoint"].iloc[0]) or _texto(grupo["url_coleta"].iloc[0])
         if not spec.ordenacao_comprovada(alvo):
-            ocorrencias.append(Ocorrencia(
-                NIVEL_QUARENTENA, plataforma,
-                f'ordenação "{spec.parametro_ordenacao}" ausente do endpoint '
-                f"coletado. A lista NÃO é de mais vendidos (provavelmente "
-                "relevância) — descartada da análise.",
-            ))
+            # A mensagem depende da REFERÊNCIA declarada da fonte: uma lista de
+            # mais vendidos sem o sort por vendas provavelmente virou
+            # relevância (a falha clássica); uma fonte de referência RELEVANCIA
+            # que perde seu próprio âncora de ordenação também vira população
+            # incerta. Nos dois casos o dado sai da análise — mas as duas
+            # referências continuam em séries separadas, jamais comparadas.
+            if spec.referencia == REFERENCIA_RELEVANCIA:
+                motivo = (
+                    f'âncora de relevância "{spec.parametro_ordenacao}" ausente '
+                    "do endpoint coletado — não há prova de que a lista é a "
+                    "ordem de relevância pretendida. Descartada da análise "
+                    "(referência: relevância)."
+                )
+            else:
+                motivo = (
+                    f'ordenação "{spec.parametro_ordenacao}" ausente do endpoint '
+                    "coletado. A lista NÃO é de mais vendidos (provavelmente "
+                    "relevância) — descartada da análise."
+                )
+            ocorrencias.append(Ocorrencia(NIVEL_QUARENTENA, plataforma, motivo))
 
     total = len(grupo)
 

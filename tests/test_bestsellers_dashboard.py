@@ -504,5 +504,94 @@ def test_pagina_sem_dados_mostra_diagnostico() -> None:
     assert "master_bestsellers.csv" in corpo, "faltou dizer onde a série deveria estar"
 
 
+# ---------------------------------------------------------------------------
+# Separação de referência (Mais Vendidos × Relevância)
+# ---------------------------------------------------------------------------
+
+def _pagina_duas_referencias_harness() -> None:
+    """Renderiza a página com uma plataforma de vendas E uma de relevância.
+
+    O painel deve oferecer o seletor de referência e mostrar UMA por vez —
+    nunca as duas populações na mesma tabela.
+    """
+    import pandas as pd
+    import streamlit as st
+
+    import app
+    from bestsellers.config import SOURCES
+    from bestsellers.models import BestSellerItem
+    from bestsellers.storage import to_dataframe
+
+    marcas = ["Midea", "LG", "Springer", "Gree", "Midea", "Elgin",
+              "Philco", "TCL", "Carrier", "Samsung"] * 2
+    linhas = []
+    for data in ("2026-08-03", "2026-08-10"):
+        # amazon = mais_vendidos ; dufrio = relevancia (âncora OrderByScoreDESC).
+        for chave in ("amazon", "dufrio"):
+            spec = SOURCES[chave]
+            endpoint = spec.url_publica + (
+                "?O=OrderByScoreDESC" if chave == "dufrio" else ""
+            )
+            for posicao, marca in enumerate(marcas, start=1):
+                linhas.append(BestSellerItem(
+                    rank=posicao,
+                    titulo=f"Ar Condicionado Split Inverter {marca} 12000 BTUs",
+                    preco=1700.0 + posicao * 10,
+                    sku_plataforma=f"{chave}-{posicao}",
+                ).to_row(
+                    data=data, horario="09:30", run_id="run", spec=spec,
+                    url_coleta=spec.url_publica, endpoint=endpoint,
+                ))
+
+    serie = to_dataframe(linhas)
+
+    def _fake(limit: int = 0):
+        return serie, "Supabase · `bestsellers`", ""
+
+    _fake.clear = lambda: None  # type: ignore[attr-defined]
+    original = app.query_bestsellers
+    app.query_bestsellers = _fake  # type: ignore[assignment]
+    try:
+        app.page_bestsellers()
+    finally:
+        app.query_bestsellers = original
+
+    st.session_state["_out"] = {"ok": True}
+
+
+def test_pagina_oferece_seletor_de_referencia() -> None:
+    at = AppTest.from_function(_pagina_duas_referencias_harness)
+    at.run(timeout=RUN_TIMEOUT)
+    assert not at.exception, f"página estourou: {[str(e.value) for e in at.exception]}"
+
+    # O radio de referência aparece com as duas opções.
+    radios = {r.label: list(r.options) for r in at.radio}
+    assert "Referência da lista" in radios, list(radios)
+    assert {"Mais Vendidos", "Relevância"} <= set(radios["Referência da lista"]), radios
+
+    # Segmento default = Mais Vendidos: só a Amazon aparece nos cards, nunca a
+    # Dufrio (relevância) — as duas populações não se misturam.
+    rotulos = {m.label for m in at.metric}
+    assert "Amazon" in rotulos, rotulos
+    assert "Dufrio" not in rotulos, "relevância vazou para o segmento de vendas"
+
+
+def test_pagina_relevancia_isola_o_segmento() -> None:
+    at = AppTest.from_function(_pagina_duas_referencias_harness)
+    at.run(timeout=RUN_TIMEOUT)
+    assert not at.exception, f"página estourou: {[str(e.value) for e in at.exception]}"
+
+    # Troca para o segmento Relevância.
+    at.radio(key="bs_referencia").set_value("relevancia").run(timeout=RUN_TIMEOUT)
+    assert not at.exception, f"página estourou: {[str(e.value) for e in at.exception]}"
+
+    rotulos = {m.label for m in at.metric}
+    assert "Dufrio" in rotulos, rotulos
+    assert "Amazon" not in rotulos, "vendas vazou para o segmento de relevância"
+    # O aviso que marca a leitura como proxy tem de estar à vista.
+    avisos = " ".join(str(w.value) for w in at.warning)
+    assert "proxy" in avisos.lower(), avisos
+
+
 if __name__ == "__main__":  # execução standalone
     raise SystemExit(pytest.main([__file__, "-q"]))

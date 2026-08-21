@@ -28,12 +28,45 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 # ---------------------------------------------------------------------------
+# Referência da lista — a MEDIÇÃO que a lista representa
+# ---------------------------------------------------------------------------
+# Duas medições convivem na série, e NÃO são a mesma população:
+#
+#   * MAIS_VENDIDOS — a lista está ordenada por VENDAS (o varejista expõe o
+#                     sort por vendas, e o endpoint carrega o parâmetro que
+#                     prova isso). É a variável de RESULTADO.
+#   * RELEVANCIA    — o varejista NÃO expõe ordenação por vendas; a única
+#                     lista navegável é a de "relevância" (ordenação própria
+#                     do algoritmo da loja: mix de venda, margem, curadoria e
+#                     disponibilidade). Serve como PROXY de destaque, nunca
+#                     como medida de venda.
+#
+# REGRA DURA desta separação: as duas referências NUNCA se misturam num mesmo
+# número. Não se compara o % do top 10 de uma lista de vendas com o de uma
+# lista de relevância, não se agregam juntas e não se somam. Cada referência
+# é uma série própria — o painel as mantém em abas/segmentos separados.
+REFERENCIA_MAIS_VENDIDOS = "mais_vendidos"
+REFERENCIA_RELEVANCIA = "relevancia"
+
+REFERENCIAS = (REFERENCIA_MAIS_VENDIDOS, REFERENCIA_RELEVANCIA)
+
+# Rótulos de exibição de cada referência (painel e relatórios).
+ROTULO_REFERENCIA: Dict[str, str] = {
+    REFERENCIA_MAIS_VENDIDOS: "Mais Vendidos",
+    REFERENCIA_RELEVANCIA: "Relevância",
+}
+
+# ---------------------------------------------------------------------------
 # Mecânicas de ordenação
 # ---------------------------------------------------------------------------
 MECANICA_VELOCIDADE = "velocidade"
 MECANICA_ACUMULADO = "acumulado"
 MECANICA_VENDAS_MES = "vendas_mes"
 MECANICA_DECLARADO = "declarado"
+# Ordenação de RELEVÂNCIA do próprio varejista — não é venda. Todo source de
+# referência RELEVANCIA usa esta mecânica; medi-la como venda é o erro que a
+# separação de referência existe para impedir.
+MECANICA_RELEVANCIA = "relevancia"
 
 # Base do campo `vendidos`. NUNCA somar bases diferentes (ver metrics.py).
 BASE_VENDIDOS_MES = "mes"
@@ -68,6 +101,11 @@ class SourceSpec:
         ativo:               Entra em `--plataformas all`.
         armadilha:           O erro que esta fonte já causou. Lido pelo
                              relatório e pelo humano que interpreta o número.
+        referencia:          MAIS_VENDIDOS ou RELEVANCIA — a MEDIÇÃO que esta
+                             lista representa. Determina em qual série/segmento
+                             ela entra; as duas referências nunca se comparam
+                             (ver REFERENCIA_* acima). Default MAIS_VENDIDOS
+                             para não mudar o significado das fontes legadas.
     """
 
     key: str
@@ -79,11 +117,21 @@ class SourceSpec:
     itens_esperados: int
     ativo: bool
     armadilha: str
+    referencia: str = REFERENCIA_MAIS_VENDIDOS
 
     @property
     def parametro_ordenacao(self) -> str:
         """Rótulo canônico da ordenação, para exibição."""
         return self.parametros_ordenacao[0]
+
+    @property
+    def referencia_rotulo(self) -> str:
+        """Nome de exibição da referência (Mais Vendidos / Relevância)."""
+        return ROTULO_REFERENCIA.get(self.referencia, self.referencia)
+
+    @property
+    def eh_mais_vendidos(self) -> bool:
+        return self.referencia == REFERENCIA_MAIS_VENDIDOS
 
     def ordenacao_comprovada(self, alvo: str) -> bool:
         """True se `alvo` (o endpoint chamado) carrega alguma das grafias."""
@@ -99,6 +147,46 @@ LEROY_CATEGORIA_URL = (
     "https://www.leroymerlin.com.br/ar-condicionado-inverter/"
     "tipo-de-ar-condicionado/Split_Inverter"
 )
+
+
+# ---------------------------------------------------------------------------
+# Como cada dealer é coletado (separado do "o que a série significa")
+# ---------------------------------------------------------------------------
+# `SourceSpec` diz o que o número REPRESENTA (referência, mecânica, armadilha).
+# `ColetaSpec` diz COMO buscá-lo. Ficam separados de propósito: as fontes
+# legadas (Amazon, ML, Shopee, Magalu, Leroy) têm coletor artesanal próprio e
+# NÃO aparecem aqui; os dealers novos compartilham dois coletores genéricos
+# (`sources/vtex_generic.py` e `sources/html_generic.py`) dirigidos por este
+# registro, para não replicar 15 arquivos quase idênticos.
+TIPO_VTEX_CATALOG = "vtex_catalog"   # API legada /api/catalog_system/pub/...
+TIPO_HTML = "html"                   # navega a URL ordenada e parseia o DOM
+
+# Ordenações da API legada de catálogo VTEX (parâmetro `O`).
+VTEX_O_MAIS_VENDIDOS = "OrderByTopSaleDESC"
+VTEX_O_RELEVANCIA = "OrderByScoreDESC"
+
+
+@dataclass(frozen=True)
+class ColetaSpec:
+    """
+    Instruções de busca de um dealer para os coletores genéricos.
+
+    Attributes:
+        tipo:      TIPO_VTEX_CATALOG (HTTP na API de catálogo) ou TIPO_HTML
+                   (browser navega a URL ordenada e parseia o DOM/JSON-LD).
+        host:      domínio da loja (sem esquema), ex. "www.dufrio.com.br".
+        categoria: para VTEX, o caminho da árvore de categoria usado na API
+                   legada (ex. "ar-condicionado/ar-condicionado-split-inverter").
+                   Ignorado no tipo HTML (que navega a `url_publica`).
+        ordem:     valor do parâmetro `O` (VTEX). Vazio = ordem padrão da loja.
+        paginacao: itens por página pedidos por chamada.
+    """
+
+    tipo: str
+    host: str
+    categoria: str = ""
+    ordem: str = ""
+    paginacao: int = 24
 
 
 SOURCES: Dict[str, SourceSpec] = {
@@ -209,6 +297,314 @@ SOURCES: Dict[str, SourceSpec] = {
             "Preços 'de' são lixo (desconto fantasma de -79%)."
         ),
     ),
+
+    # -----------------------------------------------------------------------
+    # DEALERS — MAIS VENDIDOS (ordenação por vendas exposta pela loja)
+    #
+    # Todos VTEX (parâmetro `O=OrderByTopSaleDESC` na API de catálogo), exceto
+    # Ar Certo (loja não-VTEX, ordenação `ordem=compras_desc` sobre o DOM).
+    # ATENÇÃO: dealers novos (Ago/2026), ainda SEM as 3 leituras de validação —
+    # tratar o número como provisório e conferir a estabilidade antes de usar
+    # em decisão (regra de `sources/__init__.py`). De IP de datacenter (VM /
+    # GitHub Actions) muitos respondem bloqueio; a coleta oficial roda do PC
+    # coletor (IP residencial).
+    # -----------------------------------------------------------------------
+    "webcontinental": SourceSpec(
+        key="webcontinental",
+        nome="Web Continental",
+        url_publica=(
+            "https://www.webcontinental.com.br/climatizacao/ar-condicionado/"
+            "ar-condicionado-split-hi-wall?order=OrderByTopSaleDESC"
+        ),
+        parametros_ordenacao=("OrderByTopSaleDESC", "orders_desc"),
+        mecanica=MECANICA_ACUMULADO,
+        base_vendidos=None,
+        itens_esperados=24,
+        ativo=True,
+        armadilha=(
+            "VTEX `OrderByTopSaleDESC` é acumulado do anúncio (viés a favor de "
+            "SKU antigo). Dealer novo — validar 3 leituras antes de decidir."
+        ),
+    ),
+    "friopecas": SourceSpec(
+        key="friopecas",
+        nome="Frio Peças",
+        url_publica=(
+            "https://www.friopecas.com.br/ar-condicionado/"
+            "ar-condicionado-split-inverter?order=OrderByTopSaleDESC"
+        ),
+        parametros_ordenacao=("OrderByTopSaleDESC", "orders_desc"),
+        mecanica=MECANICA_ACUMULADO,
+        base_vendidos=None,
+        itens_esperados=24,
+        ativo=True,
+        armadilha=(
+            "VTEX `OrderByTopSaleDESC` (acumulado). Recorte já é split "
+            "inverter — contaminação menor, mas validar 3 leituras."
+        ),
+    ),
+    "climario": SourceSpec(
+        key="climario",
+        nome="Clima Rio",
+        url_publica=(
+            "https://www.climario.com.br/ar-condicionado/"
+            "ar-condicionado-hi-wall-inverter?order=OrderByTopSaleDESC"
+        ),
+        parametros_ordenacao=("OrderByTopSaleDESC", "orders_desc"),
+        mecanica=MECANICA_ACUMULADO,
+        base_vendidos=None,
+        itens_esperados=24,
+        ativo=True,
+        armadilha=(
+            "VTEX `OrderByTopSaleDESC` (acumulado). A prateleira navegável usa "
+            "map de 2 categorias; a coleta ancora em hi-wall inverter."
+        ),
+    ),
+    "arcerto": SourceSpec(
+        key="arcerto",
+        nome="Ar Certo",
+        url_publica=(
+            "https://www.arcerto.com/categoria/ar-condicionado-inverter/"
+            "?ordem=compras_desc"
+        ),
+        parametros_ordenacao=("ordem=compras_desc", "compras_desc"),
+        mecanica=MECANICA_ACUMULADO,
+        base_vendidos=None,
+        itens_esperados=20,
+        ativo=True,
+        armadilha=(
+            "Loja NÃO-VTEX: ordenação `compras_desc` (compras acumuladas) só "
+            "existe no DOM — sem API de sellers, buy box fica vazia. Parser de "
+            "cards é frágil a redesign; conferir cobertura de preço/título."
+        ),
+    ),
+    "poloar": SourceSpec(
+        key="poloar",
+        nome="Polo Ar",
+        url_publica=(
+            "https://www.poloar.com.br/ar-condicionado/inverter?"
+            "category-1=ar-condicionado&category-2=inverter&sort=orders_desc"
+        ),
+        parametros_ordenacao=("orders_desc", "OrderByTopSaleDESC"),
+        mecanica=MECANICA_ACUMULADO,
+        base_vendidos=None,
+        itens_esperados=24,
+        ativo=True,
+        armadilha=(
+            "VTEX Intelligent Search `sort=orders_desc` (acumulado). Dealer "
+            "novo — validar 3 leituras antes de decidir."
+        ),
+    ),
+    "belmicro": SourceSpec(
+        key="belmicro",
+        nome="Bel Micro",
+        url_publica=(
+            "https://www.belmicro.com.br/climatizacao/Ar-Condicionado-Split"
+            "?order=OrderByTopSaleDESC"
+        ),
+        parametros_ordenacao=("OrderByTopSaleDESC", "orders_desc"),
+        mecanica=MECANICA_ACUMULADO,
+        base_vendidos=None,
+        itens_esperados=24,
+        ativo=True,
+        armadilha=(
+            "VTEX `OrderByTopSaleDESC` (acumulado). Recorte 'Ar-Condicionado-"
+            "Split' arrasta janela/piso-teto — o KPI filtra por tipo."
+        ),
+    ),
+    "fastshop": SourceSpec(
+        key="fastshop",
+        nome="Fast Shop",
+        url_publica=(
+            "https://site.fastshop.com.br/ar-e-ventilacao/ar-condicionado?"
+            "category-1=ar-e-ventilacao&category-2=ar-condicionado&sort=orders_desc"
+        ),
+        parametros_ordenacao=("orders_desc", "OrderByTopSaleDESC"),
+        mecanica=MECANICA_ACUMULADO,
+        base_vendidos=None,
+        itens_esperados=24,
+        ativo=True,
+        armadilha=(
+            "VTEX IS `sort=orders_desc` (acumulado). Fast Shop tem PerimeterX "
+            "pesado — de IP de datacenter costuma vir 0 itens; coletar do PC."
+        ),
+    ),
+    "bemol": SourceSpec(
+        key="bemol",
+        nome="Bemol",
+        url_publica=(
+            "https://www.bemol.com.br/ar-e-ventilacao/ar-condicionado/"
+            "ar-condicionado-split?order=OrderByTopSaleDESC"
+        ),
+        parametros_ordenacao=("OrderByTopSaleDESC", "orders_desc"),
+        mecanica=MECANICA_ACUMULADO,
+        base_vendidos=None,
+        itens_esperados=24,
+        ativo=True,
+        armadilha=(
+            "VTEX `OrderByTopSaleDESC` (acumulado). Loja com forte pegada "
+            "regional (Norte) — mix pode divergir do resto da série."
+        ),
+    ),
+    "frigelar": SourceSpec(
+        key="frigelar",
+        nome="Frigelar",
+        url_publica="https://www.frigelar.com.br/split-inverter/c",
+        parametros_ordenacao=("OrderByTopSaleDESC", "orders_desc"),
+        mecanica=MECANICA_ACUMULADO,
+        base_vendidos=None,
+        itens_esperados=24,
+        ativo=True,
+        armadilha=(
+            "VTEX: a UI expõe 'Mais Vendidos' num <select> dentro do container "
+            "de ordenação, mas a API de catálogo reproduz com "
+            "`O=OrderByTopSaleDESC` sem precisar clicar. Acumulado do anúncio."
+        ),
+    ),
+
+    # -----------------------------------------------------------------------
+    # DEALERS — RELEVÂNCIA (a loja NÃO expõe ordenação por vendas)
+    #
+    # Referência RELEVANCIA: a lista é a ordem padrão/relevância do algoritmo
+    # da loja — PROXY de destaque, NUNCA medida de venda. Entra numa série
+    # própria, jamais comparada com as listas de mais vendidos.
+    # -----------------------------------------------------------------------
+    "dufrio": SourceSpec(
+        key="dufrio",
+        nome="Dufrio",
+        url_publica=(
+            "https://www.dufrio.com.br/ar-condicionado/"
+            "ar-condicionado-split-inverter"
+        ),
+        parametros_ordenacao=("OrderByScoreDESC", "relevance", "relevancia"),
+        mecanica=MECANICA_RELEVANCIA,
+        base_vendidos=None,
+        itens_esperados=24,
+        ativo=True,
+        referencia=REFERENCIA_RELEVANCIA,
+        armadilha=(
+            "RELEVÂNCIA, não vendas: VTEX `OrderByScoreDESC` é o score do "
+            "algoritmo (mix de venda, margem, estoque, curadoria). Não somar "
+            "nem comparar com as listas de mais vendidos."
+        ),
+    ),
+    "centralar": SourceSpec(
+        key="centralar",
+        nome="Central Ar",
+        url_publica=(
+            "https://www.centralar.com.br/ar-condicionado/inverter/c/INVERTER"
+            "?sort=relevance"
+        ),
+        parametros_ordenacao=("sort=relevance", "relevance", "relevancia"),
+        mecanica=MECANICA_RELEVANCIA,
+        base_vendidos=None,
+        itens_esperados=20,
+        ativo=True,
+        referencia=REFERENCIA_RELEVANCIA,
+        armadilha=(
+            "RELEVÂNCIA. Loja SAP Hybris (não-VTEX): `sort=relevance` no DOM, "
+            "sem API de sellers. Proxy de destaque, nunca medida de venda."
+        ),
+    ),
+    "leveros": SourceSpec(
+        key="leveros",
+        nome="Leveros",
+        url_publica="https://www.leveros.com.br/ar-condicionado/inverter/",
+        parametros_ordenacao=("OrderByScoreDESC", "relevance", "relevancia"),
+        mecanica=MECANICA_RELEVANCIA,
+        base_vendidos=None,
+        itens_esperados=24,
+        ativo=True,
+        referencia=REFERENCIA_RELEVANCIA,
+        armadilha=(
+            "RELEVÂNCIA: VTEX ordem padrão (score). Leveros é atacado/B2B — o "
+            "destaque reflete sortimento profissional, não sell-out ao consumo."
+        ),
+    ),
+    "ferreiracosta": SourceSpec(
+        key="ferreiracosta",
+        nome="Ferreira Costa",
+        url_publica=(
+            "https://www.ferreiracosta.com/Destaque/split-inverter-subcategoria"
+        ),
+        parametros_ordenacao=("Destaque", "relevancia", "relevance"),
+        mecanica=MECANICA_RELEVANCIA,
+        base_vendidos=None,
+        itens_esperados=20,
+        ativo=True,
+        referencia=REFERENCIA_RELEVANCIA,
+        armadilha=(
+            "RELEVÂNCIA/DESTAQUE: página 'Destaque' curada pela loja, não "
+            "ordenação por vendas. Parser de DOM; conferir cobertura de campos."
+        ),
+    ),
+    "engage": SourceSpec(
+        key="engage",
+        nome="Engage",
+        url_publica="https://www.engageeletro.com.br/ar-e-clima/ar-condicionado/",
+        parametros_ordenacao=("ar-condicionado", "relevancia", "relevance"),
+        mecanica=MECANICA_RELEVANCIA,
+        base_vendidos=None,
+        itens_esperados=20,
+        ativo=True,
+        referencia=REFERENCIA_RELEVANCIA,
+        armadilha=(
+            "RELEVÂNCIA: sem parâmetro de ordenação na URL — é a ordem padrão "
+            "da categoria. Proxy de destaque; validar cobertura do parser."
+        ),
+    ),
+}
+
+# Registro de COMO buscar cada dealer genérico (ver ColetaSpec). As fontes
+# legadas com coletor próprio (amazon, mercadolivre, magazineluiza, shopee,
+# leroymerlin, casasbahia) NÃO entram aqui.
+COLETA: Dict[str, ColetaSpec] = {
+    "webcontinental": ColetaSpec(
+        TIPO_VTEX_CATALOG, "www.webcontinental.com.br",
+        "climatizacao/ar-condicionado/ar-condicionado-split-hi-wall",
+        VTEX_O_MAIS_VENDIDOS,
+    ),
+    "friopecas": ColetaSpec(
+        TIPO_VTEX_CATALOG, "www.friopecas.com.br",
+        "ar-condicionado/ar-condicionado-split-inverter", VTEX_O_MAIS_VENDIDOS,
+    ),
+    "climario": ColetaSpec(
+        TIPO_VTEX_CATALOG, "www.climario.com.br",
+        "ar-condicionado/ar-condicionado-hi-wall-inverter", VTEX_O_MAIS_VENDIDOS,
+    ),
+    "arcerto": ColetaSpec(TIPO_HTML, "www.arcerto.com"),
+    "poloar": ColetaSpec(
+        TIPO_VTEX_CATALOG, "www.poloar.com.br",
+        "ar-condicionado/inverter", VTEX_O_MAIS_VENDIDOS,
+    ),
+    "belmicro": ColetaSpec(
+        TIPO_VTEX_CATALOG, "www.belmicro.com.br",
+        "climatizacao/Ar-Condicionado-Split", VTEX_O_MAIS_VENDIDOS,
+    ),
+    "fastshop": ColetaSpec(
+        TIPO_VTEX_CATALOG, "site.fastshop.com.br",
+        "ar-e-ventilacao/ar-condicionado", VTEX_O_MAIS_VENDIDOS,
+    ),
+    "bemol": ColetaSpec(
+        TIPO_VTEX_CATALOG, "www.bemol.com.br",
+        "ar-e-ventilacao/ar-condicionado/ar-condicionado-split",
+        VTEX_O_MAIS_VENDIDOS,
+    ),
+    "frigelar": ColetaSpec(
+        TIPO_VTEX_CATALOG, "www.frigelar.com.br",
+        "split-inverter", VTEX_O_MAIS_VENDIDOS,
+    ),
+    "dufrio": ColetaSpec(
+        TIPO_VTEX_CATALOG, "www.dufrio.com.br",
+        "ar-condicionado/ar-condicionado-split-inverter", VTEX_O_RELEVANCIA,
+    ),
+    "centralar": ColetaSpec(TIPO_HTML, "www.centralar.com.br"),
+    "leveros": ColetaSpec(
+        TIPO_VTEX_CATALOG, "www.leveros.com.br",
+        "ar-condicionado/inverter", VTEX_O_RELEVANCIA,
+    ),
+    "ferreiracosta": ColetaSpec(TIPO_HTML, "www.ferreiracosta.com"),
+    "engage": ColetaSpec(TIPO_HTML, "www.engageeletro.com.br"),
 }
 
 # ---------------------------------------------------------------------------
@@ -271,6 +667,23 @@ MINIMO_LEITURAS_TENDENCIA: int = 3
 def sources_ativos() -> Dict[str, SourceSpec]:
     """Fontes que entram em `--plataformas all`."""
     return {k: v for k, v in SOURCES.items() if v.ativo}
+
+
+def referencia_de(plataforma: str) -> str:
+    """
+    Referência (MAIS_VENDIDOS/RELEVANCIA) de uma chave de plataforma.
+
+    Cai em MAIS_VENDIDOS para chaves não registradas — é o significado das
+    fontes legadas e o default histórico da série, então uma leitura antiga
+    sem a coluna não muda de referência ao ser reprocessada.
+    """
+    spec = SOURCES.get(plataforma)
+    return spec.referencia if spec is not None else REFERENCIA_MAIS_VENDIDOS
+
+
+def coleta_de(plataforma: str) -> Optional[ColetaSpec]:
+    """Instruções de busca de um dealer genérico, ou None se não registrado."""
+    return COLETA.get(plataforma)
 
 
 def resolver_keys(selecao) -> list:

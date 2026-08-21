@@ -10479,15 +10479,25 @@ def page_bestsellers() -> None:
     dia**, no escopo split hi-wall. Todo o resto é diagnóstico de apoio.
     """
     from bestsellers import metrics, report, validate
-    from bestsellers.config import TIPO_ESCOPO_KPI, TOP_N, sources_ativos
+    from bestsellers.config import (
+        REFERENCIA_MAIS_VENDIDOS,
+        REFERENCIA_RELEVANCIA,
+        ROTULO_REFERENCIA,
+        TIPO_ESCOPO_KPI,
+        TOP_N,
+        referencia_de,
+        sources_ativos,
+    )
 
     st.title("🥇 Mais Vendidos")
     st.caption(
-        "Ranking das listas ordenadas por vendas dos varejistas — a única "
-        "variável de **resultado** da coleta. Ranking é medida **ordinal**: "
-        "não soma entre plataformas e não vira share de mercado (isso vem de "
-        "GfK/Neotrust). Comparação só entre a mesma plataforma, no mesmo dia "
-        "da semana."
+        "Rankings de prateleira dos varejistas — a única variável de "
+        "**resultado** da coleta. Duas **referências** convivem e **nunca se "
+        "misturam**: *Mais Vendidos* (lista ordenada por vendas) e *Relevância* "
+        "(ordem de destaque da loja, um proxy — não é venda). Ranking é medida "
+        "**ordinal**: não soma entre plataformas nem vira share de mercado "
+        "(isso vem de GfK/Neotrust). Comparação só entre a mesma plataforma, no "
+        "mesmo dia da semana."
     )
 
     df_bruto, origem, aviso = query_bestsellers()
@@ -10536,6 +10546,64 @@ def page_bestsellers() -> None:
             icon="🚫",
         )
 
+    # ── Referência: Mais Vendidos × Relevância ────────────────────────────
+    # REGRA DURA: as duas medições nunca se misturam num mesmo número. O painel
+    # trabalha UMA referência por vez — trocar de referência recorta a série
+    # inteira ANTES de qualquer KPI, delta, gráfico ou validação, de modo que
+    # nenhuma tabela consiga cruzar uma lista de vendas com uma de relevância.
+    refs_ordem = [REFERENCIA_MAIS_VENDIDOS, REFERENCIA_RELEVANCIA]
+    refs_presentes = [r for r in refs_ordem if (serie["referencia"] == r).any()]
+    if not refs_presentes:
+        refs_presentes = [REFERENCIA_MAIS_VENDIDOS]
+
+    with st.sidebar:
+        st.subheader("Filtros — Rankings")
+        st.caption(
+            "Esta página não usa os Filtros Globais: a série de rankings é "
+            "outra população."
+        )
+        if len(refs_presentes) > 1:
+            referencia_sel = st.radio(
+                "Referência da lista",
+                refs_presentes,
+                format_func=lambda r: ROTULO_REFERENCIA.get(r, r),
+                key="bs_referencia",
+                help=(
+                    "Mais Vendidos (ordenado por vendas) e Relevância (ordem de "
+                    "destaque da loja) são medições diferentes e nunca se "
+                    "comparam. O painel mostra uma por vez."
+                ),
+            )
+        else:
+            referencia_sel = refs_presentes[0]
+            st.caption(
+                "Referência única na série: "
+                f"**{ROTULO_REFERENCIA.get(referencia_sel, referencia_sel)}**."
+            )
+
+    # Recorte por referência — a fronteira que mantém as duas populações
+    # separadas em todo o resto da página (série limpa E série bruta da aba de
+    # validação).
+    serie = serie[serie["referencia"] == referencia_sel]
+    serie_bruta = serie_bruta[serie_bruta["referencia"] == referencia_sel]
+    if not len(serie):
+        st.info(
+            f"Sem leituras na referência "
+            f"**{ROTULO_REFERENCIA.get(referencia_sel, referencia_sel)}**.",
+            icon="ℹ️",
+        )
+        return
+
+    if referencia_sel == REFERENCIA_RELEVANCIA:
+        st.warning(
+            "Referência **Relevância**: estas listas são a ordem de **destaque** "
+            "do algoritmo de cada loja (mix de venda, margem, estoque e "
+            "curadoria), não uma ordenação por vendas. Leia como **proxy** de "
+            "presença — nunca como sell-out, e nunca lado a lado com as listas "
+            "de Mais Vendidos.",
+            icon="🧭",
+        )
+
     datas = sorted(serie["data"].dt.date.unique())
     plataformas_disponiveis = sorted(serie["plataforma"].dropna().unique())
 
@@ -10548,17 +10616,17 @@ def page_bestsellers() -> None:
     # limpa o cache dos dados, não o filtro). Ao detectar um dia novo, apaga o
     # valor salvo para o widget recair no `value=` (intervalo completo, já com o
     # dia novo). Uma restrição manual de período dentro da MESMA carga persiste.
-    if st.session_state.get("bs_max_data") != datas[-1]:
-        st.session_state["bs_max_data"] = datas[-1]
+    # A chave inclui a referência: alternar entre elas também recai no `value=`.
+    # Trocar de referência também limpa a seleção de plataformas — as duas
+    # referências têm plataformas disjuntas, e um valor salvo de fora das
+    # opções atuais faria o `st.multiselect` estourar.
+    if st.session_state.get("bs_max_data") != (referencia_sel, datas[-1]):
+        st.session_state["bs_max_data"] = (referencia_sel, datas[-1])
         st.session_state.pop("bs_dates", None)
+        st.session_state.pop("bs_plataformas", None)
 
     # ── Controles ─────────────────────────────────────────────────────────
     with st.sidebar:
-        st.subheader("Filtros — Mais Vendidos")
-        st.caption(
-            "Esta página não usa os Filtros Globais: a série de mais vendidos "
-            "é outra população."
-        )
         intervalo_sel = st.date_input(
             "Período",
             value=(datas[0], datas[-1]),
@@ -10628,9 +10696,13 @@ def page_bestsellers() -> None:
     # painel nunca mostraria por que ela saiu.
     # "Plataforma ausente" só faz sentido contra o que o usuário pediu — sem
     # o recorte, filtrar a Amazon acusaria as outras cinco de sumidas.
+    # Só as plataformas da referência ativa entram em "esperadas": sem o
+    # recorte, ver Mais Vendidos acusaria as fontes de Relevância de ausentes,
+    # e vice-versa.
     esperadas = [
         chave for chave in sources_ativos()
-        if not sel_plataformas or chave in sel_plataformas
+        if referencia_de(chave) == referencia_sel
+        and (not sel_plataformas or chave in sel_plataformas)
     ]
     hoje_bruto = serie_bruta[serie_bruta["data"] == dia]
     if sel_plataformas:
@@ -10881,7 +10953,8 @@ def page_bestsellers() -> None:
             spec = specs.get(plat_sel)
             if spec is not None:
                 st.caption(
-                    f"Ordenação: `{spec.parametro_ordenacao}` · mecânica: "
+                    f"Referência: **{spec.referencia_rotulo}** · ordenação: "
+                    f"`{spec.parametro_ordenacao}` · mecânica: "
                     f"**{spec.mecanica}** · base de `vendidos`: "
                     f"**{spec.base_vendidos or 'não declarada'}**"
                 )
@@ -11084,12 +11157,17 @@ def page_bestsellers() -> None:
                  mecanica=("mecanica", "first"))
             .reset_index()
         )
+        evidencia["referencia"] = evidencia["plataforma"].map(
+            lambda k: specs[k].referencia_rotulo if k in specs else referencia_de(k)
+        )
         evidencia["plataforma"] = evidencia["plataforma"].map(lambda k: _bs_nome(k, specs))
         st.dataframe(
-            evidencia.rename(columns={
-                "plataforma": "Plataforma", "itens": "Itens",
-                "endpoint": "Endpoint chamado", "ordenacao": "Ordenação",
-                "mecanica": "Mecânica",
+            evidencia[
+                ["plataforma", "referencia", "itens", "ordenacao", "mecanica", "endpoint"]
+            ].rename(columns={
+                "plataforma": "Plataforma", "referencia": "Referência",
+                "itens": "Itens", "endpoint": "Endpoint chamado",
+                "ordenacao": "Ordenação", "mecanica": "Mecânica",
             }),
             use_container_width=True, hide_index=True,
         )

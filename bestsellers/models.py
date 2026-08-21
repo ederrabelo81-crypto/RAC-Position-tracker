@@ -303,6 +303,7 @@ class BestSellerItem:
             "run_id": run_id,
             "plataforma": spec.key,
             "plataforma_nome": spec.nome,
+            "referencia": spec.referencia,
             "mecanica": spec.mecanica,
             "url_coleta": url_coleta,
             "endpoint": endpoint,
@@ -330,7 +331,8 @@ class BestSellerItem:
 # Ordem canônica das colunas da série histórica. Fonte única para CSV,
 # Parquet e Supabase — divergência entre eles quebra o merge do histórico.
 COLUNAS: List[str] = [
-    "data", "horario", "run_id", "plataforma", "plataforma_nome", "mecanica",
+    "data", "horario", "run_id", "plataforma", "plataforma_nome", "referencia",
+    "mecanica",
     "url_coleta", "endpoint", "parametro_ordenacao", "rank", "titulo",
     "marca", "grupo_midea", "btu", "tipo", "no_escopo", "preco", "preco_de",
     "rating", "reviews", "vendidos", "base_vendidos", "seller",
