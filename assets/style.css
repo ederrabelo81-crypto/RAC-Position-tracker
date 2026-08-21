@@ -477,6 +477,143 @@ input[type="text"]:focus,
 }
 
 /* ===========================
+   MULTISELECT & DROPDOWN OPTIONS
+   =========================== */
+/* Ensure dropdown menus have visible options */
+[data-testid="stMultiSelect"] label,
+[data-testid="stSelectbox"] label {
+    color: #1e293b !important;
+    font-weight: 500 !important;
+}
+
+/* Dropdown menu panel background */
+ul[data-testid="stVirtualSelect"] {
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+}
+
+/* Individual dropdown options */
+ul[data-testid="stVirtualSelect"] li,
+[data-testid="stMultiSelect"] ul li,
+.stMultiSelect ul li,
+div[data-baseweb="menu"] li,
+[data-baseweb="menu-item"] {
+    color: #1e293b !important;
+    background: #ffffff !important;
+}
+
+/* Hover state for dropdown options */
+ul[data-testid="stVirtualSelect"] li:hover,
+[data-testid="stMultiSelect"] ul li:hover,
+.stMultiSelect ul li:hover,
+div[data-baseweb="menu"] li:hover,
+[data-baseweb="menu-item"]:hover {
+    background: #eff6ff !important;
+    color: #1a56db !important;
+}
+
+/* Selected options in dropdown */
+ul[data-testid="stVirtualSelect"] li[aria-selected="true"],
+[data-testid="stMultiSelect"] ul li[aria-selected="true"],
+.stMultiSelect ul li[aria-selected="true"],
+div[data-baseweb="menu"] li[aria-selected="true"],
+[data-baseweb="menu-item"][aria-selected="true"] {
+    background: #dbeafe !important;
+    color: #1e40af !important;
+    font-weight: 600 !important;
+}
+
+/* Multi-select chips/tags */
+[data-testid="stMultiSelect"] [data-testid="stChip"] {
+    background: linear-gradient(135deg, #1a56db 0%, #1e40af 100%) !important;
+    color: #ffffff !important;
+    border-radius: 6px !important;
+    font-weight: 500 !important;
+}
+
+/* Date input styling */
+[data-testid="stDateInput"] input {
+    color: #1e293b !important;
+    background: #ffffff !important;
+    border: 2px solid #e2e8f0 !important;
+    border-radius: 8px !important;
+    padding: 0.6rem 1rem !important;
+}
+
+[data-testid="stDateInput"] input:focus {
+    border-color: #1a56db !important;
+    box-shadow: 0 0 0 3px rgba(26, 86, 219, 0.1) !important;
+}
+
+/* Calendar picker styling */
+[data-baseweb="calendar"] {
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+}
+
+[data-baseweb="calendar"] button {
+    color: #1e293b !important;
+    background: #ffffff !important;
+}
+
+[data-baseweb="calendar"] button:hover {
+    background: #eff6ff !important;
+    color: #1a56db !important;
+}
+
+[data-baseweb="calendar"] [aria-current="date"],
+[data-baseweb="calendar"] [aria-selected="true"] {
+    background: #1a56db !important;
+    color: #ffffff !important;
+}
+
+/* Time input styling */
+[data-testid="stTimeInput"] input {
+    color: #1e293b !important;
+    background: #ffffff !important;
+    border: 2px solid #e2e8f0 !important;
+    border-radius: 8px !important;
+    padding: 0.6rem 1rem !important;
+}
+
+/* Number input in filters */
+[data-testid="stNumberInput"] input {
+    color: #1e293b !important;
+    background: #ffffff !important;
+    border: 2px solid #e2e8f0 !important;
+    border-radius: 8px !important;
+    padding: 0.6rem 1rem !important;
+}
+
+[data-testid="stNumberInput"] input:focus {
+    border-color: #1a56db !important;
+    box-shadow: 0 0 0 3px rgba(26, 86, 219, 0.1) !important;
+}
+
+/* Text input in filters */
+[data-testid="stTextInput"] input {
+    color: #1e293b !important;
+    background: #ffffff !important;
+}
+
+/* Placeholder text color */
+::placeholder {
+    color: #94a3b8 !important;
+    opacity: 1 !important;
+}
+
+:-ms-input-placeholder {
+    color: #94a3b8 !important;
+}
+
+::-ms-input-placeholder {
+    color: #94a3b8 !important;
+}
+
+/* ===========================
    SLIDER
    =========================== */
 /* Target only the track bar (BaseWeb slider track), not label/tick rows */
