@@ -347,6 +347,76 @@ section[data-testid="stSidebar"] .stRadio input:checked + span {
     font-weight: 700 !important;
 }
 
+/* Sidebar date/time inputs - visible fields with white background */
+section[data-testid="stSidebar"] [data-testid="stDateInput"] input,
+section[data-testid="stSidebar"] [data-testid="stTimeInput"] input,
+section[data-testid="stSidebar"] [data-testid="stTextInput"] input {
+    background: #ffffff !important;
+    color: #1e293b !important;
+    border: 2px solid rgba(255, 255, 255, 0.3) !important;
+    border-radius: 6px !important;
+    padding: 0.5rem 0.75rem !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stDateInput"] input:focus,
+section[data-testid="stSidebar"] [data-testid="stTimeInput"] input:focus,
+section[data-testid="stSidebar"] [data-testid="stTextInput"] input:focus {
+    border-color: #fbbf24 !important;
+    box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2) !important;
+}
+
+/* Sidebar number inputs */
+section[data-testid="stSidebar"] [data-testid="stNumberInput"] input {
+    background: #ffffff !important;
+    color: #1e293b !important;
+    border: 2px solid rgba(255, 255, 255, 0.3) !important;
+    border-radius: 6px !important;
+    padding: 0.5rem 0.75rem !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stNumberInput"] input:focus {
+    border-color: #fbbf24 !important;
+    box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2) !important;
+}
+
+/* Sidebar selectbox and multiselect dropdowns */
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div,
+section[data-testid="stSidebar"] [data-testid="stMultiSelect"] > div > div {
+    background: #ffffff !important;
+    color: #1e293b !important;
+    border: 2px solid rgba(255, 255, 255, 0.3) !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] input,
+section[data-testid="stSidebar"] [data-testid="stMultiSelect"] input {
+    background: #ffffff !important;
+    color: #1e293b !important;
+}
+
+/* Calendar picker in sidebar - ensure visibility */
+section[data-testid="stSidebar"] [data-baseweb="calendar"] {
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+}
+
+section[data-testid="stSidebar"] [data-baseweb="calendar"] button {
+    color: #1e293b !important;
+    background: #ffffff !important;
+}
+
+section[data-testid="stSidebar"] [data-baseweb="calendar"] button:hover {
+    background: #eff6ff !important;
+    color: #1a56db !important;
+}
+
+section[data-testid="stSidebar"] [data-baseweb="calendar"] [aria-current="date"],
+section[data-testid="stSidebar"] [data-baseweb="calendar"] [aria-selected="true"] {
+    background: #1a56db !important;
+    color: #ffffff !important;
+}
+
 /* Navigation buttons — full text, left-aligned */
 section[data-testid="stSidebar"] .stButton > button {
     text-align: left !important;
