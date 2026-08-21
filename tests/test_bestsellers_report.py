@@ -10,6 +10,7 @@ sido persistida.
 Rode: pytest tests/test_bestsellers_report.py
 """
 import pandas as pd
+import pytest
 
 from bestsellers import report
 
@@ -39,8 +40,30 @@ class TestTabelaSemTabulate:
         _sem_tabulate(monkeypatch)
         assert report._tabela(pd.DataFrame()) == "_Sem dados nesta seção._"
 
-    def test_usa_tabulate_quando_disponivel(self):
-        """Caminho feliz: com tabulate instalado, ainda produz markdown válido."""
-        df = pd.DataFrame({"a": [1], "b": [2]})
+    def test_valor_com_pipe_e_nao_escalar_nao_estoura(self, monkeypatch):
+        """
+        A rede de proteção não pode virar o próprio crash: célula com `|`
+        precisa ser escapada e célula não-escalar (list) não pode passar por
+        `pd.isna` escalar.
+        """
+        _sem_tabulate(monkeypatch)
+        df = pd.DataFrame({"titulo": ["A | B"], "sellers": [["x", "y"]]})
         saida = report._tabela(df)
-        assert "a" in saida and "b" in saida and saida.startswith("|")
+        assert r"A \| B" in saida
+        assert "['x', 'y']" in saida
+
+    def test_usa_tabulate_quando_disponivel(self, monkeypatch):
+        """Caminho feliz REAL: com tabulate presente, `to_markdown` é chamado."""
+        pytest.importorskip("tabulate")
+        chamado = {}
+        orig = pd.DataFrame.to_markdown
+
+        def _spy(self, *a, **k):
+            saida = orig(self, *a, **k)
+            chamado["sim"] = True  # só marca se to_markdown de fato renderizou
+            return saida
+
+        monkeypatch.setattr(pd.DataFrame, "to_markdown", _spy, raising=True)
+        saida = report._tabela(pd.DataFrame({"a": [1], "b": [2]}))
+        assert chamado.get("sim") is True
+        assert saida.startswith("|")

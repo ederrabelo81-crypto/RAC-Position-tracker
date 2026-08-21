@@ -1438,6 +1438,18 @@ class MagaluScraper(BaseScraper):
                 f"[{self.platform_name}] Contexto do browser sem cookies para validar."
             )
             return None
+
+        # `_abck` ainda em challenge = sessão NÃO validada pelo sensor.js. Colher
+        # e cachear esses cookies gravaria em disco uma sessão que leva 403 no
+        # curl_cffi e a reusaria nos próximos dias. Melhor devolver None: o
+        # fallback falha limpo e a coleta não persiste uma sessão bloqueada.
+        abck = next((c.get("value", "") for c in cookies if c.get("name") == "_abck"), "")
+        if "~0~" not in abck:
+            logger.warning(
+                f"[{self.platform_name}] _abck ainda em challenge — sessão não "
+                "validada; não vou cachear cookies bloqueados."
+            )
+            return None
         return cookies
 
     def _ensure_validated_session(self, force_refresh: bool = False) -> bool:

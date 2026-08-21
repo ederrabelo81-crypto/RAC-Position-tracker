@@ -476,3 +476,26 @@ class TestValidaSessao:
         monkeypatch.setattr(s, "_revive_page", lambda: False)
         assert s._validate_session_via_browser() is None
         assert s._ensure_validated_session() is False
+
+    def test_abck_em_challenge_nao_e_cacheado(self, monkeypatch):
+        """
+        Sessão bloqueada não pode ser colhida nem cacheada: `_abck` sem `~0~`
+        significa challenge do Akamai — reusá-la levaria 403 no curl_cffi e
+        envenenaria o cache em disco.
+        """
+        s = self._scraper()
+        cookies = [{"name": "_abck", "value": "abc~-1~challenge", "domain": ".x"}]
+        monkeypatch.setattr(s, "_revive_page", lambda: True)
+        monkeypatch.setattr(s, "_refresh_browser_session", lambda: None)
+        salvos = []
+        monkeypatch.setattr(s, "_save_cached_session", lambda c: salvos.append(c))
+        monkeypatch.setattr(s, "_load_cached_session", lambda: None)
+
+        class _Ctx:
+            def cookies(self_inner):
+                return cookies
+
+        s._pw_context = _Ctx()
+        assert s._validate_session_via_browser() is None
+        assert s._ensure_validated_session() is False
+        assert salvos == [], "sessão em challenge não pode ir para o cache"
