@@ -499,3 +499,34 @@ class TestValidaSessao:
         assert s._validate_session_via_browser() is None
         assert s._ensure_validated_session() is False
         assert salvos == [], "sessão em challenge não pode ir para o cache"
+
+    def _colher(self, monkeypatch, cookies):
+        s = self._scraper()
+        monkeypatch.setattr(s, "_revive_page", lambda: True)
+        monkeypatch.setattr(s, "_refresh_browser_session", lambda: None)
+
+        class _Ctx:
+            def cookies(self_inner):
+                return cookies
+
+        s._pw_context = _Ctx()
+        return s._validate_session_via_browser()
+
+    def test_abck_validado_de_outro_host_nao_conta(self, monkeypatch):
+        """
+        Chrome compartilhado: um `_abck` validado de OUTRO site não pode validar
+        a sessão da Magalu — só o cookie do domínio magazineluiza vale.
+        """
+        cookies = [
+            {"name": "_abck", "value": "ok~0~valid", "domain": ".casasbahia.com.br"},
+            {"name": "_abck", "value": "no~-1~challenge", "domain": ".magazineluiza.com.br"},
+        ]
+        assert self._colher(monkeypatch, cookies) is None
+
+    def test_abck_validado_da_magalu_entre_outros_conta(self, monkeypatch):
+        """O `_abck` validado da Magalu convive com cookies de outros hosts."""
+        cookies = [
+            {"name": "_abck", "value": "no~-1~challenge", "domain": ".casasbahia.com.br"},
+            {"name": "_abck", "value": "ok~0~valid", "domain": ".magazineluiza.com.br"},
+        ]
+        assert self._colher(monkeypatch, cookies) == cookies

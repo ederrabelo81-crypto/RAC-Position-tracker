@@ -1443,11 +1443,22 @@ class MagaluScraper(BaseScraper):
         # e cachear esses cookies gravaria em disco uma sessão que leva 403 no
         # curl_cffi e a reusaria nos próximos dias. Melhor devolver None: o
         # fallback falha limpo e a coleta não persiste uma sessão bloqueada.
-        abck = next((c.get("value", "") for c in cookies if c.get("name") == "_abck"), "")
-        if "~0~" not in abck:
+        #
+        # O `_abck` tem que ser o DA MAGALU: num Chrome compartilhado
+        # (RAC_LOCAL_CHROME) o contexto guarda cookies Akamai de vários sites, e
+        # pegar o primeiro `_abck` qualquer poderia aceitar um challenge da
+        # Magalu ou rejeitar uma sessão válida por causa do cookie de outro host.
+        abck_valido = any(
+            c.get("name") == "_abck"
+            and isinstance(c.get("value"), str)
+            and "~0~" in c["value"]
+            and (c.get("domain") or "").lstrip(".").endswith("magazineluiza.com.br")
+            for c in cookies
+        )
+        if not abck_valido:
             logger.warning(
-                f"[{self.platform_name}] _abck ainda em challenge — sessão não "
-                "validada; não vou cachear cookies bloqueados."
+                f"[{self.platform_name}] _abck da Magalu ainda em challenge — "
+                "sessão não validada; não vou cachear cookies bloqueados."
             )
             return None
         return cookies
