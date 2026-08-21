@@ -39,7 +39,24 @@ def _tabela(df: pd.DataFrame) -> str:
     """Markdown de um DataFrame, ou uma frase quando ele está vazio."""
     if df is None or not len(df):
         return "_Sem dados nesta seção._"
-    return df.to_markdown(index=False)
+    try:
+        return df.to_markdown(index=False)
+    except ImportError:
+        # `to_markdown` exige `tabulate` (declarado no requirements, mas pode
+        # faltar num ambiente que não reinstalou deps). Renderiza a tabela à
+        # mão em vez de derrubar o brief inteiro depois de coleta + upload OK.
+        return _markdown_manual(df)
+
+
+def _markdown_manual(df: pd.DataFrame) -> str:
+    """Tabela markdown mínima, sem depender de `tabulate`."""
+    colunas = [str(c) for c in df.columns]
+    linhas = ["| " + " | ".join(colunas) + " |",
+              "| " + " | ".join("---" for _ in colunas) + " |"]
+    for _, linha in df.iterrows():
+        celulas = ["" if pd.isna(v) else str(v) for v in linha.tolist()]
+        linhas.append("| " + " | ".join(celulas) + " |")
+    return "\n".join(linhas)
 
 
 # ---------------------------------------------------------------------------

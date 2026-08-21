@@ -430,3 +430,49 @@ class TestCascataDeEstrategias:
         assert s._cffi_disabled is True
         s._search_page("kw", {}, 3)
         assert s._cffi_calls == 2  # a terceira nem tentou
+
+
+# ---------------------------------------------------------------------------
+# Sessão validada — regressão do AttributeID de 21/08/2026
+# ---------------------------------------------------------------------------
+
+class TestValidaSessao:
+    """
+    `_ensure_validated_session` chamava `_validate_session_via_browser`, um
+    método que não existia — a coleta de mais vendidos da Magalu morria com
+    `AttributeError` no fallback curl_cffi. Estes testes fixam o contrato.
+    """
+
+    def _scraper(self):
+        s = MagaluScraper()
+        s._session_validated = False
+        s._browser_mode = True
+        return s
+
+    def test_metodo_existe(self):
+        assert hasattr(MagaluScraper, "_validate_session_via_browser")
+
+    def test_cache_vazio_colhe_cookies_do_browser(self, monkeypatch):
+        s = self._scraper()
+        cookies = [{"name": "_abck", "value": "x~0~y", "domain": ".magazineluiza.com.br"}]
+        monkeypatch.setattr(s, "_load_cached_session", lambda: None)
+        monkeypatch.setattr(s, "_revive_page", lambda: True)
+        monkeypatch.setattr(s, "_refresh_browser_session", lambda: None)
+        monkeypatch.setattr(s, "_save_cached_session", lambda c: None)
+        monkeypatch.setattr(s, "_apply_cookies_to_cffi", lambda c: len(c))
+
+        class _Ctx:
+            def cookies(self_inner):
+                return cookies
+
+        s._pw_context = _Ctx()
+        assert s._ensure_validated_session() is True
+        assert s._session_validated is True
+
+    def test_sem_browser_falha_sem_explodir(self, monkeypatch):
+        """Browser indisponível → None, e a coleta segue (retorna False)."""
+        s = self._scraper()
+        monkeypatch.setattr(s, "_load_cached_session", lambda: None)
+        monkeypatch.setattr(s, "_revive_page", lambda: False)
+        assert s._validate_session_via_browser() is None
+        assert s._ensure_validated_session() is False
