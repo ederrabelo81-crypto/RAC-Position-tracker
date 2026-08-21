@@ -10478,16 +10478,43 @@ def page_bestsellers() -> None:
     KPI único: **% do top N ocupado pelo grupo Midea, por plataforma, por
     dia**, no escopo split hi-wall. Todo o resto é diagnóstico de apoio.
     """
-    from bestsellers import metrics, report, validate
-    from bestsellers.config import (
-        REFERENCIA_MAIS_VENDIDOS,
-        REFERENCIA_RELEVANCIA,
-        ROTULO_REFERENCIA,
-        TIPO_ESCOPO_KPI,
-        TOP_N,
-        referencia_de,
-        sources_ativos,
-    )
+    try:
+        from bestsellers import metrics, report, validate
+        from bestsellers.config import (
+            REFERENCIA_MAIS_VENDIDOS,
+            REFERENCIA_RELEVANCIA,
+            ROTULO_REFERENCIA,
+            TIPO_ESCOPO_KPI,
+            TOP_N,
+            referencia_de,
+            sources_ativos,
+        )
+    except ImportError as exc:
+        # Deploy stale: o Streamlit re-executa `app.py` a cada rerun mas mantém
+        # os submódulos já importados em `sys.modules`. Depois de um deploy que
+        # muda `bestsellers/config.py` (ex.: PR que adiciona `referencia_de`,
+        # `ROTULO_REFERENCIA`, `REFERENCIA_RELEVANCIA`), o processo antigo segue
+        # servindo o `config.py` de antes — o `app.py` novo pede um nome que o
+        # módulo cacheado ainda não tem e o import quebra. O código do repo está
+        # correto; o processo é que precisa reiniciar. Sem este guard, o erro
+        # sobe redigido ("redacted to prevent data leaks") e derruba a página
+        # inteira sem dizer o que fazer.
+        st.error(
+            "A página **Mais Vendidos** ficou indisponível porque este processo "
+            "do Streamlit está rodando uma versão desatualizada do módulo "
+            "`bestsellers` (cache de submódulo após o último deploy). O código "
+            "no repositório está correto — o processo é que precisa ser "
+            "reiniciado para recarregá-lo.",
+            icon="🔄",
+        )
+        st.markdown(
+            "**Como resolver (Streamlit Cloud):** abra **Manage app** (canto "
+            "inferior direito) → **Reboot app**. O reboot sobe um processo novo "
+            "que reimporta `bestsellers/config.py` na versão atual e a página "
+            "volta.\n\n"
+            f"Detalhe técnico do import que falhou: `{exc}`"
+        )
+        return
 
     st.title("🥇 Mais Vendidos")
     st.caption(
