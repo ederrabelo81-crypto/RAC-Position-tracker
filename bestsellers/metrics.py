@@ -33,8 +33,10 @@ from bestsellers.config import (
     LIMITE_ESTABILIDADE,
     LIMITE_MOVIMENTO_PRECO,
     MINIMO_LEITURAS_TENDENCIA,
+    REFERENCIA_MAIS_VENDIDOS,
     TIPO_ESCOPO_KPI,
     TOP_N,
+    referencia_de,
 )
 
 # Períodos de agregação aceitos por `serie_agregada`.
@@ -76,6 +78,21 @@ def preparar(df: pd.DataFrame) -> pd.DataFrame:
     out["mes"] = out["data"].dt.strftime("%Y-%m")
     out["grupo_midea"] = out["grupo_midea"].astype(bool)
     out["rank"] = pd.to_numeric(out["rank"], errors="coerce")
+
+    # `referencia` separa as duas medições (mais vendidos × relevância) e
+    # nunca pode chegar vazia à análise: uma linha sem referência escaparia
+    # do segmento certo no painel e poderia acabar comparada com a outra
+    # população. Leituras antigas (gravadas antes da coluna existir) e
+    # qualquer célula em branco são reconstituídas a partir do registro da
+    # plataforma — o default é MAIS_VENDIDOS, o significado das fontes legadas.
+    if "referencia" not in out.columns:
+        out["referencia"] = None
+    referencia = out["referencia"].astype("string").str.strip()
+    referencia = referencia.where(referencia.isin(("mais_vendidos", "relevancia")))
+    out["referencia"] = referencia.where(
+        referencia.notna(),
+        out["plataforma"].map(referencia_de),
+    ).fillna(REFERENCIA_MAIS_VENDIDOS)
     for coluna in ("preco", "rating", "vendidos", "btu", "reviews"):
         if coluna in out.columns:
             out[coluna] = pd.to_numeric(out[coluna], errors="coerce")

@@ -57,6 +57,36 @@ Tudo o mais no brief é diagnóstico de apoio.
 4. **Tendência exige 3 leituras.** Agregação semanal/mensal com menos que isso
    sai com `tendencia_valida = False`.
 5. **Lacuna fica vazia.** Nada é interpolado ou estimado.
+6. **Mais Vendidos ≠ Relevância.** Cada lista carrega `referencia`
+   (`mais_vendidos` × `relevancia`). Uma lista de *relevância* é a ordem de
+   destaque do algoritmo da loja (mix de venda, margem, estoque, curadoria) —
+   proxy, **não** medida de venda. As duas referências **nunca se comparam,
+   agregam ou somam**; são séries próprias, em segmentos próprios no dashboard.
+
+---
+
+## Referência: Mais Vendidos × Relevância (Ago/2026)
+
+Nem todo varejista expõe ordenação por vendas. Onde só há a lista de
+"relevância" (Dufrio, Central Ar, Leveros, Ferreira Costa, Engage), a coleta a
+registra com `referencia = relevancia` e mecânica `relevancia`, numa **série
+separada**. Isso preserva a regra dura acima: o número de uma lista de
+relevância nunca entra no mesmo KPI de uma lista de vendas.
+
+- **Onde vive a distinção:** coluna `referencia` na tabela `bestsellers`
+  (migração `013_bestsellers_referencia.sql`), gravada em toda linha a partir
+  de `SourceSpec.referencia`.
+- **Portão de ordenação:** continua exigindo prova no `endpoint` — só que o
+  *token* difere. Mais Vendidos prova o sort por vendas
+  (`OrderByTopSaleDESC`/`orders_desc`); Relevância prova sua âncora
+  (`OrderByScoreDESC`/`sort=relevance`). Sem o token, quarentena — com a
+  mensagem certa para cada referência.
+- **Dashboard:** a página 🥇 Mais Vendidos tem um seletor **Referência da
+  lista** na barra lateral. Trocar de referência recorta a série inteira antes
+  de qualquer número; as duas nunca aparecem na mesma tabela.
+
+Dealers de **Mais Vendidos** (VTEX, sort por vendas): Web Continental, Frio
+Peças, Clima Rio, Ar Certo, Polo Ar, Bel Micro, Fast Shop, Bemol, Frigelar.
 
 ---
 
@@ -271,12 +301,19 @@ o markdown cru sem comentário.
 
 ## Adicionar um varejista novo
 
-1. Achar a URL com a ordenação **por vendas** e testá-la no navegador. Se a
-   ordenação não existir de forma explícita, **não adicionar** — relevância
-   não serve e não é comparável com o resto da série.
-2. Registrar a fonte em `bestsellers/config.py`: URL pública, parâmetros de
-   ordenação aceitos, mecânica e base de `vendidos`.
-3. Implementar a classe em `bestsellers/sources/` e registrá-la em
+1. Achar a URL com a ordenação **por vendas** e testá-la no navegador.
+   - Se existir sort por vendas → `referencia = mais_vendidos`.
+   - Se a loja **só** tiver a ordem de relevância/destaque → `referencia =
+     relevancia`. Entra numa **série própria**, nunca comparada com as listas
+     de vendas (não é "não serve", é outra medição). NUNCA registre uma lista
+     de relevância como `mais_vendidos`.
+2. Registrar a fonte em `bestsellers/config.py`: `SOURCES` (URL pública,
+   parâmetros de ordenação aceitos, `referencia`, mecânica, base de `vendidos`)
+   e — se for dealer VTEX/HTML genérico — a `ColetaSpec` em `COLETA`.
+3. Dealer VTEX/HTML: **nada mais a implementar** — os coletores genéricos
+   (`sources/vtex_generic.py`, `sources/html_generic.py`) e o registro em
+   `SOURCE_CLASSES` se resolvem por `COLETA`. Plataforma com mecânica/anti-bot
+   próprio: implementar a classe em `bestsellers/sources/` e registrá-la em
    `SOURCE_CLASSES`.
 4. Rodar 3 dias antes de usar em decisão.
 

@@ -39,21 +39,42 @@ venda**. As listas "Mais Vendidos" dos varejistas são a **única variável de
 resultado** disponível no nível do SKU, alimentando análises diárias, semanais
 e mensais de **ganho/perda de share de topo de ranking**.
 
-**Módulo:** `bestsellers/` com 6 sources (Amazon, ML, Magalu, Casas Bahia, Shopee, Leroy Merlin)
+**Módulo:** `bestsellers/` — 6 sources artesanais (Amazon, ML, Magalu, Casas
+Bahia, Shopee, Leroy Merlin) **+ 14 dealers genéricos** (Ago/2026) via dois
+coletores dirigidos por `config.COLETA`: VTEX (`sources/vtex_generic.py`, API
+de catálogo) e HTML/JSON-LD (`sources/html_generic.py`, para lojas não-VTEX).
 
 ```bash
 python scripts/collect_bestsellers.py                    # coleta do dia + brief diário
+python scripts/collect_bestsellers.py --plataformas dufrio webcontinental  # dealers avulsos
 python scripts/collect_bestsellers.py --relatorio semanal  # evolução (não coleta)
 python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6
 python scripts/collect_bestsellers.py --import arquivo.xlsx # backfill
 ```
 
-Tabela `bestsellers` com migração `docs/migrations/011_bestsellers_diario.sql`.
+Tabela `bestsellers` — migrações `011_bestsellers_diario.sql` +
+`013_bestsellers_referencia.sql` (coluna `referencia`).
 Cadência obrigatória: todo dia útil **09:30 BRT** (Amazon recalcula ranking de hora em hora).
+
+**Duas referências (Ago/2026):** cada lista carrega `referencia` =
+`mais_vendidos` (loja expõe ordenação por vendas) **ou** `relevancia` (a loja
+só tem a ordem de destaque do algoritmo — proxy, NÃO é venda). **Regra dura da
+separação:** as duas referências **nunca se misturam** num mesmo número —
+séries próprias, segmentos próprios no painel. Dealers de relevância: Dufrio,
+Central Ar, Leveros, Ferreira Costa, Engage. Os demais dealers novos (Web
+Continental, Frio Peças, Clima Rio, Ar Certo, Polo Ar, Bel Micro, Fast Shop,
+Bemol, Frigelar) são `mais_vendidos`. **Todos são novos e sem as 3 leituras de
+validação** (regra de `sources/__init__.py`) — tratar como provisório; de IP
+de datacenter muitos vêm bloqueados, a coleta oficial roda do PC coletor.
 
 **Regra dura:** ranking é ORDINAL — nunca soma entre plataformas, nunca vira
 share de mercado (isso vem de GfK/Neotrust). KPI: % Midea no top 10 por
 plataforma + delta vs período anterior.
+
+**Adicionar dealer VTEX/HTML:** registrar a fonte em `bestsellers/config.py`
+(`SOURCES` com a `referencia` certa) e a `ColetaSpec` em `COLETA` — o coletor
+genérico e o registro em `SOURCE_CLASSES` se resolvem sozinhos, sem novo
+arquivo.
 
 **Agendamento Windows (Task Scheduler):** `RAC_Bestsellers` 09:30 seg-sex +
 catch-up no logon. Roda no PC porque Amazon/ML/Shopee precisam de browser real
@@ -292,16 +313,18 @@ rac-position-tracker/
 ├── bestsellers/                 # 🆕 Módulo de Mais Vendidos (rankings por plataforma)
 │   ├── __init__.py              # Orquestração CLI
 │   ├── base.py                  # BaseBestsellerSource ABC
-│   ├── config.py                # Plataformas, regex de validação
+│   ├── config.py                # SOURCES (+ referencia) + COLETA (dealers VTEX/HTML)
 │   ├── models.py                # Dataclasses (Bestseller, Metric, Report)
 │   ├── metrics.py               # KPIs (rank delta, share top 10, etc.)
 │   ├── report.py                # Renderização HTML + Telegram
 │   ├── storage.py               # Supabase + JSON persistence
-│   ├── validate.py              # Filtros anti-spam
+│   ├── validate.py              # Portões (ordenação referência-aware, anti-spam)
 │   ├── importer_xlsx.py         # Backfill via XLSX
 │   └── sources/                 # Scrapers por plataforma
 │       ├── amazon.py, casas_bahia.py, leroy_merlin.py
 │       ├── magalu.py, mercado_livre.py, shopee.py
+│       ├── vtex_generic.py      # 🆕 coletor VTEX genérico (dealers, dirigido por COLETA)
+│       └── html_generic.py      # 🆕 coletor HTML/JSON-LD genérico (dealers não-VTEX)
 │
 ├── scrapers/
 │   ├── __init__.py
@@ -953,6 +976,6 @@ Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto
 
 ---
 
-*Last updated: August 14, 2026 (v4.8)*  
-*Latest changes: Bestsellers module (6 scrapers), LocalBrowser + PlaywrightRuntime for auto-recovery, improved browser fallback chain*  
+*Last updated: August 21, 2026 (v4.9)*  
+*Latest changes: Bestsellers — expansão para 14 dealers (coletores VTEX/HTML genéricos) e separação de referência Mais Vendidos × Relevância (coluna `referencia`, migração 013, segmento próprio no dashboard)*  
 *Maintained by: RAC Position Tracker Team*

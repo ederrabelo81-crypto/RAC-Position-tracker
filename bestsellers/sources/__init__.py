@@ -19,13 +19,17 @@ Ponto, Carrefour, Americanas, Web Continental.
 from typing import Dict, Type
 
 from bestsellers.base import BestSellerSource
+from bestsellers.config import COLETA, TIPO_HTML, TIPO_VTEX_CATALOG
 from bestsellers.sources.amazon import AmazonBestSellers
 from bestsellers.sources.casas_bahia import CasasBahiaBestSellers
+from bestsellers.sources.html_generic import make_html_source
 from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers
 from bestsellers.sources.magalu import MagaluBestSellers
 from bestsellers.sources.mercado_livre import MercadoLivreBestSellers
 from bestsellers.sources.shopee import ShopeeBestSellers
+from bestsellers.sources.vtex_generic import make_vtex_source
 
+# Fontes com coletor artesanal próprio (mecânica/anti-bot específicos).
 SOURCE_CLASSES: Dict[str, Type[BestSellerSource]] = {
     "amazon": AmazonBestSellers,
     "mercadolivre": MercadoLivreBestSellers,
@@ -34,5 +38,14 @@ SOURCE_CLASSES: Dict[str, Type[BestSellerSource]] = {
     "leroymerlin": LeroyMerlinBestSellers,
     "casasbahia": CasasBahiaBestSellers,
 }
+
+# Dealers genéricos: um coletor compartilhado por tipo (VTEX catálogo / HTML),
+# amarrado à chave da plataforma. A ponte é `config.COLETA` — adicionar dealer
+# VTEX/HTML novo é só registrar a fonte e a ColetaSpec, sem tocar aqui.
+_FABRICA = {TIPO_VTEX_CATALOG: make_vtex_source, TIPO_HTML: make_html_source}
+for _chave, _coleta in COLETA.items():
+    _fabrica = _FABRICA.get(_coleta.tipo)
+    if _fabrica is not None:
+        SOURCE_CLASSES[_chave] = _fabrica(_chave)
 
 __all__ = ["SOURCE_CLASSES", "BestSellerSource"]
