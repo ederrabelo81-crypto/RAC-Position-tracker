@@ -1399,6 +1399,70 @@ class MagaluScraper(BaseScraper):
                 pass
         return applied
 
+    def _validate_session_via_browser(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Colhe cookies Akamai validados do browser persistente.
+
+        Chamado por `_ensure_validated_session` quando o cache está
+        ausente/expirado: reaproveita a aba já aberta (reanimando-a se a janela
+        foi fechada), aquece a sessão pra dar chance ao sensor.js de promover o
+        `_abck`, e devolve os cookies do contexto no formato que
+        `_save_cached_session`/`_apply_cookies_to_cffi` esperam.
+
+        Returns:
+            Lista de cookies (dicts do Playwright) ou None se o browser não
+            estiver disponível — nesse caso o curl_cffi puro segue sem sessão
+            validada e o chamador trata a falha.
+        """
+        if not self._browser_mode or not self._revive_page():
+            logger.warning(
+                f"[{self.platform_name}] Browser indisponível para validar "
+                "sessão — curl_cffi seguirá sem cookies Akamai frescos."
+            )
+            return None
+
+        # Aquece a home + emula interação: é o mesmo caminho que promove o
+        # _abck de 'challenge' para validado antes de colher os cookies.
+        self._refresh_browser_session()
+
+        try:
+            cookies = self._pw_context.cookies() if self._pw_context else None
+        except Exception as exc:
+            logger.warning(
+                f"[{self.platform_name}] Falha ao colher cookies do browser: {exc}"
+            )
+            return None
+
+        if not cookies:
+            logger.warning(
+                f"[{self.platform_name}] Contexto do browser sem cookies para validar."
+            )
+            return None
+
+        # `_abck` ainda em challenge = sessão NÃO validada pelo sensor.js. Colher
+        # e cachear esses cookies gravaria em disco uma sessão que leva 403 no
+        # curl_cffi e a reusaria nos próximos dias. Melhor devolver None: o
+        # fallback falha limpo e a coleta não persiste uma sessão bloqueada.
+        #
+        # O `_abck` tem que ser o DA MAGALU: num Chrome compartilhado
+        # (RAC_LOCAL_CHROME) o contexto guarda cookies Akamai de vários sites, e
+        # pegar o primeiro `_abck` qualquer poderia aceitar um challenge da
+        # Magalu ou rejeitar uma sessão válida por causa do cookie de outro host.
+        abck_valido = any(
+            c.get("name") == "_abck"
+            and isinstance(c.get("value"), str)
+            and "~0~" in c["value"]
+            and (c.get("domain") or "").lstrip(".").endswith("magazineluiza.com.br")
+            for c in cookies
+        )
+        if not abck_valido:
+            logger.warning(
+                f"[{self.platform_name}] _abck da Magalu ainda em challenge — "
+                "sessão não validada; não vou cachear cookies bloqueados."
+            )
+            return None
+        return cookies
+
     def _ensure_validated_session(self, force_refresh: bool = False) -> bool:
         """
         Garante que self._cffi_session tem cookies Akamai validados.

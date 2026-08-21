@@ -39,7 +39,38 @@ def _tabela(df: pd.DataFrame) -> str:
     """Markdown de um DataFrame, ou uma frase quando ele está vazio."""
     if df is None or not len(df):
         return "_Sem dados nesta seção._"
-    return df.to_markdown(index=False)
+    try:
+        return df.to_markdown(index=False)
+    except ImportError:
+        # `to_markdown` exige `tabulate` (declarado no requirements, mas pode
+        # faltar num ambiente que não reinstalou deps). Renderiza a tabela à
+        # mão em vez de derrubar o brief inteiro depois de coleta + upload OK.
+        return _markdown_manual(df)
+
+
+def _celula_md(v) -> str:
+    """
+    Serializa uma célula para markdown, sem depender de `tabulate`.
+
+    `pd.isna` só decide vazio para escalares — num cell list/dict ele devolve
+    um array e `"" if pd.isna(v)` estouraria `ValueError` (a mesma classe de
+    crash que este fallback existe para evitar). Pipes e quebras de linha são
+    escapados para não quebrar a grade da tabela.
+    """
+    if pd.api.types.is_scalar(v) and pd.isna(v):
+        return ""
+    return str(v).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def _markdown_manual(df: pd.DataFrame) -> str:
+    """Tabela markdown mínima, sem depender de `tabulate`."""
+    colunas = [_celula_md(c) for c in df.columns]
+    linhas = ["| " + " | ".join(colunas) + " |",
+              "| " + " | ".join("---" for _ in colunas) + " |"]
+    for _, linha in df.iterrows():
+        celulas = [_celula_md(v) for v in linha.tolist()]
+        linhas.append("| " + " | ".join(celulas) + " |")
+    return "\n".join(linhas)
 
 
 # ---------------------------------------------------------------------------

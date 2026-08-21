@@ -430,3 +430,103 @@ class TestCascataDeEstrategias:
         assert s._cffi_disabled is True
         s._search_page("kw", {}, 3)
         assert s._cffi_calls == 2  # a terceira nem tentou
+
+
+# ---------------------------------------------------------------------------
+# Sessão validada — regressão do AttributeID de 21/08/2026
+# ---------------------------------------------------------------------------
+
+class TestValidaSessao:
+    """
+    `_ensure_validated_session` chamava `_validate_session_via_browser`, um
+    método que não existia — a coleta de mais vendidos da Magalu morria com
+    `AttributeError` no fallback curl_cffi. Estes testes fixam o contrato.
+    """
+
+    def _scraper(self):
+        s = MagaluScraper()
+        s._session_validated = False
+        s._browser_mode = True
+        return s
+
+    def test_metodo_existe(self):
+        assert hasattr(MagaluScraper, "_validate_session_via_browser")
+
+    def test_cache_vazio_colhe_cookies_do_browser(self, monkeypatch):
+        s = self._scraper()
+        cookies = [{"name": "_abck", "value": "x~0~y", "domain": ".magazineluiza.com.br"}]
+        monkeypatch.setattr(s, "_load_cached_session", lambda: None)
+        monkeypatch.setattr(s, "_revive_page", lambda: True)
+        monkeypatch.setattr(s, "_refresh_browser_session", lambda: None)
+        monkeypatch.setattr(s, "_save_cached_session", lambda c: None)
+        monkeypatch.setattr(s, "_apply_cookies_to_cffi", lambda c: len(c))
+
+        class _Ctx:
+            def cookies(self_inner):
+                return cookies
+
+        s._pw_context = _Ctx()
+        assert s._ensure_validated_session() is True
+        assert s._session_validated is True
+
+    def test_sem_browser_falha_sem_explodir(self, monkeypatch):
+        """Browser indisponível → None, e a coleta segue (retorna False)."""
+        s = self._scraper()
+        monkeypatch.setattr(s, "_load_cached_session", lambda: None)
+        monkeypatch.setattr(s, "_revive_page", lambda: False)
+        assert s._validate_session_via_browser() is None
+        assert s._ensure_validated_session() is False
+
+    def test_abck_em_challenge_nao_e_cacheado(self, monkeypatch):
+        """
+        Sessão bloqueada não pode ser colhida nem cacheada: `_abck` sem `~0~`
+        significa challenge do Akamai — reusá-la levaria 403 no curl_cffi e
+        envenenaria o cache em disco.
+        """
+        s = self._scraper()
+        cookies = [{"name": "_abck", "value": "abc~-1~challenge", "domain": ".x"}]
+        monkeypatch.setattr(s, "_revive_page", lambda: True)
+        monkeypatch.setattr(s, "_refresh_browser_session", lambda: None)
+        salvos = []
+        monkeypatch.setattr(s, "_save_cached_session", lambda c: salvos.append(c))
+        monkeypatch.setattr(s, "_load_cached_session", lambda: None)
+
+        class _Ctx:
+            def cookies(self_inner):
+                return cookies
+
+        s._pw_context = _Ctx()
+        assert s._validate_session_via_browser() is None
+        assert s._ensure_validated_session() is False
+        assert salvos == [], "sessão em challenge não pode ir para o cache"
+
+    def _colher(self, monkeypatch, cookies):
+        s = self._scraper()
+        monkeypatch.setattr(s, "_revive_page", lambda: True)
+        monkeypatch.setattr(s, "_refresh_browser_session", lambda: None)
+
+        class _Ctx:
+            def cookies(self_inner):
+                return cookies
+
+        s._pw_context = _Ctx()
+        return s._validate_session_via_browser()
+
+    def test_abck_validado_de_outro_host_nao_conta(self, monkeypatch):
+        """
+        Chrome compartilhado: um `_abck` validado de OUTRO site não pode validar
+        a sessão da Magalu — só o cookie do domínio magazineluiza vale.
+        """
+        cookies = [
+            {"name": "_abck", "value": "ok~0~valid", "domain": ".casasbahia.com.br"},
+            {"name": "_abck", "value": "no~-1~challenge", "domain": ".magazineluiza.com.br"},
+        ]
+        assert self._colher(monkeypatch, cookies) is None
+
+    def test_abck_validado_da_magalu_entre_outros_conta(self, monkeypatch):
+        """O `_abck` validado da Magalu convive com cookies de outros hosts."""
+        cookies = [
+            {"name": "_abck", "value": "no~-1~challenge", "domain": ".casasbahia.com.br"},
+            {"name": "_abck", "value": "ok~0~valid", "domain": ".magazineluiza.com.br"},
+        ]
+        assert self._colher(monkeypatch, cookies) == cookies
