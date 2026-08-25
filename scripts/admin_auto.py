@@ -73,7 +73,7 @@ def main() -> None:
 
     if report["status"] == "skipped":
         reason = report.get("skip_reason")
-        if reason == "quota_restricted":
+        if reason in ("quota_restricted", "network_unreachable"):
             # run_admin_automation já logou a mensagem acionável completa —
             # não repetir (preserva o fail-fast silencioso), só propaga o código.
             sys.exit(1)

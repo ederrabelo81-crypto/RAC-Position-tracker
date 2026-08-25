@@ -22,6 +22,7 @@ import json
 import os
 import math
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -46,6 +47,12 @@ except ImportError:
 
 # Tamanho do lote para upsert — free tier Supabase suporta bem até 500 linhas
 _BATCH_SIZE = 500
+
+# Retentativas para falha de REDE/DNS no meio do upload — mesma janela de
+# backoff do Drive (utils/history/backends.py: _DRIVE_BACKOFF_BASE = 2.0),
+# para dar a um DNS que caiu por um instante a chance de voltar sozinho.
+_NETWORK_RETRY_ATTEMPTS = 3
+_NETWORK_RETRY_BACKOFF_BASE = 2.0  # segundos; dobra a cada tentativa
 
 # Mapeamento: coluna interna do bot → coluna na tabela `coletas` do Supabase
 _COLUMN_MAP = {
@@ -389,6 +396,85 @@ def is_quota_restricted_error(exc: Exception) -> bool:
     return "exceed_db_size_quota" in str(exc).lower()
 
 
+# Assinaturas de erro de RESOLUÇÃO DE DNS / conectividade — vêm do resolvedor
+# do próprio SO (socket), não da API do Supabase. Windows, Linux e macOS têm
+# mensagens diferentes para "sem DNS/sem rede"; cobre os três.
+_NETWORK_ERROR_MARKERS = (
+    "getaddrinfo failed",                    # Windows [Errno 11001] / genérico
+    "name or service not known",             # Linux [Errno -2]
+    "temporary failure in name resolution",  # Linux, DNS fora do ar
+    "nodename nor servname provided",        # macOS
+    "failed to establish a new connection",
+    "connection refused",
+    "network is unreachable",
+    "max retries exceeded with url",
+    "remote end closed connection",
+)
+
+
+def is_network_error(exc: Exception) -> bool:
+    """
+    Detecta falha de REDE/DNS (sem internet, DNS fora do ar, Wi-Fi caiu) — não
+    confundir com erro de credencial ou de schema.
+
+    Ao contrário da restrição por cota (estado persistente do projeto), falha
+    de rede costuma ser transitória: o computador ficou momentaneamente sem
+    DNS. Mas quando persiste, ela é idêntica em TODOS os lotes — não adianta
+    reenviar o mesmo lote 19 vezes, nem rodar a Automação ADMIN em seguida
+    (ela bate na mesma parede).
+
+    Detecta por assinatura de erro de socket/DNS (`getaddrinfo failed`, `Name
+    or service not known`, `Connection refused`, etc.) — mensagens que vêm do
+    resolvedor do SO, não do PostgREST.
+
+    Args:
+        exc: exceção capturada de uma chamada ao Supabase.
+
+    Returns:
+        True se o erro indica falta de rede/DNS, não um problema do banco.
+    """
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _NETWORK_ERROR_MARKERS)
+
+
+def _call_with_network_retry(fn, what: str):
+    """
+    Executa `fn` (uma chamada Supabase) com retentativas SÓ para falha de
+    rede/DNS — mesmo ritmo de backoff do Drive (2s, 4s).
+
+    Qualquer outro erro (coluna ausente, cota, dado inválido) sobe na hora:
+    retry não ajuda uma falha determinística, só atrasa o diagnóstico.
+
+    Args:
+        fn:   callable sem argumentos que executa a chamada Supabase.
+        what: rótulo do que está sendo tentado, para o log de retentativa.
+
+    Returns:
+        O retorno de `fn()`.
+
+    Raises:
+        Exception: a última exceção, se `fn` continuar falhando após todas
+            as tentativas (ou na primeira falha, se não for erro de rede).
+    """
+    ultimo: Optional[Exception] = None
+    for tentativa in range(1, _NETWORK_RETRY_ATTEMPTS + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if not is_network_error(exc):
+                raise
+            ultimo = exc
+            if tentativa == _NETWORK_RETRY_ATTEMPTS:
+                raise
+            espera = _NETWORK_RETRY_BACKOFF_BASE * (2 ** (tentativa - 1))
+            logger.warning(
+                f"[Supabase] {what} falhou por rede/DNS (tentativa {tentativa}/"
+                f"{_NETWORK_RETRY_ATTEMPTS}): {exc} — nova tentativa em {espera:.0f}s"
+            )
+            time.sleep(espera)
+    raise ultimo  # pragma: no cover — inalcançável, o loop sempre retorna ou levanta
+
+
 def _map_record(record: Dict[str, Any]) -> Dict[str, Any]:
     """
     Converte um registro do formato interno do bot para o formato da tabela.
@@ -639,6 +725,10 @@ def upload_to_supabase(
     # igual. No 1º lote com esse erro abortamos o restante (fail-fast) em vez de
     # repetir a mesma falha N vezes.
     quota_restricted = False
+    # Sem internet/DNS no computador: idêntico em todos os lotes (o run #… que
+    # motivou este guard repetiu "[Errno 11001] getaddrinfo failed" em 19/19).
+    # Depois de esgotar as retentativas no lote corrente, aborta o resto.
+    network_unreachable = False
 
     def _strip_optional(batch_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [
@@ -668,11 +758,14 @@ def upload_to_supabase(
             if batch else "?"
         )
         try:
-            result = client.table("coletas").upsert(
-                batch,
-                on_conflict="data,turno,plataforma,keyword,produto,run_id",
-                ignore_duplicates=True,  # → INSERT ON CONFLICT (coletas_unique_run) DO NOTHING
-            ).execute()
+            result = _call_with_network_retry(
+                lambda: client.table("coletas").upsert(
+                    batch,
+                    on_conflict="data,turno,plataforma,keyword,produto,run_id",
+                    ignore_duplicates=True,  # → INSERT ON CONFLICT (coletas_unique_run) DO NOTHING
+                ).execute(),
+                what=f"Lote {i+1}/{batches}",
+            )
             inseridas = len(result.data) if result.data else 0
             ignoradas = len(batch) - inseridas
             sent += inseridas
@@ -694,6 +787,14 @@ def upload_to_supabase(
                 quota_restricted = True
                 errors += len(batch)
                 break
+            # Sem internet/DNS: já esgotou as retentativas acima. Idêntico em
+            # todos os lotes — aborta o restante em vez de repetir a mesma
+            # falha (e, na sequência, deixar a Automação ADMIN bater na mesma
+            # parede em 11 etapas).
+            if is_network_error(exc):
+                network_unreachable = True
+                errors += len(batch)
+                break
             # Banco sem as colunas opcionais (url/screenshots) → remove e tenta de novo
             if not drop_optional and _is_missing_column_error(exc):
                 drop_optional = True
@@ -703,11 +804,14 @@ def upload_to_supabase(
                     "docs/migrations/001_add_url_screenshot_columns.sql para persisti-las."
                 )
                 try:
-                    result = client.table("coletas").upsert(
-                        _strip_optional(batch),
-                        on_conflict="data,turno,plataforma,keyword,produto,run_id",
-                        ignore_duplicates=True,
-                    ).execute()
+                    result = _call_with_network_retry(
+                        lambda: client.table("coletas").upsert(
+                            _strip_optional(batch),
+                            on_conflict="data,turno,plataforma,keyword,produto,run_id",
+                            ignore_duplicates=True,
+                        ).execute(),
+                        what=f"Lote {i+1}/{batches} (sem colunas opcionais)",
+                    )
                     inseridas = len(result.data) if result.data else 0
                     sent += inseridas
                     dupes += len(batch) - inseridas
@@ -722,6 +826,10 @@ def upload_to_supabase(
                         quota_restricted = True
                         errors += len(batch)
                         break
+                    if is_network_error(exc2):
+                        network_unreachable = True
+                        errors += len(batch)
+                        break
                     exc = exc2
             errors += len(batch)
             logger.warning(
@@ -729,14 +837,14 @@ def upload_to_supabase(
             )
 
     # `dupes` = já existiam (contadas nos lotes processados); `nao_enviados` =
-    # linhas em lotes nunca tentados (só quando abortamos por cota). Sem abort,
-    # nao_enviados é sempre 0 e o resumo fecha: total = sent + dupes + errors.
+    # linhas em lotes nunca tentados (só quando abortamos por cota ou rede).
+    # Sem abort, nao_enviados é sempre 0 e o resumo fecha: total = sent + dupes + errors.
     ignorados = dupes
     nao_enviados = total - sent - dupes - errors
     logger.info(
         f"[INSERT] Run={run_id or 'NULL'} | "
         f"Tentadas={total} | Inseridas={sent} | Já existiam={ignorados} | Erros={errors}"
-        + (f" | Não enviados (abortado)={nao_enviados}" if quota_restricted else "")
+        + (f" | Não enviados (abortado)={nao_enviados}" if (quota_restricted or network_unreachable) else "")
     )
 
     if quota_restricted:
@@ -750,6 +858,19 @@ def upload_to_supabase(
             "   • Para RESTAURAR o serviço: libere espaço no banco (as maiores "
             "tabelas são pricetrack_daily e coletas) ou faça upgrade do plano "
             "Supabase / remova o spend cap."
+        )
+        return False
+
+    if network_unreachable:
+        logger.error(
+            "[Supabase] 📡 Falha de REDE/DNS — não foi possível alcançar o "
+            f"Supabase e o upload foi abortado após retentativas — {sent} de "
+            f"{total} registros gravados antes da queda.\n"
+            "   • Não é problema de credencial — a conexão do computador caiu "
+            "no meio do upload (sem internet ou DNS fora do ar).\n"
+            "   • O CSV local JÁ está salvo — nada foi perdido.\n"
+            "   • Reenvie quando a rede voltar: "
+            "python scripts/upload_csv.py <arquivo.csv> (idempotente)."
         )
         return False
 

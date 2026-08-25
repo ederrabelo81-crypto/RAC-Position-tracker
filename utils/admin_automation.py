@@ -57,7 +57,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from loguru import logger
 
-from utils.supabase_client import _get_client, is_quota_restricted_error
+from utils.supabase_client import _get_client, is_network_error, is_quota_restricted_error
 from utils.text import is_valid_product
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1079,7 +1079,7 @@ def run_admin_automation(
         "finished_at": None,
         "duration_s": 0.0,
         "status": "skipped",
-        "skip_reason": None,  # None | no_credentials | quota_restricted | locked
+        "skip_reason": None,  # None | no_credentials | quota_restricted | network_unreachable | locked
         "errors": 0,
         "watermark_id": None,
         "steps": [],
@@ -1112,6 +1112,24 @@ def run_admin_automation(
             report["duration_s"] = round(time.time() - t0, 1)
             # Espelho local (sem client → não reinsere no banco restrito) para
             # auditar o skip e evitar que should_run re-dispare sem registro.
+            _persist_run(None, report)
+            return report
+        if is_network_error(exc):
+            # Sem internet/DNS no computador: as 11 etapas cairiam na mesma
+            # parede (cada uma abre um client e consulta o banco). O run que
+            # motivou este guard gerou 5 "Etapa … falhou" idênticos, todos com
+            # o mesmo [Errno 11001] getaddrinfo failed — detecta cedo e pula
+            # com UMA mensagem clara em vez de repetir o erro 11 vezes.
+            logger.error(
+                "[AdminAuto] 📡 Supabase inalcançável por REDE/DNS — automação "
+                "PULADA (as 11 etapas falhariam igual, sem rede não tem o que "
+                "consultar). Confira a conexão do computador e rode de novo — "
+                "os dados da coleta já estão salvos no CSV local."
+            )
+            report["status"] = "skipped"
+            report["skip_reason"] = "network_unreachable"
+            report["finished_at"] = datetime.now(timezone.utc).isoformat()
+            report["duration_s"] = round(time.time() - t0, 1)
             _persist_run(None, report)
             return report
         # Qualquer outro erro: segue o fluxo normal — não mascara problemas reais.
