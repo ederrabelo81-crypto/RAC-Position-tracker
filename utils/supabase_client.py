@@ -84,6 +84,12 @@ _COLUMN_MAP = {
     "URL Produto":          "url_produto",
     "Screenshot Busca":     "screenshot_busca",
     "Screenshot Produto":   "screenshot_produto",
+    # ── Identidade da oferta (migration 014 — Fase 1 da auditoria) ──
+    "ID Produto Marketplace": "marketplace_product_id",
+    "ID Oferta Marketplace":  "marketplace_offer_id",
+    "ID Seller":              "seller_id",
+    "URL Canônica":           "canonical_url",
+    "Offer Key":              "offer_key",
     # run_id é injetado diretamente no upload — não vem do CSV/dict interno
 }
 
@@ -96,6 +102,9 @@ _OPTIONAL_DEST_COLS = {
     "patrocinado", "buy_box_seller", "qtd_sellers", "tipo_seller", "reputacao_seller",
     # Adicionada na migration 004 (formato canônico v2 SKU-anchored)
     "produto_normalizado",
+    # Adicionadas na migration 014 (identidade da oferta — Fase 1 da auditoria)
+    "marketplace_product_id", "marketplace_offer_id", "seller_id",
+    "canonical_url", "offer_key",
 }
 
 # Colunas numéricas — None em vez de NaN para o Postgres

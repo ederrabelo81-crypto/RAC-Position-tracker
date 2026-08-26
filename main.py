@@ -116,6 +116,15 @@ COLUMN_ORDER = [
     "URL Produto",
     "Screenshot Busca",
     "Screenshot Produto",
+    # ── Identidade da oferta (Fase 1 da auditoria — Ago/2026) ──
+    # Adicionadas NO FIM de propósito: consumidores que leem o CSV por posição
+    # (planilhas, macros do time) continuam achando as colunas antigas onde
+    # sempre estiveram.
+    "ID Produto Marketplace",
+    "ID Oferta Marketplace",
+    "ID Seller",
+    "URL Canônica",
+    "Offer Key",
 ]
 
 

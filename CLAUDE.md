@@ -926,6 +926,10 @@ fica instável (re-capturar sessão com `session_grabber.py --site shopee`).
 > **Foco (Mai/2026):** buy box, sellers e insights. Preço agora é **secundário**.
 > Colunas novas: `Patrocinado?`, `Buy Box Seller`, `Qtd Sellers`, `Tipo Seller`,
 > `Reputação Seller`. DB: `docs/migrations/003_add_buybox_seller_columns.sql`.
+>
+> **Identidade da oferta (Ago/2026):** `ID Produto Marketplace`,
+> `ID Oferta Marketplace`, `ID Seller`, `URL Canônica`, `Offer Key` — anexadas
+> no FIM do CSV. DB: `docs/migrations/014_offer_identity.sql`.
 
 ```
 Data; Turno; Horário; Analista; Plataforma; Tipo Plataforma;
@@ -933,8 +937,31 @@ Keyword Buscada; Categoria Keyword; Marca Monitorada; Produto / SKU;
 Posição Orgânica; Posição Patrocinada; Posição Geral; Patrocinado?;
 Buy Box Seller; Qtd Sellers; Tipo Seller; Reputação Seller;
 Seller / Vendedor; Fulfillment?; Avaliação; Qtd Avaliações; Tag Destaque;
-Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto
+Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto;
+ID Produto Marketplace; ID Oferta Marketplace; ID Seller; URL Canônica; Offer Key
 ```
+
+### Identidade da oferta — `utils/offer_identity.py` (Ago/2026) 🆕
+
+Antes da Fase 1 da auditoria, ASIN, MLB, `itemid` da Shopee, `productId` do
+Magalu e `idLojista` da Casas Bahia eram extraídos, usados para montar a URL e
+**descartados** — sem id de oferta não existe série histórica.
+
+**Três conceitos, deliberadamente separados:**
+- `marketplace_product_id` — id de PRODUTO (um produto tem N ofertas);
+- `marketplace_offer_id` — id da OFERTA, **só quando o marketplace expõe um**
+  (ML e Shopee). **Nunca sintetizado** — id inventado parece autoridade que o
+  dado não tem;
+- `offer_key` — chave DERIVADA e VERSIONADA (`v1|`), sempre preenchida. Escada
+  de precedência: offer id → product+seller → product → hash da URL canônica →
+  hash do título. O seller é anexado também aos degraus derivados, senão dois
+  lojistas na mesma página colapsam numa série só.
+
+**Regra dura:** ids passados pelo coletor têm precedência sobre os derivados da
+URL — quem leu `data-asin` tem dado de primeira mão. Ao mexer nos regex de
+identidade, valide contra URLs REAIS da base (`tests/test_offer_identity.py`
+usa amostra de produção); regex escrito contra formato imaginado quebra na
+primeira coleta.
 
 ### Token Cost Estimates (for AI assistants)
 

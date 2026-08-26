@@ -994,6 +994,12 @@ class LeroyMerlinScraper(BaseScraper):
                 review_count=int(review_count) if review_count else None,
                 tag_destaque=None,
                 url_produto=self._extract_algolia_url(hit),
+                # A Algolia expõe o id do produto e o do lojista direto no hit
+                # — dado de primeira mão, melhor que reconstruir da URL.
+                marketplace_product_id=(
+                    hit.get("objectID") or hit.get("id") or hit.get("sku") or None
+                ),
+                seller_id=info.get("seller_id"),
             ))
 
         if hits:

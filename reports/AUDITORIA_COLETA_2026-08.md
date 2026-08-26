@@ -422,13 +422,27 @@ Todas destravam com o mesmo pré-requisito: **§2**.
 Ordem por (impacto no número final ÷ risco de regressão). Cada fase é
 independente e aditiva — **nenhuma coluna existente é removida**.
 
-### Fase 1 — Identidade da oferta ⭐ pré-requisito de tudo
-Adicionar a `_build_record()` (parâmetros opcionais, default `None`):
-`marketplace_product_id`, `marketplace_offer_id`, `seller_id`, `canonical_url`.
-Ligar nos 7 coletores os IDs **que já são extraídos hoje** (ASIN, MLB, itemid+shopid,
-productId, objectID+sellerId, productId+idLojista). Colunas novas no fim de
-`COLUMN_ORDER`; migração `014` com `_OPTIONAL_DEST_COLS` para degradação graciosa.
-*Baixo risco: campos aditivos, nenhum caminho de parsing alterado.*
+### Fase 1 — Identidade da oferta ✅ **IMPLEMENTADA** (Ago/2026)
+Módulo `utils/offer_identity.py` + 5 colunas no fim de `COLUMN_ORDER`:
+`ID Produto Marketplace`, `ID Oferta Marketplace`, `ID Seller`, `URL Canônica`,
+`Offer Key`. Migração `014` + `_OPTIONAL_DEST_COLS` (degradação graciosa em
+banco não migrado). `_build_record()` ganhou 3 parâmetros opcionais; ids
+passados pelo coletor têm precedência sobre os derivados da URL.
+
+Decisões que valem registro:
+- **`marketplace_offer_id` nunca é sintetizado.** Só ML e Shopee expõem um id
+  de oferta real; nas outras o campo fica vazio. Um id inventado pareceria
+  autoridade que o dado não tem.
+- **`offer_key` é versionada** (`v1|`): se a regra de derivação mudar, a versão
+  sobe e séries antigas param de casar com novas — em vez de casarem errado.
+- **O seller entra também nos degraus derivados** da chave. Sem isso, dois
+  lojistas na mesma página de produto colapsavam numa série só — bug real,
+  pego por teste durante a implementação.
+- Regex de identidade validado contra **URLs reais de produção**, não formato
+  imaginado (`tests/test_offer_identity.py`).
+
+Cobertura obtida (smoke test das 7 plataformas): product id nas 6 que têm um;
+offer id nativo em ML e Shopee; seller id em CB, Magalu, Shopee e Leroy.
 
 ### Fase 2 — Correção do preço Casas Bahia 🔴
 1. `Price or ListPrice` → usar `Price`; **nunca** cair em `ListPrice`.

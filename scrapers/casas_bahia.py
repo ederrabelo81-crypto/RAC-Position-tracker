@@ -743,6 +743,9 @@ class CasasBahiaScraper(BaseScraper):
         # da casa. O caller decide o que mostrar no campo display `seller`.
         return {
             "buy_box_seller": buy_box_name,
+            # `buy_box_id` já era calculado aqui e descartado no return — é o
+            # id do lojista que vence a buy box, a chave da série por seller.
+            "buy_box_seller_id": str(buy_box_id) if buy_box_id else None,
             "qtd_sellers": len(distinct_sellers) or None,
             "tipo_seller": self._classify_seller(buy_box_name, buy_box_id),
             "price_float": buy_box_price,
@@ -1006,6 +1009,15 @@ class CasasBahiaScraper(BaseScraper):
                 rating=rating,
                 review_count=review_count,
                 tag_destaque=None,
+                # VTEX expõe o id do produto no payload; o lojista vem do
+                # array sellers[]. Quando o payload chega sem sellers[] (o
+                # caso majoritário em produção — auditoria §3.2), o
+                # `seller_id` fica None e a URL ainda pode trazer o
+                # idLojista, resolvido em build_identity.
+                marketplace_product_id=str(
+                    prod.get("productId") or prod.get("productReference") or ""
+                ) or None,
+                seller_id=sellers_info.get("buy_box_seller_id"),
             )
             if sellers_info["buy_box_seller"] is None:
                 # _build_record cai para `seller` quando buy_box_seller=None;
