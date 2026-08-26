@@ -15,7 +15,7 @@ Cinco achados, em ordem de impacto sobre o número que chega ao executivo:
 |---|--------|-----------|------------|
 | **A** | **Casas Bahia grava um preço errado e congelado** para parte das ofertas — o `sellers[]` da VTEX nunca chega, e o fallback pega um campo `price` que não é o preço vigente | 42EFVCA12M5: mediana CB **R$ 5.869** vs **R$ 1.804–2.149** nas outras 5 plataformas | 🔴 Crítica |
 | **B** | **Nenhum identificador de oferta é persistido.** ASIN, MLB, itemid Shopee, productId Magalu e `idLojista` da CB são extraídos, usados para montar URL e **descartados** | `_build_record` não tem campo de ID; `amazon.py:373` faz `record.pop("_asin")` | 🔴 Crítica |
-| **C** | **66,7% das linhas são reobservações da mesma oferta no mesmo turno.** Não há deduplicação entre keywords para marketplaces | 161.079 linhas → 53.606 ofertas únicas/turno; Amazon chega a **146 linhas** para um produto num turno | 🟠 Alta |
+| **C** | **82,8% das linhas são reobservações da mesma oferta no mesmo turno.** Não há deduplicação entre keywords para marketplaces | 161.079 linhas → 27.745 ofertas únicas/turno (medido pela `offer_key` após a Fase 1); Amazon chega a **146 linhas** para um produto num turno | 🟠 Alta |
 | **D** | **Kits bi/multi-split entram na cesta como se fossem aparelhos unitários.** O título normalizado apaga o sinal de kit | Kits: mediana **R$ 5.639–17.399** vs **R$ 2.205–2.658** dos unitários. 1.673 linhas sem rótulo | 🟠 Alta |
 | **E** | **A validação de preço só existe no dashboard, em tempo de leitura, e apaga a linha** em vez de classificá-la. A coleta não valida nada | `app.py` `_is_placeholder_price` / `_is_implausible_price`; nada equivalente em `scrapers/` | 🟠 Alta |
 
@@ -270,8 +270,16 @@ do foco) e, parcialmente, por página no Magalu.
 
 Semana de 18–24/08:
 
-- **161.079 linhas** → **53.606** ofertas únicas (data+turno+plataforma+URL canônica)
-- **66,7% das linhas são reobservação da mesma oferta no mesmo turno**
+- **161.079 linhas** → **27.745** ofertas únicas (data+turno+plataforma+`offer_key`)
+- **82,8% das linhas são reobservação da mesma oferta no mesmo turno**
+
+> **Correção (Ago/2026, após a Fase 1).** A primeira medição desta auditoria deu
+> 66,7%, usando a URL sem query string como chave. Era um **piso**: a mesma
+> oferta aparece com slugs de path diferentes (o título do produto entra na URL
+> e varia), então uma comparação por string tratava como distintas linhas que a
+> `offer_key` — ancorada no id do marketplace — reconhece como a mesma oferta.
+> Com a identidade real preenchida no histórico, o número correto é **82,8%**.
+> O achado é maior do que o relatado inicialmente.
 
 | Plataforma | Linhas/produto/turno | Keywords/produto | Máx linhas | % grupos com preço divergente no mesmo turno |
 |-----------|----------------------|------------------|------------|---------------------------------------------|
@@ -443,6 +451,32 @@ Decisões que valem registro:
 
 Cobertura obtida (smoke test das 7 plataformas): product id nas 6 que têm um;
 offer id nativo em ML e Shopee; seller id em CB, Magalu, Shopee e Leroy.
+
+**Backfill do histórico** (migração `014b`, aplicada em 26/08/2026): a
+identidade foi derivada retroativamente da `url_produto` já gravada —
+**376.289 de 379.848 linhas (99,06%)**. Cobertura resultante:
+
+| Plataforma | Linhas | `offer_key` | product id | offer id nativo | seller id | Ofertas distintas |
+|-----------|--------|-------------|-----------|-----------------|-----------|-------------------|
+| Amazon | 105.055 | 100,0% | 89,8% | — | — | 876 |
+| Shopee | 77.817 | 100,0% | 100,0% | **100,0%** | 100,0% | 1.311 |
+| Mercado Livre | 81.094 | 100,0% | 53,1% | **22,5%** | — | 1.439 |
+| Magalu | 50.277 | 100,0% | 100,0% | — | 82,6% | 2.160 |
+| Leroy Merlin | 48.815 | 100,0% | 100,0% | — | — | 649 |
+| Casas Bahia | 15.170 | 76,5% | 76,5% | — | 18,9% | 494 |
+| Google Shopping | 1.620 | 100,0% | — | — | — | **1** |
+
+Duas leituras que só ficam visíveis agora:
+
+- **Google Shopping tem 1 oferta distinta em 1.620 linhas.** Não é
+  concentração de mercado: as 1.620 linhas apontam todas para a mesma página
+  de ajuda do Google (`support.google.com/googleshopping/answer/9128904`). O
+  extrator de URL da plataforma está pegando o link de rodapé em vez do
+  produto — defeito que estava invisível enquanto não havia identidade.
+- **Casas Bahia a 76,5%** é o teto possível: as 3.559 linhas restantes (23,5%)
+  não têm `url_produto` nenhuma. Ficam com `offer_key` NULL de propósito — ver
+  a nota da migração `014b` sobre por que não fabricar chave a partir do
+  título normalizado.
 
 ### Fase 2 — Correção do preço Casas Bahia 🔴
 1. `Price or ListPrice` → usar `Price`; **nunca** cair em `ListPrice`.
