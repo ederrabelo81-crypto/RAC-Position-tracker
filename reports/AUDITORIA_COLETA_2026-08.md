@@ -16,7 +16,7 @@ Cinco achados, em ordem de impacto sobre o número que chega ao executivo:
 | **A** | **Casas Bahia grava um preço errado e congelado** para parte das ofertas — o `sellers[]` da VTEX nunca chega, e o fallback pega um campo `price` que não é o preço vigente | 42EFVCA12M5: mediana CB **R$ 5.869** vs **R$ 1.804–2.149** nas outras 5 plataformas | 🔴 Crítica |
 | **B** | **Nenhum identificador de oferta é persistido.** ASIN, MLB, itemid Shopee, productId Magalu e `idLojista` da CB são extraídos, usados para montar URL e **descartados** | `_build_record` não tem campo de ID; `amazon.py:373` faz `record.pop("_asin")` | 🔴 Crítica |
 | **C** | **66,7% das linhas são reobservações da mesma oferta no mesmo turno.** Não há deduplicação entre keywords para marketplaces | 161.079 linhas → 53.606 ofertas únicas/turno; Amazon chega a **146 linhas** para um produto num turno | 🟠 Alta |
-| **D** | **Kits bi/multi-split entram na cesta como se fossem aparelhos unitários.** O título normalizado apaga o sinal de kit | Kits: mediana **R$ 5.639–6.564** vs **R$ 2.207–2.658** dos unitários. 1.673 linhas sem rótulo | 🟠 Alta |
+| **D** | **Kits bi/multi-split entram na cesta como se fossem aparelhos unitários.** O título normalizado apaga o sinal de kit | Kits: mediana **R$ 5.639–17.399** vs **R$ 2.205–2.658** dos unitários. 1.673 linhas sem rótulo | 🟠 Alta |
 | **E** | **A validação de preço só existe no dashboard, em tempo de leitura, e apaga a linha** em vez de classificá-la. A coleta não valida nada | `app.py` `_is_placeholder_price` / `_is_implausible_price`; nada equivalente em `scrapers/` | 🟠 Alta |
 
 **Resultado honesto e contra-intuitivo:** deduplicar por oferta **não** reduz a
@@ -77,7 +77,7 @@ app.py (dashboard)                 → ⚠️ ÚNICO ponto de validação de pre
 | Preço (Amazon) | `scrapers/amazon.py:146` | `_extract_price()` |
 | Marca | `utils/brands.py` | `extract_brand()` |
 | Produto | `utils/normalize_product.py` | `normalize_product_name{,_v2}()` |
-| SKU | `utils/sku_matcher.py:145` | `resolve_sku()` — **pós-coleta**, não na coleta |
+| SKU | `utils/sku_matcher.py:143` | `resolve_sku()` — **pós-coleta**, não na coleta |
 | Seller | por scraper | `_extract_seller()` / `sellers[]` |
 | Keyword | `main.py:_run_scraper` | laço sobre `KEYWORDS_LIST` |
 | Turno | `utils/text.py:454` | `get_turno()` — relógio do instante da linha |
@@ -231,13 +231,22 @@ Impacto medido na semana:
 
 | Plataforma | Linhas de kit | % do total | Mediana kit | Mediana unitário | Razão |
 |-----------|---------------|-----------|-------------|------------------|-------|
-| Magalu | 515 | 2,21% | R$ 6.564 | R$ 2.439 | **2,7×** |
-| Shopee | 453 | 1,66% | — | R$ 2.207 | — |
-| Leroy Merlin | 316 | 1,31% | R$ 5.263 | R$ 2.484 | **2,1×** |
-| Mercado Livre | 296 | 1,04% | R$ 5.269 | R$ 2.619 | **2,0×** |
+| Magalu | 515 | 2,21% | R$ 6.499 | R$ 2.439 | **2,7×** |
+| Shopee | 453 | 1,66% | R$ 7.107 | R$ 2.205 | **3,2×** |
+| Leroy Merlin | 316 | 1,31% | R$ 7.793 | R$ 2.484 | **3,1×** |
+| Mercado Livre | 296 | 1,04% | R$ 5.809 | R$ 2.599 | **2,2×** |
+| Amazon | 53 | 0,10% | R$ 17.399 | R$ 2.249 | **7,7×** |
 | Casas Bahia | 32 | 0,60% | R$ 5.639 | R$ 2.658 | **2,1×** |
-| Amazon | 53 | 0,10% | — | R$ 2.249 | — |
+| Google Shopping | 8 | 1,55% | R$ 6.362 | R$ 2.425 | **2,6×** |
 | **Total** | **1.673** | — | — | — | — |
+
+> **Filtro usado** (idêntico para contagem e para as duas medianas — a
+> inconsistência entre os dois é fácil de introduzir e falseia a razão):
+> `url_produto ~* 'bi-split|bisplit|multi-split|multisplit|2x-evap|3x-evap'`
+> **OU** `produto ~* 'bi.?split|multi.?split'`. É uma detecção por texto, logo
+> um **piso**: kits que não trazem o termo na URL nem no título não entram na
+> contagem. O número real de kits mal classificados é maior que 1.673.
+
 
 O valor **R$ 5.528** citado no briefing é exatamente o **mínimo do balde de kits**
 da Casas Bahia — ou seja, aquela anomalia específica **não é erro de captura de
