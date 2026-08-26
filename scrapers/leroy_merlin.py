@@ -696,17 +696,23 @@ class LeroyMerlinScraper(BaseScraper):
             # Case A: list of dicts carrying the name inline
             if isinstance(first, dict):
                 self._seller_metrics["marketplace_sellers_list_dict"] += 1
+                # O id do lojista é dado próprio, não um nome de exibição: sai
+                # em `seller_id` mesmo quando também precisa servir de rótulo
+                # por falta de `sellerName`. Antes ele era lido só como nome e
+                # o `seller_id` voltava None — a oferta 3P perdia a identidade
+                # de primeira mão e caía na derivação por URL.
+                raw_sid = first.get("sellerId") or first.get("seller_id")
+                sid = str(raw_sid).strip() or None if raw_sid is not None else None
                 seller = (
                     first.get("sellerName")
                     or first.get("seller_name")
-                    or first.get("sellerId")
-                    or first.get("seller_id")
+                    or raw_sid
                 )
                 if seller:
                     self._seller_metrics["resolved_via_inline_hit"] += 1
                     return {
                         "seller": str(seller).strip(),
-                        "seller_id": None,
+                        "seller_id": sid,
                         "qtd_sellers": qtd_sellers,
                         "tipo_seller": "3P",
                     }

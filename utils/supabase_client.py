@@ -804,13 +804,18 @@ def upload_to_supabase(
                 network_unreachable = True
                 errors += len(batch)
                 break
-            # Banco sem as colunas opcionais (url/screenshots) → remove e tenta de novo
+            # Banco sem colunas opcionais (migrações 001/003/004/014) → remove e tenta
             if not drop_optional and _is_missing_column_error(exc):
                 drop_optional = True
                 logger.warning(
-                    "[Supabase] Colunas opcionais (url_produto/screenshot_*) ausentes "
-                    "no banco — reenviando sem elas. Aplique a migração "
-                    "docs/migrations/001_add_url_screenshot_columns.sql para persisti-las."
+                    "[Supabase] Colunas opcionais ausentes "
+                    "no banco — reenviando sem elas. As colunas opcionais vêm "
+                    "de várias migrações: 001 (url/screenshots), 003 (buy box/"
+                    "seller), 004 (produto normalizado) e 014 (identidade da "
+                    "oferta: marketplace_product_id, marketplace_offer_id, "
+                    "seller_id, canonical_url, offer_key). Aplique as pendentes "
+                    "em docs/migrations/ para persisti-las — sem elas a coleta "
+                    "sobe, mas esses campos são descartados em silêncio."
                 )
                 try:
                     result = _call_with_network_retry(

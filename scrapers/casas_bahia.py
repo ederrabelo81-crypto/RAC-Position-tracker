@@ -150,6 +150,23 @@ _SEARCH_INPUT_SELECTORS = (
 )
 
 
+def _first_present(*valores) -> Optional[str]:
+    """Primeiro valor NÃO-NULO da sequência, como string não-vazia.
+
+    Difere de `a or b`: aqui o zero e o `False` contam como presentes. Ids de
+    marketplace são strings, mas um payload que devolva `0` não pode virar
+    "campo ausente" e cair no fallback — id existente descartado é série
+    histórica perdida.
+    """
+    for v in valores:
+        if v is None:
+            continue
+        texto = str(v).strip()
+        if texto:
+            return texto
+    return None
+
+
 class CasasBahiaScraper(BaseScraper):
     """Scraper modular para Casas Bahia."""
 
@@ -745,7 +762,10 @@ class CasasBahiaScraper(BaseScraper):
             "buy_box_seller": buy_box_name,
             # `buy_box_id` já era calculado aqui e descartado no return — é o
             # id do lojista que vence a buy box, a chave da série por seller.
-            "buy_box_seller_id": str(buy_box_id) if buy_box_id else None,
+            "buy_box_seller_id": (
+                (str(buy_box_id).strip() or None)
+                if buy_box_id is not None else None
+            ),
             "qtd_sellers": len(distinct_sellers) or None,
             "tipo_seller": self._classify_seller(buy_box_name, buy_box_id),
             "price_float": buy_box_price,
@@ -1014,9 +1034,9 @@ class CasasBahiaScraper(BaseScraper):
                 # caso majoritário em produção — auditoria §3.2), o
                 # `seller_id` fica None e a URL ainda pode trazer o
                 # idLojista, resolvido em build_identity.
-                marketplace_product_id=str(
-                    prod.get("productId") or prod.get("productReference") or ""
-                ) or None,
+                marketplace_product_id=_first_present(
+                    prod.get("productId"), prod.get("productReference")
+                ),
                 seller_id=sellers_info.get("buy_box_seller_id"),
             )
             if sellers_info["buy_box_seller"] is None:

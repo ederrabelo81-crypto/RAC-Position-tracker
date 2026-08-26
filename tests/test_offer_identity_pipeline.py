@@ -17,11 +17,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import csv  # noqa: E402
+
 import pytest  # noqa: E402
 
-from main import COLUMN_ORDER  # noqa: E402
+from main import COLUMN_ORDER, _dump_raw_records, _export_csv  # noqa: E402
 from scrapers.base import BaseScraper  # noqa: E402
-from utils.supabase_client import _COLUMN_MAP, _OPTIONAL_DEST_COLS  # noqa: E402
+from utils.supabase_client import (  # noqa: E402
+    _COLUMN_MAP,
+    _OPTIONAL_DEST_COLS,
+    _map_record,
+)
 
 
 IDENTITY_COLUMNS = [
@@ -137,7 +143,7 @@ def test_record_without_url_still_gets_a_key():
 
 
 def test_same_offer_two_keywords_same_key():
-    """A dedup da Fase 5 depende disto: 66,7% das linhas são reobservação."""
+    """A dedup da Fase 5 depende disto: 82,8% das linhas são reobservação."""
     url = "https://www.casasbahia.com.br/x/p/1582007658?idLojista=19937"
     a = _record("Casas Bahia", url_produto=url + "&position=3",
                 keyword="ar condicionado")
@@ -145,6 +151,92 @@ def test_same_offer_two_keywords_same_key():
                 keyword="ar condicionado 12000 btus")
     assert a["Keyword Buscada"] != b["Keyword Buscada"]
     assert a["Offer Key"] == b["Offer Key"]
+
+
+# ── A cadeia de verdade: grava o CSV e lê de volta ─────────────────────────
+# Os testes acima checam pertinência estática (a coluna está no COLUMN_ORDER,
+# o destino está no _COLUMN_MAP). Isso não exercita `df[COLUMN_ORDER]` nem o
+# `to_csv` — e as duas falhas que o docstring deste módulo cita moram
+# exatamente aí. Estes testes fecham a lacuna.
+
+def _csv_roundtrip(records, tmp_path):
+    """Grava pelo exportador REAL e devolve as linhas lidas de volta."""
+    caminho = _export_csv(records, str(tmp_path))
+    with open(caminho, encoding="utf-8-sig", newline="") as fh:
+        return list(csv.DictReader(fh, delimiter=";"))
+
+
+def test_csv_roundtrip_preserva_identidade(tmp_path):
+    """Ponta a ponta: _build_record → DataFrame → CSV → leitura."""
+    rec = _record(
+        "Casas Bahia",
+        url_produto=(
+            "https://www.casasbahia.com.br/ar-cond-42efvca12m5/p/1582007658"
+            "?idLojista=19937&utm_source=busca"
+        ),
+        price_float=2392.0,
+    )
+    linha = _csv_roundtrip([rec], tmp_path)[0]
+
+    assert linha["ID Produto Marketplace"] == "1582007658"
+    assert linha["ID Seller"] == "19937"
+    assert linha["Offer Key"] == "v1|CASASBAHIA|prod:1582007658@19937"
+    assert linha["URL Canônica"] == (
+        "https://www.casasbahia.com.br/ar-cond-42efvca12m5/p/1582007658"
+    )
+    # o que já existia continua no lugar
+    assert linha["Preço (R$)"] == "2392.0"
+    assert linha["Plataforma"] == "Casas Bahia"
+
+
+def test_csv_roundtrip_todas_as_plataformas(tmp_path):
+    """As 7 plataformas atravessam o exportador sem perder a chave."""
+    casos = [
+        ("Amazon", "https://www.amazon.com.br/x/dp/B0CPTGF6HY/ref=sr_1_93"),
+        ("Casas Bahia", "https://www.casasbahia.com.br/x/p/1582007658"),
+        ("Leroy Merlin", "https://www.leroymerlin.com.br/ar-cond-tcl_92311464"),
+        ("Magalu", "https://m.magazineluiza.com.br/x/p/djc52g533e/ar/aciv/?seller_id=friopecas"),
+        ("Mercado Livre", "https://www.mercadolivre.com.br/x/p/MLB54211169"),
+        ("Shopee", "https://shopee.com.br/product/1207374375/22498850572"),
+        ("Google Shopping", "https://www.google.com/shopping/product/123"),
+    ]
+    linhas = _csv_roundtrip(
+        [_record(p, url_produto=u) for p, u in casos], tmp_path
+    )
+    assert len(linhas) == len(casos)
+    for linha in linhas:
+        assert linha["Offer Key"], f"{linha['Plataforma']} sem Offer Key no CSV"
+
+
+def test_csv_nao_perde_coluna_na_reordenacao(tmp_path):
+    """`df = df[COLUMN_ORDER]` descarta em silêncio o que não está na lista."""
+    rec = _record("Shopee", url_produto="https://shopee.com.br/product/1/2",
+                  marketplace_offer_id="1_2", seller_id="1")
+    linha = _csv_roundtrip([rec], tmp_path)[0]
+    for col in IDENTITY_COLUMNS:
+        assert col in linha, f"{col} sumiu na escrita do CSV"
+
+
+def test_dump_raw_preserva_identidade(tmp_path):
+    """O dump de emergência (rede de segurança do run) também leva a identidade."""
+    rec = _record("Amazon", url_produto="https://www.amazon.com.br/x/dp/B0CPTGF6HY")
+    caminho = _dump_raw_records([rec], str(tmp_path), "run-de-teste")
+    with open(caminho, encoding="utf-8-sig", newline="") as fh:
+        linha = list(csv.DictReader(fh, delimiter=";"))[0]
+    assert linha["Offer Key"] == "v1|AMAZON|prod:B0CPTGF6HY"
+
+
+def test_supabase_row_carrega_as_colunas_de_identidade():
+    """A conversão para o formato do banco leva os 5 campos com os nomes certos."""
+    rec = _record(
+        "Casas Bahia",
+        url_produto="https://www.casasbahia.com.br/x/p/1582007658?idLojista=19937",
+    )
+    row = _map_record(rec)
+    assert row["marketplace_product_id"] == "1582007658"
+    assert row["seller_id"] == "19937"
+    assert row["offer_key"] == "v1|CASASBAHIA|prod:1582007658@19937"
+    assert row["canonical_url"].endswith("/p/1582007658")
 
 
 # ── Não-regressão: nada do que já existia pode ter mudado ──────────────────

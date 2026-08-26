@@ -34,7 +34,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from typing import Dict, Optional
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 # Versão da regra de derivação de `offer_key`. Bump obrigatório sempre que a
 # composição da chave mudar — séries de versões diferentes não se comparam.
@@ -171,7 +171,10 @@ def canonicalize_url(url: Optional[str], platform: Optional[str] = None) -> Opti
         (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=False)
         if k.lower() not in _TRACKING_PARAMS
     ]
-    query = "&".join(f"{k}={v}" for k, v in sorted(kept))
+    # urlencode (e não f"{k}={v}"): parse_qsl já decodificou os valores, então
+    # um valor que contenha "&" ou "=" produziria uma query ambígua — e a URL
+    # canônica alimenta o hash da offer_key.
+    query = urlencode(sorted(kept))
 
     return urlunsplit(("https", host, path, query, ""))
 
@@ -222,7 +225,10 @@ def derive_from_url(
         out["marketplace_product_id"] = _first_group(_RE_ML_CATALOG, raw)
         item = _first_group(_RE_ML_ITEM, raw)
         if item:
-            item = item.replace("-", "").replace("up/", "").upper()
+            # O regex casa "up/" sem distinguir caixa; o strip precisa fazer
+            # o mesmo, senão "/UP/MLBU…" mantém o prefixo e a mesma oferta
+            # gera duas offer_keys.
+            item = re.sub(r"(?i)^up/", "", item.replace("-", "")).upper()
             # /p/MLB… já foi capturado como produto; não repetir como oferta.
             if item != (out["marketplace_product_id"] or "").upper():
                 out["marketplace_offer_id"] = item

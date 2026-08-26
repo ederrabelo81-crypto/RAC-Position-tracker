@@ -367,8 +367,9 @@ DB: `docs/migrations/014_offer_identity.sql`.
 
 Campos de insight (protagonistas desde Mai/2026): `Patrocinado?`,
 `Buy Box Seller`, `Qtd Sellers`, `Tipo Seller`, `Reputação Seller`.
-Migrations do banco: `migrations/` (PriceTrack: 001→004, inclui turno e RPC de
-piso por marca) + `docs/migrations/` (coletas: 001→009).
+Migrations do banco: `migrations/` (PriceTrack: 001→005, inclui turno, RPC de
+piso por marca e índices) + `docs/migrations/` (coletas: 001→014b, inclui buy
+box, bestsellers e identidade da oferta).
 
 ### Dashboard Streamlit — 20 páginas
 
