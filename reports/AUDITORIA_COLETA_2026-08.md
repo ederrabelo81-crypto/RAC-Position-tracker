@@ -324,7 +324,8 @@ mais sensível a entrada/saída de anúncio.
 > `offer_key` depois do backfill (`014b`). **A conclusão não muda; o efeito
 > fica mais nítido.** O que se moveu: Casas Bahia foi de 2,04% para **3,11%** e
 > Amazon de 1,31% para 1,03%. O caso da Casas Bahia é o mais informativo — com
-> a chave certa, deduplicar *dobra* a volatilidade dela. Faz sentido: é a
+> a chave certa, deduplicar **quase triplica** a volatilidade dela — 1,15% →
+> 3,11%, fator **2,7×**. Faz sentido: é a
 > plataforma com preço congelado errado (§3), e a dedup tira o peso das
 > reobservações que diluíam esses valores, deixando a mediana diária
 > descansar sobre menos ofertas — várias delas com preço não-vigente.
