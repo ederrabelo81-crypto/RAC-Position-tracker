@@ -150,6 +150,27 @@ _SEARCH_INPUT_SELECTORS = (
 )
 
 
+def _first_present(*valores) -> Optional[str]:
+    """Primeiro valor NÃO-NULO da sequência, como string não-vazia.
+
+    Difere de `a or b`: aqui o zero conta como presente. Ids de marketplace são
+    strings, mas um payload que devolva `0` não pode virar "campo ausente" e
+    cair no fallback — id existente descartado é série histórica perdida.
+
+    Booleano é descartado: `str(False)` viraria a string "False" e se
+    passaria por id. O teste tem de vir ANTES do de `int` — em Python
+    `isinstance(True, int)` é verdadeiro, então um guarda por tipo numérico
+    deixaria o bool passar.
+    """
+    for v in valores:
+        if v is None or isinstance(v, bool):
+            continue
+        texto = str(v).strip()
+        if texto:
+            return texto
+    return None
+
+
 class CasasBahiaScraper(BaseScraper):
     """Scraper modular para Casas Bahia."""
 
@@ -743,6 +764,12 @@ class CasasBahiaScraper(BaseScraper):
         # da casa. O caller decide o que mostrar no campo display `seller`.
         return {
             "buy_box_seller": buy_box_name,
+            # `buy_box_id` já era calculado aqui e descartado no return — é o
+            # id do lojista que vence a buy box, a chave da série por seller.
+            "buy_box_seller_id": (
+                (str(buy_box_id).strip() or None)
+                if buy_box_id is not None else None
+            ),
             "qtd_sellers": len(distinct_sellers) or None,
             "tipo_seller": self._classify_seller(buy_box_name, buy_box_id),
             "price_float": buy_box_price,
@@ -1006,6 +1033,15 @@ class CasasBahiaScraper(BaseScraper):
                 rating=rating,
                 review_count=review_count,
                 tag_destaque=None,
+                # VTEX expõe o id do produto no payload; o lojista vem do
+                # array sellers[]. Quando o payload chega sem sellers[] (o
+                # caso majoritário em produção — auditoria §3.2), o
+                # `seller_id` fica None e a URL ainda pode trazer o
+                # idLojista, resolvido em build_identity.
+                marketplace_product_id=_first_present(
+                    prod.get("productId"), prod.get("productReference")
+                ),
+                seller_id=sellers_info.get("buy_box_seller_id"),
             )
             if sellers_info["buy_box_seller"] is None:
                 # _build_record cai para `seller` quando buy_box_seller=None;

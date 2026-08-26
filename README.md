@@ -345,7 +345,7 @@ scripts\install_tasks.bat
 - **Screenshots SERP:** capturados por keyword/página
 - **HTML de debug:** `logs/dealer_debug_<nome>_p<N>.html` e `logs/ml_debug_*.html`
 
-### Colunas do CSV (schema Jun/2026)
+### Colunas do CSV (schema Ago/2026)
 
 ```
 Data; Turno; Horário; Analista; Plataforma; Tipo Plataforma;
@@ -353,13 +353,23 @@ Keyword Buscada; Categoria Keyword; Marca Monitorada; Produto / SKU;
 Produto Normalizado; Posição Orgânica; Posição Patrocinada; Posição Geral;
 Patrocinado?; Buy Box Seller; Qtd Sellers; Tipo Seller; Reputação Seller;
 Seller / Vendedor; Fulfillment?; Avaliação; Qtd Avaliações; Tag Destaque;
-Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto
+Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto;
+ID Produto Marketplace; ID Oferta Marketplace; ID Seller; URL Canônica; Offer Key
 ```
+
+**Identidade da oferta (Ago/2026 — Fase 1 da auditoria):** as 5 últimas colunas
+são novas e ficam **no fim** de propósito, para não deslocar quem lê o CSV por
+posição. `ID Oferta Marketplace` só é preenchido quando o marketplace expõe um
+id de oferta de verdade (hoje: Mercado Livre e Shopee) — nunca é sintetizado.
+Para uma chave sempre presente use `Offer Key`, derivada e versionada
+(`v1|<plataforma>|<escopo>:<valor>`). Módulo: `utils/offer_identity.py`;
+DB: `docs/migrations/014_offer_identity.sql`.
 
 Campos de insight (protagonistas desde Mai/2026): `Patrocinado?`,
 `Buy Box Seller`, `Qtd Sellers`, `Tipo Seller`, `Reputação Seller`.
-Migrations do banco: `migrations/` (PriceTrack: 001→004, inclui turno e RPC de
-piso por marca) + `docs/migrations/` (coletas: 001→009).
+Migrations do banco: `migrations/` (PriceTrack: 001→005, inclui turno, RPC de
+piso por marca e índices) + `docs/migrations/` (coletas: 001→014b, inclui buy
+box, bestsellers e identidade da oferta).
 
 ### Dashboard Streamlit — 20 páginas
 

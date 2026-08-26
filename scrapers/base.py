@@ -607,6 +607,10 @@ class BaseScraper(ABC):
         qtd_sellers: Optional[int] = None,
         tipo_seller: Optional[str] = None,
         reputacao_seller: Optional[str] = None,
+        # ── Identidade da oferta (Fase 1 da auditoria — Ago/2026) ──
+        marketplace_product_id: Optional[str] = None,
+        marketplace_offer_id: Optional[str] = None,
+        seller_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Monta um dicionário compatível com as colunas do DataFrame de saída.
@@ -621,9 +625,21 @@ class BaseScraper(ABC):
             reputacao_seller: nota/nível de reputação do seller quando disponível
                               (ex: "MercadoLíder Platinum", "green", "4.8").
 
+        Identidade da oferta (Fase 1 — Ago/2026):
+            marketplace_product_id: id de PRODUTO do marketplace (ASIN, MLB de
+                              catálogo, id da CB…). Opcional: quando o coletor
+                              não passa, é derivado da URL.
+            marketplace_offer_id: id da OFERTA individual, **só quando o
+                              marketplace expõe um de verdade**. Nunca é
+                              sintetizado — para uma chave sempre-presente use
+                              a coluna `Offer Key`.
+            seller_id:        id do seller no marketplace (idLojista da CB,
+                              seller_id do Magalu, shopid da Shopee…).
+
         Preço continua coletado, porém como campo secundário.
         """
         from utils.text import parse_price
+        from utils.offer_identity import build_identity
 
         now = now_brt()
         title_clean = normalize_text(title)
@@ -642,6 +658,18 @@ class BaseScraper(ABC):
         # v2 canonical (UPPERCASE, SKU-anchored). Parte descritiva apenas —
         # voltagem/SKU são anexados depois pela resolução de-para (catálogo).
         product_name_v2 = normalize_product_name_v2(title_clean, brand)
+
+        # Identidade da oferta: ids passados pelo coletor têm precedência; a
+        # URL é a rede de segurança quando ele não os tem. Sem isto não existe
+        # série histórica de oferta (auditoria §2).
+        identity = build_identity(
+            self.platform_name,
+            url_produto,
+            marketplace_product_id=marketplace_product_id,
+            marketplace_offer_id=marketplace_offer_id,
+            seller_id=seller_id,
+            title=title_clean,
+        )
 
         return {
             "Data":                now.strftime("%Y-%m-%d"),
@@ -678,6 +706,12 @@ class BaseScraper(ABC):
             "URL Produto":         url_produto,
             "Screenshot Busca":    screenshot_busca,
             "Screenshot Produto":  screenshot_produto,
+            # ── Identidade da oferta (Fase 1) ──
+            "ID Produto Marketplace": identity.marketplace_product_id,
+            "ID Oferta Marketplace":  identity.marketplace_offer_id,
+            "ID Seller":              identity.seller_id,
+            "URL Canônica":           identity.canonical_url,
+            "Offer Key":              identity.offer_key,
         }
 
     # ------------------------------------------------------------------

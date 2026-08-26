@@ -943,6 +943,13 @@ class ShopeeScraper(BaseScraper):
                 review_count=int(review_count) if review_count else None,
                 tag_destaque=tag_destaque,
                 url_produto=url_produto,
+                # A Shopee é a única das 7 que expõe id de OFERTA de verdade:
+                # o par (shopid, itemid) identifica o anúncio de um lojista.
+                marketplace_product_id=str(itemid) if itemid else None,
+                marketplace_offer_id=(
+                    f"{shopid}_{itemid}" if shopid and itemid else None
+                ),
+                seller_id=str(shopid) if shopid else None,
             ))
         return records
 

@@ -339,6 +339,10 @@ class AmazonScraper(BaseScraper):
             tag    = tag_el.get_text(strip=True) if tag_el else None
 
             url_produto = self._extract_url(item)
+            # ASIN é o id de produto da Amazon e vem de `data-asin`, atributo
+            # funcional do card — fonte melhor que a URL, que pode vir com
+            # `/ref=` de tracking ou apontar para um card agregado.
+            asin = self._extract_asin(item)
 
             record = self._build_record(
                 keyword=keyword,
@@ -357,6 +361,7 @@ class AmazonScraper(BaseScraper):
                 review_count=review_count,
                 tag_destaque=tag,
                 url_produto=url_produto,
+                marketplace_product_id=asin,
             )
             if seller_extracted is None:
                 # _build_record cai pra `seller` ("Amazon") quando buy_box=None;
@@ -364,8 +369,9 @@ class AmazonScraper(BaseScraper):
                 # pode virar vitória 1P fantasma no share of buy box.
                 record["Buy Box Seller"] = None
                 # ASIN guardado no registro para a etapa opcional de PDP; sai
-                # do dict antes do CSV/Supabase (não é coluna do schema).
-                record["_asin"] = self._extract_asin(item)
+                # do dict antes do CSV/Supabase (a chave `_asin` é privada —
+                # o ASIN persistido é a coluna `ID Produto Marketplace`).
+                record["_asin"] = asin
             records.append(record)
 
         self._resolve_buybox_via_pdp(records)
