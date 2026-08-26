@@ -14,6 +14,12 @@ qualquer seletor único vira coleta vazia silenciosa na primeira mudança.
 
 A posição vem do badge "#7" impresso no card. Quando ele não existe (layouts
 de teste A/B), cai para a ordem do DOM, que é a mesma coisa nesta página.
+
+Seller / Buy Box (similar ao scraper principal): a SERP de mais vendidos NÃO
+mostra "Vendido por" — só o PDP. Por isso este módulo pode navegar até cada
+PDP para extrair o seller, com as mesmas proteções do scraper principal:
+desligado por padrão (RAC_AMAZON_PDP_BUYBOX=1), com orçamento por execução
+(RAC_AMAZON_PDP_BUDGET, default 40) e cache persistente em data/amazon_sellers.json.
 """
 
 import re
@@ -25,6 +31,13 @@ from loguru import logger
 from bestsellers.base import BestSellerSource, PlainBrowser
 from bestsellers.models import BestSellerItem
 from utils.text import parse_price, parse_rating, parse_review_count
+from utils.amazon_sellers import (
+    AmazonSellerCache,
+    extract_seller_from_pdp,
+    is_amazon_self,
+    pdp_budget,
+    resolution_enabled,
+)
 
 _ITEM_SELECTORS = (
     "div#gridItemRoot",
@@ -75,6 +88,9 @@ class AmazonBestSellers(BestSellerSource):
     def __init__(self, headless: bool = True) -> None:
         super().__init__(headless=headless)
         self._browser: Optional[PlainBrowser] = None
+        # Cache e orçamento para resolução de seller via PDP
+        self._seller_cache: Optional[AmazonSellerCache] = None
+        self._pdp_budget_left: int = pdp_budget()
 
     def _abrir(self) -> None:
         self._browser = PlainBrowser(self.spec.nome, headless=self.headless)
@@ -90,6 +106,7 @@ class AmazonBestSellers(BestSellerSource):
         return base if pagina <= 1 else f"{base}?pg={pagina}"
 
     def _coletar(self, paginas: int) -> List[BestSellerItem]:
+        """Executa a coleta da lista de mais vendidos."""
         itens: List[BestSellerItem] = []
         for pagina in range(1, max(1, paginas) + 1):
             url = self._url_pagina(pagina)
@@ -109,6 +126,9 @@ class AmazonBestSellers(BestSellerSource):
             itens.extend(novos)
             if pagina < paginas:
                 self._browser._random_delay()
+
+        # Resolve sellers via PDP após coletar todas as páginas
+        self._resolve_sellers_via_pdp(itens)
         return itens
 
     def _baixar(self, url: str, pagina: int) -> Optional[str]:
@@ -261,3 +281,139 @@ class AmazonBestSellers(BestSellerSource):
         if not href:
             return None
         return href if href.startswith("http") else f"https://www.amazon.com.br{href}"
+
+    # ------------------------------------------------------------------
+    # Seller resolution via PDP (opt-in, same as scrapers/amazon.py)
+    # ------------------------------------------------------------------
+
+    def __init__(self, headless: bool = True) -> None:
+        super().__init__(headless=headless)
+        self._browser: Optional[PlainBrowser] = None
+        # Cache e orçamento para resolução de seller via PDP
+        self._seller_cache: Optional[AmazonSellerCache] = None
+        self._pdp_budget_left: int = pdp_budget()
+
+    def _resolve_sellers_via_pdp(self, itens: List[BestSellerItem]) -> None:
+        """
+        Preenche o campo `seller` navegando ao PDP dos itens sem seller.
+
+        Desligado por padrão: só roda com RAC_AMAZON_PDP_BUYBOX=1. A lista de
+        mais vendidos não expõe "Vendido por" na SERP, então este é o único
+        caminho — mas cada ASIN novo custa uma requisição na plataforma mais
+        agressiva em anti-bot. Por isso o teto por execução
+        (RAC_AMAZON_PDP_BUDGET, default 40): batendo o limite os demais itens
+        seguem sem seller, em vez de arriscar derrubar a coleta.
+
+        Args:
+            itens: lista de BestSellerItem; alterada no lugar.
+
+        Note:
+            Falhas são silenciosas por item (o campo fica None) e o ASIN entra
+            em quarentena no cache para não consumir o orçamento de novo.
+        """
+        if not resolution_enabled():
+            return
+
+        pendentes = [i for i in itens if not i.seller and i.sku_plataforma]
+        if not pendentes:
+            return
+
+        if self._seller_cache is None:
+            self._seller_cache = AmazonSellerCache()
+        cache = self._seller_cache
+
+        resolvidos_cache = 0
+        resolvidos_pdp = 0
+        for item in pendentes:
+            asin = item.sku_plataforma
+
+            conhecido = cache.get(asin)
+            if conhecido:
+                item.seller = conhecido
+                resolvidos_cache += 1
+                continue
+
+            if self._pdp_budget_left <= 0 or not cache.should_retry(asin):
+                continue
+
+            self._pdp_budget_left -= 1
+            nome = self._fetch_pdp_seller(asin)
+            if nome:
+                cache.put(asin, nome)
+                item.seller = nome
+                resolvidos_pdp += 1
+            else:
+                cache.mark_failed(asin, "PDP sem 'Vendido por'")
+
+        # Salva sempre: mark_failed também suja o cache, e é justamente no
+        # caso em que NADA resolveu (Amazon bloqueando todos os PDPs) que a
+        # quarentena precisa chegar ao disco.
+        cache.save()
+        if resolvidos_cache or resolvidos_pdp:
+            logger.info(
+                f"[{self.nome}] Seller resolvido: "
+                f"{resolvidos_cache} do cache + {resolvidos_pdp} via PDP "
+                f"({len(pendentes)} pendentes · orçamento restante "
+                f"{self._pdp_budget_left})"
+            )
+
+    def _fetch_pdp_seller(self, asin: str) -> Optional[str]:
+        """
+        Abre o PDP do ASIN e devolve o vendedor da buy box.
+
+        Args:
+            asin: identificador do produto na Amazon.
+
+        Returns:
+            Nome do vendedor, ou None se o PDP não revelou (challenge de bot,
+            produto fora do ar, ou layout desconhecido).
+        """
+        if self._browser is None or self._browser._page is None:
+            return None
+        try:
+            self._browser._page.goto(
+                f"https://www.amazon.com.br/dp/{asin}",
+                timeout=PAGE_TIMEOUT,
+                wait_until="domcontentloaded",
+            )
+            self._browser._random_delay(min_s=2.0, max_s=5.0)
+            return extract_seller_from_pdp(self._browser._page.content())
+        except Exception as exc:
+            logger.debug(
+                f"[{self.nome}] PDP {asin} falhou: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _parse(self, html: str, offset: int) -> List[BestSellerItem]:
+        soup = BeautifulSoup(html, "html.parser")
+        cards = self._detectar_itens(soup)
+        itens: List[BestSellerItem] = []
+
+        for idx, card in enumerate(cards):
+            titulo = self._extrair_titulo(card)
+            if not titulo:
+                continue
+
+            rank_tag = self._primeiro(card, _RANK_SELECTORS)
+            rank = None
+            if rank_tag is not None:
+                achado = re.search(r"\d+", rank_tag.get_text(strip=True))
+                rank = int(achado.group()) if achado else None
+
+            preco_tag = self._primeiro(card, _PRICE_SELECTORS)
+            rating_tag = self._primeiro(card, _RATING_SELECTORS)
+
+            itens.append(BestSellerItem(
+                rank=rank if rank is not None else offset + idx + 1,
+                titulo=titulo,
+                preco=parse_price(preco_tag.get_text(" ", strip=True)) if preco_tag else None,
+                rating=parse_rating(rating_tag.get_text(" ", strip=True)) if rating_tag else None,
+                reviews=self._extrair_reviews(card),
+                sku_plataforma=self._extrair_asin(card),
+                url_produto=self._extrair_url(card),
+                # A lista de mais vendidos é orgânica por construção: a Amazon
+                # não vende posição nela. `False`, não `None`.
+                patrocinado=False,
+            ))
+        return itens
