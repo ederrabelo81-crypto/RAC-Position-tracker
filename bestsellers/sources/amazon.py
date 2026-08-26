@@ -30,6 +30,7 @@ from loguru import logger
 
 from bestsellers.base import BestSellerSource, PlainBrowser
 from bestsellers.models import BestSellerItem
+from config import PAGE_TIMEOUT
 from utils.text import parse_price, parse_rating, parse_review_count
 from utils.amazon_sellers import (
     AmazonSellerCache,
@@ -285,13 +286,6 @@ class AmazonBestSellers(BestSellerSource):
     # ------------------------------------------------------------------
     # Seller resolution via PDP (opt-in, same as scrapers/amazon.py)
     # ------------------------------------------------------------------
-
-    def __init__(self, headless: bool = True) -> None:
-        super().__init__(headless=headless)
-        self._browser: Optional[PlainBrowser] = None
-        # Cache e orçamento para resolução de seller via PDP
-        self._seller_cache: Optional[AmazonSellerCache] = None
-        self._pdp_budget_left: int = pdp_budget()
 
     def _resolve_sellers_via_pdp(self, itens: List[BestSellerItem]) -> None:
         """

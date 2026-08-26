@@ -262,10 +262,10 @@ SOURCES: Dict[str, SourceSpec] = {
         # O ESCOPO agora é reproduzível na tela; a ORDEM por vendas, porém, ainda
         # só existe via o índice Algolia (a UI da Leroy não expõe sort por
         # vendas), então a prova de ordenação (`parametros_ordenacao`) segue
-        # vivendo no `endpoint` — o índice `production_products_most_sales`,
-        # sempre registrado em `_coletar`.
+        # vivendo no `endpoint` — o índice `production_products`, com query vazia
+        # e facetFilters aplicados à categoria Split Inverter.
         url_publica=LEROY_CATEGORIA_URL,
-        parametros_ordenacao=("production_products_most_sales",),
+        parametros_ordenacao=("production_products",),
         mecanica=MECANICA_DECLARADO,
         base_vendidos=None,
         itens_esperados=30,
