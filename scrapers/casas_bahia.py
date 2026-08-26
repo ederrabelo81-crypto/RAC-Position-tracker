@@ -153,13 +153,17 @@ _SEARCH_INPUT_SELECTORS = (
 def _first_present(*valores) -> Optional[str]:
     """Primeiro valor NÃO-NULO da sequência, como string não-vazia.
 
-    Difere de `a or b`: aqui o zero e o `False` contam como presentes. Ids de
-    marketplace são strings, mas um payload que devolva `0` não pode virar
-    "campo ausente" e cair no fallback — id existente descartado é série
-    histórica perdida.
+    Difere de `a or b`: aqui o zero conta como presente. Ids de marketplace são
+    strings, mas um payload que devolva `0` não pode virar "campo ausente" e
+    cair no fallback — id existente descartado é série histórica perdida.
+
+    Booleano é descartado: `str(False)` viraria a string "False" e se
+    passaria por id. O teste tem de vir ANTES do de `int` — em Python
+    `isinstance(True, int)` é verdadeiro, então um guarda por tipo numérico
+    deixaria o bool passar.
     """
     for v in valores:
-        if v is None:
+        if v is None or isinstance(v, bool):
             continue
         texto = str(v).strip()
         if texto:

@@ -275,3 +275,26 @@ def test_every_platform_builds_a_record_without_raising(platform):
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ── `_first_present`: o que conta como id presente ─────────────────────────
+# Extraído durante a review da Fase 1 porque o padrão `a or b` descartava o
+# zero. O bool foi o passo seguinte: `str(False)` é "False", que passaria por
+# id. O guarda precisa vir ANTES de qualquer teste numérico — em Python
+# `isinstance(True, int)` é verdadeiro.
+
+@pytest.mark.parametrize("valores,esperado,motivo", [
+    ((0, "REF-1"), "0", "zero é um id presente, não ausência"),
+    ((False, "REF-1"), "REF-1", "bool nunca é id — cai para o próximo"),
+    ((True, "REF-1"), "REF-1", "idem para True"),
+    ((False, None), None, "só bool disponível → ausente"),
+    ((None, "REF-1"), "REF-1", "None cai para o próximo"),
+    (("", "REF-1"), "REF-1", "string vazia é ausência"),
+    (("   ", "REF-1"), "REF-1", "só espaços é ausência"),
+    ((None, None), None, "nada presente"),
+    ((1582007658,), "1582007658", "int vira string"),
+    (("  1582007658 ",), "1582007658", "espaços das bordas são aparados"),
+])
+def test_first_present(valores, esperado, motivo):
+    from scrapers.casas_bahia import _first_present
+    assert _first_present(*valores) == esperado, motivo

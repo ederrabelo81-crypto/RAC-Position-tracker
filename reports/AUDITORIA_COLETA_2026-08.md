@@ -301,20 +301,33 @@ distinguir as duas hipóteses** — é a dependência que trava o resto da anál
 ## 6. Duplicação **não** é a causa da volatilidade — evidência contrária
 
 Recalculei a mediana diária dos produtos 12k com e sem deduplicação por oferta
-(coeficiente de variação da mediana diária, semana de 18–24/08):
+(coeficiente de variação da mediana diária, semana de 18–24/08). A tabela abaixo
+usa a **`offer_key`** como chave de dedup — ver a nota de método logo em seguida:
 
 | Plataforma | Volatilidade bruta | Volatilidade deduplicada |
 |-----------|--------------------|--------------------------|
 | Leroy Merlin | 1,33% | **0,28%** ↓ |
 | Shopee | 2,06% | **1,38%** ↓ |
-| Magalu | 1,30% | 1,28% ≈ |
-| Amazon | 1,00% | 1,31% ↑ |
+| Amazon | 1,00% | 1,03% ≈ |
+| Magalu | 1,30% | 1,34% ≈ |
 | Mercado Livre | 1,00% | 1,19% ↑ |
-| Casas Bahia | 1,15% | **2,04%** ↑ |
+| Casas Bahia | 1,15% | **3,11%** ↑ |
 
-Deduplicar ajuda em duas plataformas, é neutro em uma e **piora em três** — ao
+Deduplicar ajuda em duas plataformas, é neutro em duas e **piora em duas** — ao
 remover a repetição, a mediana passa a ser sustentada por menos ofertas e fica
 mais sensível a entrada/saída de anúncio.
+
+> **Nota de método (Ago/2026).** A primeira versão desta tabela usava a URL sem
+> query string como chave de dedup — a mesma que a §5 passou a chamar de piso.
+> Deixar a conclusão central do relatório apoiada numa chave que o próprio
+> relatório desqualifica seria incoerente, então recomputei tudo com a
+> `offer_key` depois do backfill (`014b`). **A conclusão não muda; o efeito
+> fica mais nítido.** O que se moveu: Casas Bahia foi de 2,04% para **3,11%** e
+> Amazon de 1,31% para 1,03%. O caso da Casas Bahia é o mais informativo — com
+> a chave certa, deduplicar *dobra* a volatilidade dela. Faz sentido: é a
+> plataforma com preço congelado errado (§3), e a dedup tira o peso das
+> reobservações que diluíam esses valores, deixando a mediana diária
+> descansar sobre menos ofertas — várias delas com preço não-vigente.
 
 **Leitura:** a volatilidade por marca reportada no briefing (Samsung 10,23%) é
 dominada por **efeito composição** (§4) e por **preço errado** (§3), não por
