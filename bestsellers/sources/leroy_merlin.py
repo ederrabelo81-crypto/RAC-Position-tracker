@@ -32,6 +32,16 @@ também explica a prateleira Midea desproporcional. Enquanto isso não for
 esclarecido com o varejista, o número do Leroy NÃO sustenta sozinho decisão de
 corte de verba — o relatório imprime esse aviso junto do resultado (`veredito`).
 
+A UI EXPÕE, SIM, a ordenação (Ago/2026)
+--------------------------------------
+Este módulo foi escrito sob a premissa de que "a UI da Leroy não expõe sort por
+vendas" — daí a prova de ordenação ter ido morar num nome de índice Algolia. O
+mantenedor confirmou em 27/08/2026 que a premissa é FALSA: a prateleira tem um
+controle "Ordenar por" que imprime a ordenação vigente em texto. A leitura
+dessa prova está em `bestsellers/sources/leroy_ordenacao.py`, testada contra o
+markup real do controle. Migrar a COLETA para a página (e não só a prova)
+depende do markup do grid de produtos, que ainda não foi levantado.
+
 Seller: o índice devolve o lojista 3P como ObjectId opaco. A resolução
 (mapa estático → cache em disco → PDP) é do `LeroyMerlinScraper`, reaproveitada
 aqui — 1 PDP por seller novo, não por produto.

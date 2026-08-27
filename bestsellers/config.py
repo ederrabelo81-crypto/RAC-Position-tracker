@@ -144,7 +144,7 @@ class SourceSpec:
 # série e a referência usada na descoberta de facet não possam divergir quando a
 # prateleira for renomeada (este módulo já enviou um `url_publica` quebrado antes).
 LEROY_CATEGORIA_URL = (
-    "https://www.leroymerlin.com.br/ar-condicionado-inverter/"
+    "https://www.leroymerlin.com.br/ar-condicionado/"
     "tipo-de-ar-condicionado/Split_Inverter"
 )
 
@@ -259,11 +259,17 @@ SOURCES: Dict[str, SourceSpec] = {
         # deixou de rankear uma busca por texto ("ar condicionado" — população
         # que ninguém acessa numa tela) e passou a recortar o índice de vendas
         # a esta categoria via `facetFilters` (ver `_descobrir_facet` na fonte).
-        # O ESCOPO agora é reproduzível na tela; a ORDEM por vendas, porém, ainda
-        # só existe via o índice Algolia (a UI da Leroy não expõe sort por
-        # vendas), então a prova de ordenação (`parametros_ordenacao`) segue
+        # O ESCOPO é reproduzível na tela. A ORDEM por vendas TAMBÉM é: a
+        # premissa antiga registrada aqui — "a UI da Leroy não expõe sort por
+        # vendas" — é FALSA, confirmada pelo mantenedor em 27/08/2026. A
+        # prateleira tem um controle "Ordenar por" que imprime a ordenação
+        # vigente em texto, "Mais vendidos" inclusive. Ler dali é a prova
+        # AUDITÁVEL que este spec sempre quis; ver
+        # `bestsellers/sources/leroy_ordenacao.py`.
+        #
+        # Enquanto a coleta ainda busca pelo índice Algolia, a prova segue
         # vivendo no `endpoint` — a RÉPLICA de vendas
-        # `production_products_most_sales`, sempre registrada em `_coletar`.
+        # `production_products_most_sales`, registrada em `_coletar`.
         #
         # ⚠️ NÃO afrouxar para `production_products`: a Algolia ordena por
         # RÉPLICA de índice, não por parâmetro de sort, e `production_products`
