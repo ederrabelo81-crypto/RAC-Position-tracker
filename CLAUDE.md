@@ -56,6 +56,19 @@ Tabela `bestsellers` — migrações `011_bestsellers_diario.sql` +
 `013_bestsellers_referencia.sql` (coluna `referencia`).
 Cadência obrigatória: todo dia útil **09:30 BRT** (Amazon recalcula ranking de hora em hora).
 
+**Buy box da Amazon — PDP a cada execução (Ago/2026) 🆕** A SERP de mais
+vendidos não imprime "Vendido por": o PDP é o único lugar onde a buy box
+existe. `bestsellers/sources/amazon.py` abre o PDP de **cada item do ranking,
+toda execução** — `seller` é a **observação do dia**, não atributo fixo do
+produto, e é assim que se vê a buy box mudar de dono. **Regra dura:** esta
+fonte **não** usa o cache `data/amazon_sellers.json` (o `AmazonSellerCache` não
+tem validade e devolveria para sempre o vendedor da 1ª resolução — do 2º dia em
+diante a série gravaria um vencedor que ninguém observou). O único cache é por
+execução: ASIN repetido entre páginas custa um PDP só. Ligado por padrão;
+`RAC_BESTSELLERS_AMAZON_PDP=0` desliga e `RAC_BESTSELLERS_AMAZON_PDP_BUDGET`
+impõe teto. **Custo:** ~30–60 PDPs por run (2–5s de intervalo cada), somando
+alguns minutos à rotina das 09:30 — dimensione a janela do Task Scheduler.
+
 **Duas referências (Ago/2026):** cada lista carrega `referencia` =
 `mais_vendidos` (loja expõe ordenação por vendas) **ou** `relevancia` (a loja
 só tem a ordem de destaque do algoritmo — proxy, NÃO é venda). **Regra dura da
@@ -556,9 +569,22 @@ Preferência do mantenedor (Jun/2026) — vale para todas as sessões.
 
 ## Testing Requirements
 
+### CI — a suíte roda em todo PR (Ago/2026) 🆕
+
+`.github/workflows/tests.yml` roda `pytest tests/ pricetrack_api/tests
+pricetrack_importer/tests -q` em **todo Pull Request** e em todo push para
+`main` (~1 min, Python 3.11, sem secret — a suíte é hermética e os testes de
+integração se auto-pulam sem `SUPABASE_URL`). Antes disso nenhum workflow
+rodava em PR: `collect`, `pricetrack_daily` e `watchdog` são cron ou dispatch
+manual. Foi essa lacuna que deixou entrar em `main` um `_parse` duplicado na
+Amazon e um índice Algolia sombreado na Leroy (PRs #322/#323).
+
+Os browsers do Playwright ficam **fora** do job de propósito — nenhum teste
+abre browser, e `playwright install` somaria minutos a uma suíte de 1 min.
+
 ### Cobertura Atual (Ago/2026)
 
-**948 testes** incluindo:
+**1.555 testes** incluindo:
 - 60+ novos testes de bestsellers (parsers, metrics, pipeline, validate)
 - 40+ testes de browser local (LocalBrowser, PlaywrightRuntime, fallback chain)
 - 20+ testes de Amazon sellers (cache, PDP)
@@ -890,7 +916,7 @@ python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv --mirror
 | Platform | Status | Notes |
 |----------|--------|-------|
 | Mercado Livre | ✅ | Buy box + Loja Oficial; browser (default) ou `MLAPIScraper` (API oficial, requer `ML_APP_ID`/`ML_APP_SECRET` — usado **automaticamente** como fallback quando a keyword leva login gate). Gate: detecção é **evidência primeiro** (card na página vence a string); persistiu → HTML em `logs/ml_gate_*.html` e roteiro no log. Antídoto: `python scripts/setup_local_profile.py --site mercadolivre` |
-| Amazon | ✅ | `Qtd Sellers` de "X ofertas"; 1P vs 3P. **Buy box só existe no PDP** (a SERP não traz "Vendido por") — campo vazio por padrão em vez de vitória 1P fantasma; resolução opcional com `RAC_AMAZON_PDP_BUYBOX=1` + cache em `data/amazon_sellers.json` |
+| Amazon | ✅ | `Qtd Sellers` de "X ofertas"; 1P vs 3P. **Buy box só existe no PDP** (a SERP não traz "Vendido por") — campo vazio por padrão em vez de vitória 1P fantasma; resolução opcional com `RAC_AMAZON_PDP_BUYBOX=1` + cache em `data/amazon_sellers.json`. ⚠️ Não confundir com a coleta de **Mais Vendidos**, que lê o PDP de todo item **a cada run** e **sem** esse cache (`RAC_BESTSELLERS_AMAZON_PDP`) |
 | Leroy Merlin | ✅ | Algolia API; 1P vs 3P marketplace. Seller 3P vem como **ObjectId opaco** — resolvido via PDP ("Vendido e entregue por") com cache persistente em `data/leroy_sellers.json` (1 PDP por seller novo, não por produto). Diagnóstico: `python scripts/leroy_seller_probe.py --scan "<keyword>"` |
 | Google Shopping | ⚠️ | reCAPTCHA em headless; `Qtd Sellers` = nº de lojas comparando |
 | Magalu | ✅ Python | `scrapers/magalu.py` — browser persistente (Akamai); seller 1P vs 3P. **Automatizado**. Extração em 3 parsers sobre o mesmo HTML: `__NEXT_DATA__` → RSC (`__next_f`, App Router) → cards do DOM. Muro de login (Ago/2026) é detectado e nomeado no log; antídoto: `python scripts/setup_local_profile.py --site magalu`. Diagnóstico pelo prefixo do dump em `logs/` (`login_`/`layout_`/`vazia_`) — ver `docs/cdp_magalu_collection.md` |

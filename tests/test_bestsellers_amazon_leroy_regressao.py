@@ -171,15 +171,6 @@ class TestAmazonSemMetodoDuplicado:
         assert itens[0].rank == 1
         assert itens[0].sku_plataforma == "B0TEST0001"
 
-    def test_pdp_de_seller_continua_desligado_por_padrao(self, monkeypatch):
-        """
-        A resolução via PDP (#322) é opt-in: ligada por engano ela multiplica
-        as requisições na plataforma mais agressiva em anti-bot.
-        """
-        from utils.amazon_sellers import ENV_ENABLED, resolution_enabled
-
-        monkeypatch.delenv(ENV_ENABLED, raising=False)
-        assert not resolution_enabled()
 
 
 class TestLeroySemMetodoDuplicado:
@@ -189,3 +180,224 @@ class TestLeroySemMetodoDuplicado:
             "LeroyMerlinBestSellers",
         )
         assert duplicados == []
+
+
+# ---------------------------------------------------------------------------
+# Amazon — buy box lida do PDP a cada execução
+# ---------------------------------------------------------------------------
+
+def _fonte_amazon(monkeypatch, respostas):
+    """
+    Uma `AmazonBestSellers` com `_fetch_pdp_seller` trocado por um dublê.
+
+    `respostas` é um dict ASIN → nome (ou None para "PDP não revelou").
+    Devolve a fonte e a lista de ASINs efetivamente abertos, na ordem.
+    """
+    from bestsellers.sources.amazon import AmazonBestSellers
+
+    fonte = AmazonBestSellers()
+    abertos = []
+
+    def _dublê(asin):
+        abertos.append(asin)
+        return respostas.get(asin)
+
+    monkeypatch.setattr(fonte, "_fetch_pdp_seller", _dublê)
+    return fonte, abertos
+
+
+def _item(rank, asin):
+    from bestsellers.models import BestSellerItem
+
+    return BestSellerItem(
+        rank=rank, titulo=f"Ar Condicionado Midea {rank}", sku_plataforma=asin
+    )
+
+
+class TestAmazonEnvDoPdp:
+    def test_ligado_por_padrao(self, monkeypatch):
+        from bestsellers.sources.amazon import _ENV_PDP, pdp_habilitado
+
+        monkeypatch.delenv(_ENV_PDP, raising=False)
+        assert pdp_habilitado()
+
+    @pytest.mark.parametrize("valor", ["0", "false", "no", "off", "OFF", " 0 "])
+    def test_desliga_com_valor_explicito(self, monkeypatch, valor):
+        from bestsellers.sources.amazon import _ENV_PDP, pdp_habilitado
+
+        monkeypatch.setenv(_ENV_PDP, valor)
+        assert not pdp_habilitado()
+
+    def test_valor_invalido_mantem_ligado(self, monkeypatch):
+        """Lixo na variável não pode desligar a leitura da buy box em silêncio."""
+        from bestsellers.sources.amazon import _ENV_PDP, pdp_habilitado
+
+        monkeypatch.setenv(_ENV_PDP, "talvez")
+        assert pdp_habilitado()
+
+    def test_sem_teto_por_padrao(self, monkeypatch):
+        from bestsellers.sources.amazon import _ENV_PDP_BUDGET, pdp_teto
+
+        monkeypatch.delenv(_ENV_PDP_BUDGET, raising=False)
+        assert pdp_teto() is None
+
+    def test_teto_explicito(self, monkeypatch):
+        from bestsellers.sources.amazon import _ENV_PDP_BUDGET, pdp_teto
+
+        monkeypatch.setenv(_ENV_PDP_BUDGET, "12")
+        assert pdp_teto() == 12
+
+
+class TestAmazonBuyBoxPorExecucao:
+    """
+    `seller` é a OBSERVAÇÃO DO DIA, não um atributo fixo do produto.
+
+    A lista é diária e o que se quer medir é a buy box mudando de dono, então
+    cada execução tem de reabrir os PDPs. Ler de um cache entre execuções
+    congelaria o vencedor da primeira leitura e a série passaria a registrar,
+    do 2º dia em diante, um vencedor que ninguém observou.
+    """
+
+    def test_resolve_todos_os_itens_da_lista(self, monkeypatch):
+        respostas = {f"B0AAAA{i:04d}": f"Loja {i}" for i in range(1, 31)}
+        fonte, abertos = _fonte_amazon(monkeypatch, respostas)
+        itens = [_item(i, asin) for i, asin in enumerate(respostas, start=1)]
+
+        fonte._resolve_sellers_via_pdp(itens)
+
+        assert len(abertos) == 30, "todo item do ranking precisa de um PDP"
+        assert all(i.seller for i in itens)
+
+    def test_nao_le_cache_entre_execucoes(self, monkeypatch):
+        """
+        O requisito da recorrência: a 2ª execução reabre os mesmos PDPs.
+        """
+        respostas = {"B0AAAA0001": "Loja A"}
+        fonte, abertos = _fonte_amazon(monkeypatch, respostas)
+
+        primeira = [_item(1, "B0AAAA0001")]
+        fonte._resolve_sellers_via_pdp(primeira)
+
+        respostas["B0AAAA0001"] = "Loja B"  # a buy box trocou de dono
+        segunda = [_item(1, "B0AAAA0001")]
+        fonte._resolve_sellers_via_pdp(segunda)
+
+        assert abertos == ["B0AAAA0001", "B0AAAA0001"]
+        assert primeira[0].seller == "Loja A"
+        assert segunda[0].seller == "Loja B", (
+            "a 2ª execução devolveu o seller da 1ª — a buy box do dia estaria "
+            "congelada na primeira leitura"
+        )
+
+    def test_fonte_nao_usa_o_cache_persistente(self):
+        """
+        `AmazonSellerCache.get()` não tem validade: uma vez resolvido, o ASIN
+        devolve o mesmo vendedor para sempre. Serve ao scraper principal, não
+        a uma série diária de buy box.
+        """
+        arvore = ast.parse(
+            (_RAIZ / "bestsellers" / "sources" / "amazon.py").read_text(
+                encoding="utf-8"
+            )
+        )
+        importados = {
+            alias.name
+            for no in ast.walk(arvore)
+            if isinstance(no, ast.ImportFrom) and no.module == "utils.amazon_sellers"
+            for alias in no.names
+        }
+        assert importados == {"extract_seller_from_pdp"}, (
+            "a fonte só pode importar o EXTRATOR de HTML; o cache persistente "
+            f"e seus helpers de orçamento não entram aqui: {importados}"
+        )
+
+    def test_asin_repetido_custa_um_pdp_so(self, monkeypatch):
+        """Mesma execução, mesmo ASIN = mesma observação; um PDP basta."""
+        fonte, abertos = _fonte_amazon(monkeypatch, {"B0AAAA0001": "Loja A"})
+        itens = [_item(1, "B0AAAA0001"), _item(2, "B0AAAA0001")]
+
+        fonte._resolve_sellers_via_pdp(itens)
+
+        assert abertos == ["B0AAAA0001"]
+        assert [i.seller for i in itens] == ["Loja A", "Loja A"]
+
+    def test_pdp_sem_seller_deixa_o_campo_vazio(self, monkeypatch):
+        """Campo sem dado fica vazio — nunca herdado de outro item ou dia."""
+        fonte, _ = _fonte_amazon(
+            monkeypatch, {"B0AAAA0001": "Loja A", "B0AAAA0002": None}
+        )
+        itens = [_item(1, "B0AAAA0001"), _item(2, "B0AAAA0002")]
+
+        fonte._resolve_sellers_via_pdp(itens)
+
+        assert itens[0].seller == "Loja A"
+        assert itens[1].seller is None
+
+    def test_desligado_nao_abre_nenhum_pdp(self, monkeypatch):
+        from bestsellers.sources.amazon import _ENV_PDP
+
+        monkeypatch.setenv(_ENV_PDP, "0")
+        fonte, abertos = _fonte_amazon(monkeypatch, {"B0AAAA0001": "Loja A"})
+        itens = [_item(1, "B0AAAA0001")]
+
+        fonte._resolve_sellers_via_pdp(itens)
+
+        assert abertos == []
+        assert itens[0].seller is None
+
+    def test_teto_trunca_e_o_resto_fica_sem_seller(self, monkeypatch):
+        from bestsellers.sources.amazon import _ENV_PDP_BUDGET
+
+        monkeypatch.setenv(_ENV_PDP_BUDGET, "2")
+        respostas = {f"B0AAAA{i:04d}": f"Loja {i}" for i in range(1, 6)}
+        fonte, abertos = _fonte_amazon(monkeypatch, respostas)
+        itens = [_item(i, asin) for i, asin in enumerate(respostas, start=1)]
+
+        fonte._resolve_sellers_via_pdp(itens)
+
+        assert len(abertos) == 2
+        assert [bool(i.seller) for i in itens] == [True, True, False, False, False]
+
+    def test_aborta_apos_falhas_seguidas(self, monkeypatch):
+        """
+        PDP após PDP sem "Vendido por" é layout novo ou bloqueio, não produto
+        fora do ar — varrer a lista inteira só gasta requisição à toa.
+        """
+        from bestsellers.sources.amazon import _MAX_FALHAS_SEGUIDAS
+
+        respostas = {f"B0AAAA{i:04d}": None for i in range(1, 21)}
+        fonte, abertos = _fonte_amazon(monkeypatch, respostas)
+        itens = [_item(i, asin) for i, asin in enumerate(respostas, start=1)]
+
+        fonte._resolve_sellers_via_pdp(itens)
+
+        assert len(abertos) == _MAX_FALHAS_SEGUIDAS
+        assert all(i.seller is None for i in itens)
+
+    def test_falha_isolada_nao_aborta(self, monkeypatch):
+        """Um produto sem seller no meio da lista não pode derrubar o resto."""
+        respostas = {f"B0AAAA{i:04d}": (None if i == 2 else f"Loja {i}")
+                     for i in range(1, 11)}
+        fonte, abertos = _fonte_amazon(monkeypatch, respostas)
+        itens = [_item(i, asin) for i, asin in enumerate(respostas, start=1)]
+
+        fonte._resolve_sellers_via_pdp(itens)
+
+        assert len(abertos) == 10
+        assert sum(1 for i in itens if i.seller) == 9
+
+    def test_coletar_dispara_a_resolucao(self, monkeypatch):
+        """A resolução tem de estar no caminho da coleta, não só disponível."""
+        from bestsellers.sources.amazon import AmazonBestSellers
+
+        chamou = []
+        fonte = AmazonBestSellers()
+        monkeypatch.setattr(fonte, "_baixar", lambda url, pagina: "<html></html>")
+        monkeypatch.setattr(fonte, "_parse", lambda html, offset: [_item(1, "B0AAAA0001")])
+        monkeypatch.setattr(
+            fonte, "_resolve_sellers_via_pdp", lambda itens: chamou.append(len(itens))
+        )
+
+        fonte._coletar(paginas=1)
+
+        assert chamou == [1]

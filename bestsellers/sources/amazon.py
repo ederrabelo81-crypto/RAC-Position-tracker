@@ -15,15 +15,16 @@ qualquer seletor único vira coleta vazia silenciosa na primeira mudança.
 A posição vem do badge "#7" impresso no card. Quando ele não existe (layouts
 de teste A/B), cai para a ordem do DOM, que é a mesma coisa nesta página.
 
-Seller / Buy Box (similar ao scraper principal): a SERP de mais vendidos NÃO
-mostra "Vendido por" — só o PDP. Por isso este módulo pode navegar até cada
-PDP para extrair o seller, com as mesmas proteções do scraper principal:
-desligado por padrão (RAC_AMAZON_PDP_BUYBOX=1), com orçamento por execução
-(RAC_AMAZON_PDP_BUDGET, default 40) e cache persistente em data/amazon_sellers.json.
+Seller / Buy Box: a SERP de mais vendidos NÃO imprime "Vendido por" — o PDP é
+o único lugar onde a buy box existe. Por isso a coleta abre o PDP de cada item
+do ranking, TODA execução: a lista é diária e o que se quer medir é a buy box
+MUDANDO de dono, então `seller` é uma observação do dia, não um atributo fixo
+do produto. Não há cache entre execuções (ver `_resolve_sellers_via_pdp`).
 """
 
+import os
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from bs4 import BeautifulSoup, Tag
 from loguru import logger
@@ -32,12 +33,7 @@ from bestsellers.base import BestSellerSource, PlainBrowser
 from bestsellers.models import BestSellerItem
 from config import PAGE_TIMEOUT
 from utils.text import parse_price, parse_rating, parse_review_count
-from utils.amazon_sellers import (
-    AmazonSellerCache,
-    extract_seller_from_pdp,
-    pdp_budget,
-    resolution_enabled,
-)
+from utils.amazon_sellers import extract_seller_from_pdp
 
 _ITEM_SELECTORS = (
     "div#gridItemRoot",
@@ -69,11 +65,42 @@ _REVIEWS_SELECTORS = ("span.a-size-small", "a[title] span.a-size-small")
 
 _RE_ASIN = re.compile(r"/(?:dp|gp/product)/([A-Z0-9]{10})")
 
+# Resolução de seller via PDP. LIGADA por padrão: sem ela a série de mais
+# vendidos sai sem buy box, e a buy box é o motivo de a Amazon estar no painel.
+_ENV_PDP = "RAC_BESTSELLERS_AMAZON_PDP"
+_ENV_PDP_BUDGET = "RAC_BESTSELLERS_AMAZON_PDP_BUDGET"
+# PDPs seguidos sem "Vendido por" que caracterizam falha SISTÊMICA (layout novo
+# ou bloqueio) em vez de produto fora do ar. Abortar aqui evita varrer a lista
+# inteira abrindo página que não vai revelar nada.
+_MAX_FALHAS_SEGUIDAS = 5
+
 # Desafio de bot da Amazon — os mesmos marcadores que `scrapers/amazon.py` usa.
 _SELECTORS_CAPTCHA = (
     "form[action='/errors/validateCaptcha'], #captcha, #captcha-form, "
     "#px-captcha, #distil_r_captcha"
 )
+
+
+def pdp_habilitado() -> bool:
+    """
+    True se a coleta deve abrir os PDPs para ler a buy box (default: sim).
+
+    Só um "0"/"false"/"no"/"off" explícito desliga — variável ausente ou com
+    lixo mantém a resolução ligada, porque o modo silenciosamente-sem-seller é
+    o pior default possível para esta série.
+    """
+    return os.getenv(_ENV_PDP, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def pdp_teto() -> Optional[int]:
+    """
+    Teto de PDPs por execução, ou None para resolver a lista inteira.
+
+    Sem teto por padrão: o ranking já é limitado por `paginas × 30`, então um
+    teto fixo só serviria para truncar a leitura no meio da lista.
+    """
+    bruto = os.getenv(_ENV_PDP_BUDGET, "").strip()
+    return int(bruto) if bruto.isdigit() else None
 
 
 class AmazonBestSellers(BestSellerSource):
@@ -88,9 +115,6 @@ class AmazonBestSellers(BestSellerSource):
     def __init__(self, headless: bool = True) -> None:
         super().__init__(headless=headless)
         self._browser: Optional[PlainBrowser] = None
-        # Cache e orçamento para resolução de seller via PDP
-        self._seller_cache: Optional[AmazonSellerCache] = None
-        self._pdp_budget_left: int = pdp_budget()
 
     def _abrir(self) -> None:
         self._browser = PlainBrowser(self.spec.nome, headless=self.headless)
@@ -127,7 +151,8 @@ class AmazonBestSellers(BestSellerSource):
             if pagina < paginas:
                 self._browser._random_delay()
 
-        # Resolve sellers via PDP após coletar todas as páginas
+        # A buy box só existe no PDP — resolvida depois que o ranking
+        # inteiro está em mãos, para o log dar a cobertura real da lista.
         self._resolve_sellers_via_pdp(itens)
         return itens
 
@@ -283,72 +308,101 @@ class AmazonBestSellers(BestSellerSource):
         return href if href.startswith("http") else f"https://www.amazon.com.br{href}"
 
     # ------------------------------------------------------------------
-    # Seller resolution via PDP (opt-in, same as scrapers/amazon.py)
+    # Seller / Buy Box via PDP
     # ------------------------------------------------------------------
 
     def _resolve_sellers_via_pdp(self, itens: List[BestSellerItem]) -> None:
         """
-        Preenche o campo `seller` navegando ao PDP dos itens sem seller.
+        Preenche `seller` abrindo o PDP de CADA item do ranking, toda execução.
 
-        Desligado por padrão: só roda com RAC_AMAZON_PDP_BUYBOX=1. A lista de
-        mais vendidos não expõe "Vendido por" na SERP, então este é o único
-        caminho — mas cada ASIN novo custa uma requisição na plataforma mais
-        agressiva em anti-bot. Por isso o teto por execução
-        (RAC_AMAZON_PDP_BUDGET, default 40): batendo o limite os demais itens
-        seguem sem seller, em vez de arriscar derrubar a coleta.
+        A SERP de mais vendidos não imprime "Vendido por" — o PDP é o único
+        lugar onde a buy box existe. Como a lista é diária e o objetivo é ver
+        a buy box MUDAR de dono ao longo do tempo, a leitura é refeita a cada
+        execução: `seller` aqui é uma OBSERVAÇÃO DO DIA, não um atributo fixo
+        do produto.
+
+        Por isso esta fonte NÃO lê o cache persistente de
+        `utils/amazon_sellers` (`data/amazon_sellers.json`), que não tem
+        validade e devolveria para sempre o vendedor da primeira resolução —
+        do 2º dia em diante a série registraria um vencedor de buy box que
+        ninguém observou. O único cache é POR EXECUÇÃO: o mesmo ASIN repetido
+        em duas páginas custa um PDP só, e as duas linhas recebem a leitura
+        daquela mesma execução, que é a mesma observação.
+
+        Ligado por padrão. `RAC_BESTSELLERS_AMAZON_PDP=0` desliga (a coleta
+        segue, com `seller` vazio). `RAC_BESTSELLERS_AMAZON_PDP_BUDGET` impõe
+        um teto de PDPs por execução; sem ele, a lista inteira é resolvida —
+        ela já é limitada por `paginas × 30`.
 
         Args:
             itens: lista de BestSellerItem; alterada no lugar.
 
         Note:
-            Falhas são silenciosas por item (o campo fica None) e o ASIN entra
-            em quarentena no cache para não consumir o orçamento de novo.
+            Item que não resolve fica com `seller` vazio — campo sem dado fica
+            vazio, nunca preenchido por herança de outro dia.
         """
-        if not resolution_enabled():
+        if not pdp_habilitado():
+            logger.info(
+                f"[{self.nome}] Resolução de seller via PDP desligada "
+                f"({_ENV_PDP}=0) — a série do dia sai sem buy box."
+            )
             return
 
         pendentes = [i for i in itens if not i.seller and i.sku_plataforma]
         if not pendentes:
             return
 
-        if self._seller_cache is None:
-            self._seller_cache = AmazonSellerCache()
-        cache = self._seller_cache
+        teto = pdp_teto()
+        orcamento = len(pendentes) if teto is None else min(teto, len(pendentes))
+        if teto is not None and teto < len(pendentes):
+            logger.warning(
+                f"[{self.nome}] Teto de {teto} PDPs abaixo dos "
+                f"{len(pendentes)} itens do ranking ({_ENV_PDP_BUDGET}) — "
+                "os excedentes ficam sem seller."
+            )
 
-        resolvidos_cache = 0
-        resolvidos_pdp = 0
+        # Cache POR EXECUÇÃO. Guarda também o insucesso (None) para não reabrir
+        # o mesmo PDP morto quando o ASIN se repete entre páginas.
+        lidos: Dict[str, Optional[str]] = {}
+        abertos = 0
+        falhas_seguidas = 0
+
         for item in pendentes:
             asin = item.sku_plataforma
 
-            conhecido = cache.get(asin)
-            if conhecido:
-                item.seller = conhecido
-                resolvidos_cache += 1
+            if asin in lidos:
+                item.seller = lidos[asin]
                 continue
 
-            if self._pdp_budget_left <= 0 or not cache.should_retry(asin):
+            if abertos >= orcamento:
                 continue
 
-            self._pdp_budget_left -= 1
+            abertos += 1
             nome = self._fetch_pdp_seller(asin)
-            if nome:
-                cache.put(asin, nome)
-                item.seller = nome
-                resolvidos_pdp += 1
-            else:
-                cache.mark_failed(asin, "PDP sem 'Vendido por'")
+            lidos[asin] = nome
+            item.seller = nome
 
-        # Salva sempre: mark_failed também suja o cache, e é justamente no
-        # caso em que NADA resolveu (Amazon bloqueando todos os PDPs) que a
-        # quarentena precisa chegar ao disco.
-        cache.save()
-        if resolvidos_cache or resolvidos_pdp:
-            logger.info(
-                f"[{self.nome}] Seller resolvido: "
-                f"{resolvidos_cache} do cache + {resolvidos_pdp} via PDP "
-                f"({len(pendentes)} pendentes · orçamento restante "
-                f"{self._pdp_budget_left})"
-            )
+            if nome:
+                falhas_seguidas = 0
+                continue
+
+            falhas_seguidas += 1
+            if falhas_seguidas >= _MAX_FALHAS_SEGUIDAS:
+                logger.error(
+                    f"[{self.nome}] {falhas_seguidas} PDPs seguidos sem "
+                    "'Vendido por' — a Amazon mudou o layout do bloco de "
+                    "compra ou está barrando. Abortando a resolução; os "
+                    f"{len(pendentes) - abertos} itens restantes ficam sem "
+                    "seller (campo vazio, não herdado)."
+                )
+                break
+
+        resolvidos = sum(1 for i in pendentes if i.seller)
+        registrar = logger.success if resolvidos else logger.warning
+        registrar(
+            f"[{self.nome}] Buy box: {resolvidos}/{len(pendentes)} itens com "
+            f"seller ({abertos} PDPs abertos, {len(lidos)} ASINs distintos)."
+        )
 
     def _fetch_pdp_seller(self, asin: str) -> Optional[str]:
         """
