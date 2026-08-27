@@ -22,6 +22,11 @@ import plotly.express as px
 import streamlit as st
 from dotenv import load_dotenv
 
+from utils.seller_names import (
+    normalize_seller_name as _normalize_seller_name,
+    variants_for as _seller_variants,
+)
+
 # ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
@@ -689,6 +694,73 @@ def _canonical_marca(marca):
 
 _SUPABASE_PAGE = 1000  # PostgREST default server-side max_rows cap
 
+# ---------------------------------------------------------------------------
+# Sellers — nome canônico do lojista
+#
+# Cada marketplace impõe um formato de apelido ao MESMO dealer: o ML usa
+# nickname colado e minúsculo com sufixo numérico (`friopecas`, `frigelar2`),
+# a Amazon usa a razão comercial acentuada (`Friopeças`), a Magalu grava o
+# slug da loja (`lojawebcontinentalmarketplace`). Sem colapsar isso, o share
+# de buy box divide um dealer em várias linhas — Web Continental aparecia
+# como 5 sellers somando 12,3% enquanto o maior pedaço marcava 7,1%.
+#
+# `utils.seller_names` é a fonte única do de-para (também usada pelo
+# `_build_record` dos scrapers e pela automação Admin). Aqui ele entra em
+# DUAS pontas, porque a base tem linhas antigas ainda não reescritas:
+#   - leitura  → `_apply_seller_canonical` canoniza o que veio do banco/frio;
+#   - filtro   → `_expand_sellers` devolve as grafias BRUTAS ao PostgREST,
+#                senão filtrar por "Web Continental" não casaria com as
+#                linhas gravadas como `continentalcenter`.
+# ---------------------------------------------------------------------------
+_SELLER_COLS = ("seller", "buy_box_seller")
+
+
+def _expand_sellers(sellers: list) -> list:
+    """Grafias brutas a mandar ao banco para os sellers canônicos escolhidos.
+
+    E.g. ["Web Continental"] → ["ContinentalCenter", "Web Continental",
+    "Webcontinental", "Webcontinental ES", …]
+    """
+    expanded: set = set()
+    for s in sellers:
+        expanded.update(_seller_variants(s) or [s])
+    return sorted(expanded)
+
+
+def _canonical_seller(seller):
+    """Nome canônico do seller para exibição/agregação.
+
+    Ausência (None, NaN, pd.NA) volta INALTERADA: sem a guarda o `str()` lá
+    dentro transformaria `pd.NA` no seller literal "<NA>", que entraria no
+    ranking de buy box como se fosse uma loja.
+    """
+    if seller is None or seller is pd.NA or pd.isna(seller):
+        return seller
+    return _normalize_seller_name(seller)
+
+
+def _canonical_seller_options(raw_values) -> list:
+    """Lista canônica, única e ordenada para o dropdown de sellers.
+
+    As 5 grafias de Web Continental viram uma opção só; o que o usuário
+    escolher volta a expandir em `_expand_sellers` na hora da consulta.
+    """
+    canon = {_canonical_seller(v) for v in raw_values if v}
+    return sorted(str(c) for c in canon if c)
+
+
+def _apply_seller_canonical(df: pd.DataFrame) -> pd.DataFrame:
+    """Canoniza `seller` e `buy_box_seller` in-place e devolve o DataFrame.
+
+    Rede de segurança da leitura: as linhas novas já chegam canônicas do
+    `_build_record`, e a automação Admin reescreve as antigas — mas o
+    histórico frio (Parquet) é imutável e nunca passa por lá.
+    """
+    for col in _SELLER_COLS:
+        if col in df.columns:
+            df[col] = df[col].map(_canonical_seller)
+    return df
+
 
 # ---------------------------------------------------------------------------
 # Catálogo canônico + de-para de família resolvida
@@ -1103,7 +1175,9 @@ def _filter_history_coletas(
     _isin("plataforma", _expand_platforms(platforms) if platforms else None)
     _isin("tipo", platform_types)
     _isin("marca", _expand_brands(brands) if brands else None)
-    _isin("seller", sellers)
+    # Grafias brutas: o Parquet do histórico é imutável e guarda o apelido
+    # como o marketplace o imprimiu.
+    _isin("seller", _expand_sellers(sellers) if sellers else None)
     _isin("keyword", keywords)
     _isin("produto", products)
 
@@ -1346,7 +1420,7 @@ def query_coletas(
                 f"Supabase não conectado — exibindo {len(df_hist):,} linha(s) do "
                 f"histórico frio (Parquet)."
             )
-        return df_hist
+        return _apply_seller_canonical(df_hist)
 
     def _build_q():
         """Fresh filtered query (no cursor yet — added per-page in the loop).
@@ -1373,7 +1447,9 @@ def query_coletas(
         if brands:
             q = q.in_("marca", _expand_brands(brands))
         if sellers:
-            q = q.in_("seller", sellers)
+            # Grafias BRUTAS: as linhas antigas ainda podem estar como
+            # `continentalcenter`/`friopecas` no banco.
+            q = q.in_("seller", _expand_sellers(sellers))
         if keywords:
             q = q.in_("keyword", keywords)
         if products:
@@ -1456,9 +1532,9 @@ def query_coletas(
         if not all_data:
             # Banco sem linhas no período: pode ser recorte legítimo ou dias já
             # migrados para o histórico frio. O frio decide.
-            return _history_gap_fill(
+            return _apply_seller_canonical(_history_gap_fill(
                 start_date, end_date, set(), limit=limit, **_hist_filtros
-            )
+            ))
 
         df = pd.DataFrame(all_data)
         df["data"] = pd.to_datetime(df["data"]).dt.date
@@ -1482,7 +1558,7 @@ def query_coletas(
         )
         if not df_frio.empty:
             df = pd.concat([df, df_frio], ignore_index=True)
-        return df
+        return _apply_seller_canonical(df)
     except Exception as exc:
         # Com o projeto restrito por cota (HTTP 402) a API recusa até leitura —
         # aqui o histórico é o único caminho, e falhar seria pior que degradar.
@@ -1496,7 +1572,7 @@ def query_coletas(
             f"Supabase indisponível ({exc}) — exibindo {len(df_frio):,} linha(s) "
             f"do histórico frio (Parquet)."
         )
-        return df_frio
+        return _apply_seller_canonical(df_frio)
 
 
 _SUPABASE_PAGE_PT = 1000
@@ -1632,7 +1708,11 @@ def _filter_history_pricetrack(
         alvo = {v.casefold() for v in _pt_platform_match_values(platforms)}
         df = df[_norm(df["marketplace"]).isin(alvo)]
     if sellers and "seller" in df.columns:
-        df = df[_norm(df["seller"]).isin({s.casefold() for s in sellers})]
+        # Compara na forma CANÔNICA dos dois lados: o histórico frio é
+        # imutável e guarda a grafia bruta (`friopecas`), enquanto o
+        # dropdown já oferece só o nome canônico ("Frio Peças").
+        alvo = {c.casefold() for c in map(_canonical_seller, sellers) if c}
+        df = df[_norm(df["seller"].map(_canonical_seller)).isin(alvo)]
     if sku_set and "sku" in df.columns:
         df = df[df["sku"].astype(str).isin({str(s) for s in sku_set})]
     if df.empty:
@@ -1791,6 +1871,13 @@ def _pt_raw_to_df(raw: pd.DataFrame) -> pd.DataFrame:
     else:
         turno_out = pd.Series(["PriceTrack"] * len(raw), index=raw.index)
 
+    # Canoniza o lojista já na entrada do PriceTrack: sem isto o merge com a
+    # coleta contaria "friopecas" e "Frio Peças" como sellers diferentes.
+    seller_raw = raw.get("seller")
+    seller_series = (
+        seller_raw.map(_canonical_seller) if seller_raw is not None else pd.NA
+    )
+
     df = pd.DataFrame({
         "data":             pd.to_datetime(raw["collection_date"]).dt.date,
         "turno":            turno_out,
@@ -1801,7 +1888,7 @@ def _pt_raw_to_df(raw: pd.DataFrame) -> pd.DataFrame:
         "sku":              sku_series,
         "title":            title_series,
         "preco":            preco,
-        "seller":           raw.get("seller"),
+        "seller":           seller_series,
         "keyword":          pd.NA,
         "posicao_geral":    pd.array([pd.NA] * len(raw), dtype="Int64"),
         "posicao_organica": pd.array([pd.NA] * len(raw), dtype="Int64"),
@@ -1910,7 +1997,9 @@ def query_pricetrack_daily(
             if parts:
                 q = q.or_(",".join(parts))
         if sellers:
-            parts = [f"seller.ilike.{s}" for s in sellers]
+            # Mesmo motivo do `_expand_platforms` acima: o PriceTrack guarda a
+            # grafia do marketplace, o dropdown oferece a canônica.
+            parts = [f"seller.ilike.{s}" for s in _expand_sellers(sellers)]
             if parts:
                 q = q.or_(",".join(parts))
         if sku_set:
@@ -2162,7 +2251,7 @@ def get_filter_options() -> dict:
                 "platform_types": sorted(data.get("platform_types") or []),
                 "brands":         sorted({_MARCA_TO_CANONICAL.get(b, b) for b in raw_brands if b}),
                 "keywords":       sorted(data.get("keywords") or []),
-                "sellers":        sorted(data.get("sellers") or []),
+                "sellers":        _canonical_seller_options(data.get("sellers") or []),
             }
     except Exception:
         pass  # cai no fallback paginado abaixo
@@ -2207,7 +2296,7 @@ def get_filter_options() -> dict:
             "platform_types": sorted(df["tipo"].dropna().unique().tolist()) if "tipo" in df.columns else [],
             "brands":         brands_canonical,
             "keywords":       sorted(df["keyword"].dropna().unique().tolist()),
-            "sellers":        sorted(df["seller"].dropna().unique().tolist()) if "seller" in df.columns else [],
+            "sellers":        _canonical_seller_options(df["seller"].dropna().unique()) if "seller" in df.columns else [],
         }
     except Exception as exc:
         # Cota estourada (402) derruba até leitura — cai no histórico antes de
@@ -2259,7 +2348,7 @@ def _filter_options_do_historico(dias: int = 120) -> dict:
         "platform_types": _distintos("tipo"),
         "brands": sorted(marcas),
         "keywords": _distintos("keyword"),
-        "sellers": _distintos("seller"),
+        "sellers": _canonical_seller_options(_distintos("seller")),
     }
 
 

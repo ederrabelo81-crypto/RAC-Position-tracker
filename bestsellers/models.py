@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from bestsellers.config import GRUPO_MIDEA, LINHAS_MIDEA, SourceSpec
+from utils.seller_names import normalize_seller_name
 from utils.attr_parser import norm as _norm_titulo
 from utils.attr_parser import parse_btu
 from utils.brands import extract_brand
@@ -270,6 +271,11 @@ class BestSellerItem:
     no_escopo: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
+        # O seller do PDP da Amazon chega com a grafia daquela loja
+        # ("Belmicro Oficial", "friopecas"); canonizar aqui mantém a série de
+        # buy box do ranking comparável com a da coleta de oferta, que
+        # canoniza no `_build_record`. Ver utils/seller_names.py.
+        self.seller = normalize_seller_name(self.seller)
         self.classificar()
 
     def classificar(self) -> None:

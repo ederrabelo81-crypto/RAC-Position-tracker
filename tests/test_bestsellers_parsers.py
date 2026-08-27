@@ -157,8 +157,13 @@ class TestMercadoLivreParser:
         assert fonte._parse(_pagina_ml())[0].preco == 1899.90
 
     def test_seller_sem_o_prefixo_por(self, fonte):
-        """O seller é a leitura de Buy Box desta lista — 'Por Fulano' é ruído."""
-        assert fonte._parse(_pagina_ml())[0].seller == "Webcontinental"
+        """O seller é a leitura de Buy Box desta lista — 'Por Fulano' é ruído.
+
+        O nickname cru do ML ("Webcontinental") sai canonizado pelo
+        `BestSellerItem.__post_init__`, senão o mesmo dealer contaria como
+        seller diferente aqui e na coleta de oferta — ver utils/seller_names.py.
+        """
+        assert fonte._parse(_pagina_ml())[0].seller == "Web Continental"
 
     def test_id_mlb_e_a_chave_de_pareamento(self, fonte):
         assert fonte._parse(_pagina_ml())[0].sku_plataforma == "MLB1111111111"
