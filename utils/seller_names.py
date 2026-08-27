@@ -264,7 +264,14 @@ def normalize_seller_name(raw: Optional[str]) -> Optional[str]:
     if not cleaned:
         return None
 
-    return _LOOKUP.get(seller_key(cleaned), cleaned)
+    key = seller_key(cleaned)
+    if not key:
+        # Só pontuação ("--", "!!!"): a chave é vazia, então não há lojista
+        # nenhum aqui. Devolver o texto cru criaria um seller espúrio no
+        # ranking de buy box e no histórico.
+        return None
+
+    return _LOOKUP.get(key, cleaned)
 
 
 def variants_for(canonical: str) -> List[str]:

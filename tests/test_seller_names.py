@@ -139,6 +139,12 @@ class TestBordas:
     def test_vazio_vira_none(self, raw):
         assert normalize_seller_name(raw) is None
 
+    @pytest.mark.parametrize("raw", ["!!!", "--", " ® ", "...", "-"])
+    def test_so_pontuacao_nao_e_seller(self, raw):
+        """Chave vazia = não há lojista ali. Devolver o texto cru criaria um
+        seller espúrio no ranking de buy box."""
+        assert normalize_seller_name(raw) is None
+
     def test_idempotente(self):
         """Canonizar duas vezes não muda nada — a coleta grava canônico e a
         automação Admin reescreve o histórico por cima."""
@@ -223,7 +229,8 @@ class TestHelpersDoDashboard:
         assert len(brutas) >= 5
 
     def test_filtro_de_seller_desconhecido_nao_some(self):
-        assert app._expand_sellers(["mgshopgra"]) == ["mgshopgra"]
+        """Sem grupo no mapa, o filtro ainda manda a própria grafia ao banco."""
+        assert "mgshopgra" in app._expand_sellers(["mgshopgra"])
 
     def test_dropdown_colapsa_as_grafias_em_uma_opcao(self):
         opcoes = app._canonical_seller_options([
@@ -239,3 +246,29 @@ class TestHelpersDoDashboard:
         ):
             for bruta in app._expand_sellers([canonical]):
                 assert app._canonical_seller(bruta) == canonical
+
+
+class TestFiltroDoHistoricoFrio:
+    """O Parquet é imutável — o backfill do Supabase nunca o alcança."""
+
+    def test_casa_grafia_fora_do_mapa(self):
+        """Variante de caixa não listada ainda casa: os dois lados canonizam."""
+        df = pd.DataFrame({
+            "seller": ["FRIOPECAS", "Friopeças", "GoCompras®", "mgshopgra"],
+            "data": [None] * 4,
+        })
+        out = app._filter_history_coletas(df, sellers=["Frio Peças"])
+        assert out["seller"].tolist() == ["FRIOPECAS", "Friopeças"]
+
+    def test_nao_arrasta_seller_vizinho(self):
+        df = pd.DataFrame({"seller": ["CLIMAMIX", "climario"], "data": [None] * 2})
+        out = app._filter_history_coletas(df, sellers=["Clima Rio"])
+        assert out["seller"].tolist() == ["climario"]
+
+
+class TestExpansaoParaOBanco:
+    def test_inclui_variantes_de_caixa(self):
+        """PostgREST compara por igualdade exata: `FRIOPECAS` escaparia."""
+        brutas = app._expand_sellers(["Frio Peças"])
+        assert "FRIOPECAS" in brutas and "friopecas" in brutas
+        assert "Frio Peças" in brutas

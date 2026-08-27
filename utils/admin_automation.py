@@ -227,7 +227,9 @@ def _step_recalc_unknown_brands(client, ctx: Dict[str, Any]) -> StepResult:
 
 def _step_normalize_platforms(client, ctx: Dict[str, Any]) -> StepResult:
     from utils.supabase_maintenance import normalize_platforms_sellers_in_supabase
-    r = normalize_platforms_sellers_in_supabase(dry_run=ctx["dry_run"])
+    r = normalize_platforms_sellers_in_supabase(
+        dry_run=ctx["dry_run"], since_id=ctx["since_id"]
+    )
     return StepResult(
         "normalize_platforms",
         ok=r.get("errors", 0) == 0,

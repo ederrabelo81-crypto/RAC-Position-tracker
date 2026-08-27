@@ -720,10 +720,17 @@ def _expand_sellers(sellers: list) -> list:
 
     E.g. ["Web Continental"] → ["ContinentalCenter", "Web Continental",
     "Webcontinental", "Webcontinental ES", …]
+
+    O PostgREST compara por igualdade exata, então cada variante entra também
+    em caixa alta e baixa: o de-para lista uma grafia por *stem*, e sem isso
+    uma linha gravada como `FRIOPECAS` escaparia do filtro "Frio Peças".
+    Acento e pontuação seguem cobertos pela lista explícita — quem canoniza
+    de verdade é o backfill, isto é rede de segurança da transição.
     """
     expanded: set = set()
     for s in sellers:
-        expanded.update(_seller_variants(s) or [s])
+        for v in (_seller_variants(s) or [s]):
+            expanded.update({v, v.lower(), v.upper()})
     return sorted(expanded)
 
 
@@ -1175,9 +1182,13 @@ def _filter_history_coletas(
     _isin("plataforma", _expand_platforms(platforms) if platforms else None)
     _isin("tipo", platform_types)
     _isin("marca", _expand_brands(brands) if brands else None)
-    # Grafias brutas: o Parquet do histórico é imutável e guarda o apelido
-    # como o marketplace o imprimiu.
-    _isin("seller", _expand_sellers(sellers) if sellers else None)
+    if sellers and "seller" in out.columns:
+        # O Parquet é IMUTÁVEL — o backfill do Supabase nunca o alcança, então
+        # ele guarda a grafia como o marketplace a imprimiu, inclusive as que
+        # não estão no mapa. Comparar canonizando os dois lados casa qualquer
+        # variante de caixa/acento/pontuação, não só as listadas.
+        alvo = {c for c in map(_canonical_seller, sellers) if c}
+        out = out[out["seller"].map(_canonical_seller).isin(alvo)]
     _isin("keyword", keywords)
     _isin("produto", products)
 

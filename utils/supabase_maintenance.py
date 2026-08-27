@@ -190,7 +190,10 @@ def normalize_brands_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
         )
     return {"total_updated": total_updated, "errors": errors, "by_brand": by_brand}
 
-def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
+def normalize_platforms_sellers_in_supabase(
+    dry_run: bool = False,
+    since_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Canoniza `plataforma`, `seller` e `buy_box_seller` na tabela `coletas`.
 
@@ -207,7 +210,10 @@ def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, 
 
     Nunca cruze os dois: a plataforma "WebContinental" e o seller
     "Web Continental" são a mesma empresa com grafias canônicas diferentes, e
-    unificar quebraria o filtro de plataforma do dashboard.
+    unificar quebraria o filtro de plataforma do dashboard. É justamente por
+    isso que `by_mapping` é indexado por (coluna, grafia): a MESMA grafia crua
+    "Webcontinental" tem alvos diferentes nas duas colunas, e um índice só por
+    grafia faria o dry-run prometer o UPDATE errado.
 
     Estratégia em 2 fases (o mesmo padrão de normalize_all_products_in_supabase):
       Fase 1 — varre `id, seller, buy_box_seller` em lotes de 1.000 e monta o
@@ -216,11 +222,14 @@ def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, 
                por linha: ~30 requisições em vez de dezenas de milhares.
 
     Args:
-        dry_run: Se True, apenas conta os registros afetados — não grava.
+        dry_run:  Se True, apenas conta os registros afetados — não grava.
+        since_id: Varredura incremental — só linhas com id > since_id
+                  (watermark da automação). None = histórico inteiro.
 
     Returns:
         dict com: total_updated, errors, by_mapping
-        (by_mapping = {valor_bruto: {"target": canônico, "<coluna>": contagem}})
+        (by_mapping = {"<coluna>:<valor_bruto>": {"target": canônico,
+                       "column": coluna, "count": nº de linhas}})
     """
     from utils.seller_names import normalize_seller_name
 
@@ -243,12 +252,18 @@ def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, 
     def _apply(col: str, source: str, target: str, count: int) -> None:
         """Conta e (fora do dry-run) aplica um de-para numa coluna."""
         nonlocal total_updated, errors
-        entry = by_mapping.setdefault(source, {"target": target})
-        entry[col] = entry.get(col, 0) + count
+        # Chave por (coluna, grafia): "Webcontinental" existe nas duas colunas
+        # com alvos diferentes, e colidir as duas mentiria no dry-run.
+        by_mapping[f"{col}:{source}"] = {
+            "column": col, "target": target, "count": count,
+        }
         if dry_run or count <= 0:
             return
         try:
-            client.table("coletas").update({col: target}).eq(col, source).execute()
+            q = client.table("coletas").update({col: target}).eq(col, source)
+            if since_id:
+                q = q.gt("id", since_id)
+            q.execute()
             total_updated += count
             logger.info(
                 f"[Supabase] {col} normalizado: {source!r} → {target!r} "
@@ -261,13 +276,14 @@ def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, 
     # ── Coluna `plataforma`: mapa fixo, contagem direta ──
     for source, target in _PLATFORM_MAP.items():
         try:
-            resp = (
+            q = (
                 client.table("coletas")
                 .select("id", count="exact", head=True)
                 .eq("plataforma", source)
-                .execute()
             )
-            count = resp.count or 0
+            if since_id:
+                q = q.gt("id", since_id)
+            count = q.execute().count or 0
         except Exception as exc:
             logger.warning(f"[Supabase] Erro ao contar plataforma={source!r}: {exc}")
             errors += 1
@@ -275,21 +291,39 @@ def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, 
         _apply("plataforma", source, target, count)
 
     # ── Colunas de seller: fase 1, descobrir as grafias presentes ──
+    # `buy_box_seller` nasceu na migração 003. Numa base sem ela o SELECT
+    # inteiro falharia e o backfill de seller morreria junto, então a coluna
+    # é PROVADA antes da varredura em vez de assumida.
+    colunas = list(_SELLER_COLUMNS)
+    try:
+        client.table("coletas").select(",".join(colunas)).limit(1).execute()
+    except Exception as exc:
+        colunas = ["seller"]
+        logger.warning(
+            f"[Supabase] `buy_box_seller` indisponível ({exc}) — normalizando "
+            "apenas `seller`. Aplique docs/migrations/003_add_buybox_seller_"
+            "columns.sql para cobrir a buy box."
+        )
+
     # {coluna: {valor_bruto: nº de linhas}} — só o que muda ao canonizar.
-    pending: Dict[str, Dict[str, int]] = {col: {} for col in _SELLER_COLUMNS}
+    pending: Dict[str, Dict[str, int]] = {col: {} for col in colunas}
     scanned = 0
     offset = 0
 
-    logger.info("[Supabase] Fase 1 — varrendo grafias de seller…")
+    logger.info(
+        f"[Supabase] Fase 1 — varrendo grafias de seller"
+        f"{f' (id > {since_id})' if since_id else ''}…"
+    )
     while True:
         try:
-            resp = (
+            q = (
                 client.table("coletas")
-                .select("id," + ",".join(_SELLER_COLUMNS))
+                .select("id," + ",".join(colunas))
                 .order("id")
-                .range(offset, offset + _FETCH_BATCH - 1)
-                .execute()
             )
+            if since_id:
+                q = q.gt("id", since_id)
+            resp = q.range(offset, offset + _FETCH_BATCH - 1).execute()
         except Exception as exc:
             logger.warning(f"[Supabase] Erro ao varrer sellers (offset={offset}): {exc}")
             errors += 1
@@ -300,7 +334,7 @@ def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, 
             break
 
         for row in rows:
-            for col in _SELLER_COLUMNS:
+            for col in colunas:
                 raw = row.get(col)
                 if not raw or not str(raw).strip():
                     continue
@@ -320,7 +354,7 @@ def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, 
     )
 
     # ── Fase 2: um UPDATE por grafia bruta distinta ──
-    for col in _SELLER_COLUMNS:
+    for col in colunas:
         for raw, count in sorted(pending[col].items(), key=lambda kv: -kv[1]):
             _apply(col, raw, normalize_seller_name(raw), count)
 
