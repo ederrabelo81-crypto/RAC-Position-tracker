@@ -324,3 +324,32 @@ quando a queda foi para o browser próprio.
 `scrapers/casas_bahia.py` `_revive_page()`/`_degrade_to_http()`;
 `scrapers/shopee.py` `_ensure_browser_page()`/`_degrade_to_http()`;
 `scrapers/mercado_livre.py` `_ensure_page()`; `tests/test_browser_degradation.py`
+
+## 23. Agrupar seller por semelhança de string (27/08/2026)
+
+**Wrong:** juntar `CLIMAMIX` com Clima Rio, `Bela Magazine` com Magazine Luiza
+ou `Refriparts` com Refricril porque o prefixo bate. Ou o oposto: deixar o
+share de buy box somar `Webcontinental`, `continentalcenter`,
+`Webcontinental ES`, `Webcontinental Marketplace` e
+`lojawebcontinentalmarketplace` como **cinco sellers diferentes**.
+**Why:** cada marketplace impõe um formato de apelido ao mesmo lojista (ML =
+nickname colado com sufixo numérico, Amazon = razão comercial acentuada,
+Magalu = slug da loja). Fragmentado, o ranking mente sobre quem lidera —
+Web Continental somava 12,3% e aparecia com 7,1%, em 2º. Agrupado por
+semelhança, transfere buy box de um seller para **outro**, que é pior: o
+número fica errado sem parecer errado.
+**Right:** `utils/seller_names.py` — `SELLER_GROUPS` só aceita variante com
+identidade **confirmada** (loja aberta no marketplace, ou confirmação do
+mantenedor); apelido opaco (`mgshopgra`, `GoCompras`) passa inalterado. O nome
+canônico é sempre uma grafia observada na coleta ou o `nome` de
+`bestsellers/config.py` — nunca inventado. Caixa, acento, pontuação e `®`
+colapsam sozinhos na chave, então não liste variante que só muda isso.
+**Cuidado:** `plataforma` e `seller` são namespaces diferentes
+(`WebContinental` ≠ `Web Continental`) — unificar quebra o filtro de
+plataforma. E o filtro do dashboard precisa **re-expandir** o canônico para as
+grafias brutas (`_expand_sellers`), senão o recorte volta vazio enquanto o
+backfill não passou.
+**Files:** `utils/seller_names.py`; `scrapers/base.py` `_build_record()`;
+`bestsellers/models.py` `__post_init__()`; `utils/supabase_maintenance.py`
+`normalize_platforms_sellers_in_supabase()`; `app.py`
+`_apply_seller_canonical()`/`_expand_sellers()`; `tests/test_seller_names.py`

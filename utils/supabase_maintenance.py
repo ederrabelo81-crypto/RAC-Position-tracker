@@ -190,71 +190,196 @@ def normalize_brands_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
         )
     return {"total_updated": total_updated, "errors": errors, "by_brand": by_brand}
 
-def normalize_platforms_sellers_in_supabase(dry_run: bool = False) -> Dict[str, Any]:
+def normalize_platforms_sellers_in_supabase(
+    dry_run: bool = False,
+    since_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """
-    Corrige variantes de plataforma e seller nos campos `plataforma` e `seller`
-    da tabela `coletas`.
+    Canoniza `plataforma`, `seller` e `buy_box_seller` na tabela `coletas`.
 
-    Mapeamento aplicado:
-      "FerreiraCoasta"  → "FerreiraCosta"   (typo no nome do dealer)
-      "Webcontinental"  → "WebContinental"  (capitalização incorreta)
+    São DOIS namespaces distintos, de propósito:
 
-    Aplica em ambas as colunas `plataforma` e `seller`.
+      `plataforma` — chave interna, casa com `config.PLATFORM_TYPE`
+                     ("WebContinental", "FerreiraCosta"). Mapa fixo de typos.
+
+      `seller` / `buy_box_seller` — nome de LOJISTA como o marketplace o
+                     imprime ("Web Continental", "Frio Peças"). Passa por
+                     `utils.seller_names.normalize_seller_name`, que colapsa as
+                     grafias do mesmo dealer (`friopecas`/`Friopeças`,
+                     `continentalcenter`/`Webcontinental ES`).
+
+    Nunca cruze os dois: a plataforma "WebContinental" e o seller
+    "Web Continental" são a mesma empresa com grafias canônicas diferentes, e
+    unificar quebraria o filtro de plataforma do dashboard. É justamente por
+    isso que `by_mapping` é indexado por (coluna, grafia): a MESMA grafia crua
+    "Webcontinental" tem alvos diferentes nas duas colunas, e um índice só por
+    grafia faria o dry-run prometer o UPDATE errado.
+
+    Estratégia em 2 fases (o mesmo padrão de normalize_all_products_in_supabase):
+      Fase 1 — varre `id, seller, buy_box_seller` em lotes de 1.000 e monta o
+               conjunto de valores BRUTOS distintos cuja forma canônica difere.
+      Fase 2 — um UPDATE por valor bruto distinto (`.eq(col, bruto)`), não um
+               por linha: ~30 requisições em vez de dezenas de milhares.
 
     Args:
-        dry_run: Se True, apenas conta registros afetados — não atualiza.
+        dry_run:  Se True, apenas conta os registros afetados — não grava.
+        since_id: Varredura incremental — só linhas com id > since_id
+                  (watermark da automação). None = histórico inteiro.
 
     Returns:
         dict com: total_updated, errors, by_mapping
+        (by_mapping = {"<coluna>:<valor_bruto>": {"target": canônico,
+                       "column": coluna, "count": nº de linhas}})
     """
+    from utils.seller_names import normalize_seller_name
+
     client = _get_client()
     if client is None:
         return {"total_updated": 0, "errors": 0, "by_mapping": {}}
 
+    # Typos históricos da coluna `plataforma` (namespace de chave interna).
     _PLATFORM_MAP: Dict[str, str] = {
         "FerreiraCoasta": "FerreiraCosta",
         "Webcontinental": "WebContinental",
     }
-    _COLUMNS = ["plataforma", "seller"]
+    _SELLER_COLUMNS = ["seller", "buy_box_seller"]
+    _FETCH_BATCH = 1_000
 
     by_mapping: Dict[str, Any] = {}
     total_updated = 0
     errors = 0
 
+    def _apply(col: str, source: str, target: str, count: int) -> None:
+        """Conta e (fora do dry-run) aplica um de-para numa coluna."""
+        nonlocal total_updated, errors
+        # Chave por (coluna, grafia): "Webcontinental" existe nas duas colunas
+        # com alvos diferentes, e colidir as duas mentiria no dry-run.
+        by_mapping[f"{col}:{source}"] = {
+            "column": col, "target": target, "count": count,
+        }
+        if dry_run or count <= 0:
+            return
+        try:
+            q = client.table("coletas").update({col: target}).eq(col, source)
+            if since_id:
+                q = q.gt("id", since_id)
+            q.execute()
+            total_updated += count
+            logger.info(
+                f"[Supabase] {col} normalizado: {source!r} → {target!r} "
+                f"({count} registros)"
+            )
+        except Exception as exc:
+            errors += 1
+            logger.warning(f"[Supabase] Erro ao normalizar {col} {source!r}: {exc}")
+
+    # ── Coluna `plataforma`: mapa fixo, contagem direta ──
     for source, target in _PLATFORM_MAP.items():
-        entry: Dict[str, Any] = {"target": target}
+        try:
+            q = (
+                client.table("coletas")
+                .select("id", count="exact", head=True)
+                .eq("plataforma", source)
+            )
+            if since_id:
+                q = q.gt("id", since_id)
+            count = q.execute().count or 0
+        except Exception as exc:
+            logger.warning(f"[Supabase] Erro ao contar plataforma={source!r}: {exc}")
+            errors += 1
+            continue
+        _apply("plataforma", source, target, count)
 
-        for col in _COLUMNS:
-            try:
-                count_resp = (
-                    client.table("coletas")
-                    .select("id", count="exact")
-                    .eq(col, source)
-                    .execute()
-                )
-                count = count_resp.count or 0
-            except Exception as exc:
-                logger.warning(f"[Supabase] Erro ao contar {col}={source!r}: {exc}")
-                count = -1
+    # ── Colunas de seller: fase 1, descobrir as grafias presentes ──
+    # `buy_box_seller` nasceu na migração 003. Numa base sem ela o SELECT
+    # inteiro falharia e o backfill de seller morreria junto, então a coluna
+    # é PROVADA antes da varredura em vez de assumida.
+    colunas = list(_SELLER_COLUMNS)
+    try:
+        client.table("coletas").select(",".join(colunas)).limit(1).execute()
+    except Exception as exc:
+        # Só "coluna não existe" autoriza seguir sem `buy_box_seller`. Timeout,
+        # 401 ou queda de rede NÃO provam ausência de coluna, e degradar neles
+        # pularia a normalização da buy box em silêncio — some trabalho sem
+        # ninguém ficar sabendo. Nesses casos mantém as duas colunas e deixa a
+        # varredura falhar de verdade, contabilizada em `errors`.
+        # Só o erro do PRÓPRIO Postgres prova ausência: 42703 /
+        # "does not exist". "schema cache" NÃO entra aqui de propósito — é a
+        # mesma mensagem que o PostgREST devolve quando a coluna existe mas o
+        # cache dele está velho (típico logo após aplicar a migração), e
+        # degradar nela pularia a buy box em silêncio num banco correto.
+        texto = str(exc).lower()
+        if "buy_box_seller" in texto and (
+            "does not exist" in texto or "42703" in texto
+        ):
+            colunas = ["seller"]
+            logger.warning(
+                f"[Supabase] `buy_box_seller` não existe nesta base ({exc}) — "
+                "normalizando apenas `seller`. Aplique "
+                "docs/migrations/003_add_buybox_seller_columns.sql para cobrir "
+                "a buy box."
+            )
+        else:
+            logger.warning(
+                f"[Supabase] Probe de `buy_box_seller` falhou sem provar "
+                f"ausência da coluna ({exc}) — seguindo com as duas colunas. "
+                "Se a migração 003 acabou de ser aplicada, o cache de schema "
+                "do PostgREST pode estar velho: rode "
+                "NOTIFY pgrst, 'reload schema' e repita a etapa."
+            )
 
-            entry[col] = count
+    # {coluna: {valor_bruto: nº de linhas}} — só o que muda ao canonizar.
+    pending: Dict[str, Dict[str, int]] = {col: {} for col in colunas}
+    scanned = 0
+    offset = 0
 
-            if dry_run or count <= 0:
-                continue
+    logger.info(
+        f"[Supabase] Fase 1 — varrendo grafias de seller"
+        f"{f' (id > {since_id})' if since_id else ''}…"
+    )
+    while True:
+        try:
+            q = (
+                client.table("coletas")
+                .select("id," + ",".join(colunas))
+                .order("id")
+            )
+            if since_id:
+                q = q.gt("id", since_id)
+            resp = q.range(offset, offset + _FETCH_BATCH - 1).execute()
+        except Exception as exc:
+            logger.warning(f"[Supabase] Erro ao varrer sellers (offset={offset}): {exc}")
+            errors += 1
+            break
 
-            try:
-                client.table("coletas").update({col: target}).eq(col, source).execute()
-                total_updated += count
-                logger.info(
-                    f"[Supabase] {col} normalizado: {source!r} → {target!r} ({count} registros)"
-                )
-            except Exception as exc:
-                errors += 1
-                logger.warning(
-                    f"[Supabase] Erro ao normalizar {col} {source!r}: {exc}"
-                )
+        rows = resp.data or []
+        if not rows:
+            break
 
-        by_mapping[source] = entry
+        for row in rows:
+            for col in colunas:
+                raw = row.get(col)
+                if not raw or not str(raw).strip():
+                    continue
+                canonical = normalize_seller_name(raw)
+                if canonical and canonical != raw:
+                    pending[col][raw] = pending[col].get(raw, 0) + 1
+
+        scanned += len(rows)
+        if len(rows) < _FETCH_BATCH:
+            break
+        offset += _FETCH_BATCH
+
+    distintos = sum(len(v) for v in pending.values())
+    logger.info(
+        f"[Supabase] Fase 1 concluída: {scanned:,} linhas varridas, "
+        f"{distintos} grafia(s) de seller a canonizar."
+    )
+
+    # ── Fase 2: um UPDATE por grafia bruta distinta ──
+    for col in colunas:
+        for raw, count in sorted(pending[col].items(), key=lambda kv: -kv[1]):
+            _apply(col, raw, normalize_seller_name(raw), count)
 
     if not dry_run:
         logger.info(

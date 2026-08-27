@@ -45,6 +45,7 @@ from utils.text import (
     parse_review_count,
 )
 from utils.normalize_product import normalize_product_name, normalize_product_name_v2
+from utils.seller_names import normalize_seller_name
 
 
 class BaseScraper(ABC):
@@ -688,13 +689,18 @@ class BaseScraper(ABC):
             "Posição Geral":       position_general,
             "Patrocinado?":        "Sim" if position_sponsored else "Não",
             # ── Insights de buy box / seller (foco principal) ──
-            "Buy Box Seller":      normalize_text(buy_box_seller) or normalize_text(seller),
+            # `normalize_seller_name` colapsa as grafias que cada marketplace
+            # impõe ao MESMO lojista (`friopecas`/`Friopeças`,
+            # `continentalcenter`/`Webcontinental ES`). Sem isso o share de
+            # buy box divide um dealer em várias linhas e o ranking mente
+            # sobre quem lidera — ver utils/seller_names.py.
+            "Buy Box Seller":      normalize_seller_name(buy_box_seller) or normalize_seller_name(seller),
             "Qtd Sellers":         self._coerce_count(
                 qtd_sellers, "Qtd Sellers", keyword
             ),
             "Tipo Seller":         normalize_text(tipo_seller),
             "Reputação Seller":    normalize_text(reputacao_seller),
-            "Seller / Vendedor":   normalize_text(seller),
+            "Seller / Vendedor":   normalize_seller_name(seller),
             "Fulfillment?":        "Sim" if is_fulfillment else "Não",
             "Avaliação":           rating,
             "Qtd Avaliações":      self._coerce_count(

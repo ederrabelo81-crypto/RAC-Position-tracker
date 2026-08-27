@@ -360,6 +360,7 @@ rac-position-tracker/
 │   ├── session_grabber.py       # Auth session capture
 │   ├── supabase_client.py       # Upload, cleanup, maintenance
 │   ├── amazon_sellers.py        # 🆕 Cache de sellers Amazon (PDP)
+│   ├── seller_names.py          # 🆕 De-para canônico de seller (buy box)
 │   ├── admin_automation.py      # Motor da automação ADMIN (zero interação)
 │   └── n8n_notify.py            # Telegram notifications (API direta)
 │
@@ -989,6 +990,49 @@ identidade, valide contra URLs REAIS da base (`tests/test_offer_identity.py`
 usa amostra de produção); regex escrito contra formato imaginado quebra na
 primeira coleta.
 
+### Nome canônico de seller — `utils/seller_names.py` (Ago/2026) 🆕
+
+Cada marketplace impõe um formato de apelido ao **mesmo** lojista: o ML usa
+nickname colado e minúsculo, com sufixo numérico quando o nome já existe
+(`friopecas`, `frigelar2`, `leveros3`); a Amazon usa a razão comercial
+acentuada (`Friopeças`, `Belmicro Oficial`); a Magalu grava o slug da loja
+(`lojawebcontinentalmarketplace`). Sem colapsar isso o share de buy box
+**fatia um dealer em várias linhas e o ranking mente sobre quem lidera** —
+Web Continental aparecia como 5 sellers (12,3% no total) com o maior pedaço
+marcando 7,1%, atrás de dois concorrentes que na verdade estavam abaixo dele.
+
+`SELLER_GROUPS` é `{nome canônico: [grafias observadas]}`. A chave de
+comparação ignora caixa, acento, pontuação e `®`, então basta **uma grafia por
+stem diferente** — "Ar Certo"/"ar-certo"/"ARCERTO" colapsam sozinhos.
+
+**Duas regras duras:**
+1. O nome canônico é sempre uma grafia **observada** na coleta ou o `nome` já
+   padronizado em `bestsellers/config.py`. Canônico inventado parece autoridade
+   que o dado não tem e some do de-para na 1ª conferência contra a tela.
+2. Variante só entra com **identidade confirmada**. Apelido opaco (`mgshopgra`,
+   `GoCompras`) passa inalterado — agrupar por semelhança de string transfere
+   buy box de um seller para outro, pior que a fragmentação que isto resolve.
+   Por isso `CLIMAMIX` ≠ Clima Rio e `Bela Magazine` ≠ Magazine Luiza.
+
+Aplicado em 4 pontos, todos pelo mesmo módulo:
+
+| Ponto | Onde | Efeito |
+|-------|------|--------|
+| Escrita (coleta) | `scrapers/base.py::_build_record` | linha nova já nasce canônica |
+| Escrita (ranking) | `bestsellers/models.py::__post_init__` | seller do PDP idem |
+| Backfill | `utils/supabase_maintenance.py::normalize_platforms_sellers_in_supabase` | reescreve `seller`/`buy_box_seller` do histórico (etapa 6 da automação ADMIN) |
+| Leitura | `app.py::_apply_seller_canonical` | rede de segurança p/ o histórico frio (Parquet), que é imutável |
+
+⚠️ **`plataforma` e `seller` são namespaces DIFERENTES.** A plataforma
+canônica é `WebContinental` (chave de `config.PLATFORM_TYPE`); o seller
+canônico é `Web Continental` (nome de lojista). Unificar os dois quebra o
+filtro de plataforma do dashboard.
+
+⚠️ **O filtro do dashboard re-expande.** O dropdown oferece só o canônico, mas
+`_expand_sellers` devolve as grafias **brutas** ao PostgREST — sem isso
+filtrar por "Web Continental" não casa com as linhas gravadas como
+`continentalcenter` e o recorte volta vazio.
+
 ### Token Cost Estimates (for AI assistants)
 
 | Document | Tokens | Auto-loaded? |
@@ -1029,6 +1073,6 @@ primeira coleta.
 
 ---
 
-*Last updated: August 21, 2026 (v4.9)*  
-*Latest changes: Bestsellers — expansão para 14 dealers (coletores VTEX/HTML genéricos) e separação de referência Mais Vendidos × Relevância (coluna `referencia`, migração 013, segmento próprio no dashboard)*  
+*Last updated: August 27, 2026 (v5.0)*  
+*Latest changes: Nome canônico de seller (`utils/seller_names.py`) — as grafias que cada marketplace impõe ao mesmo dealer colapsam na coleta, no backfill do Supabase e na leitura do dashboard; o share de buy box deixa de fatiar um lojista em várias linhas*  
 *Maintained by: RAC Position Tracker Team*

@@ -34,6 +34,7 @@ from bestsellers.models import BestSellerItem
 from config import PAGE_TIMEOUT
 from utils.text import parse_price, parse_rating, parse_review_count
 from utils.amazon_sellers import extract_seller_from_pdp
+from utils.seller_names import normalize_seller_name
 
 _ITEM_SELECTORS = (
     "div#gridItemRoot",
@@ -411,9 +412,15 @@ class AmazonBestSellers(BestSellerSource):
         Args:
             asin: identificador do produto na Amazon.
 
+        O nome sai CANÔNICO (`utils/seller_names.py`). A canonização vive aqui,
+        e não no chamador, porque `_resolver_sellers_pdp` atribui `item.seller`
+        em três pontos (cache lido, cache gravado, item novo) e todos saem
+        deste retorno — o `__post_init__` do `BestSellerItem` não pega nenhum
+        deles, já que a atribuição é POSTERIOR à construção.
+
         Returns:
-            Nome do vendedor, ou None se o PDP não revelou (challenge de bot,
-            produto fora do ar, ou layout desconhecido).
+            Nome canônico do vendedor, ou None se o PDP não revelou (challenge
+            de bot, produto fora do ar, ou layout desconhecido).
         """
         if self._browser is None or self._browser._page is None:
             return None
@@ -424,7 +431,9 @@ class AmazonBestSellers(BestSellerSource):
                 wait_until="domcontentloaded",
             )
             self._browser._random_delay(min_s=2.0, max_s=5.0)
-            return extract_seller_from_pdp(self._browser._page.content())
+            return normalize_seller_name(
+                extract_seller_from_pdp(self._browser._page.content())
+            )
         except Exception as exc:
             logger.debug(
                 f"[{self.nome}] PDP {asin} falhou: "
