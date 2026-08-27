@@ -49,15 +49,70 @@ def _metodos_duplicados(caminho: Path, classe: str):
     return sorted(nome for nome, qtd in Counter(nomes).items() if qtd > 1)
 
 
-def _atribuicoes_modulo(caminho: Path):
-    """Contagem de atribuições de nome no nível do módulo."""
-    arvore = ast.parse(caminho.read_text(encoding="utf-8"))
+def _contar_atribuicoes(fonte: str):
+    """
+    Contagem de atribuições de nome no nível do módulo.
+
+    Conta as DUAS sintaxes que ligam um valor a um nome: `X = ...` (`ast.Assign`)
+    e `X: str = ...` (`ast.AnnAssign` com valor). Contar só a primeira deixaria
+    o guard cego justamente ao caso misto — original anotado, duplicata anexada
+    sem anotação — em que o sombreamento acontece e a contagem daria 1.
+
+    A anotação SEM valor (`X: str`) fica de fora de propósito: ela declara um
+    tipo e não liga valor nenhum, então não sombreia ninguém e contá-la seria
+    falso positivo.
+    """
+    arvore = ast.parse(fonte)
     nomes = [
         alvo.id
         for no in arvore.body if isinstance(no, ast.Assign)
         for alvo in no.targets if isinstance(alvo, ast.Name)
     ]
+    nomes += [
+        no.target.id
+        for no in arvore.body
+        if isinstance(no, ast.AnnAssign)
+        and no.value is not None
+        and isinstance(no.target, ast.Name)
+    ]
     return Counter(nomes)
+
+
+def _atribuicoes_modulo(caminho: Path):
+    """Contagem de atribuições de nome no nível do módulo, a partir do arquivo."""
+    return _contar_atribuicoes(caminho.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# O guard de duplicata precisa enxergar as duas sintaxes de atribuição
+# ---------------------------------------------------------------------------
+
+class TestGuardDeAtribuicao:
+    """
+    Achado do cubic na revisão desta PR: contar só `ast.Assign` deixava o guard
+    cego ao caso misto (original anotado + duplicata anexada sem anotação), que
+    é exatamente o sombreamento que estes testes existem para pegar.
+    """
+
+    def test_pega_duplicata_entre_anotada_e_simples(self):
+        contagem = _contar_atribuicoes('_X: str = "bom"\n_X = "sombreado"\n')
+        assert contagem["_X"] == 2
+
+    def test_pega_duplicata_entre_simples_e_anotada(self):
+        contagem = _contar_atribuicoes('_X = "bom"\n_X: str = "sombreado"\n')
+        assert contagem["_X"] == 2
+
+    def test_pega_duplicata_entre_duas_anotadas(self):
+        contagem = _contar_atribuicoes('_X: str = "bom"\n_X: str = "sombreado"\n')
+        assert contagem["_X"] == 2
+
+    def test_anotacao_sem_valor_nao_conta(self):
+        """`_X: str` declara tipo e não liga valor — não sombreia ninguém."""
+        contagem = _contar_atribuicoes('_X: str\n_X = "unico"\n')
+        assert contagem["_X"] == 1
+
+    def test_definicao_unica_continua_valendo_um(self):
+        assert _contar_atribuicoes('_X = "unico"\n')["_X"] == 1
 
 
 # ---------------------------------------------------------------------------
