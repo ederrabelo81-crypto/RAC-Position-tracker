@@ -288,6 +288,15 @@ class TestChaveDeComparacaoDoFiltro:
         assert app._seller_match_key(None) == ""
         assert app._seller_match_key(float("nan")) == ""
 
+    def test_nome_nao_latino_nao_zera_o_recorte(self):
+        """Chave vazia é descartada de `alvo` — sem fallback, filtrar por um
+        seller não latino derrubaria TODAS as linhas."""
+        df = pd.DataFrame({
+            "seller": ["Мосторг", "мосторг", "outro"], "data": [None] * 3,
+        })
+        out = app._filter_history_coletas(df, sellers=["Мосторг"])
+        assert out["seller"].tolist() == ["Мосторг", "мосторг"]
+
     def test_pricetrack_usa_a_mesma_comparacao(self):
         df = pd.DataFrame({
             "seller": ["FRIOPECAS", "Friopeças", "CLIMAMIX"],

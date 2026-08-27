@@ -303,9 +303,14 @@ def normalize_platforms_sellers_in_supabase(
         # pularia a normalização da buy box em silêncio — some trabalho sem
         # ninguém ficar sabendo. Nesses casos mantém as duas colunas e deixa a
         # varredura falhar de verdade, contabilizada em `errors`.
+        # Só o erro do PRÓPRIO Postgres prova ausência: 42703 /
+        # "does not exist". "schema cache" NÃO entra aqui de propósito — é a
+        # mesma mensagem que o PostgREST devolve quando a coluna existe mas o
+        # cache dele está velho (típico logo após aplicar a migração), e
+        # degradar nela pularia a buy box em silêncio num banco correto.
         texto = str(exc).lower()
         if "buy_box_seller" in texto and (
-            "does not exist" in texto or "42703" in texto or "schema cache" in texto
+            "does not exist" in texto or "42703" in texto
         ):
             colunas = ["seller"]
             logger.warning(
@@ -317,7 +322,10 @@ def normalize_platforms_sellers_in_supabase(
         else:
             logger.warning(
                 f"[Supabase] Probe de `buy_box_seller` falhou sem provar "
-                f"ausência da coluna ({exc}) — seguindo com as duas colunas."
+                f"ausência da coluna ({exc}) — seguindo com as duas colunas. "
+                "Se a migração 003 acabou de ser aplicada, o cache de schema "
+                "do PostgREST pode estar velho: rode "
+                "NOTIFY pgrst, 'reload schema' e repita a etapa."
             )
 
     # {coluna: {valor_bruto: nº de linhas}} — só o que muda ao canonizar.

@@ -759,7 +759,11 @@ def _seller_match_key(seller) -> str:
     canon = _canonical_seller(seller)
     if canon is None or canon is pd.NA or pd.isna(canon):
         return ""
-    return _seller_key(canon)
+    # `seller_key` só preserva [a-z0-9], então fica vazia para um nome
+    # inteiramente fora do alfabeto latino ("Мосторг") — e chave vazia é
+    # descartada de `alvo`, o que derrubaria TODAS as linhas do recorte.
+    # Nesses casos o casefold (Unicode-aware) é a comparação possível.
+    return _seller_key(canon) or str(canon).casefold()
 
 
 def _canonical_seller_options(raw_values) -> list:
