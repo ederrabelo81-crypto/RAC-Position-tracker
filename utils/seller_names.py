@@ -265,10 +265,13 @@ def normalize_seller_name(raw: Optional[str]) -> Optional[str]:
         return None
 
     key = seller_key(cleaned)
-    if not key:
-        # Só pontuação ("--", "!!!"): a chave é vazia, então não há lojista
-        # nenhum aqui. Devolver o texto cru criaria um seller espúrio no
-        # ranking de buy box e no histórico.
+    if not key and not any(c.isalnum() for c in cleaned):
+        # Só pontuação ("--", "!!!"): não há lojista nenhum aqui, e devolver o
+        # texto cru criaria um seller espúrio no ranking de buy box.
+        # A chave vazia sozinha NÃO basta como prova: ela também fica vazia
+        # para um nome inteiramente fora do alfabeto latino ("Мосторг"), que é
+        # um seller legítimo e passa inalterado como qualquer outro
+        # desconhecido. `str.isalnum()` é Unicode-aware e separa os dois casos.
         return None
 
     return _LOOKUP.get(key, cleaned)

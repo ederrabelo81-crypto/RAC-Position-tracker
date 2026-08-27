@@ -145,6 +145,15 @@ class TestBordas:
         seller espúrio no ranking de buy box."""
         assert normalize_seller_name(raw) is None
 
+    @pytest.mark.parametrize("raw", ["Мосторг", "日本ストア", "Ωμέγα"])
+    def test_nome_fora_do_alfabeto_latino_sobrevive(self, raw):
+        """`seller_key` também fica vazia para nome não latino — mas ali existe
+        um lojista. Só a ausência de qualquer alfanumérico descarta."""
+        assert normalize_seller_name(raw) == raw
+
+    def test_nome_so_de_digitos_passa(self):
+        assert normalize_seller_name("777") == "777"
+
     def test_idempotente(self):
         """Canonizar duas vezes não muda nada — a coleta grava canônico e a
         automação Admin reescreve o histórico por cima."""
@@ -264,6 +273,28 @@ class TestFiltroDoHistoricoFrio:
         df = pd.DataFrame({"seller": ["CLIMAMIX", "climario"], "data": [None] * 2})
         out = app._filter_history_coletas(df, sellers=["Clima Rio"])
         assert out["seller"].tolist() == ["climario"]
+
+
+class TestChaveDeComparacaoDoFiltro:
+    """Casefold sozinho não bastaria — seller fora do mapa mantém a caixa."""
+
+    def test_seller_desconhecido_casa_entre_caixas(self):
+        df = pd.DataFrame({"seller": ["MGSHOPGRA", "mgshopgra"], "data": [None] * 2})
+        out = app._filter_history_coletas(df, sellers=["mgshopgra"])
+        assert out["seller"].tolist() == ["MGSHOPGRA", "mgshopgra"]
+
+    def test_ausencia_nunca_casa(self):
+        assert app._seller_match_key(pd.NA) == ""
+        assert app._seller_match_key(None) == ""
+        assert app._seller_match_key(float("nan")) == ""
+
+    def test_pricetrack_usa_a_mesma_comparacao(self):
+        df = pd.DataFrame({
+            "seller": ["FRIOPECAS", "Friopeças", "CLIMAMIX"],
+            "collection_date": [None] * 3,
+        })
+        out = app._filter_history_pricetrack(df, sellers=["Frio Peças"])
+        assert out["seller"].tolist() == ["FRIOPECAS", "Friopeças"]
 
 
 class TestExpansaoParaOBanco:

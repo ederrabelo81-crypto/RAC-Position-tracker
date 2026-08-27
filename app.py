@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 
 from utils.seller_names import (
     normalize_seller_name as _normalize_seller_name,
+    seller_key as _seller_key,
     variants_for as _seller_variants,
 )
 
@@ -746,6 +747,21 @@ def _canonical_seller(seller):
     return _normalize_seller_name(seller)
 
 
+def _seller_match_key(seller) -> str:
+    """Chave de comparação de seller para filtro client-side.
+
+    Canoniza e depois reduz à chave do módulo, que ignora caixa, acento e
+    pontuação. Casefold sozinho não bastaria: um seller FORA do mapa passa
+    inalterado por `_canonical_seller`, então "MGSHOPGRA" e "mgshopgra"
+    continuariam sendo valores diferentes e o filtro derrubaria um dos dois.
+    Ausência vira "" e nunca casa com nada.
+    """
+    canon = _canonical_seller(seller)
+    if canon is None or canon is pd.NA or pd.isna(canon):
+        return ""
+    return _seller_key(canon)
+
+
 def _canonical_seller_options(raw_values) -> list:
     """Lista canônica, única e ordenada para o dropdown de sellers.
 
@@ -1187,8 +1203,8 @@ def _filter_history_coletas(
         # ele guarda a grafia como o marketplace a imprimiu, inclusive as que
         # não estão no mapa. Comparar canonizando os dois lados casa qualquer
         # variante de caixa/acento/pontuação, não só as listadas.
-        alvo = {c for c in map(_canonical_seller, sellers) if c}
-        out = out[out["seller"].map(_canonical_seller).isin(alvo)]
+        alvo = {k for k in map(_seller_match_key, sellers) if k}
+        out = out[out["seller"].map(_seller_match_key).isin(alvo)]
     _isin("keyword", keywords)
     _isin("produto", products)
 
@@ -1722,8 +1738,8 @@ def _filter_history_pricetrack(
         # Compara na forma CANÔNICA dos dois lados: o histórico frio é
         # imutável e guarda a grafia bruta (`friopecas`), enquanto o
         # dropdown já oferece só o nome canônico ("Frio Peças").
-        alvo = {c.casefold() for c in map(_canonical_seller, sellers) if c}
-        df = df[_norm(df["seller"].map(_canonical_seller)).isin(alvo)]
+        alvo = {k for k in map(_seller_match_key, sellers) if k}
+        df = df[df["seller"].map(_seller_match_key).isin(alvo)]
     if sku_set and "sku" in df.columns:
         df = df[df["sku"].astype(str).isin({str(s) for s in sku_set})]
     if df.empty:

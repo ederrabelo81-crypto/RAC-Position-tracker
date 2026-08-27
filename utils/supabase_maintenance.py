@@ -298,12 +298,27 @@ def normalize_platforms_sellers_in_supabase(
     try:
         client.table("coletas").select(",".join(colunas)).limit(1).execute()
     except Exception as exc:
-        colunas = ["seller"]
-        logger.warning(
-            f"[Supabase] `buy_box_seller` indisponível ({exc}) — normalizando "
-            "apenas `seller`. Aplique docs/migrations/003_add_buybox_seller_"
-            "columns.sql para cobrir a buy box."
-        )
+        # Só "coluna não existe" autoriza seguir sem `buy_box_seller`. Timeout,
+        # 401 ou queda de rede NÃO provam ausência de coluna, e degradar neles
+        # pularia a normalização da buy box em silêncio — some trabalho sem
+        # ninguém ficar sabendo. Nesses casos mantém as duas colunas e deixa a
+        # varredura falhar de verdade, contabilizada em `errors`.
+        texto = str(exc).lower()
+        if "buy_box_seller" in texto and (
+            "does not exist" in texto or "42703" in texto or "schema cache" in texto
+        ):
+            colunas = ["seller"]
+            logger.warning(
+                f"[Supabase] `buy_box_seller` não existe nesta base ({exc}) — "
+                "normalizando apenas `seller`. Aplique "
+                "docs/migrations/003_add_buybox_seller_columns.sql para cobrir "
+                "a buy box."
+            )
+        else:
+            logger.warning(
+                f"[Supabase] Probe de `buy_box_seller` falhou sem provar "
+                f"ausência da coluna ({exc}) — seguindo com as duas colunas."
+            )
 
     # {coluna: {valor_bruto: nº de linhas}} — só o que muda ao canonizar.
     pending: Dict[str, Dict[str, int]] = {col: {} for col in colunas}
