@@ -35,7 +35,6 @@ from utils.text import parse_price, parse_rating, parse_review_count
 from utils.amazon_sellers import (
     AmazonSellerCache,
     extract_seller_from_pdp,
-    is_amazon_self,
     pdp_budget,
     resolution_enabled,
 )
@@ -378,36 +377,3 @@ class AmazonBestSellers(BestSellerSource):
                 f"{type(exc).__name__}: {exc}"
             )
             return None
-
-    def _parse(self, html: str, offset: int) -> List[BestSellerItem]:
-        soup = BeautifulSoup(html, "html.parser")
-        cards = self._detectar_itens(soup)
-        itens: List[BestSellerItem] = []
-
-        for idx, card in enumerate(cards):
-            titulo = self._extrair_titulo(card)
-            if not titulo:
-                continue
-
-            rank_tag = self._primeiro(card, _RANK_SELECTORS)
-            rank = None
-            if rank_tag is not None:
-                achado = re.search(r"\d+", rank_tag.get_text(strip=True))
-                rank = int(achado.group()) if achado else None
-
-            preco_tag = self._primeiro(card, _PRICE_SELECTORS)
-            rating_tag = self._primeiro(card, _RATING_SELECTORS)
-
-            itens.append(BestSellerItem(
-                rank=rank if rank is not None else offset + idx + 1,
-                titulo=titulo,
-                preco=parse_price(preco_tag.get_text(" ", strip=True)) if preco_tag else None,
-                rating=parse_rating(rating_tag.get_text(" ", strip=True)) if rating_tag else None,
-                reviews=self._extrair_reviews(card),
-                sku_plataforma=self._extrair_asin(card),
-                url_produto=self._extrair_url(card),
-                # A lista de mais vendidos é orgânica por construção: a Amazon
-                # não vende posição nela. `False`, não `None`.
-                patrocinado=False,
-            ))
-        return itens

@@ -262,10 +262,18 @@ SOURCES: Dict[str, SourceSpec] = {
         # O ESCOPO agora é reproduzível na tela; a ORDEM por vendas, porém, ainda
         # só existe via o índice Algolia (a UI da Leroy não expõe sort por
         # vendas), então a prova de ordenação (`parametros_ordenacao`) segue
-        # vivendo no `endpoint` — o índice `production_products`, com query vazia
-        # e facetFilters aplicados à categoria Split Inverter.
+        # vivendo no `endpoint` — a RÉPLICA de vendas
+        # `production_products_most_sales`, sempre registrada em `_coletar`.
+        #
+        # ⚠️ NÃO afrouxar para `production_products`: a Algolia ordena por
+        # RÉPLICA de índice, não por parâmetro de sort, e `production_products`
+        # é a réplica PADRÃO (relevância). Pior, ela é SUBSTRING do nome da
+        # réplica de vendas — `ordenacao_comprovada` faz `in`, então aceitar o
+        # nome curto faz o portão passar para os DOIS índices e a coleta pode
+        # gravar relevância dentro da série de mais vendidos sem ninguém ver.
+        # Foi exatamente essa a regressão de 26/08/2026.
         url_publica=LEROY_CATEGORIA_URL,
-        parametros_ordenacao=("production_products",),
+        parametros_ordenacao=("production_products_most_sales", "most_sales"),
         mecanica=MECANICA_DECLARADO,
         base_vendidos=None,
         itens_esperados=30,
