@@ -1,0 +1,67 @@
+name: Testes
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Suíte de testes em todo Pull Request e em todo push para main.
+#
+# Por que existe (26/08/2026): até aqui NENHUM workflow rodava em PR — os três
+# existentes são cron ou dispatch manual (collect, pricetrack_daily, watchdog).
+# Foi assim que as PRs #322/#323 entraram em main com um `_parse` duplicado na
+# Amazon e um índice Algolia sombreado na Leroy que trocava a lista de "mais
+# vendidos" por "relevância": código anexado ao fim do arquivo, última
+# definição vencendo em silêncio, e nada rodando para reclamar.
+#
+# NÃO precisa de secret nenhum: a suíte é hermética. Os testes de integração
+# se auto-pulam sem SUPABASE_URL/SUPABASE_KEY no ambiente, e é assim que deve
+# continuar — PR de fork não recebe secret, e um teste que só passa com
+# credencial vira falha permanente para quem contribui de fora.
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Push novo na mesma branch cancela o run anterior: o resultado do commit
+# antigo não interessa mais e o runner fica livre.
+concurrency:
+  group: testes-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  pytest:
+    # `name` de job não enxerga o contexto `env` — daí a versão literal aqui.
+    name: pytest (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Instalar dependências
+        # Os browsers do Playwright ficam DE FORA de propósito: nenhum teste
+        # abre browser (os scrapers entram por dublê), e `playwright install`
+        # somaria minutos de download a uma suíte que roda em ~1 min. Se algum
+        # teste passar a exigir browser de verdade, ele deve ser marcado e
+        # pulado aqui — não é este job que muda.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Rodar a suíte
+        # Os mesmos três caminhos que o CLAUDE.md manda rodar localmente.
+        run: pytest tests/ pricetrack_api/tests pricetrack_importer/tests -q

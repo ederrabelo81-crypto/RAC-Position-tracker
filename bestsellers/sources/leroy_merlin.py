@@ -86,16 +86,6 @@ _FACET_KEY_RE = re.compile(r"categ|tipo|type|famil|hierarch|departa|classe|segme
 # que porventura tenham nome parecido com categoria mas carreguem prosa.
 _FACET_VALOR_MAX = 120
 
-# Novo endpoint Algolia para coleta via página web (ordenar por "Mais vendidos")
-# A coleta agora usa o índice production_products com ordenação explícita
-_INDICE_MAIS_VENDIDOS = "production_products"
-_URL_ALGOLIA = (
-    f"https://{_ALGOLIA_APP_ID}-dsn.algolia.net"
-    f"/1/indexes/{_INDICE_MAIS_VENDIDOS}/query"
-    f"?x-algolia-application-id={_ALGOLIA_APP_ID}"
-    f"&x-algolia-api-key={_ALGOLIA_API_KEY}"
-)
-
 
 class _IndiceInexistente(RuntimeError):
     """
