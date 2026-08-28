@@ -53,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from loguru import logger
 
 from config import ACTIVE_PLATFORMS
+from utils.pipeline_registry import PLATFORM_KEY_TO_NOME
 from utils.supabase_client import _get_client
 from utils.text import now_brt
 
@@ -224,14 +225,13 @@ DEALER_CONFIGS = _load_dealer_configs()
 #   Fechamento (1 página, prioridade alta):        menos registros
 # Plataformas críticas (`critical=True`) entram no exit code 1 se falharem.
 
+# Reexportado do registro da pipeline: o mapa passou a ter dois leitores (este
+# watchdog de DADO e o supervisor de EXECUÇÃO em scripts/pipeline_watch.py) e
+# duas cópias divergiriam na primeira plataforma nova, em silêncio.
 PLATFORM_NAME_MAP: Dict[str, str] = {
-    "ml":              "Mercado Livre",
-    "amazon":          "Amazon",
-    "magalu":          "Magalu",
-    "google_shopping": "Google Shopping",
-    "leroy":           "Leroy Merlin",
-    "casasbahia":      "Casas Bahia",
-    "shopee":          "Shopee",
+    chave: nome
+    for chave, nome in PLATFORM_KEY_TO_NOME.items()
+    if chave != "fast"  # Fast Shop está em stand-by (PerimeterX) desde Mai/2026
 }
 
 # Thresholds: (min_abertura, min_fechamento, critical)
@@ -387,7 +387,18 @@ def _offline_channels(
 # ---------------------------------------------------------------------------
 
 def _expected_platforms() -> List[str]:
-    """Lista nomes de plataformas esperadas hoje (ativas no config)."""
+    """Lista nomes de plataformas esperadas hoje (ativas no config).
+
+    Note:
+        Dealers ficam de fora enquanto ``ACTIVE_PLATFORMS["dealers"]`` for
+        False — e ficam mesmo quando a VM Oracle os coleta explicitamente (o
+        flag do config é só o default do CLI; ``--platforms dealers`` passa por
+        cima dele). Esse ponto cego é o motivo de a parada da VM em Ago/2026 não
+        ter gerado alerta nenhum. Quem cobra dealers hoje é o supervisor de
+        execução (`scripts/pipeline_watch.py`), pelo contrato do job
+        ``vm_coleta_manha`` em `utils/pipeline_registry.py` — que conta dealers
+        por EXCLUSÃO dos marketplaces e não depende deste flag.
+    """
     expected: List[str] = []
     for key, active in ACTIVE_PLATFORMS.items():
         if not active:

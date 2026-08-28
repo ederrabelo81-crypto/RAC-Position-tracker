@@ -11,8 +11,28 @@ name: PriceTrack Daily Import
 #   • upsert ON CONFLICT em pricetrack_daily
 # Logo, este workflow só precisa disparar o comando uma vez por dia.
 #
-# Schedule (UTC):
-#   09:00 UTC = 06:00 BRT  → importa a coleta de ONTEM (já fechada no PriceTrack)
+# Schedule (UTC) — ESCADA DE TRÊS TENTATIVAS (Ago/2026):
+#   06:20 UTC = 03:20 BRT  → 1ª tentativa (com --force: fecha o dia)
+#   07:20 UTC = 04:20 BRT  → 2ª tentativa (no-op se D-1 já entrou)
+#   08:20 UTC = 05:20 BRT  → 3ª tentativa + auto-heal dos últimos 14 dias
+#
+# Por que três, e por que tão cedo
+# --------------------------------
+# Estava em `0 9 * * *` (06:00 BRT), uma hora antes do briefing das 07:00. Cron
+# do Actions é *best effort* e a fila do topo da hora é a mais disputada: a
+# série de agosto/2026 mostra este workflow começando 09:16, 09:29, 09:50,
+# 11:11, 12:11 UTC — e, em 27/08, **19:18 UTC**. Naquele dia o briefing das
+# 07:00 publicou preço de D-2 e nada avisou, porque o job não tinha falhado:
+# ele ainda não tinha rodado.
+#
+# Uma tentativa uma hora antes do consumidor não tem folga nenhuma para um
+# agendamento que atrasa horas. Três tentativas espaçadas, a partir das 03:20,
+# dão ~3h40 de margem até o briefing, e o minuto :20 evita a fila do minuto 0.
+# O script já é idempotente (`date_exists()` pula data presente), então as
+# tentativas 2 e 3 custam segundos quando a 1ª funcionou.
+#
+# A rede de segurança final é o `pipeline_guard.yml` às 06:35 BRT: se as três
+# tentativas falharem, ele reimporta na hora e avisa ANTES da publicação.
 #
 # Variáveis obrigatórias (Settings → Secrets and variables → Actions):
 #   PRICETRACK_API_KEY  —  token da API do PriceTrack (Configurações → API)
@@ -27,7 +47,9 @@ name: PriceTrack Daily Import
 
 on:
   schedule:
-    - cron: '0 9 * * *'    # 06:00 BRT — importa o dia anterior
+    - cron: '20 6 * * *'   # 03:20 BRT — 1ª tentativa (força e fecha o dia)
+    - cron: '20 7 * * *'   # 04:20 BRT — 2ª tentativa (no-op se D-1 já entrou)
+    - cron: '20 8 * * *'   # 05:20 BRT — 3ª tentativa + auto-heal de 14 dias
   workflow_dispatch:
     inputs:
       start:
@@ -47,9 +69,14 @@ env:
   PYTHON_VERSION: '3.11'
   TZ: America/Sao_Paulo
 
-# Evita dois imports concorrentes gravando na mesma tabela
+# Grupo COMPARTILHADO com o `pipeline_guard.yml`: a organização tem 3 slots de
+# export no PriceTrack, e o `Heal recent gaps` do 3º degrau varre até 14 datas.
+# Se ele ainda estiver rodando quando o portão das 06:35 tentar sua cura, os
+# dois clientes disputam os mesmos slots e um dos dois falha — justamente a
+# cura de emergência, que é a última rede antes do briefing. Com o mesmo grupo,
+# o portão espera o heal terminar em vez de brigar com ele.
 concurrency:
-  group: pricetrack-daily
+  group: pricetrack-exports
   cancel-in-progress: false
 
 jobs:
@@ -110,26 +137,57 @@ jobs:
           START="${START:-$YESTERDAY}"
           END="${END:-$YESTERDAY}"
 
-          # O run agendado SEMPRE força: um import intra-dia MANUAL
+          # Qual degrau da escada é este run? O GitHub não diz qual cron
+          # disparou, então a hora UTC é o que separa os três — e ela é o dado
+          # certo mesmo com atraso de fila: um run das 06:20 que só começa às
+          # 07:40 continua sendo a 1ª tentativa em intenção, mas já se comporta
+          # como a 2ª, que é exatamente o desejado (não reforçar um dia que a
+          # 1ª tentativa atrasada pode ter acabado de gravar).
+          HORA=$(date -u +%H)
+          DEGRAU="1"
+          if [ "$HORA" = "07" ]; then DEGRAU="2"; fi
+          if [ "$HORA" -ge 8 ] 2>/dev/null; then DEGRAU="3"; fi
+
+          # --force só no PRIMEIRO degrau. Motivo: um import intra-dia MANUAL
           # (`pricetrack_import_linux.sh today`) pode ter gravado linhas
-          # provisórias para o dia (parciais, só manhã/tarde coletadas até ali).
-          # Sem --force, date_exists() pularia esse D-1 e a versão parcial
-          # ficaria como definitiva. Forçar re-importa o dia já fechado e
-          # sobrescreve (upsert) a provisória pela completa — também auto-cura
-          # primeiros imports parciais.
+          # provisórias para o dia (parciais). Sem --force, date_exists()
+          # pularia esse D-1 e a parcial ficaria como definitiva — por isso o
+          # 1º degrau força e fecha o dia.
+          # Nos degraus 2 e 3, forçar seria reimportar de novo um dia que já
+          # entrou completo: três exports por dia em vez de um, gastando os
+          # 3 slots de export da organização à toa. Sem --force eles são
+          # no-op de segundos e só agem se o degrau anterior falhou — que é a
+          # razão de a escada existir.
           FORCE_FLAG=""
-          if [ "$FORCE" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "$FORCE" = "true" ]; then
+            FORCE_FLAG="--force"
+          elif [ "${{ github.event_name }}" = "schedule" ] && [ "$DEGRAU" = "1" ]; then
             FORCE_FLAG="--force"
           fi
 
           echo "start=$START"           >> "$GITHUB_OUTPUT"
           echo "end=$END"               >> "$GITHUB_OUTPUT"
           echo "force_flag=$FORCE_FLAG" >> "$GITHUB_OUTPUT"
+          echo "degrau=$DEGRAU"         >> "$GITHUB_OUTPUT"
 
           echo "=== Parâmetros do import ==="
-          echo "  Start: $START"
-          echo "  End  : $END"
-          echo "  Force: ${FORCE:-false}"
+          echo "  Start : $START"
+          echo "  End   : $END"
+          echo "  Degrau: $DEGRAU de 3 (hora UTC $HORA)"
+          echo "  Force : ${FORCE_FLAG:-não}"
+
+      # ── 4b. Batida de ponto: começou ──────────────────────────────────────
+      # O livro-razão (`pipeline_heartbeat`, migração 015) é o que permite ao
+      # supervisor afirmar "este job NÃO rodou" — a única coisa que nenhum
+      # monitor do projeto sabia afirmar, e a causa do briefing de D-2 em 27/08.
+      - name: Heartbeat — started
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python -m utils.heartbeat --job gh_pricetrack_d1 --status STARTED \
+            --detail "degrau ${{ steps.params.outputs.degrau }}/3"
 
       # ── 5. Import PriceTrack → Supabase ────────────────────────────────────
       - name: Run PriceTrack API import
@@ -166,8 +224,11 @@ jobs:
       # ── 5b. Auto-heal: preenche buracos dos últimos 14 dias (só agendado) ──
       # Evita que falhas transitórias da API deixem datas faltando no histórico
       # (ex.: 14/01, 18-20/02, 05/05, 08/05 — gaps detectados em 02/06/2026).
+      # Só no ÚLTIMO degrau da escada: varrer 14 dias três vezes por dia
+      # gastaria os 3 slots de export da organização para responder a mesma
+      # pergunta, e é justamente o slot ocupado que trava o import do dia.
       - name: Heal recent gaps
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' && steps.params.outputs.degrau == '3'
         # Varre até 14 datas em lotes de 3 (`max_concurrent_exports`), então o
         # pior caso por poll seria ceil(14/3) x 45min ≈ 3h45 — muito além do
         # job. Quem segura o passo é o par abaixo:
@@ -202,6 +263,56 @@ jobs:
           GAP_END=$(date -u -d 'yesterday' +%F)
           python scripts/pricetrack_api_import.py \
             --start "$GAP_START" --end "$GAP_END" --gaps-only
+
+      # ── 5c. Batida de ponto: terminou ─────────────────────────────────────
+      # `if: always()` de propósito: o supervisor precisa saber que o job
+      # tentou e falhou tanto quanto precisa saber que ele deu certo. Sem a
+      # batida de fracasso, uma falha vira indistinguível de "não rodou".
+      # O status vem da CONTAGEM em `pricetrack_daily`, não do exit code.
+      # `scripts/pricetrack_api_import.py::main()` descarta o retorno de `run()`
+      # e sai 0 mesmo quando o export não trouxe nada (`no_data`, resultado
+      # vazio, falha de uma data). Derivar SUCCESS de `job.status` marcaria como
+      # execução saudável um dia que continua sem linha — e o portão das 06:35
+      # confiaria nesse verde. A verdade é o destino.
+      - name: Heartbeat — finished
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          JOB_STATUS: ${{ job.status }}
+          DEGRAU: ${{ steps.params.outputs.degrau }}
+          D1: ${{ steps.params.outputs.start }}
+        run: |
+          LINHAS=$(python -c "
+          import os, sys
+          sys.path.insert(0, '.')
+          from utils.supabase_client import _get_client
+          c = _get_client()
+          if c is None:
+              print(-1); sys.exit(0)
+          try:
+              r = c.table('pricetrack_daily').select('id', count='exact') \
+                   .eq('collection_date', os.environ['D1']).limit(1).execute()
+              print(r.count or 0)
+          except Exception:
+              print(-1)
+          " 2>/dev/null | tail -1)
+          LINHAS=${LINHAS:--1}
+
+          if [ "$JOB_STATUS" != "success" ]; then
+            STATUS=FAILED
+          elif [ "$LINHAS" = "0" ]; then
+            # Saiu 0 e o dia continua vazio: execução sem resultado.
+            STATUS=PARTIAL
+          else
+            STATUS=SUCCESS
+          fi
+
+          ARGS=(--job gh_pricetrack_d1 --status "$STATUS")
+          if [ "$LINHAS" != "-1" ]; then ARGS+=(--rows "$LINHAS"); fi
+          python -m utils.heartbeat "${ARGS[@]}" \
+            --detail "degrau ${DEGRAU}/3 — D-1 ${D1} — ${LINHAS} linha(s) em pricetrack_daily"
 
       # ── 6. Salva logs como artefato ────────────────────────────────────────
       - name: Upload logs

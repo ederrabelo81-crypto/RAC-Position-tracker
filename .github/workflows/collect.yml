@@ -72,19 +72,28 @@ jobs:
       # ── 2. Parâmetros do run (schedule vs. manual) ─────────────────────────
       - name: Set run parameters
         id: params
+        env:
+          # O cron que AGENDOU o run — não a hora em que ele conseguiu começar.
+          # Um run das 13:00 UTC que entra na fila e só arranca às 18:20 (esta
+          # série tem atrasos rotineiros de 35 a 80 minutos, e o PriceTrack já
+          # teve de 10h) era classificado pelo relógio como Fechamento: gravava
+          # o turno errado no dado E batia ponto como o job errado, deixando a
+          # Abertura constar como "não executou" enquanto ela rodava.
+          CRON: ${{ github.event.schedule }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            HOUR=$(date -u +%H)
-            # Cron das 13:00 UTC = Abertura; das 00:00 UTC = Fechamento
-            if [ "$HOUR" -ge 12 ] && [ "$HOUR" -lt 18 ]; then
-              TURNO="Abertura"
-              PAGES="2"
-              PRIORITY="alta media"
-            else
-              TURNO="Fechamento"
-              PAGES="1"
-              PRIORITY="alta"
-            fi
+            case "$CRON" in
+              '0 13 * * *')
+                TURNO="Abertura"
+                PAGES="2"
+                PRIORITY="alta media"
+                ;;
+              *)
+                TURNO="Fechamento"
+                PAGES="1"
+                PRIORITY="alta"
+                ;;
+            esac
             # Só o que coleta de um IP de datacenter. Fora daqui, e por quê:
             #   ml, magalu, shopee, casasbahia → exigem IP residencial e sessão
             #     logada; rodam no notebook por scripts/collect_local_authenticated.bat.
@@ -101,6 +110,17 @@ jobs:
             PRIORITY="${{ github.event.inputs.priority }}"
           fi
 
+          # Id do job no livro-razão de execução (utils/pipeline_registry.py).
+          # É o que permite ao supervisor dizer "a coleta da Abertura não
+          # rodou" em vez de só "não achei dado" — que é indistinguível de
+          # "rodou e veio vazio".
+          case "$TURNO" in
+            Abertura)   JOB_ID="gh_collect_abertura"   ;;
+            Fechamento) JOB_ID="gh_collect_fechamento" ;;
+            *)          JOB_ID=""                      ;;  # manual não bate ponto
+          esac
+
+          echo "job_id=$JOB_ID"     >> "$GITHUB_OUTPUT"
           echo "turno=$TURNO"       >> "$GITHUB_OUTPUT"
           echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
           echo "pages=$PAGES"       >> "$GITHUB_OUTPUT"
@@ -179,6 +199,7 @@ jobs:
 
       # ── 8. Coleta Python ───────────────────────────────────────────────────
       - name: Run Python collector (xvfb + MAGALU_HEADLESS=false)
+        id: collect
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -192,6 +213,10 @@ jobs:
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           MAGALU_HEADLESS: 'false'
           CI: 'true'
+          # main.py bate o ponto (início/fim, contagem por plataforma e quais
+          # vieram ZERADAS) quando esta variável está definida. Vazia em run
+          # manual: execução avulsa não é um job agendado que alguém cobra.
+          RAC_JOB_ID: ${{ steps.params.outputs.job_id }}
         run: |
           PLATFORMS="${{ steps.params.outputs.platforms }}"
           PAGES="${{ steps.params.outputs.pages }}"
@@ -241,6 +266,34 @@ jobs:
             logs/dealer_debug_*.html
           retention-days: 7
           if-no-files-found: ignore
+
+      # ── 10b. Batida de fracasso do JOB (não do main.py) ───────────────────
+      # main.py já bate SUCCESS/PARTIAL/FAILED por conta própria, com contagem
+      # por plataforma e a lista das ZERADAS. Este passo cobre só o caso em que
+      # ele NÃO chegou a bater: falha de dependência antes da coleta,
+      # cancelamento, runner perdido.
+      #
+      # A condição exclui `steps.collect.outcome == 'failure'` de propósito: se
+      # o main.py rodou e saiu != 0, ele já gravou um FAILED com o motivo real
+      # ("persistência falhou: upload Supabase"), e `ultimas_batidas()` devolve
+      # sempre a batida MAIS RECENTE — um segundo FAILED genérico aqui apagaria
+      # esse diagnóstico do alerta e deixaria só "o job falhou".
+      #
+      # Runner morto e timeout de 5h continuam sem passo nenhum: ali o STARTED
+      # do main.py fica sozinho e o supervisor reporta TRAVADO depois do
+      # deadline — veredito correto e distinto de "não executou".
+      - name: Heartbeat — job failure
+        if: >-
+          (failure() || cancelled())
+          && steps.params.outputs.job_id != ''
+          && steps.collect.outcome != 'failure'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python -m utils.heartbeat --job "${{ steps.params.outputs.job_id }}" \
+            --status FAILED --detail "job do Actions falhou antes de concluir"
 
       # ── 11. Alerta de falha ────────────────────────────────────────────────
       # Doze coletas agendadas morreram entre 26 e 31/07/2026 e o único sinal

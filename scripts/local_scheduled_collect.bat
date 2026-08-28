@@ -57,6 +57,10 @@ goto :legacy
 
 :slot_manha
 set "SLOT=manha"
+:: Id do job no livro-razao de execucao (utils\pipeline_registry.py): main.py
+:: bate ponto de inicio e fim, e o supervisor consegue dizer "o PC coletor nao
+:: rodou" em vez de acusar 4 plataformas criticas caidas.
+set "RAC_JOB_ID=local_manha"
 set "PAGES=2"
 set "PRIORITY=alta media"
 set "WIN_MIN=9"
@@ -65,6 +69,7 @@ goto :guarded_run
 
 :slot_noite
 set "SLOT=noite"
+set "RAC_JOB_ID=local_noite"
 set "PAGES=1"
 set "PRIORITY=alta"
 set "WIN_MIN=20"
@@ -73,6 +78,7 @@ goto :guarded_run
 
 :slot_bestsellers
 set "SLOT=bestsellers"
+set "RAC_JOB_ID=local_bestsellers"
 set "WIN_MIN=9"
 set "WIN_MAX=10"
 if exist "logs\coleta_bestsellers_%TODAY%.done" (

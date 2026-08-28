@@ -29,7 +29,7 @@ import random
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
@@ -577,6 +577,18 @@ def main() -> int:
         f"Headless: {args.headless}"
     )
 
+    # Fixada AGORA e reutilizada no fim: ver a nota sobre a meia-noite em
+    # `_bater_ponto`. `_data_str` só é resolvida mais abaixo, então a data do
+    # run é capturada aqui, no primeiro instante em que ela é conhecida.
+    from utils.text import now_brt as _now_brt
+    _RUN_DATA_REF = _now_brt().date()
+
+    _bater_ponto(
+        "STARTED",
+        detalhe=f"plataformas: {' '.join(platform_names)}",
+        data_ref=_RUN_DATA_REF,
+    )
+
     # Visibilidade do modo Chrome local (ML/Shopee/Magalu/Casas Bahia). Sem essa
     # confirmação, um RAC_LOCAL_CHROME não-setado (ex.: `set` no PowerShell, que
     # NÃO exporta env — use `$env:RAC_LOCAL_CHROME="1"`) passava despercebido e a
@@ -811,13 +823,99 @@ def main() -> int:
             + ". Os dados coletados estão nos arquivos gravados em "
             f"{args.output_dir}/ (inclusive raw_{RUN_ID}.csv)."
         )
+        _bater_ponto(
+            "FAILED", all_records, platform_names,
+            detalhe="persistência falhou: " + ", ".join(falhas_persistencia),
+            data_ref=_RUN_DATA_REF,
+        )
         return 1
+
+    # PARTIAL quando o run terminou limpo mas trouxe zero linha: é execução sem
+    # resultado, e o supervisor precisa enxergar isso diferente de sucesso.
+    _bater_ponto(
+        "SUCCESS" if all_records else "PARTIAL",
+        all_records,
+        platform_names,
+        data_ref=_RUN_DATA_REF,
+    )
     return 0
 
 
 # ---------------------------------------------------------------------------
 # Demo: executa Mercado Livre com 1 keyword, 1 página (teste rápido)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Batida de ponto (livro-razão de execução)
+# ---------------------------------------------------------------------------
+# Instrumentar AQUI, e não em cada agendador, é o que faz a mesma batida valer
+# para os três executores: o `collect.yml` do Actions, o cron da VM Oracle e o
+# Task Scheduler do PC coletor todos chamam `main.py`. Cada lançador só precisa
+# exportar RAC_JOB_ID com o id do job em `utils/pipeline_registry.py`.
+#
+# Sem RAC_JOB_ID a função é no-op: rodar `python main.py` na mão não deve sujar
+# o livro-razão com execuções que ninguém agendou nem vai cobrar.
+
+def _bater_ponto(
+    status: str,
+    registros: Optional[List[Dict[str, Any]]] = None,
+    plataformas_pedidas: Optional[List[str]] = None,
+    detalhe: str = "",
+    data_ref: Optional[date] = None,
+) -> None:
+    """Registra a execução no livro-razão, se este run pertence a um job agendado.
+
+    Args:
+        status: STARTED | SUCCESS | PARTIAL | FAILED.
+        registros: Linhas coletadas, para contar total e por plataforma.
+        plataformas_pedidas: Plataformas solicitadas no run — comparadas com as
+            que trouxeram dado, para nomear no detalhe as que vieram ZERADAS.
+            É o sinal que faltava: Google Shopping passou ~1 mês vazia com o
+            workflow verde, porque plataforma sem resultado não derruba o job.
+        detalhe: Texto adicional.
+        data_ref: Dia BRT ao qual a execução pertence. Precisa ser o MESMO nas
+            batidas de início e de fim: a coleta da noite começa 21:00 e pode
+            cruzar a meia-noite, e aí o STARTED cairia num dia e o SUCCESS no
+            seguinte — o supervisor leria o run original como TRAVADO (começou
+            e nunca fechou) e ainda cobraria um job fantasma no dia novo.
+
+    Nunca levanta: observabilidade não pode derrubar coleta.
+    """
+    job_id = os.getenv("RAC_JOB_ID", "").strip()
+    if not job_id:
+        return
+    try:
+        from utils.heartbeat import bater
+
+        linhas = len(registros) if registros is not None else None
+        partes: List[str] = []
+        if registros is not None:
+            from collections import Counter
+            por_plataforma = Counter(r.get("Plataforma", "?") for r in registros)
+            if por_plataforma:
+                partes.append(
+                    ", ".join(f"{nome}={qtd}" for nome, qtd in sorted(por_plataforma.items()))
+                )
+            # Fora do `if por_plataforma`: quando TODAS as plataformas voltam
+            # vazias é que a lista de zeradas mais importa — era exatamente o
+            # caso em que ela deixava de ser calculada, e o alerta dizia
+            # "0 linhas" sem dizer de quem.
+            if plataformas_pedidas:
+                nomes_com_dado = set(por_plataforma)
+                zeradas = [
+                    SCRAPER_REGISTRY[p].platform_name
+                    for p in plataformas_pedidas
+                    if p in SCRAPER_REGISTRY
+                    and SCRAPER_REGISTRY[p].platform_name not in nomes_com_dado
+                ]
+                if zeradas:
+                    partes.append("ZERADAS: " + ", ".join(zeradas))
+        if detalhe:
+            partes.append(detalhe)
+        bater(job_id, status, rows=linhas, detail=" | ".join(partes), data_ref=data_ref)
+    except Exception as exc:
+        logger.debug(f"[Heartbeat] Batida '{status}' não registrada: {exc}")
+
 
 def demo() -> None:
     """
