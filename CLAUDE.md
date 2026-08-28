@@ -147,6 +147,47 @@ PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1
 
 ---
 
+### Confiabilidade da pipeline — quem rodou, quem não rodou (Ago/2026) 🆕
+
+**Mapa completo:** `docs/MAPA_COLETAS.md` (o que roda no PC, no Actions e na VM,
+e por quê). **Contrato em código:** `utils/pipeline_registry.py`.
+
+Todo monitor do projeto perguntava "o dado chegou?". Nenhum perguntava **"quem
+prometeu rodar e não rodou?"** — e três falhas de agosto passaram por essa
+fresta: o import do PriceTrack começou 13h atrasado e o briefing das 07:00 saiu
+com preço de D-2; Google Shopping ficou ~1 mês zerada com `collect.yml` verde em
+221 runs; a coleta de dealers da VM Oracle parou sem que nada soubesse que
+aquela máquina existia.
+
+```bash
+python scripts/pipeline_watch.py            # quem não bateu ponto hoje
+python scripts/briefing_gate.py             # o dado de D-1 está fresco?
+python scripts/pipeline_heal.py --dry-run   # o que a contenção faria
+```
+
+**Livro-razão (`pipeline_heartbeat`, migração 015):** cada executor grava início
+e fim. O lançador só exporta `RAC_JOB_ID`; `main.py` e `collect_bestsellers.py`
+batem o ponto sozinhos, com contagem por plataforma e a lista das que vieram
+**ZERADAS**. Ausência de batida até o `deadline_min` do contrato = **NÃO
+EXECUTOU** (dead man's switch: o silêncio é que dispara o alarme).
+
+**Regras duras:**
+1. Uma plataforma tem **um dono por turno** em `JOBS`. Órfã ninguém cobra (foi o
+   caso dos dealers); com dois donos, o mesmo buraco gera dois alertas — e
+   alerta duplicado é o primeiro passo para alerta ignorado.
+   `tests/test_pipeline_registry.py` reprova o PR nos dois casos.
+2. **Cron do Actions é best effort.** Nunca agende em minuto `0` a menos de duas
+   horas de quem consome o dado. O PriceTrack virou escada de três tentativas
+   (03:20/04:20/05:20 BRT) + portão às 06:35.
+3. **Coleta de marketplace não é auto-disparada.** No executor errado devolve
+   zero linha com cara de sucesso — o próprio modo de falha que isto combate.
+   Cura automática só para o que é idempotente, barato e do lado certo da rede
+   (na prática: reimport do PriceTrack).
+4. **Batida de ponto nunca derruba coleta.** Falha do livro-razão é absorvida e
+   espelhada em `logs/heartbeat.jsonl`.
+
+---
+
 ## Table of Contents
 
 1. [Session Start Protocol](#session-start-protocol)
@@ -887,7 +928,14 @@ python scripts/collect_bestsellers.py --import arquivo.xlsx  # Backfill históri
 # Dashboard
 streamlit run app.py
 
-# Validação diária — relatório PASS/FAIL por plataforma no Telegram
+# Supervisão de EXECUÇÃO — quem prometeu rodar e não rodou (docs/MAPA_COLETAS.md)
+python scripts/pipeline_watch.py                  # varredura + alerta acionável
+python scripts/pipeline_watch.py --no-notify --json logs/pipeline_status.json
+python scripts/briefing_gate.py                   # portão de frescor do briefing das 07:00
+python scripts/briefing_gate.py --json --curar    # verifica e reimporta o que faltar
+python scripts/pipeline_heal.py --dry-run         # contenção: o que seria curado
+
+# Validação diária de DADO — relatório PASS/FAIL por plataforma no Telegram
 python scripts/daily_status_check.py              # Hoje, ambos turnos
 python scripts/daily_status_check.py --turno Abertura
 python scripts/daily_status_check.py --data 2026-05-14 --no-notify
@@ -1073,6 +1121,7 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 
 ---
 
-*Last updated: August 27, 2026 (v5.0)*  
-*Latest changes: Nome canônico de seller (`utils/seller_names.py`) — as grafias que cada marketplace impõe ao mesmo dealer colapsam na coleta, no backfill do Supabase e na leitura do dashboard; o share de buy box deixa de fatiar um lojista em várias linhas*  
+*Last updated: August 28, 2026 (v5.1)*  
+*Latest changes: Confiabilidade da pipeline — livro-razão de execução (`pipeline_heartbeat`), supervisor `pipeline_watch.py`, portão do briefing `briefing_gate.py`, contenção `pipeline_heal.py` e o mapa `docs/MAPA_COLETAS.md`; a ausência de execução virou evento*  
+*Anterior: Nome canônico de seller (`utils/seller_names.py`) — as grafias que cada marketplace impõe ao mesmo dealer colapsam na coleta, no backfill do Supabase e na leitura do dashboard; o share de buy box deixa de fatiar um lojista em várias linhas*  
 *Maintained by: RAC Position Tracker Team*

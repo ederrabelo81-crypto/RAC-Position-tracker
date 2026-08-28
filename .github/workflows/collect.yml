@@ -101,6 +101,17 @@ jobs:
             PRIORITY="${{ github.event.inputs.priority }}"
           fi
 
+          # Id do job no livro-razão de execução (utils/pipeline_registry.py).
+          # É o que permite ao supervisor dizer "a coleta da Abertura não
+          # rodou" em vez de só "não achei dado" — que é indistinguível de
+          # "rodou e veio vazio".
+          case "$TURNO" in
+            Abertura)   JOB_ID="gh_collect_abertura"   ;;
+            Fechamento) JOB_ID="gh_collect_fechamento" ;;
+            *)          JOB_ID=""                      ;;  # manual não bate ponto
+          esac
+
+          echo "job_id=$JOB_ID"     >> "$GITHUB_OUTPUT"
           echo "turno=$TURNO"       >> "$GITHUB_OUTPUT"
           echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
           echo "pages=$PAGES"       >> "$GITHUB_OUTPUT"
@@ -192,6 +203,10 @@ jobs:
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           MAGALU_HEADLESS: 'false'
           CI: 'true'
+          # main.py bate o ponto (início/fim, contagem por plataforma e quais
+          # vieram ZERADAS) quando esta variável está definida. Vazia em run
+          # manual: execução avulsa não é um job agendado que alguém cobra.
+          RAC_JOB_ID: ${{ steps.params.outputs.job_id }}
         run: |
           PLATFORMS="${{ steps.params.outputs.platforms }}"
           PAGES="${{ steps.params.outputs.pages }}"
@@ -241,6 +256,21 @@ jobs:
             logs/dealer_debug_*.html
           retention-days: 7
           if-no-files-found: ignore
+
+      # ── 10b. Batida de fracasso do JOB (não do main.py) ───────────────────
+      # main.py já bate SUCCESS/PARTIAL/FAILED por conta própria. Este passo
+      # cobre o caso em que ele nem chega lá: runner morto, timeout de 5h,
+      # falha de dependência. Sem isto, um job assassinado fica indistinguível
+      # de um job que nunca foi agendado.
+      - name: Heartbeat — job failure
+        if: failure() && steps.params.outputs.job_id != ''
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python -m utils.heartbeat --job "${{ steps.params.outputs.job_id }}" \
+            --status FAILED --detail "job do Actions falhou antes de concluir"
 
       # ── 11. Alerta de falha ────────────────────────────────────────────────
       # Doze coletas agendadas morreram entre 26 e 31/07/2026 e o único sinal

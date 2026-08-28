@@ -10,6 +10,13 @@ cd "$PROJECT_DIR"
 source "$PROJECT_DIR/.venv/bin/activate"
 set -a; source "$PROJECT_DIR/.env"; set +a
 
+# Id do job no livro-razão de execução (utils/pipeline_registry.py). Com ele,
+# main.py bate ponto de início e fim — e o supervisor consegue afirmar "a VM
+# Oracle não rodou hoje" em vez de só "não achei dado de dealer", que é
+# indistinguível de "rodou e o site bloqueou". A coleta de dealers desta VM
+# parou em Ago/2026 e ninguém percebeu justamente por essa ambiguidade.
+export RAC_JOB_ID=vm_coleta_manha
+
 LOG="$PROJECT_DIR/logs/cron.log"
 mkdir -p "$PROJECT_DIR/logs"
 

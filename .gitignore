@@ -38,3 +38,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 ```
+# Espelho local do livro-razão de execução (utils/heartbeat.py) — é
+# diagnóstico da máquina, não dado de repositório.
+logs/heartbeat.jsonl
+logs/pipeline_status.json
+logs/pipeline_heal.json
+logs/briefing_gate.txt

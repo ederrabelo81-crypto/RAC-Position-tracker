@@ -57,6 +57,20 @@
 4. Leitura no painel: dashboard page 🥇 Mais Vendidos (`app.py`)
 5. Regra dura: ranking é ORDINAL — nunca vira share de mercado
 
+### "A collection did not run / the briefing got stale data / where should X run?"
+1. Load `docs/MAPA_COLETAS.md` (what runs on the PC, on Actions and on the VM,
+   and why — plus the alerting and containment design)
+2. Contract in code: `utils/pipeline_registry.py` (`JOBS`) — the single source
+   of truth for schedule, owner platform, deadline and remediation
+3. Commands:
+   - `python scripts/pipeline_watch.py` — who promised to run and did not
+   - `python scripts/briefing_gate.py` — is D-1 data actually fresh?
+   - `python scripts/pipeline_heal.py --dry-run` — what containment would do
+4. Ledger: `pipeline_heartbeat` (migration 015). Missing beat past the job
+   deadline = NOT EXECUTED — silence is what fires the alarm
+5. Hard rule: one owner per (platform, turno); an orphan platform is billed to
+   nobody (that is how dealers went unnoticed)
+
 ### "I need to work with PriceTrack data (price source of truth)"
 1. Load `docs/PRICETRACK_INSIGHTS.md` (pipeline + insight/improvement roadmap)
 2. Key files: `pricetrack_api/` (typed API client — see `pricetrack_api/README.md`),
@@ -113,6 +127,7 @@ docs/INDEX.md                              ← This file
 docs/QUICK_REFERENCE.md                    ← Fast lookups
 docs/COLETA_LOCAL_AUTENTICADA.md           ← Shopee/Magalu/CB no notebook (Chrome real logado) ⭐
 docs/AUTOMACAO_COLETAS_AUTENTICADAS.md     ← Legado: automation via CDP + sessions
+docs/MAPA_COLETAS.md                       ← Where each collection runs + execution monitoring ⭐
 docs/PRICETRACK_INSIGHTS.md                ← PriceTrack pipeline + insight roadmap
 docs/HISTORICO_DRIVE.md                    ← Cold history in Parquet (Google Drive)
 docs/PROMPT_COWORK_DRIVE.md                ← Cowork prompt: read the Drive instead of Supabase

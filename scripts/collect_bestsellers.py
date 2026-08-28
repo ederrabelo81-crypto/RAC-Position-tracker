@@ -31,11 +31,12 @@ Códigos de saída:
 """
 
 import argparse
+import os
 import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 from loguru import logger
@@ -122,12 +123,37 @@ def coletar(
 # Modos de execução
 # ---------------------------------------------------------------------------
 
+def _bater_ponto(status: str, linhas: Optional[int] = None, detalhe: str = "") -> None:
+    """Registra a coleta no livro-razão de execução, se ela foi agendada.
+
+    A tarefa RAC_Bestsellers exporta ``RAC_JOB_ID=local_bestsellers``; sem a
+    variável a função é no-op, para que uma execução manual não vire promessa
+    que ninguém fez. Nunca levanta: observabilidade não derruba coleta.
+
+    Args:
+        status: STARTED | SUCCESS | PARTIAL | FAILED.
+        linhas: Linhas gravadas no histórico do dia.
+        detalhe: Uma linha de diagnóstico (ex.: plataformas que falharam).
+    """
+    job_id = os.getenv("RAC_JOB_ID", "").strip()
+    if not job_id:
+        return
+    try:
+        from utils.heartbeat import bater
+
+        bater(job_id, status, rows=linhas, detail=detalhe)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug(f"[Heartbeat] Batida '{status}' não registrada: {exc}")
+
+
 def executar_coleta(args: argparse.Namespace) -> int:
     try:
         chaves = resolver_keys(args.plataformas)
     except ValueError as exc:
         logger.error(str(exc))
         return 2
+
+    _bater_ponto("STARTED", detalhe=f"{len(chaves)} lista(s)")
 
     agora = now_brt()
     data = args.data or agora.strftime("%Y-%m-%d")
@@ -141,10 +167,9 @@ def executar_coleta(args: argparse.Namespace) -> int:
         chaves, args.paginas, not args.no_headless, run_id, data, agora.strftime("%H:%M")
     )
     if not len(df):
-        logger.error(
-            "Nenhuma plataforma produziu dados. Motivos: "
-            + ("; ".join(f"{k}: {v}" for k, v in falhas.items()) or "desconhecido")
-        )
+        motivos = "; ".join(f"{k}: {v}" for k, v in falhas.items()) or "desconhecido"
+        logger.error(f"Nenhuma plataforma produziu dados. Motivos: {motivos}")
+        _bater_ponto("FAILED", 0, f"nenhuma lista coletou — {motivos}")
         return 1
 
     # CSV do dia: evidência BRUTA, com tudo o que foi coletado — inclusive o
@@ -172,6 +197,7 @@ def executar_coleta(args: argparse.Namespace) -> int:
             "Nada gravado no histórico — o CSV bruto do dia ficou salvo para "
             "diagnóstico."
         )
+        _bater_ponto("FAILED", 0, "todas as listas reprovadas no portão de ordenação")
         return 1
 
     master = storage.atualizar_historico(analisado, args.historico)
@@ -200,6 +226,13 @@ def executar_coleta(args: argparse.Namespace) -> int:
         _notificar(report.resumo_telegram(preparado_hoje, ocorrencias, n=args.top))
 
     _resumo_console(preparado_hoje, args.top)
+    # PARTIAL quando alguma lista esperada não veio: a série do dia existe, mas
+    # incompleta — e o supervisor precisa ver a diferença.
+    _bater_ponto(
+        "PARTIAL" if falhas else "SUCCESS",
+        int(len(analisado)),
+        ("falharam: " + ", ".join(sorted(falhas))) if falhas else "",
+    )
     return 0
 
 
