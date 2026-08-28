@@ -22,7 +22,9 @@ ATUALIZAÇÃO 09/mai/2026: Restaurada leaf-div como estratégia primária (COMMO
   aria-label rebaixado para último recurso; removido check hardcoded "Ar Condicionado".
 """
 
+import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
@@ -31,8 +33,9 @@ from bs4 import BeautifulSoup, Tag
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import MAX_PAGES, LOGS_DIR
+from config import MAX_PAGES, LOGS_DIR, PAGE_TIMEOUT
 from scrapers.base import BaseScraper
+from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
 from utils.brands import extract_brand
 from utils.text import parse_price, parse_rating, parse_review_count
 
@@ -141,6 +144,174 @@ class GoogleShoppingScraper(BaseScraper):
         self.captcha_hit: bool = False
         self._card_logged: bool = False
         self._cards_sem_seller: int = 0
+        # Modo Chrome real local (RAC_LOCAL_CHROME) — perfil residencial logado
+        # atacado via CDP. É o único caminho que o anti-bot do Google aceita em
+        # volume: o launch próprio do BaseScraper sobe um Chromium sem sessão e
+        # com fingerprint de automação, que leva reCAPTCHA de imediato.
+        self._local_active: bool = False
+        self._local_browser: Optional[Any] = None
+        # Warm-up da home do Google roda uma vez por sessão (carrega consent +
+        # cookies quentes antes de bater na SERP de shopping).
+        self._google_warmed: bool = False
+
+    # ------------------------------------------------------------------
+    # Browser: Chrome real local via CDP (RAC_LOCAL_CHROME) ou launch próprio
+    # ------------------------------------------------------------------
+
+    def _launch(self) -> None:
+        """
+        Preferência no notebook: Chrome real logado compartilhado
+        (``RAC_LOCAL_CHROME``), atacado via CDP. O perfil residencial com
+        conta Google e cookies de consentimento já aceitos é o antídoto ao
+        reCAPTCHA — um Chromium recém-aberto pelo Playwright (o launch padrão
+        do BaseScraper) é barrado logo na primeira keyword, mesmo com stealth.
+
+        Sem o modo local, cai no launch padrão do BaseScraper (VM/Actions
+        seguem no caminho antigo — sujeito a reCAPTCHA, sem regressão).
+        """
+        if is_local_chrome_enabled():
+            lb = get_local_browser()
+            if lb is not None:
+                page = lb.new_page()
+                if page is not None:
+                    self._local_browser = lb
+                    self._context = lb.context
+                    self._page = page
+                    self._page.set_default_timeout(PAGE_TIMEOUT)
+                    self._local_active = True
+                    logger.info(
+                        f"[{self.platform_name}] Chrome real local (perfil "
+                        "compartilhado, logado) via CDP — fingerprint nativo "
+                        "contra o reCAPTCHA do Google"
+                    )
+                    return
+            logger.warning(
+                f"[{self.platform_name}] RAC_LOCAL_CHROME ligado mas o Chrome "
+                "local não abriu — caindo no browser próprio (reCAPTCHA provável)"
+            )
+
+        super()._launch()
+
+    def _close(self) -> None:
+        # Modo local: fecha SÓ a aba — a janela é compartilhada e encerrada no
+        # fim da coleta (close_local_browser).
+        if self._local_active:
+            try:
+                if self._page and not self._page.is_closed():
+                    self._page.close()
+            except Exception:
+                pass
+            self._page = None
+            self._context = None
+            self._local_browser = None
+            self._local_active = False
+            return
+        super()._close()
+
+    # ------------------------------------------------------------------
+    # Warm-up + resolução manual de reCAPTCHA (modo Chrome real local)
+    # ------------------------------------------------------------------
+
+    def _warmup_google_home(self) -> None:
+        """Aquece a home do Google uma vez antes da 1ª SERP de shopping.
+
+        Um ``goto`` direto em ``/search?tbm=shop`` chega sem os cookies de
+        sessão/consentimento que uma navegação humana normal carrega. Visitar a
+        home primeiro (com um scroll leve) promove esses cookies para a rota de
+        busca e reduz a chance de reCAPTCHA. Só faz sentido no Chrome real
+        local — no launch próprio o perfil é descartável e a home não ajuda.
+        """
+        if self._google_warmed or not self._local_active:
+            return
+        try:
+            self._page.goto(
+                "https://www.google.com/?gl=br&hl=pt-BR",
+                wait_until="domcontentloaded",
+            )
+            self._wait_for_network_idle()
+            self._human_scroll(steps=3, step_px=250)
+        except Exception as exc:
+            # NÃO marca como aquecido: uma falha transitória aqui deve ser
+            # re-tentada na próxima keyword, não silenciada para a sessão toda
+            # (marcar antes do goto pulava o warm-up de todas as keywords
+            # seguintes quando a 1ª navegação falhava).
+            logger.debug(f"[{self.platform_name}] Warm-up da home falhou: {exc}")
+            return
+        self._google_warmed = True
+        logger.info(f"[{self.platform_name}] Warm-up da home do Google concluído")
+
+    @staticmethod
+    def _manual_captcha_enabled() -> bool:
+        """Resolução manual do reCAPTCHA (padrão: ligada no modo Chrome local).
+
+        Desligue com ``RAC_GOOGLE_MANUAL_CAPTCHA=0`` para o comportamento antigo
+        (abortar a sessão ao ver o reCAPTCHA).
+        """
+        return os.getenv("RAC_GOOGLE_MANUAL_CAPTCHA", "1").strip().lower() not in (
+            "0", "false", "no", "nao", "off"
+        )
+
+    @staticmethod
+    def _manual_captcha_timeout() -> float:
+        """Segundos de espera pela resolução manual (env, padrão 180)."""
+        raw = os.getenv("RAC_GOOGLE_MANUAL_CAPTCHA_TIMEOUT", "").strip()
+        try:
+            return float(raw) if raw else 180.0
+        except ValueError:
+            return 180.0
+
+    def _await_manual_captcha_solution(self) -> bool:
+        """Espera o usuário resolver o reCAPTCHA na janela do Chrome real.
+
+        Só vale no modo Chrome local (a janela é visível e humana). Faz polling
+        do seletor de captcha até ele sumir ou estourar o timeout.
+
+        Returns:
+            True se o captcha foi resolvido (página liberada), False se o tempo
+            esgotou ou a resolução manual está desligada.
+        """
+        if not self._local_active or not self._manual_captcha_enabled():
+            return False
+
+        timeout = self._manual_captcha_timeout()
+        logger.warning(
+            f"[{self.platform_name}] reCAPTCHA na janela do Chrome real — "
+            f"resolva-o manualmente ({int(timeout)}s de tolerância). "
+            "Desligue com RAC_GOOGLE_MANUAL_CAPTCHA=0."
+        )
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(3.0)
+            if self._captcha_cleared():
+                logger.success(
+                    f"[{self.platform_name}] reCAPTCHA resolvido — retomando coleta"
+                )
+                return True
+        logger.warning(
+            f"[{self.platform_name}] reCAPTCHA não resolvido em {int(timeout)}s — "
+            "abortando keywords restantes"
+        )
+        return False
+
+    def _captcha_cleared(self) -> bool:
+        """True quando a página de resultados foi liberada após o reCAPTCHA.
+
+        Existência do elemento de captcha não é sinal confiável de conclusão:
+        o Google às vezes mantém o widget resolvido no DOM, e checar só o
+        seletor esperaria o timeout inteiro à toa. O sinal forte é a página de
+        resultados ter voltado — cards presentes. Sem cards, aí sim o
+        desaparecimento do formulário de captcha vale como liberação (SERP
+        legítima e vazia, ou redirect de volta à busca).
+        """
+        try:
+            html = self._page.content()
+        except Exception:
+            return False
+        soup = BeautifulSoup(html, "html.parser")
+        items, _ = self._detect_items(soup)
+        if items:
+            return True
+        return soup.select_one(_SELECTORS["captcha"]) is None
 
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
@@ -699,6 +870,10 @@ class GoogleShoppingScraper(BaseScraper):
         """Busca keyword no Google Shopping por até `page_limit` páginas."""
         all_records: List[Dict[str, Any]] = []
 
+        # Aquece a home do Google uma vez (só no Chrome real local) antes de
+        # bater na SERP de shopping — carrega consent + cookies quentes.
+        self._warmup_google_home()
+
         for page in range(1, page_limit + 1):
             if self.captcha_hit:
                 break
@@ -726,6 +901,21 @@ class GoogleShoppingScraper(BaseScraper):
                     page=page,
                     page_offset=offset,
                 )
+
+                # No Chrome real local a janela é visível: em vez de abortar a
+                # sessão inteira ao ver o reCAPTCHA, dá ao usuário a chance de
+                # resolvê-lo à mão e reparseia a mesma página.
+                if self.captcha_hit and self._await_manual_captcha_solution():
+                    self.captcha_hit = False
+                    self._human_scroll(steps=8, step_px=350)
+                    records = self._parse_results(
+                        html=self._page.content(),
+                        keyword=keyword,
+                        keyword_category_map=keyword_category_map,
+                        page=page,
+                        page_offset=offset,
+                    )
+
                 all_records.extend(records)
 
                 if not records or self.captcha_hit:
