@@ -125,3 +125,70 @@ class TestFalsoPositivoDeRodape:
             f"<body>Before you continue to Google Search{self._RODAPE}</body></html>"
         )
         assert scraper._classify_zero_result(html) == "consent"
+
+
+class TestChromeLocalMode:
+    """Cobre a fiação do Chrome real local (RAC_LOCAL_CHROME) no Google Shopping.
+
+    Sem essa fiação o scraper ignorava o perfil logado e caía no launch próprio
+    do BaseScraper, tomando reCAPTCHA de imediato — a causa do Google zerar
+    mesmo com "perfil do Chrome carregado" (Ago/2026).
+    """
+
+    def test_launch_cai_no_base_quando_local_desligado(self, monkeypatch, scraper):
+        import scrapers.google_shopping as gs
+
+        monkeypatch.setattr(gs, "is_local_chrome_enabled", lambda: False)
+        chamou = {"base": False}
+
+        def _fake_super_launch(self):
+            chamou["base"] = True
+
+        monkeypatch.setattr(gs.BaseScraper, "_launch", _fake_super_launch)
+        scraper._local_active = False
+        scraper._launch()
+        assert chamou["base"] is True
+        assert scraper._local_active is False
+
+    def test_launch_usa_chrome_local_quando_disponivel(self, monkeypatch):
+        import scrapers.google_shopping as gs
+
+        class _FakePage:
+            def set_default_timeout(self, _):
+                pass
+
+        class _FakeLB:
+            context = object()
+
+            def new_page(self):
+                return _FakePage()
+
+        monkeypatch.setattr(gs, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(gs, "get_local_browser", lambda: _FakeLB())
+
+        s = gs.GoogleShoppingScraper()
+        s._launch()
+        assert s._local_active is True
+        assert s._page is not None
+
+    def test_manual_captcha_default_e_toggle(self, monkeypatch):
+        from scrapers.google_shopping import GoogleShoppingScraper as G
+
+        monkeypatch.delenv("RAC_GOOGLE_MANUAL_CAPTCHA", raising=False)
+        assert G._manual_captcha_enabled() is True
+        monkeypatch.setenv("RAC_GOOGLE_MANUAL_CAPTCHA", "0")
+        assert G._manual_captcha_enabled() is False
+
+    def test_manual_captcha_timeout_parsing(self, monkeypatch):
+        from scrapers.google_shopping import GoogleShoppingScraper as G
+
+        monkeypatch.delenv("RAC_GOOGLE_MANUAL_CAPTCHA_TIMEOUT", raising=False)
+        assert G._manual_captcha_timeout() == 180.0
+        monkeypatch.setenv("RAC_GOOGLE_MANUAL_CAPTCHA_TIMEOUT", "45")
+        assert G._manual_captcha_timeout() == 45.0
+        monkeypatch.setenv("RAC_GOOGLE_MANUAL_CAPTCHA_TIMEOUT", "lixo")
+        assert G._manual_captcha_timeout() == 180.0
+
+    def test_await_manual_captcha_desligado_fora_do_modo_local(self, scraper):
+        scraper._local_active = False
+        assert scraper._await_manual_captcha_solution() is False

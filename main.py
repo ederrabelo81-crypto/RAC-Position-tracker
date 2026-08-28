@@ -594,11 +594,15 @@ def main() -> int:
     # NÃO exporta env — use `$env:RAC_LOCAL_CHROME="1"`) passava despercebido e a
     # coleta caía no caminho antigo bloqueado pelo Akamai/login gate.
     from scrapers.local_browser import is_local_chrome_enabled
-    _antibot = [p for p in ("ml", "shopee", "magalu", "casasbahia") if p in platform_names]
+    _antibot = [
+        p for p in ("ml", "shopee", "magalu", "casasbahia", "google_shopping")
+        if p in platform_names
+    ]
     if is_local_chrome_enabled():
         logger.info(
             "[Chrome local] RAC_LOCAL_CHROME=ON — Mercado Livre/Shopee/Magalu/"
-            "Casas Bahia usarão o Chrome real via CDP (perfil dedicado)."
+            "Casas Bahia/Google Shopping usarão o Chrome real via CDP (perfil "
+            "dedicado)."
         )
     elif _antibot:
         logger.warning(
