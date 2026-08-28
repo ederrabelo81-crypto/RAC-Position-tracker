@@ -223,7 +223,6 @@ class GoogleShoppingScraper(BaseScraper):
         """
         if self._google_warmed or not self._local_active:
             return
-        self._google_warmed = True
         try:
             self._page.goto(
                 "https://www.google.com/?gl=br&hl=pt-BR",
@@ -231,9 +230,15 @@ class GoogleShoppingScraper(BaseScraper):
             )
             self._wait_for_network_idle()
             self._human_scroll(steps=3, step_px=250)
-            logger.info(f"[{self.platform_name}] Warm-up da home do Google concluído")
         except Exception as exc:
+            # NÃO marca como aquecido: uma falha transitória aqui deve ser
+            # re-tentada na próxima keyword, não silenciada para a sessão toda
+            # (marcar antes do goto pulava o warm-up de todas as keywords
+            # seguintes quando a 1ª navegação falhava).
             logger.debug(f"[{self.platform_name}] Warm-up da home falhou: {exc}")
+            return
+        self._google_warmed = True
+        logger.info(f"[{self.platform_name}] Warm-up da home do Google concluído")
 
     @staticmethod
     def _manual_captcha_enabled() -> bool:
@@ -277,11 +282,7 @@ class GoogleShoppingScraper(BaseScraper):
         deadline = time.time() + timeout
         while time.time() < deadline:
             time.sleep(3.0)
-            try:
-                still_present = self._page.query_selector(_SELECTORS["captcha"])
-            except Exception:
-                still_present = None
-            if not still_present:
+            if self._captcha_cleared():
                 logger.success(
                     f"[{self.platform_name}] reCAPTCHA resolvido — retomando coleta"
                 )
@@ -291,6 +292,26 @@ class GoogleShoppingScraper(BaseScraper):
             "abortando keywords restantes"
         )
         return False
+
+    def _captcha_cleared(self) -> bool:
+        """True quando a página de resultados foi liberada após o reCAPTCHA.
+
+        Existência do elemento de captcha não é sinal confiável de conclusão:
+        o Google às vezes mantém o widget resolvido no DOM, e checar só o
+        seletor esperaria o timeout inteiro à toa. O sinal forte é a página de
+        resultados ter voltado — cards presentes. Sem cards, aí sim o
+        desaparecimento do formulário de captcha vale como liberação (SERP
+        legítima e vazia, ou redirect de volta à busca).
+        """
+        try:
+            html = self._page.content()
+        except Exception:
+            return False
+        soup = BeautifulSoup(html, "html.parser")
+        items, _ = self._detect_items(soup)
+        if items:
+            return True
+        return soup.select_one(_SELECTORS["captcha"]) is None
 
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:

@@ -150,6 +150,28 @@ class TestChromeLocalMode:
         assert chamou["base"] is True
         assert scraper._local_active is False
 
+    def test_launch_cai_no_base_quando_chrome_local_nao_abre(self, monkeypatch):
+        """RAC_LOCAL_CHROME=1 mas get_local_browser() None → fallback sem raise.
+
+        É o caminho que protege VM/GH Actions e qualquer host com a flag ligada
+        sem Chrome de pé. Também é o caminho do browser próprio, então uma
+        regressão aqui estoura (e pula o cleanup) em vez de degradar.
+        """
+        import scrapers.google_shopping as gs
+
+        monkeypatch.setattr(gs, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(gs, "get_local_browser", lambda: None)
+        chamou = {"base": False}
+
+        def _fake_super_launch(self):
+            chamou["base"] = True
+
+        monkeypatch.setattr(gs.BaseScraper, "_launch", _fake_super_launch)
+        s = gs.GoogleShoppingScraper()
+        s._launch()
+        assert chamou["base"] is True
+        assert s._local_active is False
+
     def test_launch_usa_chrome_local_quando_disponivel(self, monkeypatch):
         import scrapers.google_shopping as gs
 
@@ -192,3 +214,53 @@ class TestChromeLocalMode:
     def test_await_manual_captcha_desligado_fora_do_modo_local(self, scraper):
         scraper._local_active = False
         assert scraper._await_manual_captcha_solution() is False
+
+
+class _StubPage:
+    """Página mínima que devolve um HTML fixo em .content()."""
+
+    def __init__(self, html: str):
+        self._html = html
+
+    def content(self) -> str:
+        return self._html
+
+
+class TestCaptchaCleared:
+    """Cobre o sinal de conclusão do reCAPTCHA (não usa existência do widget)."""
+
+    def _scraper_com_html(self, html):
+        s = GoogleShoppingScraper()
+        s._page = _StubPage(html)
+        return s
+
+    def test_cards_presentes_liberam_mesmo_com_widget_no_dom(self):
+        # Widget de captcha AINDA no DOM, mas cards de resultado presentes:
+        # a página foi liberada — não pode esperar o timeout inteiro.
+        cards = "".join("<div class='Ez5pwe'>produto</div>" for _ in range(3))
+        html = f"<html><body><div id='recaptcha'></div>{cards}</body></html>"
+        assert self._scraper_com_html(html)._captcha_cleared() is True
+
+    def test_captcha_sem_cards_nao_liberou(self):
+        html = "<html><body><form id='captcha-form'></form></body></html>"
+        assert self._scraper_com_html(html)._captcha_cleared() is False
+
+    def test_pagina_sem_captcha_e_sem_cards_conta_como_liberada(self):
+        html = "<html><body>nenhum resultado</body></html>"
+        assert self._scraper_com_html(html)._captcha_cleared() is True
+
+
+class TestWarmupRetry:
+    """A falha do warm-up não pode marcar a sessão como aquecida (retry)."""
+
+    def test_falha_do_goto_nao_marca_aquecido(self):
+        s = GoogleShoppingScraper()
+        s._local_active = True
+
+        class _PageBoom:
+            def goto(self, *a, **k):
+                raise RuntimeError("sem rede")
+
+        s._page = _PageBoom()
+        s._warmup_google_home()
+        assert s._google_warmed is False
