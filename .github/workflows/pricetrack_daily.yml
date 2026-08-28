@@ -69,9 +69,14 @@ env:
   PYTHON_VERSION: '3.11'
   TZ: America/Sao_Paulo
 
-# Evita dois imports concorrentes gravando na mesma tabela
+# Grupo COMPARTILHADO com o `pipeline_guard.yml`: a organização tem 3 slots de
+# export no PriceTrack, e o `Heal recent gaps` do 3º degrau varre até 14 datas.
+# Se ele ainda estiver rodando quando o portão das 06:35 tentar sua cura, os
+# dois clientes disputam os mesmos slots e um dos dois falha — justamente a
+# cura de emergência, que é a última rede antes do briefing. Com o mesmo grupo,
+# o portão espera o heal terminar em vez de brigar com ele.
 concurrency:
-  group: pricetrack-daily
+  group: pricetrack-exports
   cancel-in-progress: false
 
 jobs:
@@ -263,17 +268,51 @@ jobs:
       # `if: always()` de propósito: o supervisor precisa saber que o job
       # tentou e falhou tanto quanto precisa saber que ele deu certo. Sem a
       # batida de fracasso, uma falha vira indistinguível de "não rodou".
+      # O status vem da CONTAGEM em `pricetrack_daily`, não do exit code.
+      # `scripts/pricetrack_api_import.py::main()` descarta o retorno de `run()`
+      # e sai 0 mesmo quando o export não trouxe nada (`no_data`, resultado
+      # vazio, falha de uma data). Derivar SUCCESS de `job.status` marcaria como
+      # execução saudável um dia que continua sem linha — e o portão das 06:35
+      # confiaria nesse verde. A verdade é o destino.
       - name: Heartbeat — finished
         if: always()
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          JOB_STATUS: ${{ job.status }}
+          DEGRAU: ${{ steps.params.outputs.degrau }}
+          D1: ${{ steps.params.outputs.start }}
         run: |
-          STATUS=SUCCESS
-          if [ "${{ job.status }}" != "success" ]; then STATUS=FAILED; fi
-          python -m utils.heartbeat --job gh_pricetrack_d1 --status "$STATUS" \
-            --detail "degrau ${{ steps.params.outputs.degrau }}/3 — D-1 ${{ steps.params.outputs.start }}"
+          LINHAS=$(python -c "
+          import os, sys
+          sys.path.insert(0, '.')
+          from utils.supabase_client import _get_client
+          c = _get_client()
+          if c is None:
+              print(-1); sys.exit(0)
+          try:
+              r = c.table('pricetrack_daily').select('id', count='exact') \
+                   .eq('collection_date', os.environ['D1']).limit(1).execute()
+              print(r.count or 0)
+          except Exception:
+              print(-1)
+          " 2>/dev/null | tail -1)
+          LINHAS=${LINHAS:--1}
+
+          if [ "$JOB_STATUS" != "success" ]; then
+            STATUS=FAILED
+          elif [ "$LINHAS" = "0" ]; then
+            # Saiu 0 e o dia continua vazio: execução sem resultado.
+            STATUS=PARTIAL
+          else
+            STATUS=SUCCESS
+          fi
+
+          ARGS=(--job gh_pricetrack_d1 --status "$STATUS")
+          if [ "$LINHAS" != "-1" ]; then ARGS+=(--rows "$LINHAS"); fi
+          python -m utils.heartbeat "${ARGS[@]}" \
+            --detail "degrau ${DEGRAU}/3 — D-1 ${D1} — ${LINHAS} linha(s) em pricetrack_daily"
 
       # ── 6. Salva logs como artefato ────────────────────────────────────────
       - name: Upload logs

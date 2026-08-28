@@ -61,7 +61,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from utils.pipeline_registry import JOBS_POR_ID  # noqa: E402
-from utils.text import now_brt  # noqa: E402
+from utils.text import BRT, now_brt  # noqa: E402
 
 #: Tabela do livro-razão (migração 015).
 TABELA = "pipeline_heartbeat"
@@ -75,6 +75,74 @@ STATUS_PARTIAL = "PARTIAL"
 STATUS_FAILED = "FAILED"
 
 _STATUS_VALIDOS = (STATUS_STARTED, STATUS_SUCCESS, STATUS_PARTIAL, STATUS_FAILED)
+
+
+def _com_fuso(momento: datetime) -> datetime:
+    """Devolve o instante com o fuso de Brasília anexado, se vier naive.
+
+    Necessário porque duas fontes se encontram aqui: `now_brt()`, que devolve
+    NAIVE, e o `started_at` recuperado do espelho local, que volta AWARE do
+    ISO-8601. Subtrair um do outro levanta TypeError, e o cálculo da duração
+    morreria dentro do try/except que absorve tudo — a batida sairia sem
+    duração e ninguém saberia por quê.
+    """
+    return momento.replace(tzinfo=BRT) if momento.tzinfo is None else momento
+
+
+def _aware(momento: datetime) -> str:
+    """Serializa um instante BRT com o offset explícito.
+
+    `now_brt()` devolve um datetime NAIVE já convertido para o fuso de
+    Brasília. Gravado assim numa coluna `timestamptz`, o Postgres assume UTC e
+    registra a execução **três horas mais cedo** — o supervisor compararia
+    deadline com um relógio adiantado e chamaria de atrasado o que rodou na
+    hora. Anexar o offset resolve na serialização, sem mexer no `now_brt()`
+    que o resto do projeto usa.
+
+    Args:
+        momento: Instante naive já em horário de Brasília.
+
+    Returns:
+        ISO-8601 com offset (ex.: ``2026-08-28T03:21:00-03:00``).
+    """
+    return _com_fuso(momento).isoformat()
+
+
+def _ultimo_started_local(job_id: str, data_ref: date) -> Optional[datetime]:
+    """Recupera o `started_at` da batida STARTED daquele job/dia no espelho local.
+
+    Existe para o caminho CLI, em que início e fim são passos SEPARADOS do
+    workflow: sem isto o registro terminal gravaria `started_at` igual ao
+    instante de conclusão, e a duração da execução se perderia. Os dois passos
+    rodam no mesmo runner e no mesmo workspace, então o JSONL local é a
+    correlação mais barata que existe — e, quando ele não está lá, o campo
+    apenas volta ao comportamento anterior.
+
+    Args:
+        job_id: Job procurado.
+        data_ref: Dia de referência.
+
+    Returns:
+        O instante de início, ou None se não houver STARTED registrado.
+    """
+    try:
+        if not ARQUIVO_LOCAL.exists():
+            return None
+        alvo = data_ref.isoformat()
+        for linha in reversed(ARQUIVO_LOCAL.read_text(encoding="utf-8").splitlines()):
+            try:
+                registro = json.loads(linha)
+            except ValueError:
+                continue
+            if (
+                registro.get("job_id") == job_id
+                and registro.get("data_ref") == alvo
+                and registro.get("status") == STATUS_STARTED
+            ):
+                return datetime.fromisoformat(registro["started_at"])
+    except Exception as exc:  # pragma: no cover - correlação é best effort
+        logger.debug(f"[Heartbeat] Não correlacionei o STARTED de {job_id}: {exc}")
+    return None
 
 
 def _host() -> str:
@@ -175,17 +243,28 @@ def bater(
         )
 
     agora = now_brt()
-    inicio = started_at or agora
+    dia = data_ref or agora.date()
+    inicio = started_at
+    if inicio is None and status != STATUS_STARTED:
+        # Caminho CLI: o STARTED foi outro passo do workflow. Recupera o
+        # instante real em vez de carimbar a conclusão como início.
+        inicio = _ultimo_started_local(job_id, dia)
+    inicio = inicio or agora
+
     registro: Dict[str, Any] = {
         "job_id": job_id,
         "executor": spec.executor if spec else "desconhecido",
-        "data_ref": (data_ref or agora.date()).isoformat(),
+        "data_ref": dia.isoformat(),
         "status": status,
-        "started_at": inicio.isoformat(),
+        "started_at": _aware(inicio),
         "host": _host(),
     }
     if status != STATUS_STARTED:
-        registro["finished_at"] = agora.isoformat()
+        registro["finished_at"] = _aware(agora)
+        if duration_seconds is None and inicio is not agora:
+            duration_seconds = max(
+                (_com_fuso(agora) - _com_fuso(inicio)).total_seconds(), 0.0
+            )
     if duration_seconds is not None:
         registro["duration_seconds"] = round(float(duration_seconds), 1)
     if rows is not None:
@@ -270,6 +349,24 @@ def batida(
         )
 
 
+class LivroRazaoIndisponivel(RuntimeError):
+    """Não deu para LER o livro-razão — distinto de "não há batidas".
+
+    A diferença importa: livro vazio é um estado legítimo (ninguém rodou
+    ainda, ou o executor ainda não foi instrumentado), enquanto falha de
+    leitura significa que o supervisor está CEGO. Devolver o mesmo dict vazio
+    nos dois casos permitiria uma indisponibilidade do banco ser relatada como
+    execução saudável — exatamente o tipo de silêncio que este subsistema
+    existe para eliminar.
+    """
+
+
+#: Marcadores de "a tabela ainda não existe" (migração 015 não aplicada). É o
+#: único erro de leitura que NÃO cega o supervisor: durante a adoção ele cai
+#: no caminho "dado presente sem batida = OK".
+_TABELA_AUSENTE = ("does not exist", "42p01", "could not find the table", "pgrst205")
+
+
 def ultimas_batidas(dia: date, job_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
     """Última batida de cada job num dia.
 
@@ -278,16 +375,22 @@ def ultimas_batidas(dia: date, job_ids: Optional[List[str]] = None) -> Dict[str,
         job_ids: Restringe a consulta; None traz todos.
 
     Returns:
-        Mapa job_id → registro da última batida. Dict vazio quando o Supabase
-        está indisponível — o chamador decide se isso é "não rodou" ou "não
-        consegui olhar" (o supervisor trata como o segundo, e diz isso).
+        Mapa job_id → registro da última batida. Dict vazio quando ninguém
+        bateu ponto ou quando a migração 015 ainda não foi aplicada.
+
+    Raises:
+        LivroRazaoIndisponivel: A leitura falhou por qualquer outro motivo
+            (rede, credencial, cota). O chamador deve tratar como "não
+            consegui olhar", nunca como "olhei e estava vazio".
     """
     try:
         from utils.supabase_client import _get_client
 
         client = _get_client()
         if client is None:
-            return {}
+            raise LivroRazaoIndisponivel(
+                "Supabase não configurado — o livro-razão não pôde ser lido."
+            )
         consulta = (
             client.table(TABELA)
             .select("*")
@@ -298,9 +401,18 @@ def ultimas_batidas(dia: date, job_ids: Optional[List[str]] = None) -> Dict[str,
         if job_ids:
             consulta = consulta.in_("job_id", job_ids)
         linhas = consulta.execute().data or []
+    except LivroRazaoIndisponivel:
+        raise
     except Exception as exc:
-        logger.warning(f"[Heartbeat] Leitura de {TABELA} falhou: {exc}")
-        return {}
+        texto = str(exc).lower()
+        if any(marcador in texto for marcador in _TABELA_AUSENTE):
+            logger.warning(
+                f"[Heartbeat] Tabela {TABELA} ausente — aplique "
+                "docs/migrations/015_pipeline_heartbeat.sql. Seguindo sem "
+                "livro-razão (só o dado no destino será avaliado)."
+            )
+            return {}
+        raise LivroRazaoIndisponivel(f"Leitura de {TABELA} falhou: {exc}") from exc
 
     # A consulta vem do id maior para o menor: a primeira ocorrência de cada
     # job já é a mais recente. Uma batida SUCCESS nunca deve ser sombreada por

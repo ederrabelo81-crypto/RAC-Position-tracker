@@ -98,7 +98,19 @@ jobs:
           pip install supabase python-dotenv loguru requests pandas tenacity \
                       pyarrow google-api-python-client google-auth
 
+      # O vigia também bate ponto. Um monitor que morre em silêncio é pior que
+      # monitor nenhum: ninguém desconfia do silêncio de quem só fala quando há
+      # problema. Com a batida, a ausência do watchdog vira evento no supervisor
+      # (`scripts/pipeline_watch.py`, job `gh_watchdog`).
+      - name: Heartbeat — started
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python -m utils.heartbeat --job gh_watchdog --status STARTED
+
       - name: Run daily status check
+        id: check
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -122,3 +134,23 @@ jobs:
           fi
           echo "Executando: python scripts/daily_status_check.py $ARGS"
           python scripts/daily_status_check.py $ARGS
+
+      # `if: always()` porque o watchdog sai != 0 justamente quando FAZ o seu
+      # trabalho (exit 1 = o dado não chegou; 2-4 = ele não conseguiu olhar).
+      # Só a ausência total de batida significa que ele próprio não rodou.
+      - name: Heartbeat — finished
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          # O exit do check é diagnóstico, não fracasso da execução: o que este
+          # job promete é OLHAR, e ele olhou. FAILED fica reservado para o passo
+          # não ter concluído.
+          STATUS=SUCCESS
+          if [ "${{ steps.check.outcome }}" = "cancelled" ] || [ -z "${{ steps.check.outcome }}" ]; then
+            STATUS=FAILED
+          fi
+          python -m utils.heartbeat --job gh_watchdog --status "$STATUS" \
+            --detail "daily_status_check outcome=${{ steps.check.outcome }}"

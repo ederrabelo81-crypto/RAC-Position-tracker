@@ -63,8 +63,18 @@ env:
   TZ: America/Sao_Paulo
 
 # Dois guardiões simultâneos só duplicariam alerta e cura.
+#
+# ⚠️ O grupo é DINÂMICO de propósito. O run do portão (06:35 BRT) pode
+# reimportar o PriceTrack e disputaria com o `Heal recent gaps` do
+# `pricetrack_daily.yml` os 3 slots de export da organização — os dois
+# perderiam. Ele entra então no MESMO grupo daquele workflow e espera a vez.
+# As varreduras que não curam nada ficam no grupo próprio: serializá-las atrás
+# de um import de 50min atrasaria o alerta sem motivo.
 concurrency:
-  group: pipeline-guard
+  # Os parênteses externos são obrigatórios: `&&` liga mais forte que `||`, e
+  # sem eles a condição verdadeira seria devolvida como `true` — o grupo viraria
+  # literalmente "true" e serializaria coisas sem relação nenhuma.
+  group: "${{ ((github.event_name == 'schedule' && github.event.schedule == '35 9 * * *') || (github.event_name == 'workflow_dispatch' && github.event.inputs.modo == 'gate')) && 'pricetrack-exports' || 'pipeline-guard' }}"
   cancel-in-progress: false
 
 permissions:
@@ -87,31 +97,42 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      # O guardião lê tabelas e notifica. Não precisa de Playwright nem dos
-      # scrapers; `requests` e `pandas` entram porque o reimport do PriceTrack
-      # (a única cura automática) usa os dois.
+      # O guardião lê tabelas e notifica — não precisa de Playwright nem dos
+      # scrapers. `requests`/`pandas` entram porque o reimport do PriceTrack (a
+      # única cura automática) usa os dois; `pyarrow` e as libs do Google
+      # entram porque esse reimport também grava o histórico frio: sem elas a
+      # cura repovoaria o Supabase e perderia a cópia durável em silêncio,
+      # trocando um buraco por outro.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install supabase python-dotenv loguru requests pandas tenacity
+          pip install supabase python-dotenv loguru requests pandas tenacity \
+                      pyarrow google-api-python-client google-auth
 
       # ── Que pergunta este run está fazendo? ───────────────────────────────
       - name: Resolve run mode
         id: modo
+        env:
+          # `github.event.schedule` é o cron que AGENDOU o run, não a hora em
+          # que ele conseguiu começar. A distinção é o próprio incidente que
+          # este workflow existe para prevenir: um run das 09:35 UTC que entra
+          # na fila e começa às 11:20 continua sendo o portão do briefing — e,
+          # classificado pelo relógio, viraria "varredura" e pularia o portão
+          # exatamente no dia em que o atraso prova que ele era necessário.
+          CRON: ${{ github.event.schedule }}
+          EVENTO: ${{ github.event_name }}
+          MODO_MANUAL: ${{ github.event.inputs.modo }}
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            # Só o disparo das 09:35 UTC é o portão do briefing.
-            HORA=$(date -u +%H)
-            if [ "$HORA" = "09" ] || [ "$HORA" = "10" ]; then
-              MODO="gate"
-            else
-              MODO="varredura"
-            fi
+          if [ "$EVENTO" = "schedule" ]; then
+            case "$CRON" in
+              '35 9 * * *') MODO="gate" ;;
+              *)            MODO="varredura" ;;
+            esac
           else
-            MODO="${{ github.event.inputs.modo }}"
+            MODO="${MODO_MANUAL:-varredura}"
           fi
           echo "modo=$MODO" >> "$GITHUB_OUTPUT"
-          echo "Modo deste run: $MODO"
+          echo "Modo deste run: $MODO (cron='${CRON:-manual}')"
 
       # ── 1. Portão do briefing (só no run das 06:35 BRT) ───────────────────
       # `--curar` reimporta o PriceTrack quando D-1 está faltando. É a cura que
@@ -127,6 +148,8 @@ jobs:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           PRICETRACK_POLL_TIMEOUT_SECONDS: "1500"
           PRICETRACK_RUN_BUDGET_SECONDS: "1800"
+          IN_DATA: ${{ github.event.inputs.data }}
+          IN_CURAR: ${{ github.event.inputs.curar }}
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
@@ -134,12 +157,21 @@ jobs:
         run: |
           set +e
           mkdir -p logs
-          CURAR=""
-          if [ "${{ github.event.inputs.curar }}" != "false" ]; then CURAR="--curar"; fi
-          ARGS=""
-          if [ -n "${{ github.event.inputs.data }}" ]; then ARGS="--data ${{ github.event.inputs.data }}"; fi
+          # Inputs NUNCA interpolados no script: `${{ }}` é substituído como
+          # texto antes de o shell existir, então um `data` com aspas e `;`
+          # executaria comandos no runner com os secrets deste job no ambiente.
+          # Via `env` eles chegam como valor, e a validação abaixo recusa
+          # qualquer coisa que não seja uma data.
+          ARGS=()
+          if [ -n "$IN_DATA" ]; then
+            case "$IN_DATA" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ARGS+=(--data "$IN_DATA") ;;
+              *) echo "::error title=Input inválido::data='$IN_DATA' não é YYYY-MM-DD"; exit 2 ;;
+            esac
+          fi
+          if [ "$IN_CURAR" != "false" ]; then ARGS+=(--curar); fi
 
-          python scripts/briefing_gate.py $ARGS $CURAR | tee logs/briefing_gate.txt
+          python scripts/briefing_gate.py "${ARGS[@]}" | tee logs/briefing_gate.txt
           echo "gate_exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       # ── 2. Supervisão: quem não bateu ponto ───────────────────────────────
@@ -151,16 +183,30 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           N8N_TELEGRAM_CHAT_ID: ${{ secrets.N8N_TELEGRAM_CHAT_ID }}
+          IN_DATA: ${{ github.event.inputs.data }}
+          MODO: ${{ steps.modo.outputs.modo }}
         run: |
           set +e
           mkdir -p logs
-          ARGS=""
-          if [ -n "${{ github.event.inputs.data }}" ]; then ARGS="--data ${{ github.event.inputs.data }}"; fi
-          # No portão o resumo sai todo dia (sinal verde do briefing e prova de
-          # vida do vigia); nas outras varreduras, só quando há problema.
-          if [ "${{ steps.modo.outputs.modo }}" = "gate" ]; then ARGS="$ARGS --sempre-notificar"; fi
+          ARGS=()
+          if [ -n "$IN_DATA" ]; then
+            case "$IN_DATA" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ARGS+=(--data "$IN_DATA") ;;
+              *) echo "::error title=Input inválido::data='$IN_DATA' não é YYYY-MM-DD"; exit 2 ;;
+            esac
+          fi
+          if [ "$MODO" = "gate" ]; then
+            # No portão o resumo sai todo dia: é o sinal verde do briefing e a
+            # prova de vida do próprio vigia — um monitor que só fala em
+            # desastre não deixa ninguém desconfiar do seu silêncio.
+            ARGS+=(--sempre-notificar)
+            # E o portão é o único disparo que fecha a janela do turno
+            # Fechamento de ontem: ele começa 21:00 e seu deadline vence às
+            # 02:00, depois da varredura das 22:35 e antes desta.
+            ARGS+=(--tambem-ontem)
+          fi
 
-          python scripts/pipeline_watch.py $ARGS --json logs/pipeline_status.json
+          python scripts/pipeline_watch.py "${ARGS[@]}" --json logs/pipeline_status.json
           echo "watch_exit=$?" >> "$GITHUB_OUTPUT"
 
       # ── 3. Contenção: cura o que é seguro curar sozinho ───────────────────
@@ -175,12 +221,19 @@ jobs:
           PRICETRACK_RUN_BUDGET_SECONDS: "1800"
           RAC_GH_PAT: ${{ secrets.RAC_GH_PAT }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          IN_DATA: ${{ github.event.inputs.data }}
         run: |
           set +e
-          ARGS=""
-          if [ -n "${{ github.event.inputs.data }}" ]; then ARGS="--data ${{ github.event.inputs.data }}"; fi
-          if [ -n "${{ secrets.RAC_GH_PAT }}" ]; then ARGS="$ARGS --dispatch"; fi
-          python scripts/pipeline_heal.py $ARGS --json logs/pipeline_heal.json
+          mkdir -p logs
+          ARGS=()
+          if [ -n "$IN_DATA" ]; then
+            case "$IN_DATA" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ARGS+=(--data "$IN_DATA") ;;
+              *) echo "::error title=Input inválido::data='$IN_DATA' não é YYYY-MM-DD"; exit 2 ;;
+            esac
+          fi
+          if [ -n "$RAC_GH_PAT" ]; then ARGS+=(--dispatch); fi
+          python scripts/pipeline_heal.py "${ARGS[@]}" --json logs/pipeline_heal.json
           echo "heal exit=$?"
 
       # ── 4. Degradação crônica vira ISSUE, não alerta repetido ─────────────
@@ -202,11 +255,34 @@ jobs:
             exit 0
           fi
           CRONICAS=$(jq -r '.degradacoes[]? | select(.cronica) | "\(.plataforma)|\(.dias_zerada)|\(.job)"' logs/pipeline_status.json)
+          HOJE=$(date -u +%F)
+
+          # Reconciliação: fecha as issues de plataformas que voltaram. Uma
+          # issue que sobrevive à recuperação é ruído com aparência de
+          # trabalho — em pouco tempo ninguém confia na lista de abertas, que
+          # é o mesmo fim do alerta diário que este mecanismo substituiu.
+          ABERTAS=$(gh issue list --state open --search '"[pipeline]" in:title' \
+                    --json number,title --jq '.[] | "\(.number)|\(.title)"')
+          echo "$ABERTAS" | while IFS='|' read -r NUM TITULO_ABERTO; do
+            [ -z "$NUM" ] && continue
+            PLAT_ABERTA=$(printf '%s' "$TITULO_ABERTO" | sed -e 's/^\[pipeline\] //' -e 's/ sem dado há dias$//')
+            if printf '%s\n' "$CRONICAS" | cut -d'|' -f1 | grep -qxF "$PLAT_ABERTA"; then
+              continue   # ainda crônica: a issue segue aberta e recebe update
+            fi
+            echo "Fechando #$NUM — $PLAT_ABERTA voltou a coletar"
+            FECHAMENTO=$(printf '%s\n' \
+              "$PLAT_ABERTA voltou a gravar linhas em \`coletas\`." \
+              "Fechada automaticamente por \`pipeline_guard.yml\` em $HOJE." \
+              "" \
+              "---" \
+              "_Generated by [Claude Code](https://claude.ai/code)_")
+            gh issue close "$NUM" --reason completed --comment "$FECHAMENTO"
+          done
+
           if [ -z "$CRONICAS" ]; then
             echo "Nenhuma degradação crônica."
             exit 0
           fi
-          HOJE=$(date -u +%F)
           echo "$CRONICAS" | while IFS='|' read -r PLATAFORMA DIAS JOB; do
             [ -z "$PLATAFORMA" ] && continue
             TITULO="[pipeline] $PLATAFORMA sem dado há dias"
@@ -231,6 +307,33 @@ jobs:
               gh issue create --title "$TITULO" --body "$CORPO"
             fi
           done
+
+      # ── 4b. Retenção do livro-razão ───────────────────────────────────────
+      # A migração 015 CRIA `cleanup_pipeline_heartbeat`, mas função que
+      # ninguém chama não é retenção — é intenção. Uma chamada por dia, na
+      # varredura da noite, mantém 180 dias de histórico sem inchar a cota
+      # (este projeto já esteve com o banco restrito por cota, e foi assim que
+      # nove dias de coleta foram gravados no vazio).
+      - name: Prune old heartbeats
+        if: steps.modo.outputs.modo != 'gate' && github.event_name == 'schedule'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from utils.supabase_client import _get_client
+          c = _get_client()
+          if c is None:
+              print('Supabase indisponível — retenção pulada.'); sys.exit(0)
+          try:
+              r = c.rpc('cleanup_pipeline_heartbeat', {'dias': 180}).execute()
+              print(f'Batidas removidas: {r.data}')
+          except Exception as exc:
+              print(f'Retenção não executou (migração 015 aplicada?): {exc}')
+          "
 
       - name: Upload status artifacts
         if: always()

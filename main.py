@@ -29,7 +29,7 @@ import random
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
@@ -577,7 +577,17 @@ def main() -> int:
         f"Headless: {args.headless}"
     )
 
-    _bater_ponto("STARTED", detalhe=f"plataformas: {' '.join(platform_names)}")
+    # Fixada AGORA e reutilizada no fim: ver a nota sobre a meia-noite em
+    # `_bater_ponto`. `_data_str` só é resolvida mais abaixo, então a data do
+    # run é capturada aqui, no primeiro instante em que ela é conhecida.
+    from utils.text import now_brt as _now_brt
+    _RUN_DATA_REF = _now_brt().date()
+
+    _bater_ponto(
+        "STARTED",
+        detalhe=f"plataformas: {' '.join(platform_names)}",
+        data_ref=_RUN_DATA_REF,
+    )
 
     # Visibilidade do modo Chrome local (ML/Shopee/Magalu/Casas Bahia). Sem essa
     # confirmação, um RAC_LOCAL_CHROME não-setado (ex.: `set` no PowerShell, que
@@ -816,6 +826,7 @@ def main() -> int:
         _bater_ponto(
             "FAILED", all_records, platform_names,
             detalhe="persistência falhou: " + ", ".join(falhas_persistencia),
+            data_ref=_RUN_DATA_REF,
         )
         return 1
 
@@ -825,6 +836,7 @@ def main() -> int:
         "SUCCESS" if all_records else "PARTIAL",
         all_records,
         platform_names,
+        data_ref=_RUN_DATA_REF,
     )
     return 0
 
@@ -849,6 +861,7 @@ def _bater_ponto(
     registros: Optional[List[Dict[str, Any]]] = None,
     plataformas_pedidas: Optional[List[str]] = None,
     detalhe: str = "",
+    data_ref: Optional[date] = None,
 ) -> None:
     """Registra a execução no livro-razão, se este run pertence a um job agendado.
 
@@ -860,6 +873,11 @@ def _bater_ponto(
             É o sinal que faltava: Google Shopping passou ~1 mês vazia com o
             workflow verde, porque plataforma sem resultado não derruba o job.
         detalhe: Texto adicional.
+        data_ref: Dia BRT ao qual a execução pertence. Precisa ser o MESMO nas
+            batidas de início e de fim: a coleta da noite começa 21:00 e pode
+            cruzar a meia-noite, e aí o STARTED cairia num dia e o SUCCESS no
+            seguinte — o supervisor leria o run original como TRAVADO (começou
+            e nunca fechou) e ainda cobraria um job fantasma no dia novo.
 
     Nunca levanta: observabilidade não pode derrubar coleta.
     """
@@ -871,12 +889,17 @@ def _bater_ponto(
 
         linhas = len(registros) if registros is not None else None
         partes: List[str] = []
-        if registros:
+        if registros is not None:
             from collections import Counter
             por_plataforma = Counter(r.get("Plataforma", "?") for r in registros)
-            partes.append(
-                ", ".join(f"{nome}={qtd}" for nome, qtd in sorted(por_plataforma.items()))
-            )
+            if por_plataforma:
+                partes.append(
+                    ", ".join(f"{nome}={qtd}" for nome, qtd in sorted(por_plataforma.items()))
+                )
+            # Fora do `if por_plataforma`: quando TODAS as plataformas voltam
+            # vazias é que a lista de zeradas mais importa — era exatamente o
+            # caso em que ela deixava de ser calculada, e o alerta dizia
+            # "0 linhas" sem dizer de quem.
             if plataformas_pedidas:
                 nomes_com_dado = set(por_plataforma)
                 zeradas = [
@@ -889,7 +912,7 @@ def _bater_ponto(
                     partes.append("ZERADAS: " + ", ".join(zeradas))
         if detalhe:
             partes.append(detalhe)
-        bater(job_id, status, rows=linhas, detail=" | ".join(partes))
+        bater(job_id, status, rows=linhas, detail=" | ".join(partes), data_ref=data_ref)
     except Exception as exc:
         logger.debug(f"[Heartbeat] Batida '{status}' não registrada: {exc}")
 

@@ -20,7 +20,7 @@ Uso::
 
     python scripts/briefing_gate.py              # relatório legível + exit code
     python scripts/briefing_gate.py --json       # JSON puro no stdout
-    python scripts/briefing_gate.py --max-idade-horas 30
+    python scripts/briefing_gate.py --max-idade-dias 2
     python scripts/briefing_gate.py --curar      # tenta consertar antes de reprovar
 
 Exit codes:
@@ -37,7 +37,7 @@ Contrato de saída (--json)::
       "fontes": [
         {"fonte": "pricetrack_daily", "esperado": "2026-08-27",
          "mais_recente": "2026-08-26", "idade_dias": 2, "fresco": false,
-         "linhas": 0, "critico": true}
+         "linhas_d1": 0, "critico": true}
       ],
       "bloqueios": ["pricetrack_daily está em 2026-08-26 (D-2)"],
       "recomendacao": "..."
@@ -99,20 +99,23 @@ def _client():
 
 
 def _mais_recente(client, tabela: str, coluna: str, teto: date) -> Optional[date]:
-    """Data mais recente presente na tabela, sem olhar para o futuro.
+    """Data mais recente presente na tabela, sem olhar além do teto.
 
-    O teto existe porque uma linha com data futura (fuso trocado, backfill
-    errado) faria o portão declarar tudo fresco justamente quando o dado está
-    corrompido.
+    O teto é **D-1**, não hoje. Parece detalhe e não é: uma linha datada do
+    próprio dia do briefing (coleta intra-dia, backfill, fuso trocado) tornava
+    ``(d1 - recente).days`` NEGATIVO, e a comparação de frescor aprovava a
+    publicação mesmo com zero linha de D-1 — o portão diria "fresco" no exato
+    cenário que ele existe para barrar. Perguntar só pelo que é ≤ D-1 responde
+    a pergunta certa: *qual é o dado mais recente que pode servir de ontem?*
 
     Args:
         client: Client Supabase.
         tabela: Nome da tabela.
         coluna: Coluna de data.
-        teto: Maior data aceitável (normalmente hoje BRT).
+        teto: Maior data aceitável (D-1).
 
     Returns:
-        A data mais recente ≤ teto, ou None se a tabela estiver vazia.
+        A data mais recente ≤ teto, ou None se não houver nenhuma.
     """
     resp = (
         client.table(tabela)
@@ -173,12 +176,13 @@ def avaliar(
 
     for spec in FONTES:
         try:
-            recente = _mais_recente(client, spec["fonte"], spec["coluna_data"], hoje)
-            linhas = _contar(client, spec["fonte"], spec["coluna_data"], d1) if recente else 0
+            recente = _mais_recente(client, spec["fonte"], spec["coluna_data"], d1)
+            linhas = _contar(client, spec["fonte"], spec["coluna_data"], d1)
         except Exception as exc:
             raise RuntimeError(f"consulta a {spec['fonte']} falhou: {exc}") from exc
 
         idade = (d1 - recente).days + 1 if recente else None
+        # `recente` já vem limitada a D-1, então a diferença nunca é negativa.
         fresco = recente is not None and (d1 - recente).days <= (max_idade_dias - 1)
 
         resultados.append({
@@ -300,7 +304,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    hoje = datetime.strptime(args.data, "%Y-%m-%d").date() if args.data else None
+    try:
+        hoje = datetime.strptime(args.data, "%Y-%m-%d").date() if args.data else None
+    except ValueError:
+        parser.error(f"--data deve estar no formato YYYY-MM-DD (recebi {args.data!r})")
+        return 2  # pragma: no cover - parser.error já encerra o processo
 
     try:
         relatorio = avaliar(hoje, args.max_idade_dias)

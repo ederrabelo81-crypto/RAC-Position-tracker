@@ -142,6 +142,47 @@ def _executar(comando: str, dry_run: bool) -> bool:
     return False
 
 
+def _cura_confirmada(job, dia: date, dry_run: bool) -> bool:
+    """Confirma no DESTINO que a cura resolveu — exit 0 não basta.
+
+    `scripts/pricetrack_api_import.py` descarta o retorno de `run()` e sai 0
+    mesmo quando o export não trouxe nada (`no_data`, resultado vazio, falha
+    de uma data). Declarar "curado" pelo código de saída marcaria como
+    resolvido um buraco que continua lá — e o alerta pararia de aparecer
+    justamente enquanto o problema persiste, que é a pior falha possível num
+    subsistema cuja função é não deixar buraco passar.
+
+    Args:
+        job: Contrato do job curado.
+        dia: Dia avaliado.
+        dry_run: Em simulação nada foi executado; nada há para confirmar.
+
+    Returns:
+        True se o destino agora tem linhas para o recorte do job.
+    """
+    if dry_run:
+        return True
+    try:
+        from scripts.pipeline_watch import _client, _linhas_do_job
+
+        linhas = _linhas_do_job(_client(), job, dia)
+    except Exception as exc:
+        logger.warning(
+            f"[Cura] Não consegui confirmar a cura de {job.id} no destino: {exc}. "
+            "Tratando como NÃO curado — o alerta continua até alguém verificar."
+        )
+        return False
+
+    if linhas:
+        logger.success(f"[Cura] {job.id} confirmado no destino: {linhas} linha(s).")
+        return True
+    logger.error(
+        f"[Cura] {job.id} rodou e saiu com sucesso, mas {job.destino} continua "
+        "vazio para o recorte — a cura NÃO resolveu."
+    )
+    return False
+
+
 def curar(
     diagnosticos: List[Diagnostico],
     dia: date,
@@ -173,7 +214,7 @@ def curar(
         if job.auto_heal:
             comando = job.auto_heal.format(dia=dia.isoformat(), d1=d1)
             acoes.append(comando)
-            if _executar(comando, dry_run):
+            if _executar(comando, dry_run) and _cura_confirmada(job, dia, dry_run):
                 curados.append(job.id)
                 continue
 

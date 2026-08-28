@@ -50,13 +50,19 @@ class TestNaoInterferencia:
         assert registros[-1]["rows_written"] == 10
 
     def test_falha_de_escrita_local_tambem_e_absorvida(self, monkeypatch, tmp_path):
-        """Disco cheio não pode derrubar a coleta que ele deveria observar."""
+        """Disco cheio não pode derrubar a coleta que ele deveria observar.
+
+        A condição é simulada pondo um ARQUIVO onde o diretório-pai deveria
+        estar: `mkdir(parents=True)` falha de verdade, sem trocar `Path.mkdir`
+        no processo inteiro — um patch global quebraria qualquer outro mkdir
+        que rodasse durante o teste (init de log, um mkdir futuro dentro do
+        próprio heartbeat) por um motivo que nada tem a ver com o que se quer
+        provar aqui.
+        """
         monkeypatch.setattr(heartbeat, "_gravar_supabase", lambda r: False)
+        (tmp_path / "bloqueio").write_text("sou um arquivo, não um diretório")
         monkeypatch.setattr(
-            heartbeat, "ARQUIVO_LOCAL", tmp_path / "nao" / "existe" / "hb.jsonl"
-        )
-        monkeypatch.setattr(
-            Path, "mkdir", lambda *a, **k: (_ for _ in ()).throw(OSError("disco cheio"))
+            heartbeat, "ARQUIVO_LOCAL", tmp_path / "bloqueio" / "hb.jsonl"
         )
         assert heartbeat.bater("gh_pricetrack_d1", "SUCCESS") is False
 
@@ -104,3 +110,60 @@ class TestCli:
     def test_cli_sempre_sai_zero(self, sem_supabase, monkeypatch):
         """Exit != 0 aqui derrubaria o passo do workflow que ela só observa."""
         assert heartbeat.main(["--job", "gh_watchdog", "--status", "SUCCESS"]) == 0
+
+
+class TestRegressoesDaRevisao:
+    """Achados da revisão do cubic no PR #327, fixados como teste."""
+
+    def test_timestamp_carrega_o_offset_de_brasilia(self, sem_supabase):
+        """Sem offset, o Postgres lê BRT como UTC e grava 3h mais cedo.
+
+        O supervisor compara a batida com o deadline do contrato: um relógio
+        adiantado em três horas faria ele chamar de atrasado o que rodou na
+        hora — e de "em janela" o que já estourou o prazo.
+        """
+        heartbeat.bater("gh_pricetrack_d1", "SUCCESS")
+        registro = _linhas(sem_supabase)[-1]
+        assert registro["started_at"].endswith("-03:00")
+        assert registro["finished_at"].endswith("-03:00")
+
+    def test_terminal_via_cli_recupera_o_started_anterior(self, sem_supabase):
+        """No Actions, início e fim são passos SEPARADOS do mesmo runner.
+
+        Sem correlação, o registro final carimbaria `started_at` igual ao
+        instante de conclusão e a duração da execução se perderia.
+        """
+        heartbeat.bater("gh_pricetrack_d1", "STARTED")
+        inicio = _linhas(sem_supabase)[-1]["started_at"]
+        heartbeat.bater("gh_pricetrack_d1", "SUCCESS", rows=4210)
+        fim = _linhas(sem_supabase)[-1]
+        assert fim["started_at"] == inicio
+        assert fim["duration_seconds"] is not None
+
+    def test_leitura_indisponivel_nao_vira_livro_vazio(self, monkeypatch):
+        """Livro ilegível ≠ livro vazio.
+
+        Devolver `{}` nos dois casos deixaria uma queda do banco ser relatada
+        como execução saudável — o silêncio que este subsistema existe para
+        eliminar.
+        """
+        class ClientQuebrado:
+            def table(self, _):
+                raise RuntimeError("connection reset by peer")
+
+        monkeypatch.setattr(
+            "utils.supabase_client._get_client", lambda: ClientQuebrado()
+        )
+        with pytest.raises(heartbeat.LivroRazaoIndisponivel):
+            heartbeat.ultimas_batidas(date(2026, 8, 27))
+
+    def test_tabela_ausente_e_adocao_gradual_nao_cegueira(self, monkeypatch):
+        """Migração 015 ainda não aplicada não pode gritar todo dia."""
+        class SemTabela:
+            def table(self, _):
+                raise RuntimeError(
+                    'relation "public.pipeline_heartbeat" does not exist'
+                )
+
+        monkeypatch.setattr("utils.supabase_client._get_client", lambda: SemTabela())
+        assert heartbeat.ultimas_batidas(date(2026, 8, 27)) == {}

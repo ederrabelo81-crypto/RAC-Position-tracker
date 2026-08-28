@@ -72,19 +72,28 @@ jobs:
       # ── 2. Parâmetros do run (schedule vs. manual) ─────────────────────────
       - name: Set run parameters
         id: params
+        env:
+          # O cron que AGENDOU o run — não a hora em que ele conseguiu começar.
+          # Um run das 13:00 UTC que entra na fila e só arranca às 18:20 (esta
+          # série tem atrasos rotineiros de 35 a 80 minutos, e o PriceTrack já
+          # teve de 10h) era classificado pelo relógio como Fechamento: gravava
+          # o turno errado no dado E batia ponto como o job errado, deixando a
+          # Abertura constar como "não executou" enquanto ela rodava.
+          CRON: ${{ github.event.schedule }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            HOUR=$(date -u +%H)
-            # Cron das 13:00 UTC = Abertura; das 00:00 UTC = Fechamento
-            if [ "$HOUR" -ge 12 ] && [ "$HOUR" -lt 18 ]; then
-              TURNO="Abertura"
-              PAGES="2"
-              PRIORITY="alta media"
-            else
-              TURNO="Fechamento"
-              PAGES="1"
-              PRIORITY="alta"
-            fi
+            case "$CRON" in
+              '0 13 * * *')
+                TURNO="Abertura"
+                PAGES="2"
+                PRIORITY="alta media"
+                ;;
+              *)
+                TURNO="Fechamento"
+                PAGES="1"
+                PRIORITY="alta"
+                ;;
+            esac
             # Só o que coleta de um IP de datacenter. Fora daqui, e por quê:
             #   ml, magalu, shopee, casasbahia → exigem IP residencial e sessão
             #     logada; rodam no notebook por scripts/collect_local_authenticated.bat.
@@ -190,6 +199,7 @@ jobs:
 
       # ── 8. Coleta Python ───────────────────────────────────────────────────
       - name: Run Python collector (xvfb + MAGALU_HEADLESS=false)
+        id: collect
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -258,12 +268,25 @@ jobs:
           if-no-files-found: ignore
 
       # ── 10b. Batida de fracasso do JOB (não do main.py) ───────────────────
-      # main.py já bate SUCCESS/PARTIAL/FAILED por conta própria. Este passo
-      # cobre o caso em que ele nem chega lá: runner morto, timeout de 5h,
-      # falha de dependência. Sem isto, um job assassinado fica indistinguível
-      # de um job que nunca foi agendado.
+      # main.py já bate SUCCESS/PARTIAL/FAILED por conta própria, com contagem
+      # por plataforma e a lista das ZERADAS. Este passo cobre só o caso em que
+      # ele NÃO chegou a bater: falha de dependência antes da coleta,
+      # cancelamento, runner perdido.
+      #
+      # A condição exclui `steps.collect.outcome == 'failure'` de propósito: se
+      # o main.py rodou e saiu != 0, ele já gravou um FAILED com o motivo real
+      # ("persistência falhou: upload Supabase"), e `ultimas_batidas()` devolve
+      # sempre a batida MAIS RECENTE — um segundo FAILED genérico aqui apagaria
+      # esse diagnóstico do alerta e deixaria só "o job falhou".
+      #
+      # Runner morto e timeout de 5h continuam sem passo nenhum: ali o STARTED
+      # do main.py fica sozinho e o supervisor reporta TRAVADO depois do
+      # deadline — veredito correto e distinto de "não executou".
       - name: Heartbeat — job failure
-        if: failure() && steps.params.outputs.job_id != ''
+        if: >-
+          (failure() || cancelled())
+          && steps.params.outputs.job_id != ''
+          && steps.collect.outcome != 'failure'
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

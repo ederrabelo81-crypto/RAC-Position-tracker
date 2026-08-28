@@ -226,12 +226,26 @@ def executar_coleta(args: argparse.Namespace) -> int:
         _notificar(report.resumo_telegram(preparado_hoje, ocorrencias, n=args.top))
 
     _resumo_console(preparado_hoje, args.top)
-    # PARTIAL quando alguma lista esperada não veio: a série do dia existe, mas
-    # incompleta — e o supervisor precisa ver a diferença.
+
+    # PARTIAL quando alguma lista esperada não entrou na série do dia. Duas
+    # formas de faltar, e só a primeira aparece em `falhas`:
+    #   1. a fonte falhou na coleta (bloqueio, timeout);
+    #   2. a fonte coletou e foi REPROVADA no portão de ordenação — nesse caso
+    #      `falhas` fica vazio e a série do dia sai incompleta em silêncio.
+    # A verdade final é quem sobreviveu à quarentena, então é `analisado` que
+    # decide, não a lista de falhas de rede.
+    coletadas = set(analisado["plataforma"].dropna().unique())
+    ausentes = sorted(set(chaves) - coletadas)
+    motivos = []
+    if falhas:
+        motivos.append("falharam: " + ", ".join(sorted(falhas)))
+    if ausentes:
+        motivos.append("fora da série: " + ", ".join(ausentes))
+
     _bater_ponto(
-        "PARTIAL" if falhas else "SUCCESS",
+        "PARTIAL" if (falhas or ausentes) else "SUCCESS",
         int(len(analisado)),
-        ("falharam: " + ", ".join(sorted(falhas))) if falhas else "",
+        " | ".join(motivos),
     )
     return 0
 

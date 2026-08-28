@@ -60,6 +60,7 @@ from utils.heartbeat import (
     STATUS_FAILED,
     STATUS_PARTIAL,
     STATUS_STARTED,
+    LivroRazaoIndisponivel,
     ultimas_batidas,
 )
 from utils.pipeline_registry import (
@@ -381,12 +382,27 @@ def _classificar(
         return Diagnostico(job, EM_JANELA, "em execução", linhas, batida)
 
     # SUCCESS ou PARTIAL: rodou até o fim. A pergunta que sobra é se trouxe algo.
+    #
+    # A contagem do destino é AGREGADA por (dia, turno, plataformas) e vários
+    # executores escrevem no mesmo recorte — a VM e o PC coletam Amazon e Leroy
+    # além do Actions. Então "há linhas no destino" NÃO prova que este job
+    # trouxe alguma: um run que gravou zero ficaria verde às custas do vizinho
+    # que gravou. Por isso o que a própria execução declara vem primeiro.
     gravadas = batida.get("rows_written")
-    if linhas == 0 or (linhas is None and (gravadas == 0 or status == STATUS_PARTIAL)):
+
+    if status == STATUS_PARTIAL or gravadas == 0:
         return Diagnostico(
             job, SEM_DADO,
-            "execução concluída sem gravar nenhuma linha no destino "
-            f"({job.destino})",
+            f"execução concluída sem gravar nenhuma linha em {job.destino}"
+            + (f" (destino tem {linhas:,} linhas de outro executor)".replace(",", ".")
+               if linhas else ""),
+            linhas, batida,
+        )
+
+    if linhas == 0:
+        return Diagnostico(
+            job, SEM_DADO,
+            f"execução concluída e {job.destino} está vazio para o recorte do job",
             linhas, batida,
         )
 
@@ -444,10 +460,55 @@ def _colapsar_executores(diagnosticos: List[Diagnostico]) -> List[Diagnostico]:
 # Varredura
 # ---------------------------------------------------------------------------
 
+def _pendencias_de_ontem(
+    client, ontem: date, agora: datetime
+) -> List[Diagnostico]:
+    """Cobra os jobs de ONTEM cujo deadline só venceu depois da meia-noite.
+
+    O turno Fechamento começa 21:00 BRT e seu deadline cai às 02:00 do dia
+    seguinte. A varredura das 22:35 é cedo demais (ali ele ainda é só
+    ATRASADO) e a das 06:35 já avalia o dia novo — então uma coleta noturna que
+    nunca rodou passava despercebida entre as duas. Esta passagem fecha a
+    janela, e o faz no disparo da manhã, que é quando importa: o briefing das
+    07:00 consome justamente o dado de ontem.
+
+    Args:
+        client: Client Supabase.
+        ontem: Dia BRT anterior ao avaliado.
+        agora: Instante de referência.
+
+    Returns:
+        Só os vereditos de ontem que já são problema — job OK ou ainda em
+        janela não volta, para o relatório de hoje não sair duplicado.
+
+    Raises:
+        SupervisorCego: Supabase ou livro-razão indisponível.
+    """
+    try:
+        batidas = ultimas_batidas(ontem, [j.id for j in jobs_do_dia(ontem)])
+    except LivroRazaoIndisponivel as exc:
+        raise SupervisorCego(str(exc)) from exc
+
+    pendentes: List[Diagnostico] = []
+    for job in jobs_do_dia(ontem):
+        if agora < job.deadline(ontem):
+            continue  # ainda dentro do prazo: quem cobra é a varredura de hoje
+        try:
+            linhas = _linhas_do_job(client, job, ontem)
+        except Exception as exc:
+            raise SupervisorCego(f"consulta ao destino de {job.id} falhou: {exc}") from exc
+        diag = _classificar(job, ontem, agora, batidas.get(job.id), linhas)
+        if diag.estado in _PROBLEMAS:
+            diag.detalhe = f"[ontem, {ontem:%d/%m}] {diag.detalhe}"
+            pendentes.append(diag)
+    return pendentes
+
+
 def varrer(
     dia: Optional[date] = None,
     agora: Optional[datetime] = None,
     checar_degradacao: bool = True,
+    incluir_ontem: bool = False,
 ) -> Tuple[List[Diagnostico], List[Degradacao]]:
     """Executa a varredura completa.
 
@@ -456,19 +517,27 @@ def varrer(
         agora: Instante de referência (default: agora BRT) — injetável em teste.
         checar_degradacao: Se False, pula a busca por plataformas cronicamente
             zeradas (a parte cara da varredura).
+        incluir_ontem: Também cobra os jobs de ontem cujo deadline venceu depois
+            da meia-noite (ver `_pendencias_de_ontem`).
 
     Returns:
         (diagnósticos por job, degradações por plataforma).
 
     Raises:
-        SupervisorCego: Supabase indisponível.
+        SupervisorCego: Supabase indisponível ou livro-razão ilegível.
     """
     agora = agora or now_brt()
     dia = dia or agora.date()
 
     client = _client()
     jobs = jobs_do_dia(dia)
-    batidas = ultimas_batidas(dia, [j.id for j in jobs])
+    try:
+        batidas = ultimas_batidas(dia, [j.id for j in jobs])
+    except LivroRazaoIndisponivel as exc:
+        # Livro ilegível ≠ livro vazio. Tratar como vazio faria uma queda do
+        # banco ser relatada como "ninguém rodou" (falso alarme em massa) ou,
+        # pior, como execução saudável quando houvesse dado de outro executor.
+        raise SupervisorCego(str(exc)) from exc
 
     diagnosticos: List[Diagnostico] = []
     for job in jobs:
@@ -479,6 +548,9 @@ def varrer(
         diagnosticos.append(_classificar(job, dia, agora, batidas.get(job.id), linhas))
 
     diagnosticos = _colapsar_executores(diagnosticos)
+
+    if incluir_ontem:
+        diagnosticos.extend(_pendencias_de_ontem(client, dia - timedelta(days=1), agora))
 
     degradacoes: List[Degradacao] = []
     if checar_degradacao:
@@ -665,6 +737,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--json", dest="json_path", default=None, help="grava o estado neste arquivo")
     parser.add_argument(
+        "--tambem-ontem",
+        action="store_true",
+        help=(
+            "também cobra os jobs de ontem cujo deadline venceu depois da "
+            "meia-noite (o Fechamento das 21:00 vence às 02:00)"
+        ),
+    )
+    parser.add_argument(
         "--sem-degradacao",
         action="store_true",
         help="pula a varredura de plataformas cronicamente zeradas (mais rápido)",
@@ -676,7 +756,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         diagnosticos, degradacoes = varrer(
-            dia, agora, checar_degradacao=not args.sem_degradacao
+            dia,
+            agora,
+            checar_degradacao=not args.sem_degradacao,
+            incluir_ontem=args.tambem_ontem,
         )
     except SupervisorCego as exc:
         logger.error(f"[Supervisor] CEGO: {exc}")

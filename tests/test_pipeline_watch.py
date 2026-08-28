@@ -199,3 +199,45 @@ class TestAlerta:
         texto = _formatar_telegram([diag], [], DIA)
         assert "&lt;script&gt;" in texto
         assert "<script>" not in texto
+
+
+class TestRegressoesDaRevisao:
+    """Achados da revisão do cubic no PR #327, fixados como teste."""
+
+    def test_partial_nao_vira_ok_por_dado_de_outro_executor(self):
+        """A contagem do destino é agregada; a batida é do job.
+
+        Amazon e Leroy são coletadas em três máquinas. Se o job do Actions
+        rodou e trouxe zero, o dado que a VM gravou no mesmo recorte não pode
+        deixá-lo verde — seria um run falho se escondendo atrás do vizinho.
+        """
+        diag = _classificar(
+            COLETA_GH, DIA, _hora(12, 0), _batida("PARTIAL", 0), 4210
+        )
+        assert diag.estado == SEM_DADO
+        assert "outro executor" in diag.detalhe
+
+    def test_rows_written_zero_com_destino_cheio_tambem_e_sem_dado(self):
+        diag = _classificar(
+            COLETA_GH, DIA, _hora(12, 0), _batida("SUCCESS", 0), 4210
+        )
+        assert diag.estado == SEM_DADO
+
+    def test_deadline_do_fechamento_cai_depois_da_meia_noite(self):
+        """Por que `--tambem-ontem` existe.
+
+        O Fechamento começa 21:00 e vence às 02:00 do dia seguinte: a
+        varredura das 22:35 é cedo demais e a das 06:35 já olha o dia novo.
+        Sem a passagem por ontem, uma coleta noturna que nunca rodou não é
+        cobrada por ninguém.
+        """
+        fechamento = JOBS_POR_ID["gh_collect_fechamento"]
+        deadline = fechamento.deadline(DIA)
+        assert deadline.day == DIA.day + 1  # 02:00 do dia seguinte
+        # Às 22:35 (a varredura da noite) o job nem atrasado está ainda: a
+        # tolerância vai até 23:00. Ou seja, o disparo que deveria fechar a
+        # janela da noite não conclui nada sobre ela — e o próximo já avalia o
+        # dia seguinte. É essa fresta que `--tambem-ontem` cobre.
+        assert _classificar(
+            fechamento, DIA, _hora(22, 35), None, 0
+        ).estado == EM_JANELA

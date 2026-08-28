@@ -55,6 +55,12 @@ de sucesso** — o pior resultado possível, porque some do radar.
 > `pricetrack_daily` começando 09:16, 09:29, 09:50, 11:11, 12:11 UTC — e, em
 > 27/08, **19:18 UTC** para um cron de 09:00. Nunca agende um job em minuto `0`
 > a menos de duas horas de quem consome o dado dele.
+>
+> Corolário que vale para todo workflow daqui: **identifique o disparo por
+> `github.event.schedule`, nunca pelo relógio de parede.** Um run das 13:00 UTC
+> que só arranca às 18:20 continua sendo a Abertura; classificado pela hora, ele
+> gravaria o turno errado no dado e bateria ponto como o job errado — deixando a
+> Abertura constar como "não executou" exatamente enquanto rodava.
 
 ### 🛰️ VM Oracle (Brazil East, IP de datacenter BR)
 
@@ -132,6 +138,20 @@ Estados possíveis: `OK`, `EM_JANELA`, `ATRASADO`, `NAO_EXECUTOU`, `TRAVADO`
 (bateu início e nunca fechou), `FALHOU`, `SEM_DADO` (rodou verde e trouxe
 zero), `EXECUTOR_OFFLINE` (a máquina inteira não rodou nada).
 
+Três detalhes que parecem miudeza e não são:
+
+* **A batida do job vence a contagem do destino.** Amazon e Leroy são coletadas
+  em três máquinas: se o job do Actions declarou zero linha, o dado que a VM
+  gravou no mesmo recorte não pode deixá-lo verde — seria um run falho se
+  escondendo atrás do vizinho.
+* **Livro-razão ilegível ≠ livro vazio.** Falha de leitura devolve exit 3
+  ("não consegui olhar"), nunca "ninguém rodou". Só a tabela ainda não criada
+  (migração 015 pendente) é tratada como adoção em curso.
+* **O turno Fechamento vence às 02:00.** A varredura das 22:35 é cedo demais e
+  a das 06:35 já olha o dia novo, então o portão da manhã roda com
+  `--tambem-ontem` e fecha essa janela — bem a tempo do briefing, que consome
+  justamente o dado de ontem.
+
 ---
 
 ## 4. Contenção e autocorreção
@@ -139,6 +159,7 @@ zero), `EXECUTOR_OFFLINE` (a máquina inteira não rodou nada).
 | Situação | O que acontece sozinho | O que exige humano |
 |---|---|---|
 | PriceTrack D-1 ausente às 06:35 | Reimporta na hora (`briefing_gate --curar`) e revalida antes das 07:00 | — |
+| Plataforma volta a coletar | A issue crônica é **fechada** automaticamente | — |
 | Import falhou nos 3 degraus | Escada + guardião já tentaram 4 vezes; alerta nomeia o erro | Chave da API / cota |
 | Plataforma zerada 1–2 dias | Entra no relatório como aviso | — |
 | Plataforma zerada **≥ 3 dias** | Abre (ou atualiza) **issue no GitHub** com a contagem | Consertar o scraper |
@@ -166,6 +187,7 @@ comando exato e a issue que transforma repetição em trabalho rastreado.
 | Novo horário de um job | `JOBS` **e** o agendador correspondente (workflow, crontab, Task Scheduler) |
 | Nova fonte que o briefing consome | `scripts/briefing_gate.py` (`FONTES`) |
 | Limiar de degradação crônica | `scripts/pipeline_watch.py` (`DIAS_PARA_CRONICO`) |
+| Retenção do livro-razão | `cleanup_pipeline_heartbeat` (chamada 1×/dia pelo guardião) |
 
 `tests/test_pipeline_registry.py` roda `validar_registro()` no CI: plataforma
 ativa sem dono, dois donos para o mesmo (plataforma, turno) ou job sem
