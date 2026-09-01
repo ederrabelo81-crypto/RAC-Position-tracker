@@ -1,28 +1,22 @@
 name: RAC Price Collection
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Coleta diária agendada + backup manual via workflow_dispatch.
+# Backup MANUAL de coleta (workflow_dispatch). O cron foi DESLIGADO em Set/2026.
 #
-# Schedule (UTC):
-#   13:00 UTC = 10:00 BRT  → turno Abertura  (2 páginas, alta+media)
-#   00:00 UTC = 21:00 BRT  → turno Fechamento (1 página, alta)
+# Desde Set/2026 o PC coletor (Windows, IP residencial) é o coletor ÚNICO de
+# oferta/posição: roda TODAS as plataformas nos três turnos (8h/14h/20h BRT) via
+# scripts/collect_local_authenticated.bat (Chrome real e logado). Este workflow
+# deixa de rodar automaticamente para não haver dois donos do mesmo dado — o
+# registro de execução (utils/pipeline_registry.py) atribui cada (plataforma,
+# turno) ao PC.
 #
-# Plataformas: google_shopping, amazon, leroy — as que coletam de um IP de
-# datacenter. A divisão com a coleta local é o desenho, não uma limitação
-# temporária:
-#
-#   Aqui (runner)          → google_shopping, amazon, leroy
-#   Notebook, IP residencial → ml, magalu, shopee, casasbahia
-#     via scripts/collect_local_authenticated.bat (Chrome real e logado)
-#
-# ML, Magalu e Casas Bahia bloqueiam IP de datacenter antes mesmo do
-# fingerprint (Akamai/anti-bot). Rodá-los aqui rendia 0 registros e consumia
-# o tempo do run. Shopee exige sessão SPC_*/csrftoken capturada, que não
-# existe no runner. Dealers estão fora do foco desde Mai/2026
-# (ACTIVE_PLATFORMS["dealers"]=False).
-#
-# Destravar Magalu/Casas Bahia por aqui depende de proxy residencial BR — sem
-# isso, mover para o local é o caminho certo, não um contorno.
+# Ele CONTINUA disponível como backup manual: se o PC ficar dias fora, dá para
+# disparar aqui uma coleta das plataformas que funcionam de IP de datacenter.
+# Lembrando das limitações do runner (não é uma regressão, é o ambiente):
+#   - ml, magalu, shopee, casasbahia → Akamai/anti-bot barra o IP de datacenter
+#     antes do fingerprint; rendem ~0 registro. Só destravam no PC.
+#   - google_shopping, amazon, leroy → rodam de IP de datacenter.
+#   - dealers → melhor de IP residencial (PC).
 #
 # Variáveis obrigatórias (Settings → Secrets and variables → Actions):
 #   SUPABASE_URL   —  URL do projeto Supabase
@@ -31,9 +25,9 @@ name: RAC Price Collection
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
-  schedule:
-    - cron: '0 13 * * *'   # Abertura  — 10:00 BRT = 13:00 UTC
-    - cron: '0 0 * * *'    # Fechamento — 21:00 BRT = 00:00 UTC
+  # Cron removido em Set/2026 (PC coletor é o dono único). Reativar aqui só se
+  # a coleta local for descontinuada — e então mover a posse de volta no
+  # utils/pipeline_registry.py para não gerar dois donos do mesmo (plataforma, turno).
   workflow_dispatch:
     inputs:
       platforms:

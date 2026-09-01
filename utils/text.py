@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from config import TURNO_ABERTURA_MAX_HOUR
+from config import TURNO_ABERTURA_MAX_HOUR, TURNO_TARDE_MAX_HOUR
 
 BRT = ZoneInfo("America/Sao_Paulo")
 
@@ -453,11 +453,21 @@ def parse_review_count(raw: Optional[str]) -> Optional[int]:
 
 def get_turno(hora: Optional[datetime] = None) -> str:
     """
-    Retorna 'Abertura' se hora <= TURNO_ABERTURA_MAX_HOUR, senão 'Fechamento'.
+    Retorna o turno da coleta a partir da hora (BRT).
+
+    Três turnos desde Set/2026, alinhados às coletas agendadas (8h/14h/20h):
+        hora <= TURNO_ABERTURA_MAX_HOUR (11)  → 'Abertura'   (coleta das 8h)
+        hora <= TURNO_TARDE_MAX_HOUR    (17)  → 'Tarde'      (coleta das 14h)
+        senão                                 → 'Fechamento' (coleta das 20h)
+
     Se hora não fornecida, usa horário atual em Brasília (independente do SO).
     """
     h = hora if hora else now_brt()
-    return "Abertura" if h.hour <= TURNO_ABERTURA_MAX_HOUR else "Fechamento"
+    if h.hour <= TURNO_ABERTURA_MAX_HOUR:
+        return "Abertura"
+    if h.hour <= TURNO_TARDE_MAX_HOUR:
+        return "Tarde"
+    return "Fechamento"
 
 
 def infer_keyword_category(keyword: str, category_map: dict) -> str:

@@ -44,17 +44,17 @@ $ResultMap = @{
 }
 
 Write-Host "==========================================================="
-Write-Host " Diagnostico da coleta local agendada (Magalu+Shopee+CB)"
+Write-Host " Diagnostico da coleta local agendada (todas as plataformas, 3 turnos)"
 Write-Host " Projeto: $BaseDir"
 Write-Host " Data:    $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "==========================================================="
 
 # --- 1. Tarefas RAC_Local_* -------------------------------------------------
-Write-Sect "Tarefas agendadas (RAC_Local_Manha / RAC_Local_Noite / RAC_Bestsellers)"
+Write-Sect "Tarefas agendadas (RAC_Local_Manha / RAC_Local_Tarde / RAC_Local_Noite)"
 
 $expectedBat = Join-Path $BaseDir "scripts\run_local_scheduled.bat"
 
-foreach ($name in @("RAC_Local_Manha", "RAC_Local_Noite", "RAC_Bestsellers")) {
+foreach ($name in @("RAC_Local_Manha", "RAC_Local_Tarde", "RAC_Local_Noite")) {
     $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
     if (-not $task) {
         Write-Bad "$name NAO existe - rode: PowerShell -ExecutionPolicy Bypass -File scripts\setup_local_scheduler.ps1"
@@ -117,9 +117,10 @@ foreach ($name in @("RAC_Local_Manha", "RAC_Local_Noite", "RAC_Bestsellers")) {
     }
 }
 
-# Tarefas legadas que conflitam/duplicam (o setup atual as remove)
+# Tarefas legadas que conflitam/duplicam (o setup atual as remove). RAC_Bestsellers
+# entra aqui: Mais Vendidos foi descontinuado em Set/2026.
 $legacy = @("RAC_Autenticada_Manha", "RAC_Autenticada_Noite", "RAC_Chrome_CDP_Startup",
-            "RAC_Magalu_Manha", "RAC_Magalu_Noite")
+            "RAC_Magalu_Manha", "RAC_Magalu_Noite", "RAC_Bestsellers")
 $found = @()
 foreach ($t in $legacy) {
     if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) { $found += $t }
@@ -134,7 +135,6 @@ Write-Sect "Scripts e ambiente"
 foreach ($rel in @("scripts\run_local_scheduled.bat",
                    "scripts\local_scheduled_collect.bat",
                    "scripts\collect_local_authenticated.bat",
-                   "scripts\collect_bestsellers.bat",
                    "scripts\ensure_deps.bat")) {
     $p = Join-Path $BaseDir $rel
     if (Test-Path $p) { Write-Ok "$rel presente" }
@@ -339,14 +339,9 @@ if (Test-Path $logFile) {
 }
 
 $today = Get-Date -Format "yyyyMMdd"
-foreach ($slot in @("manha", "noite", "bestsellers")) {
+foreach ($slot in @("manha", "tarde", "noite")) {
     $marker = Join-Path $BaseDir "logs\coleta_${slot}_${today}.done"
     if (Test-Path $marker) { Write-Ok "Coleta '$slot' de hoje concluida (marcador presente)" }
-    elseif ($slot -eq "bestsellers" -and ([int]((Get-Date).DayOfWeek)) -in @(0, 6)) {
-        # Mais vendidos so roda em dia util: ausencia de marcador no fim de
-        # semana e o comportamento correto, nao uma coleta perdida.
-        Write-Info "Coleta 'bestsellers': fim de semana - nao roda (so dia util, janela 9-10h)"
-    }
     else { Write-Info "Coleta '$slot' de hoje: sem marcador (ainda nao rodou/nao concluiu)" }
 }
 

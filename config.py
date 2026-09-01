@@ -174,7 +174,7 @@ ACTIVE_PLATFORMS = {
     "leroy":          True,   # ✅ Leroy Merlin — Algolia API (1P vs 3P marketplace)
     "shopee":         True,   # 🟡 Shopee — API v4 + sessão (best-effort, instável sem proxy)
     "fast":           False,  # ⏸️  Fast Shop — bloqueio total (PerimeterX + browser timeout)
-    "dealers":        False,  # ⏸️  Dealers — fora do foco (insights de marketplace)
+    "dealers":        True,   # ✅ Dealers — coletados localmente (IP residencial) desde Set/2026
 }
 
 # ---------------------------------------------------------------------------
@@ -191,7 +191,15 @@ RETRY_ATTEMPTS: int = 2     # tentativas em caso de falha
 # Metadados fixos
 # ---------------------------------------------------------------------------
 ANALYST_NAME: str = "Bot Automático Python"
-TURNO_ABERTURA_MAX_HOUR: int = 12  # até 12h → Abertura; após → Fechamento
+# Três turnos distintos (Set/2026): a coleta local passou a rodar 8h, 14h e 20h
+# BRT, então o dia se divide em três faixas em vez de duas. Os cortes são por
+# HORA e ficam entre os horários agendados, para que uma execução em catch-up
+# (gatilho de logon fora do horário exato) ainda caia no turno certo:
+#   hora ≤ 11        → Abertura   (coleta das 8h)
+#   12 ≤ hora ≤ 17   → Tarde      (coleta das 14h)
+#   hora ≥ 18        → Fechamento (coleta das 20h)
+TURNO_ABERTURA_MAX_HOUR: int = 11  # até 11h → Abertura
+TURNO_TARDE_MAX_HOUR: int = 17     # 12h–17h → Tarde; após → Fechamento
 
 # ---------------------------------------------------------------------------
 # Mapeamento de plataforma → tipo

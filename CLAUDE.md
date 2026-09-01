@@ -15,12 +15,21 @@ por buy box e inteligência de sellers**. Preço continua coletado, porém como
 campo secundário. Campos de insight em todo registro: `Buy Box Seller`,
 `Qtd Sellers`, `Tipo Seller`, `Reputação Seller`, `Patrocinado?`.
 
-**7 plataformas (dealers saíram do foco):** Mercado Livre, Amazon, Google
-Shopping, Magalu, Casas Bahia, Shopee, Leroy Merlin. APIs JSON são preferidas
-ao DOM — expõem o array de sellers e o vencedor da buy box diretamente.
+**8 grupos de plataforma (Set/2026 — dealers voltaram):** Mercado Livre, Amazon,
+Google Shopping, Magalu, Casas Bahia, Shopee, Leroy Merlin **e os dealers**.
+APIs JSON são preferidas ao DOM — expõem o array de sellers e o vencedor da buy
+box diretamente.
+
+> **Coletor único local + 3 turnos (Set/2026):** toda a coleta de oferta/posição
+> roda **no PC coletor** (Windows, IP residencial), em **três turnos por dia** —
+> 08:00 (Abertura), 14:00 (Tarde) e 20:00 (Fechamento). O cron do GitHub Actions
+> (`collect.yml`) e a VM Oracle foram **desligados** como coletores para não haver
+> dois donos do mesmo `(plataforma, turno)`. **Mais Vendidos** deixou de ser
+> coletado. Contrato em `utils/pipeline_registry.py`; agendamento em
+> `scripts/setup_local_scheduler.ps1`.
 
 ```bash
-# Coleta padrão (todas as 7 plataformas ativas em ACTIVE_PLATFORMS)
+# Coleta padrão (todas as plataformas ativas em ACTIVE_PLATFORMS, dealers incluídos)
 python main.py --platforms all --pages 2
 
 # Plataformas individuais
@@ -32,7 +41,14 @@ python main.py --platforms magalu --pages 2        # curl_cffi/browser
 python utils/session_grabber.py --site shopee
 ```
 
-### Mais Vendidos — a única variável de RESULTADO (Ago/2026) 🆕
+### Mais Vendidos — ⏸️ DESCONTINUADO na coleta (Set/2026)
+
+> **A coleta de Mais Vendidos foi desligada em Set/2026** — o foco passou a ser
+> 100% oferta/posição, em 3 turnos locais. A tarefa `RAC_Bestsellers` foi
+> removida do agendador e o job `local_bestsellers` saiu do
+> `pipeline_registry.py`. O módulo `bestsellers/` e o `scripts/collect_bestsellers.py`
+> **continuam no repositório** e podem ser rodados à mão, mas não fazem parte da
+> rotina agendada. O texto abaixo é referência histórica do que a coleta fazia.
 
 A coleta de OFERTA mede preço, posição e buy box; ela **não contém volume de
 venda**. As listas "Mais Vendidos" dos varejistas são a **única variável de
@@ -89,12 +105,14 @@ plataforma + delta vs período anterior.
 genérico e o registro em `SOURCE_CLASSES` se resolvem sozinhos, sem novo
 arquivo.
 
-**Agendamento Windows (Task Scheduler):** `RAC_Bestsellers` 09:30 seg-sex +
-catch-up no logon. Roda no PC porque Amazon/ML/Shopee precisam de browser real
-e sessão logada — em IP de datacenter do Oracle/GitHub, 2–3 das 6 listas somem.
-Uma execução por dia: recoletar **substitui** a entrada do dia (idempotência),
-então **não ligue cron da VM**. Setup: `scripts\setup_local_scheduler.ps1`
-(registra as 3 tarefas em paralelo: Bestsellers + Local Autenticada + ML).
+**Agendamento Windows (Task Scheduler) — atual (Set/2026):** três tarefas de
+coleta de oferta/posição, todas rodando a varredura completa (todas as
+plataformas + dealers, 2 páginas, todas as keywords):
+`RAC_Local_Manha` 08:00 (Abertura), `RAC_Local_Tarde` 14:00 (Tarde) e
+`RAC_Local_Noite` 20:00 (Fechamento), cada uma com catch-up no logon dentro da
+sua janela (8–11h / 12–17h / 18–23h). A tarefa `RAC_Bestsellers` foi removida.
+Setup: `scripts\setup_local_scheduler.ps1`; diagnóstico:
+`scripts\check_local_scheduler.ps1`.
 
 **Valição:** Filtros anti-spam (título vazio, caracteres proibidos, duplicado
 entre SKUs, marca fora do escopo). Parser por plataforma em `bestsellers/sources/`.
@@ -958,9 +976,10 @@ python scripts/gdrive_setup.py --check            # histórico/CSV vão ao Drive
 python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv --mirror
 ```
 
-### Platform Status (foco buy box/seller — Mai 2026)
+### Platform Status (foco buy box/seller)
 
-> Dealers saíram do foco (marketplaces apenas). Preço é secundário.
+> Set/2026: dealers de volta ao foco (coletados localmente). Coleta 100% no PC
+> coletor, 3 turnos (8h/14h/20h). Preço é secundário.
 
 | Platform | Status | Notes |
 |----------|--------|-------|
@@ -972,7 +991,7 @@ python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv --mirror
 | Casas Bahia | ✅ | `scrapers/casas_bahia.py` — VTEX intelligent-search + **warm-up de cookies Akamai** (session curl_cffi persistente); `sellers[]` → buy box (`sellerDefault`) |
 | Shopee | 🟡 Python | `scrapers/shopee.py` — API v4 + sessão capturada (curl_cffi). **Best-effort** sem proxy BR; flags Mall/Preferred+. Node em `magalu_shopee/` fica como fallback |
 | Fast Shop | ⏸️ | PerimeterX total block |
-| Dealers | ⏸️ | Fora do foco — `ACTIVE_PLATFORMS["dealers"]=False` |
+| Dealers | ✅ | De volta ao foco (Set/2026) — coletados **localmente** (IP residencial), `ACTIVE_PLATFORMS["dealers"]=True`. `DealerScraper` + `DEALER_CONFIGS` |
 
 **Bloqueios Shopee/Casas Bahia:** causa raiz é o IP de datacenter (Oracle/GH
 Actions marcado pelo Akamai/anti-bot antes do fingerprint). Maior ganho =
@@ -1121,7 +1140,7 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 
 ---
 
-*Last updated: August 28, 2026 (v5.1)*  
-*Latest changes: Confiabilidade da pipeline — livro-razão de execução (`pipeline_heartbeat`), supervisor `pipeline_watch.py`, portão do briefing `briefing_gate.py`, contenção `pipeline_heal.py` e o mapa `docs/MAPA_COLETAS.md`; a ausência de execução virou evento*  
-*Anterior: Nome canônico de seller (`utils/seller_names.py`) — as grafias que cada marketplace impõe ao mesmo dealer colapsam na coleta, no backfill do Supabase e na leitura do dashboard; o share de buy box deixa de fatiar um lojista em várias linhas*  
+*Last updated: September 1, 2026 (v5.2)*  
+*Latest changes: PC coletor como dono ÚNICO de oferta/posição em 3 turnos (08:00 Abertura / 14:00 Tarde / 20:00 Fechamento) coletando TODAS as plataformas + dealers; `get_turno()` passou a 3 turnos; Mais Vendidos descontinuado da coleta agendada; cron do `collect.yml` e VM Oracle desligados como coletores; `pipeline_registry.py` reescrito para o coletor único*  
+*Anterior: Confiabilidade da pipeline — livro-razão de execução (`pipeline_heartbeat`), supervisor `pipeline_watch.py`, portão do briefing `briefing_gate.py`, contenção `pipeline_heal.py` e o mapa `docs/MAPA_COLETAS.md`; a ausência de execução virou evento*  
 *Maintained by: RAC Position Tracker Team*

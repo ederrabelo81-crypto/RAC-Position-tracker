@@ -1,24 +1,21 @@
 # =============================================================================
 # setup_local_scheduler.ps1 - Agenda a coleta LOCAL autenticada no notebook.
 #
-# Coleta Magalu + Shopee + Casas Bahia com o Chrome real logado (perfil
-# dedicado data\chrome_profile), IP residencial, SEM CDP e SEM porta de debug.
+# Desde Set/2026 o PC e o coletor UNICO de oferta/posicao. Cada coleta roda
+# TODAS as plataformas (ML + Amazon + Magalu + Casas Bahia + Google Shopping +
+# Leroy + Shopee + dealers) com o Chrome real logado (perfil dedicado
+# data\chrome_profile), IP residencial, SEM CDP e SEM porta de debug.
 #
-# Cria 3 tarefas (nao precisa mais da tarefa de "abrir Chrome CDP no logon" -
-# o proprio Python abre o Chrome quando a coleta roda):
-#   1. RAC_Local_Manha   - 09:00 diario + catch-up no logon (janela 9-12h)
-#   2. RAC_Local_Noite   - 20:00 diario + catch-up no logon (janela 20-23h)
-#   3. RAC_Bestsellers   - 09:30 dia util + catch-up no logon (janela 9-10h)
+# Cria 3 tarefas - TRES turnos por dia (mais cobertura que os 2 antigos):
+#   1. RAC_Local_Manha   - 08:00 diario + catch-up no logon (janela 8-11h)   -> turno Abertura
+#   2. RAC_Local_Tarde   - 14:00 diario + catch-up no logon (janela 12-17h)  -> turno Tarde
+#   3. RAC_Local_Noite   - 20:00 diario + catch-up no logon (janela 18-23h)  -> turno Fechamento
 #
-# A terceira e a coleta de MAIS VENDIDOS (docs\BESTSELLERS.md). Ela e uma
-# tarefa separada, e nao um passo da coleta da manha, por tres motivos: mede
-# outra coisa (resultado/venda, nao oferta e posicao), tem cadencia propria
-# (dia util, janela de 1h, porque o ranking da Amazon e recalculado de hora em
-# hora) e nao pode herdar o destino da coleta principal - se a coleta da manha
-# falhar ou atrasar, a serie de mais vendidos do dia nao pode cair junto.
+# Mais Vendidos (RAC_Bestsellers) foi DESCONTINUADO em Set/2026 - foco 100% na
+# coleta de oferta/posicao. Este setup remove a tarefa antiga se ela existir.
 #
 # A ACTION das tarefas e o proprio run_local_scheduled.bat, com argumento so
-# "manha"/"noite" - SEM "cmd.exe /c" e SEM redirect ">> log". Motivo (causa
+# "manha"/"tarde"/"noite" - SEM "cmd.exe /c" e SEM redirect ">> log". Motivo (causa
 # raiz das coletas agendadas que "nao rodavam"): com 4 aspas + ">>" o cmd.exe
 # descarta a primeira e a ultima aspas do /c; como o caminho do projeto tem
 # espaco (C:\Users\Eder Rabelo\...), o comando virava "C:\Users\Eder ..." e a
@@ -111,11 +108,13 @@ if ([string]::IsNullOrWhiteSpace($TaskUser)) {
     $TaskUser = "$env:USERDOMAIN\$env:USERNAME"
 }
 
-$Tasks       = @("RAC_Local_Manha", "RAC_Local_Noite", "RAC_Bestsellers")
-# Tarefas antigas (CDP / perfil copiado) substituidas por esta versao
+$Tasks       = @("RAC_Local_Manha", "RAC_Local_Tarde", "RAC_Local_Noite")
+# Tarefas antigas substituidas/descontinuadas por esta versao. RAC_Bestsellers
+# entra aqui: Mais Vendidos saiu da coleta em Set/2026, entao re-rodar o setup
+# limpa a tarefa antiga em vez de deixa-la disparando uma coleta que sumiu.
 $LegacyTasks = @(
     "RAC_Autenticada_Manha", "RAC_Autenticada_Noite", "RAC_Chrome_CDP_Startup",
-    "RAC_Magalu_Manha", "RAC_Magalu_Noite"
+    "RAC_Magalu_Manha", "RAC_Magalu_Noite", "RAC_Bestsellers"
 )
 
 if ($Remove) {
@@ -179,42 +178,39 @@ function New-RacLogonTrigger {
 # (desligado), roda assim que possivel. RestartCount/Interval: retenta se a
 # execucao falhar (ex.: pull/coleta com erro transiente). IgnoreNew: os gatilhos
 # de horario e de logon podem coincidir - nao empilha instancias.
-Write-Host "Registrando: RAC_Local_Manha (09:00 diario + catch-up no logon)" -ForegroundColor Cyan
-$triggers = @((New-ScheduledTaskTrigger -Daily -At "9:00AM"), (New-RacLogonTrigger))
+# Janela de tempo de 4h por turno: a varredura agora e completa (8 plataformas,
+# todas as keywords), entao precisa de mais folga que os 2-3h antigos. Nos
+# horarios normais (8/14/20h) os turnos nao se sobrepoem (8+4=12<14; 14+4=18<20).
+$AllPlatforms = "ML+Amazon+Magalu+CB+GoogleShopping+Leroy+Shopee+dealers"
+
+Write-Host "Registrando: RAC_Local_Manha (08:00 diario + catch-up no logon)" -ForegroundColor Cyan
+$triggers = @((New-ScheduledTaskTrigger -Daily -At "8:00AM"), (New-RacLogonTrigger))
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10) `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 3)
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
 Register-ScheduledTask -TaskName "RAC_Local_Manha" `
     -Action (New-RacAction "manha") -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
-    -Description "Coleta local autenticada (ML+Magalu+Shopee+CB+Leroy+Amazon) - Abertura, janela 9-12h" `
+    -Description "Coleta local autenticada ($AllPlatforms) - turno Abertura, janela 8-11h" `
+    -Force | Out-Null
+
+Write-Host "Registrando: RAC_Local_Tarde (14:00 diario + catch-up no logon)" -ForegroundColor Cyan
+$triggers = @((New-ScheduledTaskTrigger -Daily -At "2:00PM"), (New-RacLogonTrigger))
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10) `
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
+Register-ScheduledTask -TaskName "RAC_Local_Tarde" `
+    -Action (New-RacAction "tarde") -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
+    -Description "Coleta local autenticada ($AllPlatforms) - turno Tarde, janela 12-17h" `
     -Force | Out-Null
 
 Write-Host "Registrando: RAC_Local_Noite (20:00 diario + catch-up no logon)" -ForegroundColor Cyan
 $triggers = @((New-ScheduledTaskTrigger -Daily -At "8:00PM"), (New-RacLogonTrigger))
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10) `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
 Register-ScheduledTask -TaskName "RAC_Local_Noite" `
     -Action (New-RacAction "noite") -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
-    -Description "Coleta local autenticada (ML+Magalu+Shopee+CB+Leroy+Amazon) - Fechamento, janela 20-23h" `
-    -Force | Out-Null
-
-Write-Host "Registrando: RAC_Bestsellers (09:30 dia util + catch-up no logon)" -ForegroundColor Cyan
-# Semanal seg-sex em vez de diario: a serie de mais vendidos so compara mesmo
-# dia da semana, entao leitura de sabado/domingo nao entra em delta nenhum -
-# e o calendario promocional do fim de semana a tornaria enganosa. O gatilho de
-# logon tambem dispara no fim de semana; quem barra ali e o estagio B (guarda
-# de dia util), que chega atualizado pelo git pull do estagio A.
-$triggers = @(
-    (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At "9:30AM"),
-    (New-RacLogonTrigger)
-)
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 5) `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 1)
-Register-ScheduledTask -TaskName "RAC_Bestsellers" `
-    -Action (New-RacAction "bestsellers") -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
-    -Description "Mais Vendidos RAC (6 listas por vendas) - dia util, janela 9-10h" `
+    -Description "Coleta local autenticada ($AllPlatforms) - turno Fechamento, janela 18-23h" `
     -Force | Out-Null
 
 Write-Host ""
@@ -236,6 +232,6 @@ Write-Host "      escrita. A coleta agora diz no log qual chave esta em uso." -F
 Write-Host "  2. O notebook precisa estar LIGADO e com voce logado no Windows" -ForegroundColor Yellow
 Write-Host "     nos horarios (o Chrome abre na sua sessao de UI). Se estiver" -ForegroundColor Yellow
 Write-Host "     desligado, a coleta roda no proximo LOGON dentro da janela" -ForegroundColor Yellow
-Write-Host "     (manha 9-12h / noite 20-23h / mais vendidos 9-10h em dia util)." -ForegroundColor Yellow
+Write-Host "     (manha 8-11h / tarde 12-17h / noite 18-23h)." -ForegroundColor Yellow
 Write-Host ""
 Wait-Key
