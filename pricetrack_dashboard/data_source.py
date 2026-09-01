@@ -24,6 +24,10 @@ from pricetrack_api.models import CollectQuery, Offer
 
 from .peer import all_tiers
 
+# Piso de read timeout (s) para a API de coleta, que pode responder devagar.
+# Só eleva; nunca reduz um valor maior configurado via PRICETRACK_TIMEOUT_SECONDS.
+_MIN_READ_TIMEOUT_SECONDS = 60.0
+
 
 def peer_brands() -> List[str]:
     """Marcas presentes no peer (para o filtro server-side de marca)."""
@@ -44,13 +48,23 @@ def find_latest_date(
     client: PriceTrackClient,
     reference: Optional[date] = None,
     max_days_back: int = 10,
+    brands: Optional[Sequence[str]] = None,
 ) -> Optional[tuple]:
-    """Acha a data mais recente com coleta. Retorna (iso, days_back) ou None."""
+    """Acha a data mais recente com coleta. Retorna (iso, days_back) ou None.
+
+    A sonda conta apenas as ofertas das marcas do peer (``product_brand``). Sem
+    esse filtro, o ``count`` percorre a coleta INTEIRA do dia (dezenas de
+    milhares de linhas) e o servidor estoura o read timeout — era o motivo de a
+    página ficar minutos girando em ``Read timed out``.
+    """
     reference = reference or date.today()
+    brand_filter = list(brands) if brands else None
     for i in range(max_days_back + 1):
         d = reference - timedelta(days=i)
         try:
-            total = client.count_offers(CollectQuery(d.isoformat(), take=1))
+            total = client.count_offers(
+                CollectQuery(d.isoformat(), product_brand=brand_filter, take=1)
+            )
         except PriceTrackNoCollectionError:
             continue
         except Exception:
@@ -81,18 +95,26 @@ def fetch_live(
         RuntimeError: nenhuma data com coleta encontrada.
     """
     settings = settings or PriceTrackSettings.from_env()
+    # A API de coleta pode responder devagar; um piso de read timeout mais
+    # folgado evita o loop de retries por timeout. Respeita um valor maior já
+    # vindo do ambiente (PRICETRACK_TIMEOUT_SECONDS).
+    if settings.timeout_seconds < _MIN_READ_TIMEOUT_SECONDS:
+        settings.timeout_seconds = _MIN_READ_TIMEOUT_SECONDS
     client = PriceTrackClient(settings)
+
+    brand_filter = list(brands) if brands is not None else peer_brands()
 
     days_back = 0
     if collection_date is None:
-        found = find_latest_date(client, reference=reference)
+        found = find_latest_date(
+            client, reference=reference, brands=brand_filter or None
+        )
         if found is None:
             raise RuntimeError(
                 "Nenhuma coleta encontrada nos últimos dias na API do PriceTrack."
             )
         collection_date, days_back = found
 
-    brand_filter = list(brands) if brands is not None else peer_brands()
     query = CollectQuery(
         collection_date,
         product_brand=brand_filter or None,
