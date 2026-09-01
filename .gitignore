@@ -12,6 +12,10 @@ venv/
 .env.local
 *.env.*
 
+# Streamlit secrets — key real do PriceTrack/Supabase; NUNCA versionar
+# (o template versionado é .streamlit/secrets.toml.example)
+.streamlit/secrets.toml
+
 # Build artifacts
 dist/
 build/
