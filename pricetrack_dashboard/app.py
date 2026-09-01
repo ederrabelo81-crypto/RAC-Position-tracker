@@ -307,7 +307,7 @@ def _controls(embedded: bool) -> tuple:
                 "Filtrar marcas do peer", value=True, key="pt_brandfilter",
                 help="Filtro server-side pelas marcas do peer (mais rápido).")
             if c4.button("🔄 Atualizar", use_container_width=True, key="pt_refresh"):
-                st.cache_data.clear()
+                _load_live.clear()
                 st.rerun()
         else:
             st.header("Fonte de dados")
@@ -322,7 +322,7 @@ def _controls(embedded: bool) -> tuple:
                 key="pt_brandfilter")
             if st.button("🔄 Atualizar agora", use_container_width=True,
                          key="pt_refresh"):
-                st.cache_data.clear()
+                _load_live.clear()
                 st.rerun()
         if not key_present:
             st.caption(

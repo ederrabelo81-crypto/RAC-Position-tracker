@@ -32,9 +32,15 @@ Defina a key primeiro:
 ```powershell
 # Windows / PowerShell (o PC coletor)
 $env:PRICETRACK_API_KEY = "sua-key"
-# Linux/Mac:  export PRICETRACK_API_KEY=sua-key
-# ou, melhor: .streamlit/secrets.toml  →  PRICETRACK_API_KEY = "sua-key"
 ```
+
+```bash
+# Linux / Mac
+export PRICETRACK_API_KEY=sua-key
+```
+
+Melhor ainda (vale nos dois SOs e no Streamlit Cloud): `.streamlit/secrets.toml`
+com `PRICETRACK_API_KEY = "sua-key"`.
 
 **No painel do projeto (recomendado)** — a página vive dentro do dashboard
 principal, no grupo **INSIGHTS → 💰 Preços 9K/12K**:
