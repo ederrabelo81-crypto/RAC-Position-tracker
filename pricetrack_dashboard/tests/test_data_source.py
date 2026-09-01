@@ -69,6 +69,14 @@ class _FakeQuery:
         self.filters[col] = val
         return self
 
+    def gte(self, col, val):
+        self.filters[f"{col}__gte"] = val
+        return self
+
+    def lte(self, col, val):
+        self.filters[f"{col}__lte"] = val
+        return self
+
     def in_(self, col, vals):
         self.filters[col] = list(vals)
         return self
@@ -148,3 +156,30 @@ class TestFetchSupabase:
     def test_latest_date_helper(self):
         fake = _FakeSupabase([{"collection_date": "2026-08-31"}])
         assert ds.supabase_latest_date(fake) == "2026-08-31"
+
+
+class TestFetchSupabaseRange:
+    def test_groups_offers_by_collection_date(self):
+        rows = [
+            {**_daily_row("42EBVCA09M5", "t", "MIDEA", 1700), "collection_date": "2026-08-25"},
+            {**_daily_row("42EBVCA09M5", "t", "MIDEA", 1720), "collection_date": "2026-08-25"},
+            {**_daily_row("42EBVCA09M5", "t", "MIDEA", 1750), "collection_date": "2026-08-26"},
+        ]
+        fake = _FakeSupabase(rows)
+        by_date = ds.fetch_supabase_range("2026-08-25", "2026-08-26", client=fake)
+        assert set(by_date.keys()) == {"2026-08-25", "2026-08-26"}
+        assert len(by_date["2026-08-25"]) == 2
+        assert len(by_date["2026-08-26"]) == 1
+
+    def test_drops_offers_without_plausible_price(self):
+        rows = [{**_daily_row("X", "t", "MIDEA", 9999999), "collection_date": "2026-08-25"}]
+        fake = _FakeSupabase(rows)
+        by_date = ds.fetch_supabase_range("2026-08-25", "2026-08-25", client=fake)
+        assert by_date == {}
+
+    def test_requires_client(self, monkeypatch):
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_KEY", raising=False)
+        import pytest
+        with pytest.raises(RuntimeError):
+            ds.fetch_supabase_range("2026-08-25", "2026-08-26")

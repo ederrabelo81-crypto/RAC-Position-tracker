@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import random
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence
@@ -282,6 +283,71 @@ def fetch_supabase(
     return LiveResult(
         offers=offers, collection_date=collection_date, days_back=days_back
     )
+
+
+def fetch_supabase_range(
+    start_date: str,
+    end_date: str,
+    brands: Optional[Sequence[str]] = None,
+    turno: str = "Diário",
+    client=None,
+) -> Dict[str, List[Offer]]:
+    """Lê ``pricetrack_daily`` num intervalo de datas, agrupado por dia.
+
+    Para o gráfico de evolução (Midea moda × mediana dos peers): uma consulta
+    só, depois agrupamos em Python por ``collection_date`` — mais barato que
+    uma chamada por dia.
+
+    Args:
+        start_date, end_date: ISO, inclusive nos dois extremos.
+        brands: filtro de marca (default: marcas do peer).
+        turno: agregado diário por padrão ("Diário").
+        client: client Supabase (injetável em teste); senão monta do ambiente.
+
+    Returns:
+        ``{data ISO: [Offer, ...]}`` — dias sem nenhuma linha simplesmente não
+        aparecem no dict (o chamador decide como tratar a lacuna).
+
+    Raises:
+        RuntimeError: Supabase não configurado.
+    """
+    client = client or _supabase_client()
+    if client is None:
+        raise RuntimeError(
+            "Supabase não configurado — defina SUPABASE_URL e SUPABASE_KEY "
+            "(env ou .streamlit/secrets.toml)."
+        )
+    brand_filter = [b.upper() for b in (brands if brands is not None else peer_brands())]
+
+    rows: List[Dict[str, Any]] = []
+    offset = 0
+    while offset < _SUPABASE_MAX_ROWS:
+        q = (
+            client.table("pricetrack_daily")
+            .select("collection_date,turno,brand,sku,title,marketplace,seller,"
+                    "min_price,avg_price,mode_price,max_price,id")
+            .gte("collection_date", start_date)
+            .lte("collection_date", end_date)
+            .eq("turno", turno)
+        )
+        if brand_filter:
+            q = q.in_("brand", brand_filter)
+        resp = q.range(offset, offset + _SUPABASE_PAGE - 1).execute()
+        page = getattr(resp, "data", None) or []
+        rows.extend(page)
+        if len(page) < _SUPABASE_PAGE:
+            break
+        offset += _SUPABASE_PAGE
+
+    by_date: Dict[str, List[Offer]] = defaultdict(list)
+    for row in rows:
+        offer = _row_to_offer(row)
+        if offer is None:
+            continue
+        d = str(row.get("collection_date") or "")[:10]
+        if d:
+            by_date[d].append(offer)
+    return dict(by_date)
 
 
 # ── Modo demo (offline) ──────────────────────────────────────────────────────

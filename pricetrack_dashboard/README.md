@@ -35,6 +35,17 @@ Midea) rodam iguais sobre qualquer uma. Seletor de data em **calendário**
 2. **Variação de preço Midea.** Por capacidade × linha: **mínimo, máximo, moda
    (modal) e média** — barra de faixa mín→máx com marcadores de moda e média.
 
+3. **Lista peer-to-peer.** Uma linha por **modelo exato** do peer (não agregado
+   por marca — uma marca pode ter mais de um modelo no mesmo tier, ex.: Philco
+   PAC9FC e PAC9FB no Low/9K), com mín/média/moda/máx/n. Midea sempre primeiro
+   em cada capacidade; os demais em moda crescente.
+
+4. **Evolução — Midea (moda) × Peers (mediana).** Série diária por tier/capacidade
+   (janela de 7/15/30 dias): linha azul cheia é a moda Midea, linha laranja
+   tracejada é a mediana dos peers. Legenda calcula o "Delta%" do período e o
+   gap Midea vs peers no último dia (negativo = Midea mais barata). Só nas
+   fontes 🟢 Supabase/🟡 Demo — a 🔴 API ao vivo levaria ~2min por dia da janela.
+
 ## Como rodar
 
 Credenciais — o **Supabase** é a fonte padrão; a `PRICETRACK_API_KEY` só é
@@ -85,10 +96,10 @@ streamlit run pricetrack_dashboard/app.py
 ```
 pricetrack_dashboard/
 ├── peer.py         # contrato do peer (SKUs por tier/capacidade) + matching por código
-├── analytics.py    # funções puras: classifica ofertas → mín/máx/moda/média/modal/piso
-├── data_source.py  # hook ao vivo (pricetrack_api) + amostra demo offline
-├── app.py          # página Streamlit
-└── tests/          # 27 testes herméticos (peer + analytics), sem rede
+├── analytics.py    # funções puras: classifica ofertas → tiers, peers, modelos, série temporal
+├── data_source.py  # Supabase (dia único + intervalo) + API ao vivo + amostra demo
+├── app.py          # página Streamlit (cards, lista peer-to-peer, gráficos de evolução)
+└── tests/          # testes herméticos (peer, analytics, data_source, app), sem rede
 ```
 
 - **Casamento oferta → tier** é por **código de modelo do fabricante**

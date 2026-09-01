@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pricetrack_api.models import Offer
 
-from pricetrack_dashboard.analytics import analyze, compute_stats
+from pricetrack_dashboard.analytics import analyze, compute_stats, daily_series
 from pricetrack_dashboard.peer import CAP_9K, CAP_12K, TIER_HIGH, TIER_LOW
 
 
@@ -113,3 +113,121 @@ class TestAnalyze:
         a = analyze([])
         assert len(a.tiers) == 6
         assert all(t.market.is_empty for t in a.tiers)
+
+
+class TestPeersStats:
+    def test_peers_excludes_midea(self):
+        offers = [
+            _offer("42EBVCA09M5", "MIDEA", 1700),
+            _offer("S3-Q09AAQAK", "LG", 1900),
+            _offer("PAC9FC", "PHILCO", 2000),
+        ]
+        low9 = analyze(offers).tier(TIER_LOW, CAP_9K)
+        assert low9.peers.count == 2
+        assert low9.peers.minimum == 1900 and low9.peers.maximum == 2000
+        assert low9.midea.count == 1
+
+    def test_midea_vs_peers_delta_negative_when_cheaper(self):
+        offers = [
+            _offer("42EBVCA09M5", "MIDEA", 1700),
+            _offer("S3-Q09AAQAK", "LG", 2000),
+        ]
+        low9 = analyze(offers).tier(TIER_LOW, CAP_9K)
+        assert low9.midea_vs_peers_delta == -300.0
+
+    def test_empty_when_no_peer_offers(self):
+        offers = [_offer("42EBVCA09M5", "MIDEA", 1700)]
+        low9 = analyze(offers).tier(TIER_LOW, CAP_9K)
+        assert low9.peers.is_empty
+        assert low9.midea_vs_peers_delta is None
+
+
+class TestModelResults:
+    def test_lists_every_peer_model_including_without_data(self):
+        offers = [_offer("42EBVCA09M5", "MIDEA", 1700)]
+        low9 = analyze(offers).tier(TIER_LOW, CAP_9K)
+        # 9 modelos definidos no peer para Low/9K (Midea + 8 concorrentes).
+        assert len(low9.models) == 9
+        midea_rows = [m for m in low9.models if m.is_midea]
+        assert len(midea_rows) == 1 and midea_rows[0].stats.count == 1
+        empty_rows = [m for m in low9.models if not m.is_midea]
+        assert all(m.stats.is_empty for m in empty_rows)
+
+    def test_distinguishes_two_models_of_the_same_brand(self):
+        # Philco tem dois modelos distintos no Low/9K (PAC9FC e PAC9FB).
+        offers = [
+            _offer("PAC9FC", "PHILCO", 1800),
+            _offer("PAC9FB", "PHILCO", 2200),
+        ]
+        low9 = analyze(offers).tier(TIER_LOW, CAP_9K)
+        philco_rows = [m for m in low9.models if m.brand == "PHILCO"]
+        assert len(philco_rows) == 2
+        stats_by_label = {m.model_label: m.stats.mode for m in philco_rows}
+        assert stats_by_label == {"PAC9FC": 1800, "PAC9FB": 2200}
+
+    def test_model_label_keeps_original_punctuation(self):
+        offers = [_offer("S3-Q09AAQAK", "LG", 1900)]
+        low9 = analyze(offers).tier(TIER_LOW, CAP_9K)
+        lg = next(m for m in low9.models if m.brand == "LG")
+        assert lg.model_label == "S3-Q09AAQAK"
+
+    def test_midea_first_then_peers_by_ascending_mode(self):
+        offers = [
+            _offer("42EBVCA09M5", "MIDEA", 1700),
+            _offer("S3-Q09AAQAK", "LG", 2500),
+            _offer("PAC9FC", "PHILCO", 1900),
+        ]
+        low9 = analyze(offers).tier(TIER_LOW, CAP_9K)
+        non_empty = [m for m in low9.models if not m.stats.is_empty]
+        assert non_empty[0].is_midea
+        modes = [m.stats.mode for m in non_empty[1:]]
+        assert modes == sorted(modes)
+
+
+class TestDailySeries:
+    def test_builds_one_point_per_date_and_tier(self):
+        rows_by_date = {
+            "2026-08-25": [
+                _offer("42EBVCA09M5", "MIDEA", 1700),
+                _offer("S3-Q09AAQAK", "LG", 2000),
+            ],
+            "2026-08-26": [
+                _offer("42EBVCA09M5", "MIDEA", 1750),
+                _offer("S3-Q09AAQAK", "LG", 2100),
+            ],
+        }
+        series = daily_series(rows_by_date)
+        low9 = next(s for s in series if s.tier == TIER_LOW and s.capacity == CAP_9K)
+        assert [p.date for p in low9.points] == ["2026-08-25", "2026-08-26"]
+        assert low9.points[0].midea_mode == 1700
+        assert low9.points[0].peers_median == 2000
+        assert low9.points[1].midea_mode == 1750
+
+    def test_delta_pct_and_gap_last(self):
+        rows_by_date = {
+            "2026-08-25": [_offer("42EBVCA09M5", "MIDEA", 1000),
+                           _offer("S3-Q09AAQAK", "LG", 1200)],
+            "2026-08-26": [_offer("42EBVCA09M5", "MIDEA", 1100),
+                           _offer("S3-Q09AAQAK", "LG", 1150)],
+        }
+        series = daily_series(rows_by_date)
+        low9 = next(s for s in series if s.tier == TIER_LOW and s.capacity == CAP_9K)
+        assert low9.delta_pct() == 10.0            # 1000 -> 1100 = +10%
+        assert low9.gap_last() == -50.0             # 1100 - 1150
+
+    def test_delta_pct_none_with_single_point(self):
+        series = daily_series({"2026-08-25": [_offer("42EBVCA09M5", "MIDEA", 1000)]})
+        low9 = next(s for s in series if s.tier == TIER_LOW and s.capacity == CAP_9K)
+        assert low9.delta_pct() is None
+
+    def test_missing_date_produces_no_point(self):
+        # Dia sem nenhuma oferta casada no peer não entra no dict de entrada;
+        # simula com um dict que já reflete isso (lacuna, sem interpolar).
+        series = daily_series({"2026-08-25": [_offer("42EBVCA09M5", "MIDEA", 1000)]})
+        low9 = next(s for s in series if s.tier == TIER_LOW and s.capacity == CAP_9K)
+        assert len(low9.points) == 1
+
+    def test_empty_series_has_no_points_and_no_data(self):
+        series = daily_series({})
+        assert all(not s.points for s in series)
+        assert all(not s.has_data for s in series)
