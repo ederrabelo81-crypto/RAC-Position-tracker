@@ -263,52 +263,77 @@ def render_midea_table(analysis: Analysis) -> None:
     )
 
 
-# ── App ──────────────────────────────────────────────────────────────────────
-def main() -> None:
-    st.set_page_config(
-        page_title="Preços RAC 9K/12K · PriceTrack",
-        page_icon="❄️", layout="wide",
-    )
-    st.title("❄️ Preços RAC 9K/12K — PriceTrack ao vivo")
-    st.caption(
-        "Ar-condicionado Só Frio (CO), tiers competitivos peer to peer. "
-        "Dados diretos da API do PriceTrack."
-    )
+# ── Chave de API (env ou st.secrets do Streamlit Cloud) ──────────────────────
+def _ensure_key_env() -> None:
+    """Espelha `PRICETRACK_API_KEY` de `st.secrets` para `os.environ`.
 
-    with st.sidebar:
-        st.header("Fonte de dados")
-        key_present = bool(os.getenv("PRICETRACK_API_KEY", "").strip())
-        default_mode = "🔴 Ao vivo (API)" if key_present else "🟡 Demo (offline)"
-        mode = st.radio(
-            "Modo",
-            ["🔴 Ao vivo (API)", "🟡 Demo (offline)"],
-            index=(0 if key_present else 1),
-        )
-        if key_present:
-            st.success("PRICETRACK_API_KEY detectada.")
+    O cliente `pricetrack_api` lê a key de `os.environ` (`from_env`). No
+    Streamlit Cloud a key costuma vir só em `st.secrets`; esta ponte deixa o
+    hook ao vivo funcionar nos dois casos.
+    """
+    if os.getenv("PRICETRACK_API_KEY", "").strip():
+        return
+    try:
+        secret = st.secrets.get("PRICETRACK_API_KEY", "")  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 — secrets pode nem existir
+        secret = ""
+    if secret:
+        os.environ["PRICETRACK_API_KEY"] = str(secret).strip()
+
+
+def _api_key_present() -> bool:
+    _ensure_key_env()
+    return bool(os.getenv("PRICETRACK_API_KEY", "").strip())
+
+
+# ── Controles + carga ────────────────────────────────────────────────────────
+def _controls(embedded: bool) -> tuple:
+    """Renderiza os controles (fonte, data, filtro). Retorna (is_live, date, filter).
+
+    Embutido no painel do projeto: controles no corpo (o sidebar é da navegação
+    global). Standalone: controles no sidebar.
+    """
+    key_present = _api_key_present()
+    container = st.container() if embedded else st.sidebar
+    with container:
+        if embedded:
+            c1, c2, c3, c4 = st.columns([1.4, 1.2, 1.4, 0.8])
+            mode = c1.radio("Fonte", ["🔴 Ao vivo (API)", "🟡 Demo (offline)"],
+                            index=(0 if key_present else 1), horizontal=False,
+                            key="pt_mode")
+            date_override = c2.text_input(
+                "Data (vazio = recente)", value="", key="pt_date").strip() or None
+            use_brand_filter = c3.checkbox(
+                "Filtrar marcas do peer", value=True, key="pt_brandfilter",
+                help="Filtro server-side pelas marcas do peer (mais rápido).")
+            if c4.button("🔄 Atualizar", use_container_width=True, key="pt_refresh"):
+                _load_live.clear()
+                st.rerun()
         else:
-            st.warning(
-                "PRICETRACK_API_KEY não configurada — modo Demo. "
-                "Defina a key no ambiente ou em `.streamlit/secrets.toml` "
-                "para o hook ao vivo."
+            st.header("Fonte de dados")
+            mode = st.radio("Modo", ["🔴 Ao vivo (API)", "🟡 Demo (offline)"],
+                            index=(0 if key_present else 1), key="pt_mode")
+            st.divider()
+            date_override = st.text_input(
+                "Data (YYYY-MM-DD, vazio = mais recente)", value="",
+                key="pt_date").strip() or None
+            use_brand_filter = st.checkbox(
+                "Filtrar por marcas do peer (mais rápido)", value=True,
+                key="pt_brandfilter")
+            if st.button("🔄 Atualizar agora", use_container_width=True,
+                         key="pt_refresh"):
+                _load_live.clear()
+                st.rerun()
+        if not key_present:
+            st.caption(
+                "🟡 `PRICETRACK_API_KEY` não configurada — modo Demo. Defina a key "
+                "no ambiente ou em `.streamlit/secrets.toml` para o hook ao vivo."
             )
-        st.divider()
-        date_override = st.text_input(
-            "Data (YYYY-MM-DD, vazio = mais recente)", value=""
-        ).strip() or None
-        use_brand_filter = st.checkbox(
-            "Filtrar por marcas do peer (mais rápido)", value=True,
-            help="Filtro server-side pelas marcas do peer. Desmarque para puxar "
-                 "tudo e casar 100% no cliente (mais lento).",
-        )
-        if st.button("🔄 Atualizar agora", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
+    return mode.startswith("🔴"), date_override, use_brand_filter
 
-    is_live = mode.startswith("🔴")
 
-    # Carrega ofertas
-    offers: List[Offer]
+def _load_analysis(is_live: bool, date_override, use_brand_filter):
+    """Carrega ofertas (live ou demo) e devolve (analysis, demo, date, days_back)."""
     collection_date: Optional[str] = None
     days_back = 0
     demo = False
@@ -316,7 +341,7 @@ def main() -> None:
         try:
             with st.spinner("Puxando ofertas da API do PriceTrack…"):
                 payload = _load_live(date_override, use_brand_filter)
-            offers = [_dict_to_offer(d) for d in payload["offers"]]
+            offers: List[Offer] = [_dict_to_offer(d) for d in payload["offers"]]
             collection_date = payload["collection_date"]
             days_back = payload["days_back"]
         except Exception as exc:  # noqa: BLE001 — superfície de erro amigável
@@ -330,10 +355,26 @@ def main() -> None:
     else:
         offers = demo_offers()
         demo = True
+    return analyze(offers, collection_date=collection_date), demo, collection_date, days_back
 
-    analysis = analyze(offers, collection_date=collection_date)
 
-    # Faixa de frescor
+# ── Corpo da página (reutilizável no painel do projeto) ──────────────────────
+def render_page(embedded: bool = False) -> None:
+    """Renderiza a página inteira (controles + tiers + variação Midea).
+
+    ``embedded=True`` para embutir no painel do projeto (app.py): sem
+    ``set_page_config``, controles no corpo. ``False`` para o app standalone.
+    """
+    st.title("❄️ Preços RAC 9K/12K — PriceTrack ao vivo")
+    st.caption(
+        "Ar-condicionado Só Frio (CO), tiers competitivos peer to peer. "
+        "Dados diretos da API do PriceTrack."
+    )
+    is_live, date_override, use_brand_filter = _controls(embedded)
+    analysis, demo, collection_date, days_back = _load_analysis(
+        is_live, date_override, use_brand_filter
+    )
+
     if demo:
         st.warning(
             "⚠️ **Modo Demo** — dados sintéticos, apenas para visualizar o "
@@ -378,6 +419,14 @@ def main() -> None:
             "código não aparece no título/sku — ajuste os códigos em "
             "`pricetrack_dashboard/peer.py`."
         )
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="Preços RAC 9K/12K · PriceTrack",
+        page_icon="❄️", layout="wide",
+    )
+    render_page(embedded=False)
 
 
 if __name__ == "__main__":
