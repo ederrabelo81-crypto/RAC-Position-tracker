@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import List, Optional
+from datetime import date
+from typing import Optional
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -37,9 +38,13 @@ from pricetrack_api.models import Offer  # noqa: E402
 
 from pricetrack_dashboard.analytics import Analysis, analyze  # noqa: E402
 from pricetrack_dashboard.data_source import (  # noqa: E402
+    _supabase_client,
     demo_offers,
     fetch_live,
+    fetch_supabase,
     peer_brands,
+    supabase_configured,
+    supabase_latest_date,
 )
 from pricetrack_dashboard.peer import (  # noqa: E402
     CAP_ORDER,
@@ -72,7 +77,7 @@ def _brl_cents(value: Optional[float]) -> str:
 # ── Carga de dados (cacheada) ────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=900)
 def _load_live(collection_date: Optional[str], use_brand_filter: bool) -> dict:
-    """Puxa ao vivo e serializa para dict (cacheável). TTL 15 min."""
+    """Puxa ao vivo da API e serializa para dict (cacheável). TTL 15 min."""
     brands = peer_brands() if use_brand_filter else []
     result = fetch_live(
         collection_date=collection_date,
@@ -83,6 +88,33 @@ def _load_live(collection_date: Optional[str], use_brand_filter: bool) -> dict:
         "collection_date": result.collection_date,
         "days_back": result.days_back,
     }
+
+
+@st.cache_data(show_spinner=False, ttl=900)
+def _load_supabase(collection_date: Optional[str], use_brand_filter: bool) -> dict:
+    """Lê pricetrack_daily do Supabase e serializa. TTL 15 min."""
+    brands = peer_brands() if use_brand_filter else []
+    result = fetch_supabase(
+        collection_date=collection_date,
+        brands=brands if brands else None,
+    )
+    return {
+        "offers": [_offer_to_dict(o) for o in result.offers],
+        "collection_date": result.collection_date,
+        "days_back": result.days_back,
+    }
+
+
+@st.cache_data(show_spinner=False, ttl=900)
+def _supabase_latest() -> Optional[str]:
+    """Data mais recente disponível no Supabase (para default do calendário)."""
+    client = _supabase_client()
+    if client is None:
+        return None
+    try:
+        return supabase_latest_date(client)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _offer_to_dict(o: Offer) -> dict:
@@ -263,99 +295,141 @@ def render_midea_table(analysis: Analysis) -> None:
     )
 
 
-# ── Chave de API (env ou st.secrets do Streamlit Cloud) ──────────────────────
-def _ensure_key_env() -> None:
-    """Espelha `PRICETRACK_API_KEY` de `st.secrets` para `os.environ`.
+# ── Segredos (env ou st.secrets do Streamlit Cloud) ──────────────────────────
+_SECRET_KEYS = ("PRICETRACK_API_KEY", "SUPABASE_URL", "SUPABASE_KEY")
 
-    O cliente `pricetrack_api` lê a key de `os.environ` (`from_env`). No
-    Streamlit Cloud a key costuma vir só em `st.secrets`; esta ponte deixa o
-    hook ao vivo funcionar nos dois casos.
+
+def _bridge_secrets_to_env() -> None:
+    """Espelha segredos de `st.secrets` para `os.environ`.
+
+    `pricetrack_api` e o client Supabase leem de `os.environ`. No Streamlit
+    Cloud os segredos costumam vir só em `st.secrets`; esta ponte deixa as duas
+    fontes (API e Supabase) funcionarem via env ou via secrets.toml.
     """
-    if os.getenv("PRICETRACK_API_KEY", "").strip():
-        return
-    try:
-        secret = st.secrets.get("PRICETRACK_API_KEY", "")  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 — secrets pode nem existir
-        secret = ""
-    if secret:
-        os.environ["PRICETRACK_API_KEY"] = str(secret).strip()
+    for name in _SECRET_KEYS:
+        if os.getenv(name, "").strip():
+            continue
+        try:
+            secret = st.secrets.get(name, "")  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 — secrets pode nem existir
+            secret = ""
+        if secret:
+            os.environ[name] = str(secret).strip()
 
 
 def _api_key_present() -> bool:
-    _ensure_key_env()
+    _bridge_secrets_to_env()
     return bool(os.getenv("PRICETRACK_API_KEY", "").strip())
 
 
-# ── Controles + carga ────────────────────────────────────────────────────────
-def _controls(embedded: bool) -> tuple:
-    """Renderiza os controles (fonte, data, filtro). Retorna (is_live, date, filter).
+def _supabase_present() -> bool:
+    _bridge_secrets_to_env()
+    return supabase_configured()
 
-    Embutido no painel do projeto: controles no corpo (o sidebar é da navegação
-    global). Standalone: controles no sidebar.
+
+# Rótulos das fontes
+SRC_SUPABASE = "🟢 Supabase (rápido)"
+SRC_LIVE = "🔴 API ao vivo (lento)"
+SRC_DEMO = "🟡 Demo (offline)"
+
+
+def _controls(embedded: bool) -> tuple:
+    """Renderiza os controles (fonte, data, filtro).
+
+    Retorna ``(source, collection_date, use_brand_filter)`` onde ``source`` é um
+    dos rótulos SRC_* e ``collection_date`` é ISO ou None (mais recente).
     """
-    key_present = _api_key_present()
+    supa_ok = _supabase_present()
+    api_ok = _api_key_present()
+    options = [SRC_SUPABASE, SRC_LIVE, SRC_DEMO]
+    default = SRC_SUPABASE if supa_ok else (SRC_LIVE if api_ok else SRC_DEMO)
+
     container = st.container() if embedded else st.sidebar
     with container:
-        if embedded:
-            c1, c2, c3, c4 = st.columns([1.4, 1.2, 1.4, 0.8])
-            mode = c1.radio("Fonte", ["🔴 Ao vivo (API)", "🟡 Demo (offline)"],
-                            index=(0 if key_present else 1), horizontal=False,
-                            key="pt_mode")
-            date_override = c2.text_input(
-                "Data (vazio = recente)", value="", key="pt_date").strip() or None
-            use_brand_filter = c3.checkbox(
-                "Filtrar marcas do peer", value=True, key="pt_brandfilter",
-                help="Filtro server-side pelas marcas do peer (mais rápido).")
-            if c4.button("🔄 Atualizar", use_container_width=True, key="pt_refresh"):
-                _load_live.clear()
-                st.rerun()
-        else:
+        if not embedded:
             st.header("Fonte de dados")
-            mode = st.radio("Modo", ["🔴 Ao vivo (API)", "🟡 Demo (offline)"],
-                            index=(0 if key_present else 1), key="pt_mode")
-            st.divider()
-            date_override = st.text_input(
-                "Data (YYYY-MM-DD, vazio = mais recente)", value="",
-                key="pt_date").strip() or None
-            use_brand_filter = st.checkbox(
-                "Filtrar por marcas do peer (mais rápido)", value=True,
-                key="pt_brandfilter")
-            if st.button("🔄 Atualizar agora", use_container_width=True,
-                         key="pt_refresh"):
-                _load_live.clear()
-                st.rerun()
-        if not key_present:
-            st.caption(
-                "🟡 `PRICETRACK_API_KEY` não configurada — modo Demo. Defina a key "
-                "no ambiente ou em `.streamlit/secrets.toml` para o hook ao vivo."
-            )
-    return mode.startswith("🔴"), date_override, use_brand_filter
+        cols = st.columns([1.6, 1.4, 1.4, 0.8]) if embedded else [st] * 4
+        c1, c2, c3, c4 = cols
+
+        source = c1.radio(
+            "Fonte", options, index=options.index(default),
+            key="pt_source",
+            help="Supabase lê o import diário (rápido). A API ao vivo bate no "
+                 "PriceTrack, porém responde em ~2min por consulta.",
+        )
+
+        use_latest = c2.checkbox(
+            "Data mais recente", value=True, key="pt_latest",
+            help="Usa a última data disponível. Desmarque para escolher no calendário.")
+        default_day = _supabase_latest() if source == SRC_SUPABASE else None
+        default_day_d = _iso_to_date(default_day) or date.today()
+        picked = c2.date_input(
+            "Data", value=default_day_d, format="YYYY-MM-DD",
+            key="pt_datepick", disabled=use_latest)
+        collection_date = None if use_latest else _date_to_iso(picked)
+
+        use_brand_filter = c3.checkbox(
+            "Filtrar marcas do peer", value=True, key="pt_brandfilter",
+            help="Filtra pelas marcas do peer (mais rápido).")
+
+        if c4.button("🔄 Atualizar", use_container_width=True, key="pt_refresh"):
+            _load_live.clear(); _load_supabase.clear(); _supabase_latest.clear()
+            st.rerun()
+
+        if source == SRC_SUPABASE and not supa_ok:
+            st.caption("🟢 Supabase não configurado — defina `SUPABASE_URL`/"
+                       "`SUPABASE_KEY` (env ou `.streamlit/secrets.toml`).")
+        if source == SRC_LIVE and not api_ok:
+            st.caption("🔴 `PRICETRACK_API_KEY` não configurada (env ou secrets).")
+    return source, collection_date, use_brand_filter
 
 
-def _load_analysis(is_live: bool, date_override, use_brand_filter):
-    """Carrega ofertas (live ou demo) e devolve (analysis, demo, date, days_back)."""
-    collection_date: Optional[str] = None
-    days_back = 0
+def _iso_to_date(iso: Optional[str]):
+    try:
+        return date.fromisoformat(iso) if iso else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _date_to_iso(d) -> Optional[str]:
+    return d.isoformat() if hasattr(d, "isoformat") else None
+
+
+def _load_analysis(source: str, collection_date, use_brand_filter):
+    """Carrega ofertas da fonte escolhida → (analysis, source_label, date, days_back).
+
+    Cai para Demo (com aviso) quando a fonte escolhida falha.
+    """
     demo = False
-    if is_live:
+    date_out: Optional[str] = None
+    days_back = 0
+
+    if source == SRC_DEMO:
+        offers, demo = demo_offers(), True
+    elif source == SRC_SUPABASE:
         try:
-            with st.spinner("Puxando ofertas da API do PriceTrack…"):
-                payload = _load_live(date_override, use_brand_filter)
-            offers: List[Offer] = [_dict_to_offer(d) for d in payload["offers"]]
-            collection_date = payload["collection_date"]
-            days_back = payload["days_back"]
-        except Exception as exc:  # noqa: BLE001 — superfície de erro amigável
-            st.error(
-                f"Falha no hook ao vivo: {type(exc).__name__}: {exc}\n\n"
-                "Verifique a `PRICETRACK_API_KEY` e o acesso de rede a "
-                "`api.pricetrack.com.br`. Caindo para o modo Demo."
-            )
-            offers = demo_offers()
-            demo = True
-    else:
-        offers = demo_offers()
-        demo = True
-    return analyze(offers, collection_date=collection_date), demo, collection_date, days_back
+            with st.spinner("Lendo pricetrack_daily do Supabase…"):
+                payload = _load_supabase(collection_date, use_brand_filter)
+            offers = [_dict_to_offer(d) for d in payload["offers"]]
+            date_out, days_back = payload["collection_date"], payload["days_back"]
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Falha lendo o Supabase: {type(exc).__name__}: {exc}\n\n"
+                     "Confira `SUPABASE_URL`/`SUPABASE_KEY`. Caindo para Demo.")
+            offers, demo = demo_offers(), True
+    else:  # SRC_LIVE
+        try:
+            with st.spinner("Puxando da API do PriceTrack (pode levar ~2min)…"):
+                payload = _load_live(collection_date, use_brand_filter)
+            offers = [_dict_to_offer(d) for d in payload["offers"]]
+            date_out, days_back = payload["collection_date"], payload["days_back"]
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Falha no hook ao vivo: {type(exc).__name__}: {exc}\n\n"
+                     "A API de coleta é lenta (~2min). Prefira a fonte Supabase. "
+                     "Caindo para Demo.")
+            offers, demo = demo_offers(), True
+
+    label = SRC_DEMO if demo else source
+    return analyze(offers, collection_date=date_out), label, date_out, days_back
 
 
 # ── Corpo da página (reutilizável no painel do projeto) ──────────────────────
@@ -365,27 +439,28 @@ def render_page(embedded: bool = False) -> None:
     ``embedded=True`` para embutir no painel do projeto (app.py): sem
     ``set_page_config``, controles no corpo. ``False`` para o app standalone.
     """
-    st.title("❄️ Preços RAC 9K/12K — PriceTrack ao vivo")
+    st.title("❄️ Preços RAC 9K/12K — PriceTrack")
     st.caption(
         "Ar-condicionado Só Frio (CO), tiers competitivos peer to peer. "
-        "Dados diretos da API do PriceTrack."
+        "Fonte padrão: Supabase (import diário do PriceTrack); API ao vivo opcional."
     )
-    is_live, date_override, use_brand_filter = _controls(embedded)
-    analysis, demo, collection_date, days_back = _load_analysis(
-        is_live, date_override, use_brand_filter
+    source, collection_date_in, use_brand_filter = _controls(embedded)
+    analysis, source_label, collection_date, days_back = _load_analysis(
+        source, collection_date_in, use_brand_filter
     )
 
-    if demo:
+    if source_label == SRC_DEMO:
         st.warning(
             "⚠️ **Modo Demo** — dados sintéticos, apenas para visualizar o "
             "layout. Não use como referência de mercado."
         )
     else:
         freshness = {0: "hoje", 1: "ontem"}.get(days_back, f"há {days_back} dias")
+        origem = "Supabase" if source_label == SRC_SUPABASE else "API ao vivo"
         st.info(
-            f"📅 Coleta de **{collection_date}** ({freshness}) · "
+            f"📅 **{collection_date}** ({freshness}) · fonte: {origem} · "
             f"{analysis.coverage.matched_offers} ofertas casadas no peer "
-            f"de {analysis.coverage.total_offers} puxadas."
+            f"de {analysis.coverage.total_offers} lidas."
         )
 
     render_tier_section(analysis)

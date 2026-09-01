@@ -1,22 +1,28 @@
 """
-Fonte de dados do dashboard — hook ao vivo na API do PriceTrack + modo demo.
+Fonte de dados do dashboard — 3 fontes: Supabase, API ao vivo e demo.
 
-``fetch_live`` descobre a data de coleta mais recente e puxa as ofertas das
-marcas do peer (filtro server-side reduz o volume para bem abaixo do threshold
-de export, então a estratégia paginada resolve em segundos). Roda onde há
-acesso à API — o PC coletor ou qualquer host com egress liberado para
-``api.pricetrack.com.br``.
+``fetch_supabase`` lê a tabela ``pricetrack_daily`` (o import diário da API já
+mora lá, agregado por listagem). É a fonte **rápida e padrão** — a API de
+coleta responde em ~2min por consulta, inviável para uso interativo.
+
+``fetch_live`` bate direto na API do PriceTrack (``pricetrack_api``). Fica como
+opção; a sonda de data e o timeout foram endurecidos, mas o endpoint é lento.
 
 ``demo_offers`` gera uma amostra sintética cobrindo os modelos do peer, para a
-página renderizar sem rede (ex.: sandboxes com egress bloqueado). Marcada como
-demo na UI — nunca confundir com dado real.
+página renderizar sem rede/credencial. Marcada como demo na UI.
+
+Todas as fontes entregam ``list[Offer]``, então ``analytics.analyze`` roda igual
+em cima das três. Em ``pricetrack_daily`` cada linha é uma listagem do dia; a
+oferta sintética usa ``min_price`` (melhor à vista daquela listagem) como preço,
+mantendo a semântica de piso/modal do resto do painel.
 """
 from __future__ import annotations
 
+import os
 import random
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from pricetrack_api import PriceTrackClient, PriceTrackSettings
 from pricetrack_api.exceptions import PriceTrackNoCollectionError
@@ -27,6 +33,16 @@ from .peer import all_tiers
 # Piso de read timeout (s) para a API de coleta, que pode responder devagar.
 # Só eleva; nunca reduz um valor maior configurado via PRICETRACK_TIMEOUT_SECONDS.
 _MIN_READ_TIMEOUT_SECONDS = 60.0
+
+# Guarda de plausibilidade de preço (R$): ar-condicionado novo não custa menos
+# que isso, e valores absurdos são placeholder de indisponível (…9999) ou erro
+# de coleta. Fora da faixa a linha é descartada — não contamina piso/média.
+_PRICE_MIN_BRL = 300.0
+_PRICE_MAX_BRL = 60_000.0
+
+# PostgREST devolve no máximo ~1000 linhas por request; paginamos por range.
+_SUPABASE_PAGE = 1000
+_SUPABASE_MAX_ROWS = 20_000
 
 
 def peer_brands() -> List[str]:
@@ -122,6 +138,147 @@ def fetch_live(
         take=settings.page_take,
     )
     offers = list(client.iter_offers(query))
+    return LiveResult(
+        offers=offers, collection_date=collection_date, days_back=days_back
+    )
+
+
+# ── Fonte Supabase (pricetrack_daily) — rápida, padrão ───────────────────────
+
+def _supabase_client():
+    """Cria o client Supabase a partir de SUPABASE_URL/SUPABASE_KEY (env).
+
+    A ponte st.secrets→env é feita na camada Streamlit (app.py), então aqui só
+    lemos o ambiente. Retorna None se pacote/credencial ausentes.
+    """
+    url = os.getenv("SUPABASE_URL", "").strip()
+    key = os.getenv("SUPABASE_KEY", "").strip()
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+    except Exception:  # noqa: BLE001 — pacote ausente
+        return None
+    return create_client(url, key)
+
+
+def supabase_configured() -> bool:
+    return bool(os.getenv("SUPABASE_URL", "").strip()
+                and os.getenv("SUPABASE_KEY", "").strip())
+
+
+def _representative_price(row: Dict[str, Any]) -> Optional[float]:
+    """Preço-observação de uma listagem: melhor à vista (min), com fallbacks."""
+    for col in ("min_price", "mode_price", "avg_price"):
+        v = row.get(col)
+        if v is None:
+            continue
+        try:
+            price = float(v)
+        except (TypeError, ValueError):
+            continue
+        if _PRICE_MIN_BRL <= price <= _PRICE_MAX_BRL:
+            return round(price, 2)
+    return None
+
+
+def _row_to_offer(row: Dict[str, Any]) -> Optional[Offer]:
+    """Converte uma linha de ``pricetrack_daily`` numa ``Offer`` sintética."""
+    price = _representative_price(row)
+    if price is None:
+        return None
+    title = str(row.get("title") or "")
+    return Offer(
+        id=str(row.get("id") or f"{row.get('sku')}-{row.get('seller')}-{price}"),
+        sku=str(row.get("sku") or ""),
+        title=title,
+        product_name=title,
+        brand=str(row.get("brand") or "").upper(),
+        category="", subcategory="", family="", color=None,
+        marketplace=str(row.get("marketplace") or ""),
+        seller=str(row.get("seller") or ""),
+        spot_price=price, forward_price=None, pix_price=None, price_from=None,
+        installment_number=None, installment_value=None,
+        status="AVAILABLE",
+        collection_date=None, collection_hour=None,
+        image_url="", screenshot_url=None, url="",
+    )
+
+
+def supabase_latest_date(client, turno: str = "Diário") -> Optional[str]:
+    """Data (ISO) mais recente com linha em ``pricetrack_daily`` para o turno."""
+    resp = (
+        client.table("pricetrack_daily")
+        .select("collection_date")
+        .eq("turno", turno)
+        .order("collection_date", desc=True)
+        .limit(1)
+        .execute()
+    )
+    data = getattr(resp, "data", None) or []
+    if not data:
+        return None
+    return str(data[0].get("collection_date"))[:10]
+
+
+def fetch_supabase(
+    collection_date: Optional[str] = None,
+    brands: Optional[Sequence[str]] = None,
+    turno: str = "Diário",
+    reference: Optional[date] = None,
+    client=None,
+) -> LiveResult:
+    """Lê ofertas do dia em ``pricetrack_daily`` (fonte rápida).
+
+    Args:
+        collection_date: data ISO; se None, usa a mais recente disponível.
+        brands: filtro de marca (default: marcas do peer).
+        turno: agregado diário por padrão ("Diário").
+        client: client Supabase (injetável em teste); senão monta do ambiente.
+
+    Raises:
+        RuntimeError: Supabase não configurado ou sem dados.
+    """
+    client = client or _supabase_client()
+    if client is None:
+        raise RuntimeError(
+            "Supabase não configurado — defina SUPABASE_URL e SUPABASE_KEY "
+            "(env ou .streamlit/secrets.toml)."
+        )
+    brand_filter = [b.upper() for b in (brands if brands is not None else peer_brands())]
+
+    if collection_date is None:
+        collection_date = supabase_latest_date(client, turno)
+        if not collection_date:
+            raise RuntimeError("Sem dados em pricetrack_daily para o turno.")
+
+    rows: List[Dict[str, Any]] = []
+    offset = 0
+    while offset < _SUPABASE_MAX_ROWS:
+        q = (
+            client.table("pricetrack_daily")
+            .select("collection_date,turno,brand,sku,title,marketplace,seller,"
+                    "min_price,avg_price,mode_price,max_price,id")
+            .eq("collection_date", collection_date)
+            .eq("turno", turno)
+        )
+        if brand_filter:
+            q = q.in_("brand", brand_filter)
+        resp = q.range(offset, offset + _SUPABASE_PAGE - 1).execute()
+        page = getattr(resp, "data", None) or []
+        rows.extend(page)
+        if len(page) < _SUPABASE_PAGE:
+            break
+        offset += _SUPABASE_PAGE
+
+    offers = [o for o in (_row_to_offer(r) for r in rows) if o is not None]
+
+    days_back = 0
+    ref = reference or date.today()
+    try:
+        days_back = max(0, (ref - date.fromisoformat(collection_date)).days)
+    except (TypeError, ValueError):
+        days_back = 0
     return LiveResult(
         offers=offers, collection_date=collection_date, days_back=days_back
     )

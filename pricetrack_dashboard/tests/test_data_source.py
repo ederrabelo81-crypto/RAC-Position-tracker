@@ -51,3 +51,100 @@ class TestReadTimeoutFloor:
         # A API de coleta pode responder devagar; piso ≥ 60s evita o loop de
         # retries por read timeout (o default do cliente é 30s).
         assert ds._MIN_READ_TIMEOUT_SECONDS >= 60.0
+
+
+# ── Fonte Supabase ────────────────────────────────────────────────────────────
+
+class _FakeQuery:
+    """Query builder dublê: encadeia .eq/.in_/.range/.order/.limit e .execute."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.filters = {}
+
+    def select(self, *a, **k):
+        return self
+
+    def eq(self, col, val):
+        self.filters[col] = val
+        return self
+
+    def in_(self, col, vals):
+        self.filters[col] = list(vals)
+        return self
+
+    def order(self, *a, **k):
+        return self
+
+    def limit(self, n):
+        self._rows = self._rows[:n]
+        return self
+
+    def range(self, lo, hi):
+        self._slice = (lo, hi)
+        return self
+
+    def execute(self):
+        lo, hi = getattr(self, "_slice", (0, len(self._rows) - 1))
+        return type("Resp", (), {"data": self._rows[lo:hi + 1]})()
+
+
+class _FakeSupabase:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def table(self, name):
+        assert name == "pricetrack_daily"
+        return _FakeQuery(list(self.rows))
+
+
+def _daily_row(sku, title, brand, min_price, **extra):
+    row = {
+        "id": extra.get("id", f"{sku}-{min_price}"),
+        "collection_date": "2026-08-31", "turno": "Diário",
+        "brand": brand, "sku": sku, "title": title,
+        "marketplace": extra.get("marketplace", "MERCADO LIVRE"),
+        "seller": extra.get("seller", "seller"),
+        "min_price": min_price, "avg_price": extra.get("avg_price"),
+        "mode_price": extra.get("mode_price"), "max_price": extra.get("max_price"),
+    }
+    return row
+
+
+class TestRowToOffer:
+    def test_uses_min_price_as_spot(self):
+        o = ds._row_to_offer(_daily_row("42EBVCA09M5", "Split Midea 9000", "MIDEA", 1700))
+        assert o is not None and o.spot_price == 1700 and o.brand == "MIDEA"
+
+    def test_falls_back_to_mode_then_avg(self):
+        o = ds._row_to_offer(_daily_row("X", "t", "MIDEA", None, mode_price=1800))
+        assert o.spot_price == 1800
+        o2 = ds._row_to_offer(_daily_row("X", "t", "MIDEA", None, avg_price=1900))
+        assert o2.spot_price == 1900
+
+    def test_drops_implausible_prices(self):
+        assert ds._row_to_offer(_daily_row("X", "t", "MIDEA", 9999999)) is None
+        assert ds._row_to_offer(_daily_row("X", "t", "MIDEA", 10)) is None
+
+
+class TestFetchSupabase:
+    def test_maps_rows_and_finds_latest(self):
+        rows = [
+            _daily_row("42EBVCA09M5", "Split Midea Inverter 9000 BTU", "MIDEA", 1700),
+            _daily_row("S3-Q09AAQAK", "Split LG 9000 BTU S3-Q09AAQAK", "LG", 1900),
+        ]
+        fake = _FakeSupabase(rows)
+        res = ds.fetch_supabase(collection_date="2026-08-31", client=fake)
+        assert res.collection_date == "2026-08-31"
+        assert len(res.offers) == 2
+
+    def test_requires_client(self, monkeypatch):
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_KEY", raising=False)
+        import pytest
+        with pytest.raises(RuntimeError):
+            ds.fetch_supabase(collection_date="2026-08-31")
+
+    def test_latest_date_helper(self):
+        fake = _FakeSupabase([{"collection_date": "2026-08-31"}])
+        assert ds.supabase_latest_date(fake) == "2026-08-31"

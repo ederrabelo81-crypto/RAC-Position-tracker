@@ -1,11 +1,22 @@
-# pricetrack_dashboard — Dashboard de Preços RAC 9K/12K (PriceTrack ao vivo)
+# pricetrack_dashboard — Dashboard de Preços RAC 9K/12K (PriceTrack)
 
 Dashboard Streamlit com os **insights de preço** do mercado de ar-condicionado
-**9.000 e 12.000 BTU (Só Frio / CO)**, lidos **direto da API do PriceTrack** e
-organizados por tier competitivo (peer to peer), no espírito do briefing diário
-do projeto.
+**9.000 e 12.000 BTU (Só Frio / CO)**, organizados por tier competitivo
+(peer to peer), no espírito do briefing diário do projeto.
 
-**Status:** ✅ Pronto para rodar · dados ao vivo na máquina com acesso à API
+**Status:** ✅ Pronto para rodar
+
+## Fontes de dados (3)
+
+| Fonte | Velocidade | Observação |
+|-------|-----------|------------|
+| 🟢 **Supabase** (padrão) | rápida | Lê `pricetrack_daily` — o import diário da API já mora lá. **Recomendada.** |
+| 🔴 **API ao vivo** | lenta (~2min/consulta) | Bate direto no PriceTrack. Só quando precisa do dado do minuto e há paciência. |
+| 🟡 **Demo** | instantânea | Dados sintéticos, para ver o layout sem credencial. |
+
+As três entregam o mesmo formato de oferta, então as análises (tiers + variação
+Midea) rodam iguais sobre qualquer uma. Seletor de data em **calendário**
+(default: data mais recente disponível).
 
 ## O que a página mostra
 
@@ -26,43 +37,48 @@ do projeto.
 
 ## Como rodar
 
-Numa máquina com acesso de rede a `api.pricetrack.com.br` (ex.: o PC coletor).
-Defina a key primeiro:
+Credenciais — o **Supabase** é a fonte padrão; a `PRICETRACK_API_KEY` só é
+necessária para a fonte "API ao vivo". Melhor caminho (vale Windows/Linux/Mac e
+Streamlit Cloud): `.streamlit/secrets.toml` na raiz do projeto —
+
+```toml
+SUPABASE_URL       = "https://SEU-PROJETO.supabase.co"
+SUPABASE_KEY       = "sua-chave-anon-ou-service-role"
+PRICETRACK_API_KEY = "sua-key"     # opcional (só p/ a fonte API ao vivo)
+```
+
+Ou por variável de ambiente:
 
 ```powershell
-# Windows / PowerShell (o PC coletor)
-$env:PRICETRACK_API_KEY = "sua-key"
+# Windows / PowerShell
+$env:SUPABASE_URL = "https://SEU-PROJETO.supabase.co"; $env:SUPABASE_KEY = "..."
 ```
-
 ```bash
 # Linux / Mac
-export PRICETRACK_API_KEY=sua-key
+export SUPABASE_URL=https://SEU-PROJETO.supabase.co SUPABASE_KEY=...
 ```
-
-Melhor ainda (vale nos dois SOs e no Streamlit Cloud): `.streamlit/secrets.toml`
-com `PRICETRACK_API_KEY = "sua-key"`.
 
 **No painel do projeto (recomendado)** — a página vive dentro do dashboard
 principal, no grupo **INSIGHTS → 💰 Preços 9K/12K**:
 
 ```bash
-pip install -r requirements_app.txt          # streamlit, plotly, pandas, requests
+pip install -r requirements_app.txt          # streamlit, plotly, pandas, requests, supabase
 streamlit run app.py
 ```
 
-**Standalone** (só esta página, sem o resto do painel):
+**Standalone** (só esta página):
 
 ```bash
 streamlit run pricetrack_dashboard/app.py
 ```
 
-- **Hook ao vivo:** cada refresh (botão *Atualizar agora* na barra lateral)
-  descobre a coleta mais recente e puxa as ofertas das marcas do peer via
-  `pricetrack_api`. Cache de 15 min para não martelar a API.
-- **Modo Demo:** sem `PRICETRACK_API_KEY`, a página cai em dados sintéticos
-  (marcados como demo) só para visualizar o layout.
-- **Secret no Streamlit Cloud:** `.streamlit/secrets.toml` →
-  `PRICETRACK_API_KEY = "..."` (o `os.getenv` lê o secret injetado).
+- **Supabase (padrão):** lê `pricetrack_daily` da data escolhida no calendário
+  (default: mais recente). Cada linha do dia vira uma observação de preço
+  (usa `min_price` como melhor à vista). Rápido. Cache de 15 min.
+- **API ao vivo:** bate no PriceTrack; a sonda de data é filtrada por marca e o
+  read timeout tem piso de 60s, mas o endpoint responde em ~2min por consulta.
+- **Demo:** sem credencial, cai em dados sintéticos (marcados como demo).
+- **Streamlit Cloud:** os mesmos nomes em Settings → Secrets.
 
 ## Arquitetura
 
