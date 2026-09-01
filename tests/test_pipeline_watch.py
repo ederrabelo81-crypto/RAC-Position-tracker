@@ -37,10 +37,13 @@ from utils.pipeline_registry import JOBS_POR_ID  # noqa: E402
 DIA = date(2026, 8, 27)
 
 PRICETRACK = JOBS_POR_ID["gh_pricetrack_d1"]      # 03:20, crítico
-COLETA_GH = JOBS_POR_ID["gh_collect_abertura"]    # 10:00, crítico
-LOCAL_MANHA = JOBS_POR_ID["local_manha"]          # 09:00, crítico
+# Coleta local é o dono único desde Set/2026. Estes três jobs são as fixtures
+# do classificador; o antigo gh_collect_abertura (Actions) não coleta mais.
+LOCAL_MANHA = JOBS_POR_ID["local_manha"]          # 08:00, crítico
+LOCAL_TARDE = JOBS_POR_ID["local_tarde"]          # 14:00
 LOCAL_NOITE = JOBS_POR_ID["local_noite"]          # 20:00
-BESTSELLERS = JOBS_POR_ID["local_bestsellers"]    # 09:30
+# Job crítico genérico usado como fixture da classificação.
+COLETA_GH = LOCAL_MANHA
 
 
 def _hora(h: int, m: int = 0) -> datetime:
@@ -119,8 +122,8 @@ class TestMaquinaOffline:
     def test_todos_os_jobs_da_maquina_ausentes_viram_um_alerta(self):
         diagnosticos = [
             Diagnostico(LOCAL_MANHA, NAO_EXECUTOU, "nada"),
+            Diagnostico(LOCAL_TARDE, NAO_EXECUTOU, "nada"),
             Diagnostico(LOCAL_NOITE, NAO_EXECUTOU, "nada"),
-            Diagnostico(BESTSELLERS, NAO_EXECUTOU, "nada"),
         ]
         resultado = _colapsar_executores(diagnosticos)
         assert len(resultado) == 1
@@ -156,7 +159,7 @@ class TestExitCode:
 
     def test_degradacao_cronica_sai_um(self):
         """Um mês de plataforma zerada não pode ser 'aviso'."""
-        deg = Degradacao("Google Shopping", 30, True, "gh_collect_abertura")
+        deg = Degradacao("Google Shopping", 30, True, "local_manha")
         assert _exit_code([Diagnostico(COLETA_GH, OK, "ok")], [deg]) == 1
 
     def test_atraso_sozinho_sai_dois(self):
@@ -183,7 +186,7 @@ class TestAlerta:
     def test_degradacao_cronica_nomeia_os_dias(self):
         texto = _formatar_telegram(
             [],
-            [Degradacao("Google Shopping", 30, True, "gh_collect_abertura")],
+            [Degradacao("Google Shopping", 30, True, "local_manha")],
             DIA,
         )
         assert "Google Shopping" in texto
@@ -223,21 +226,20 @@ class TestRegressoesDaRevisao:
         )
         assert diag.estado == SEM_DADO
 
-    def test_deadline_do_fechamento_cai_depois_da_meia_noite(self):
-        """Por que `--tambem-ontem` existe.
+    def test_fechamento_local_vence_no_mesmo_dia(self):
+        """Coleta noturna 20:00: tolerância 22:00, deadline 23:00 (mesmo dia).
 
-        O Fechamento começa 21:00 e vence às 02:00 do dia seguinte: a
-        varredura das 22:35 é cedo demais e a das 06:35 já olha o dia novo.
-        Sem a passagem por ontem, uma coleta noturna que nunca rodou não é
-        cobrada por ninguém.
+        Com o coletor único local o Fechamento começa às 20:00 (não mais 21:00),
+        então seu deadline cai às 23:00 do mesmo dia — não cruza a meia-noite.
+        `--tambem-ontem` segue útil de forma geral (uma varredura da manhã ainda
+        cobre a noite anterior), mas aqui o ponto é o timing do turno noturno.
         """
-        fechamento = JOBS_POR_ID["gh_collect_fechamento"]
+        fechamento = JOBS_POR_ID["local_noite"]
         deadline = fechamento.deadline(DIA)
-        assert deadline.day == DIA.day + 1  # 02:00 do dia seguinte
-        # Às 22:35 (a varredura da noite) o job nem atrasado está ainda: a
-        # tolerância vai até 23:00. Ou seja, o disparo que deveria fechar a
-        # janela da noite não conclui nada sobre ela — e o próximo já avalia o
-        # dia seguinte. É essa fresta que `--tambem-ontem` cobre.
-        assert _classificar(
-            fechamento, DIA, _hora(22, 35), None, 0
-        ).estado == EM_JANELA
+        assert deadline.day == DIA.day  # 23:00 do mesmo dia
+        # 21:00: dentro da tolerância (até 22:00) — ainda em janela.
+        assert _classificar(fechamento, DIA, _hora(21, 0), None, 0).estado == EM_JANELA
+        # 22:35: passou a tolerância, antes do deadline — atrasado.
+        assert _classificar(fechamento, DIA, _hora(22, 35), None, 0).estado == ATRASADO
+        # 23:30: passou o deadline sem batida — não executou.
+        assert _classificar(fechamento, DIA, _hora(23, 30), None, 0).estado == NAO_EXECUTOU

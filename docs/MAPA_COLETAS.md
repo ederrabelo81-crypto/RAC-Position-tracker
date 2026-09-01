@@ -29,15 +29,25 @@ de sucesso** — o pior resultado possível, porque some do radar.
 **Agendar em:** Task Scheduler — `scripts\setup_local_scheduler.ps1`
 **Diagnóstico:** `PowerShell -ExecutionPolicy Bypass -File scripts\check_local_scheduler.ps1`
 
-| Tarefa | Horário | Coleta | Por que aqui |
-|---|---|---|---|
-| `RAC_Local_Manha` | 09:00 + catch-up no logon | **Mercado Livre, Magalu, Shopee, Casas Bahia** (+ Amazon e Leroy de carona) | ML e Magalu barram datacenter; Shopee exige sessão `SPC_*`/`csrftoken` capturada |
-| `RAC_Local_Noite` | 20:00 + catch-up no logon | as mesmas, turno Fechamento | idem |
-| `RAC_Bestsellers` | 09:30, **dia útil** | **Mais Vendidos** (6 listas + 14 dealers) | Amazon/ML/Shopee precisam de browser real e sessão; a Amazon abre o PDP de cada item |
+Desde **Set/2026** o PC coletor é o **dono único** da coleta de oferta/posição:
+roda **todas as plataformas** em **três turnos** por dia (mais cobertura que os
+dois turnos antigos). Cada turno faz a mesma varredura — 2 páginas, todas as
+keywords — e difere só pelo turno gravado.
 
-> A janela de 09:00–12:00 (manhã) e 20:00–23:00 (noite) é guardada pelo próprio
-> `local_scheduled_collect.bat`: fora dela a tarefa **pula** em vez de gravar
-> com o turno errado (`get_turno()` marca Abertura até 12h).
+| Tarefa | Horário | Turno | Coleta |
+|---|---|---|---|
+| `RAC_Local_Manha` | 08:00 + catch-up no logon | Abertura | **ML, Amazon, Magalu, Casas Bahia, Google Shopping, Leroy, Shopee, dealers** |
+| `RAC_Local_Tarde` | 14:00 + catch-up no logon | Tarde | as mesmas |
+| `RAC_Local_Noite` | 20:00 + catch-up no logon | Fechamento | as mesmas |
+
+> As janelas — manhã 8–11h, tarde 12–17h, noite 18–23h — são guardadas pelo
+> próprio `local_scheduled_collect.bat`: fora delas a tarefa **pula** em vez de
+> gravar com o turno errado. `get_turno()` marca Abertura até 11h, Tarde de
+> 12h a 17h e Fechamento das 18h em diante — exatamente os cortes entre os
+> horários agendados, para que um catch-up no logon caia no turno certo.
+>
+> Mais Vendidos (`RAC_Bestsellers`) foi **descontinuado** em Set/2026; o setup
+> remove a tarefa antiga se ela ainda existir.
 
 ### ☁️ GitHub Actions (IP de datacenter, sem sessão)
 
@@ -47,8 +57,8 @@ de sucesso** — o pior resultado possível, porque some do radar.
 | Workflow | Horário BRT | Faz | Por que aqui |
 |---|---|---|---|
 | `pricetrack_daily.yml` | **03:20, 04:20, 05:20** (escada) | Importa preços do PriceTrack (D-1) → `pricetrack_daily` | É chamada de API: não precisa de browser, IP nem sessão |
-| `collect.yml` | 10:00 e 21:00 | **Amazon, Leroy Merlin, Google Shopping** | As três aceitam IP de datacenter |
-| `watchdog.yml` | 20:30 | Watchdog de **dado** (`daily_status_check.py`) | — |
+| `collect.yml` | **só manual** (cron desligado em Set/2026) | Backup manual: Amazon, Leroy, Google Shopping | O PC virou coletor único; o cron sairia com dois donos do mesmo dado |
+| `watchdog.yml` | 20:30 | Watchdog de **dado** (`daily_status_check.py`) — agora nos 3 turnos | — |
 | `pipeline_guard.yml` | **06:35, 12:35, 22:35** | Supervisor de **execução** + portão do briefing | — |
 
 > ⚠️ **Cron do Actions é *best effort*.** A série de agosto/2026 mostra o
@@ -62,30 +72,25 @@ de sucesso** — o pior resultado possível, porque some do radar.
 > gravaria o turno errado no dado e bateria ponto como o job errado — deixando a
 > Abertura constar como "não executou" exatamente enquanto rodava.
 
-### 🛰️ VM Oracle (Brazil East, IP de datacenter BR)
+### 🛰️ VM Oracle (Brazil East) — desativada como coletora (Set/2026)
 
-**Agendar em:** crontab do usuário `ubuntu` (instalado por `scripts/oracle_setup.sh`)
-**Diagnóstico:** `ssh ubuntu@<vm-ip> 'crontab -l; tail -50 ~/rac-position-tracker/logs/cron.log'`
+A VM **não coleta mais**: os dealers e a redundância de marketplace passaram para
+o PC coletor, com IP residencial (melhor para o que os dealers precisam). O
+executor segue documentado em `EXECUTORES` caso volte a ser usado, mas nenhum
+job aponta para ele. Se for reativar a VM como coletora, **primeiro** devolva a
+posse das plataformas a um job da VM em `utils/pipeline_registry.py` — senão
+haverá dois donos do mesmo `(plataforma, turno)`.
 
-| Cron (UTC) | Horário BRT | Faz | Por que aqui |
-|---|---|---|---|
-| `0 13 * * *` | 10:00 | **Dealers (14 lojistas)** + redundância de Amazon/Leroy/Casas Bahia/Google/Magalu | Dealers são lojas pequenas, sem defesa anti-bot pesada; IP BR ajuda no frete/estoque regional |
-| `0 0 * * *` | 21:00 | idem, turno Fechamento | — |
-
-> **A VM é a ÚNICA dona de dealers.** Se ela para, ninguém mais coleta lojista.
-> Foi o que aconteceu em Ago/2026 — e o watchdog de dado não viu porque
-> `ACTIVE_PLATFORMS["dealers"]=False` faz `_expected_platforms()` pular dealers,
-> embora o script da VM os passe explicitamente na linha de comando (o flag do
-> config é apenas o *default* do CLI). Quem cobra dealers agora é o supervisor
-> de execução, pelo contrato do job `vm_coleta_manha`.
+> Ao desligar a VM, **remova o crontab dela** (`ssh ubuntu@<vm-ip> 'crontab -r'`
+> ou edite com `crontab -e`). Deixá-lo ligado faz a VM coletar em paralelo com o
+> PC e gravar dado redundante — sem quebrar nada, mas desperdiçando a máquina.
 
 ### 🚫 O que NÃO deve rodar em cada lugar
 
 | Nunca rode… | …aqui | Porque |
 |---|---|---|
-| ML, Magalu, Shopee, Casas Bahia | Actions / VM | Akamai barra o IP antes do fingerprint → 0 linha com run verde |
-| Dealers | Actions | Fora do foco de marketplace desde Mai/2026 e sem dono lá |
-| Mais Vendidos | Actions / VM | Amazon e ML somem de IP de datacenter: 2–3 das 6 listas não voltam |
+| ML, Magalu, Shopee, Casas Bahia | Actions | Akamai barra o IP antes do fingerprint → 0 linha com run verde |
+| Coleta de marketplace/dealers | Actions (automático) | O PC é o dono único; auto-disparo criaria dois donos do mesmo dado |
 | PriceTrack | PC coletor | É API — ocupar o notebook com isso é desperdício e cria um segundo dono |
 
 ---
@@ -98,12 +103,11 @@ de sucesso** — o pior resultado possível, porque some do radar.
 05:20 ├─ PriceTrack D-1 (tentativa 3 + auto-heal de 14 dias)
 06:35 ├─ 🚦 PORTÃO DO BRIEFING — verifica frescor e CURA o que falta
 07:00 └─ ▶ BRIEFING (consumidor)
-09:00 ── PC: coleta manhã          09:30 ── PC: Mais Vendidos
-10:00 ── Actions + VM: turno Abertura
+08:00 ── PC: coleta turno Abertura (todas as plataformas)
 12:35 ── Supervisor fecha a janela da manhã
-20:00 ── PC: coleta noite
-20:30 ── Watchdog de dado (daily_status_check)
-21:00 ── Actions + VM: turno Fechamento
+14:00 ── PC: coleta turno Tarde (todas as plataformas)
+20:00 ── PC: coleta turno Fechamento (todas as plataformas)
+20:30 ── Watchdog de dado (daily_status_check) — Abertura + Tarde
 22:35 ── Supervisor fecha a janela da noite
 ```
 
@@ -140,17 +144,18 @@ zero), `EXECUTOR_OFFLINE` (a máquina inteira não rodou nada).
 
 Três detalhes que parecem miudeza e não são:
 
-* **A batida do job vence a contagem do destino.** Amazon e Leroy são coletadas
-  em três máquinas: se o job do Actions declarou zero linha, o dado que a VM
-  gravou no mesmo recorte não pode deixá-lo verde — seria um run falho se
-  escondendo atrás do vizinho.
+* **A batida do job vence a contagem do destino.** Se o job declarou zero linha,
+  a contagem do destino (agregada por dia/turno/plataforma) não pode deixá-lo
+  verde — seria um run falho se escondendo atrás de dado de outra origem. Com o
+  coletor único isso quase não acontece, mas a regra de classificação continua
+  valendo (é o que impede um PARTIAL de virar OK).
 * **Livro-razão ilegível ≠ livro vazio.** Falha de leitura devolve exit 3
   ("não consegui olhar"), nunca "ninguém rodou". Só a tabela ainda não criada
   (migração 015 pendente) é tratada como adoção em curso.
-* **O turno Fechamento vence às 02:00.** A varredura das 22:35 é cedo demais e
-  a das 06:35 já olha o dia novo, então o portão da manhã roda com
-  `--tambem-ontem` e fecha essa janela — bem a tempo do briefing, que consome
-  justamente o dado de ontem.
+* **O turno Fechamento (20:00) vence às 23:00, no mesmo dia.** A varredura das
+  22:35 pega o Fechamento ainda atrasado (tolerância até 22:00) e a das 06:35 já
+  olha o dia novo, então o portão da manhã roda com `--tambem-ontem` e fecha
+  essa janela — bem a tempo do briefing, que consome justamente o dado de ontem.
 
 ---
 
@@ -163,9 +168,8 @@ Três detalhes que parecem miudeza e não são:
 | Import falhou nos 3 degraus | Escada + guardião já tentaram 4 vezes; alerta nomeia o erro | Chave da API / cota |
 | Plataforma zerada 1–2 dias | Entra no relatório como aviso | — |
 | Plataforma zerada **≥ 3 dias** | Abre (ou atualiza) **issue no GitHub** com a contagem | Consertar o scraper |
-| PC coletor desligado | Um alerta de `EXECUTOR_OFFLINE`, não 4 de plataforma caída | Ligar o notebook |
-| VM Oracle parada | Alerta com o comando de diagnóstico por SSH | Religar/reprovisionar |
-| Job do Actions não disparou | Re-dispatch automático **se** houver `RAC_GH_PAT` | Sem PAT, disparo manual |
+| PC coletor desligado | Um alerta de `EXECUTOR_OFFLINE`, não N de plataforma caída | Ligar o notebook |
+| Import do PriceTrack não disparou | Re-dispatch automático **se** houver `RAC_GH_PAT` | Sem PAT, disparo manual |
 
 **O que deliberadamente NÃO é curado sozinho:** coleta de marketplace. Ela
 precisa da máquina certa, leva mais de uma hora e, disparada no executor

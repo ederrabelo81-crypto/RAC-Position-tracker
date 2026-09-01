@@ -79,7 +79,7 @@ class TestNaoInterferencia:
 
 class TestContextoDeExecucao:
     def test_sucesso_registra_inicio_e_fim(self, sem_supabase):
-        with heartbeat.batida("local_bestsellers") as ctx:
+        with heartbeat.batida("local_tarde") as ctx:
             ctx["rows"] = 60
         registros = _linhas(sem_supabase)
         assert [r["status"] for r in registros] == ["STARTED", "SUCCESS"]
@@ -88,13 +88,13 @@ class TestContextoDeExecucao:
 
     def test_zero_linha_vira_partial(self, sem_supabase):
         """Execução sem resultado ≠ execução bem-sucedida."""
-        with heartbeat.batida("local_bestsellers") as ctx:
+        with heartbeat.batida("local_tarde") as ctx:
             ctx["rows"] = 0
         assert _linhas(sem_supabase)[-1]["status"] == "PARTIAL"
 
     def test_excecao_registra_failed_e_repropaga(self, sem_supabase):
         with pytest.raises(RuntimeError):
-            with heartbeat.batida("local_bestsellers"):
+            with heartbeat.batida("local_tarde"):
                 raise RuntimeError("Akamai bloqueou")
         ultimo = _linhas(sem_supabase)[-1]
         assert ultimo["status"] == "FAILED"

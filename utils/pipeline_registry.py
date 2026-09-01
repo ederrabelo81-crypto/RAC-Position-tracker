@@ -213,16 +213,24 @@ DIAS_UTEIS: Tuple[int, ...] = (0, 1, 2, 3, 4)
 # ---------------------------------------------------------------------------
 # Divisão de trabalho (o "porquê" de cada linha está em docs/MAPA_COLETAS.md):
 #
-#   PC local  → tudo que exige IP residencial e/ou Chrome logado:
-#               ML, Magalu, Shopee, Casas Bahia + Mais Vendidos.
-#   Actions   → o que coleta de IP de datacenter sem sessão:
-#               Amazon, Leroy, Google Shopping + import do PriceTrack.
-#   VM Oracle → dealers (14 lojistas) e redundância de Amazon/Leroy/Magalu.
+#   PC local  → coletor ÚNICO de OFERTA/POSIÇÃO desde Set/2026. Roda TODAS as
+#               plataformas (ML, Amazon, Magalu, Casas Bahia, Google Shopping,
+#               Leroy, Shopee e os dealers) em três turnos: 8h (Abertura),
+#               14h (Tarde) e 20h (Fechamento). É o único caminho com IP
+#               residencial e Chrome logado, que ML/Magalu/Shopee exigem — e
+#               concentrar tudo nele evita o dado fantasma que a coleta de
+#               marketplace em IP de datacenter produzia (0 linha com cara de
+#               sucesso).
+#   Actions   → NÃO coleta mais marketplace (o cron do collect.yml foi
+#               desligado). Segue dono apenas do import do PriceTrack e do
+#               watchdog de dado.
+#   VM Oracle → desativada como coletora (o cron foi removido). O executor
+#               permanece documentado em EXECUTORES caso volte a ser usado.
 #
-# A redundância é deliberada: Amazon e Leroy são coletadas em três lugares.
-# Quem é COBRADO por elas é o Actions (`plataformas`); nos outros dois jobs
-# elas entram como `plataformas_redundantes` para não gerar três alertas do
-# mesmo buraco.
+# Um turno = um dono. Cada (plataforma, turno) tem exatamente um job cobrado,
+# e os três turnos locais não se sobrepõem, então não há redundância a
+# declarar aqui — a resiliência agora vem dos três horários do próprio PC e do
+# gatilho de catch-up no logon, não de uma segunda máquina.
 # ---------------------------------------------------------------------------
 
 JOBS: Tuple[JobSpec, ...] = (
@@ -255,46 +263,6 @@ JOBS: Tuple[JobSpec, ...] = (
         ),
     ),
     JobSpec(
-        id="gh_collect_abertura",
-        nome="Coleta Actions — turno Abertura",
-        executor=EXEC_ACTIONS,
-        workflow="collect.yml",
-        gatilho=".github/workflows/collect.yml (cron 13:00 UTC)",
-        comando="python main.py --platforms google_shopping amazon leroy --pages 2 --priority alta media",
-        horario_brt=(10, 0),
-        dias=TODOS_OS_DIAS,
-        tolerancia_min=120,
-        deadline_min=300,
-        destino="coletas (turno Abertura)",
-        turno="Abertura",
-        plataformas=("Amazon", "Leroy Merlin", "Google Shopping"),
-        severidade=SEV_CRITICO,
-        remediacao="Actions → RAC Price Collection → Run workflow (platforms: google_shopping amazon leroy)",
-        auto_heal=None,  # coleta completa é cara demais para auto-disparo cego
-        observacao=(
-            "ML/Magalu/Shopee/Casas Bahia NÃO rodam aqui: IP de datacenter é "
-            "barrado pelo Akamai antes do fingerprint. Não é limitação "
-            "temporária, é o desenho."
-        ),
-    ),
-    JobSpec(
-        id="gh_collect_fechamento",
-        nome="Coleta Actions — turno Fechamento",
-        executor=EXEC_ACTIONS,
-        workflow="collect.yml",
-        gatilho=".github/workflows/collect.yml (cron 00:00 UTC)",
-        comando="python main.py --platforms google_shopping amazon leroy --pages 1 --priority alta",
-        horario_brt=(21, 0),
-        dias=TODOS_OS_DIAS,
-        tolerancia_min=120,
-        deadline_min=300,
-        destino="coletas (turno Fechamento)",
-        turno="Fechamento",
-        plataformas=("Amazon", "Leroy Merlin", "Google Shopping"),
-        severidade=SEV_IMPORTANTE,
-        remediacao="Actions → RAC Price Collection → Run workflow",
-    ),
-    JobSpec(
         id="gh_watchdog",
         nome="Watchdog diário (daily_status_check)",
         executor=EXEC_ACTIONS,
@@ -313,114 +281,79 @@ JOBS: Tuple[JobSpec, ...] = (
             "pior que monitor nenhum, porque ninguém desconfia do silêncio."
         ),
     ),
-    # ── VM Oracle ──────────────────────────────────────────────────────────
-    JobSpec(
-        id="vm_coleta_manha",
-        nome="Coleta VM Oracle — manhã",
-        executor=EXEC_VM,
-        gatilho="crontab ubuntu: 0 13 * * * scripts/collect_manha_linux.sh",
-        comando="bash scripts/collect_manha_linux.sh",
-        horario_brt=(10, 0),
-        dias=TODOS_OS_DIAS,
-        tolerancia_min=90,
-        deadline_min=240,
-        destino="coletas (turno Abertura)",
-        turno="Abertura",
-        plataformas=("dealers",),
-        plataformas_redundantes=("Amazon", "Leroy Merlin", "Casas Bahia", "Google Shopping", "Magalu"),
-        severidade=SEV_CRITICO,
-        remediacao=(
-            "ssh ubuntu@<vm-ip> 'crontab -l && tail -50 ~/rac-position-tracker/logs/cron.log'; "
-            "VM reprovisionada? rode scripts/oracle_setup.sh de novo"
-        ),
-        auto_heal=None,  # nada aqui alcança a VM: só o humano religa
-        observacao=(
-            "É o ÚNICO dono de `dealers` — e o watchdog de dado era cego para "
-            "isso: `_expected_platforms()` pula dealers porque "
-            "ACTIVE_PLATFORMS['dealers']=False, ainda que o script da VM passe "
-            "`dealers` explicitamente (o flag do config é só o default do CLI)."
-        ),
-    ),
-    JobSpec(
-        id="vm_coleta_noite",
-        nome="Coleta VM Oracle — noite",
-        executor=EXEC_VM,
-        gatilho="crontab ubuntu: 0 0 * * * scripts/collect_noite_linux.sh",
-        comando="bash scripts/collect_noite_linux.sh",
-        horario_brt=(21, 0),
-        dias=TODOS_OS_DIAS,
-        tolerancia_min=90,
-        deadline_min=240,
-        destino="coletas (turno Fechamento)",
-        turno="Fechamento",
-        plataformas=("dealers",),
-        plataformas_redundantes=("Amazon", "Leroy Merlin", "Casas Bahia", "Google Shopping", "Magalu"),
-        severidade=SEV_IMPORTANTE,
-        remediacao="ssh ubuntu@<vm-ip> 'tail -50 ~/rac-position-tracker/logs/cron.log'",
-    ),
-    # ── PC local (Windows) ─────────────────────────────────────────────────
+    # ── PC local (Windows) — coletor único de oferta/posição ───────────────
+    # As três coletas do dia rodam a MESMA varredura completa (todas as
+    # plataformas, todas as keywords, 2 páginas). Elas se distinguem só pelo
+    # turno gravado, o que dá três fotos por dia da mesma competição de buy box.
     JobSpec(
         id="local_manha",
-        nome="Coleta local autenticada — manhã",
+        nome="Coleta local — turno Abertura (08:00)",
         executor=EXEC_LOCAL,
-        gatilho="Task Scheduler: RAC_Local_Manha (09:00 + catch-up no logon)",
+        gatilho="Task Scheduler: RAC_Local_Manha (08:00 + catch-up no logon)",
         comando="scripts\\run_local_scheduled.bat manha",
-        horario_brt=(9, 0),
+        horario_brt=(8, 0),
         dias=TODOS_OS_DIAS,
         # Janela larga: a tarefa tem gatilho de logon justamente porque o
-        # notebook pode estar desligado às 09:00. O deadline fecha ao meio-dia,
-        # que é o fim da janela do próprio local_scheduled_collect.bat.
+        # notebook pode estar desligado às 08:00. O deadline (11:00) fecha junto
+        # com a janela do próprio local_scheduled_collect.bat (8–11h).
         tolerancia_min=120,
-        deadline_min=190,
+        deadline_min=180,
         destino="coletas (turno Abertura)",
         turno="Abertura",
-        plataformas=("Mercado Livre", "Magalu", "Shopee", "Casas Bahia"),
-        plataformas_redundantes=("Amazon", "Leroy Merlin"),
+        plataformas=(
+            "Mercado Livre", "Amazon", "Magalu", "Casas Bahia",
+            "Google Shopping", "Leroy Merlin", "Shopee", "dealers",
+        ),
         severidade=SEV_CRITICO,
         remediacao=(
             "PowerShell -ExecutionPolicy Bypass -File scripts\\check_local_scheduler.ps1 "
             "(sessão vencida? python scripts/setup_local_profile.py --site magalu)"
         ),
         observacao=(
+            "PC coletor é o ÚNICO dono de oferta/posição desde Set/2026. "
             "Notebook desligado é causa legítima e frequente: o supervisor "
-            "reporta 'executor offline' (um alerta), não 4 plataformas críticas "
-            "caídas (quatro alertas idênticos que ninguém mais lê)."
+            "reporta 'executor offline' (um alerta), não N plataformas críticas "
+            "caídas (N alertas idênticos que ninguém mais lê)."
         ),
     ),
     JobSpec(
+        id="local_tarde",
+        nome="Coleta local — turno Tarde (14:00)",
+        executor=EXEC_LOCAL,
+        gatilho="Task Scheduler: RAC_Local_Tarde (14:00 + catch-up no logon)",
+        comando="scripts\\run_local_scheduled.bat tarde",
+        horario_brt=(14, 0),
+        dias=TODOS_OS_DIAS,
+        # Janela 12–17h (ver local_scheduled_collect.bat). Deadline às 17:00.
+        tolerancia_min=120,
+        deadline_min=180,
+        destino="coletas (turno Tarde)",
+        turno="Tarde",
+        plataformas=(
+            "Mercado Livre", "Amazon", "Magalu", "Casas Bahia",
+            "Google Shopping", "Leroy Merlin", "Shopee", "dealers",
+        ),
+        severidade=SEV_IMPORTANTE,
+        remediacao="PowerShell -ExecutionPolicy Bypass -File scripts\\check_local_scheduler.ps1",
+    ),
+    JobSpec(
         id="local_noite",
-        nome="Coleta local autenticada — noite",
+        nome="Coleta local — turno Fechamento (20:00)",
         executor=EXEC_LOCAL,
         gatilho="Task Scheduler: RAC_Local_Noite (20:00 + catch-up no logon)",
         comando="scripts\\run_local_scheduled.bat noite",
         horario_brt=(20, 0),
         dias=TODOS_OS_DIAS,
         tolerancia_min=120,
-        deadline_min=190,
+        deadline_min=180,
         destino="coletas (turno Fechamento)",
         turno="Fechamento",
-        plataformas=("Mercado Livre", "Magalu", "Shopee", "Casas Bahia"),
-        plataformas_redundantes=("Amazon", "Leroy Merlin"),
+        plataformas=(
+            "Mercado Livre", "Amazon", "Magalu", "Casas Bahia",
+            "Google Shopping", "Leroy Merlin", "Shopee", "dealers",
+        ),
         severidade=SEV_IMPORTANTE,
         remediacao="PowerShell -ExecutionPolicy Bypass -File scripts\\check_local_scheduler.ps1",
-    ),
-    JobSpec(
-        id="local_bestsellers",
-        nome="Mais Vendidos (ranking diário)",
-        executor=EXEC_LOCAL,
-        gatilho="Task Scheduler: RAC_Bestsellers (09:30 dia útil + catch-up no logon)",
-        comando="python scripts/collect_bestsellers.py",
-        horario_brt=(9, 30),
-        dias=DIAS_UTEIS,
-        tolerancia_min=60,
-        deadline_min=150,
-        destino="bestsellers",
-        severidade=SEV_IMPORTANTE,
-        remediacao="scripts\\collect_bestsellers.bat (janela canônica 09-10h — Amazon recalcula o ranking de hora em hora)",
-        observacao=(
-            "Única variável de RESULTADO da pipeline. Buraco de dia não se "
-            "recupera: recoletar amanhã dá o ranking de amanhã, não o de hoje."
-        ),
     ),
     # ── Consumidor externo ─────────────────────────────────────────────────
     JobSpec(
@@ -435,7 +368,7 @@ JOBS: Tuple[JobSpec, ...] = (
         deadline_min=180,
         destino="briefing publicado",
         severidade=SEV_CRITICO,
-        depende_de=("gh_pricetrack_d1", "gh_collect_fechamento", "local_noite"),
+        depende_de=("gh_pricetrack_d1", "local_noite"),
         remediacao="python scripts/briefing_gate.py --json (diz se o dado de D-1 está fresco e o que falta)",
         observacao=(
             "Não é coletor: é o consumidor que sofreu o incidente de 27/08. "

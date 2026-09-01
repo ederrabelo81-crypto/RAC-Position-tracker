@@ -278,18 +278,17 @@ PLATFORM_CHANNEL: Dict[str, str] = {
 
 
 #: (hora, minuto) BRT a partir de quando zero registros num turno deixa de ser
-#: "ainda não rodou" e passa a ser falha. A coleta começa 10:00 (Abertura) e
-#: 21:00 (Fechamento); a margem de 30min cobre a partida da coleta.
+#: "ainda não rodou" e passa a ser falha.
 #:
-#: A margem precisa ser CURTA. `collect_manha_linux.sh` e
-#: `collect_noite_linux.sh` rodam `daily_status_check.py --turno <turno>` logo
-#: DEPOIS da própria coleta — por volta de 10:30–12:00 e 21:30–22:30. Uma
-#: margem larga (o primeiro palpite foi 12h e 23h) faria justamente essa
-#: verificação pós-coleta tratar um apagão total como "ainda dentro da janela"
-#: e rebaixar para WARN o caso mais grave que existe. Curta demais, por outro
-#: lado, faria o watchdog agendado das 20:30 gritar por causa do Fechamento
-#: que ainda nem começou. 30min após o início separa os dois.
-_TURNO_DEADLINE_BRT = {"Abertura": (10, 30), "Fechamento": (21, 30)}
+#: Desde Set/2026 a coleta local roda 08:00 (Abertura), 14:00 (Tarde) e 20:00
+#: (Fechamento). Os valores abaixo NÃO são "início + 30min": eles preservam o
+#: comportamento do watchdog agendado das 20:30 BRT. Àquela hora Abertura e
+#: Tarde já fecharam (podem ser julgadas), mas o Fechamento acabou de começar —
+#: seu limite fica às 21:30 justamente para que o run das 20:30 o trate como
+#: "ainda na janela" em vez de acusar um turno que mal arrancou. Encurtar o
+#: limite do Fechamento recriaria o run vermelho de toda noite que este
+#: watchdog existe para evitar.
+_TURNO_DEADLINE_BRT = {"Abertura": (10, 30), "Tarde": (14, 30), "Fechamento": (21, 30)}
 
 
 def _turno_window_closed(
@@ -390,14 +389,13 @@ def _expected_platforms() -> List[str]:
     """Lista nomes de plataformas esperadas hoje (ativas no config).
 
     Note:
-        Dealers ficam de fora enquanto ``ACTIVE_PLATFORMS["dealers"]`` for
-        False — e ficam mesmo quando a VM Oracle os coleta explicitamente (o
-        flag do config é só o default do CLI; ``--platforms dealers`` passa por
-        cima dele). Esse ponto cego é o motivo de a parada da VM em Ago/2026 não
-        ter gerado alerta nenhum. Quem cobra dealers hoje é o supervisor de
-        execução (`scripts/pipeline_watch.py`), pelo contrato do job
-        ``vm_coleta_manha`` em `utils/pipeline_registry.py` — que conta dealers
-        por EXCLUSÃO dos marketplaces e não depende deste flag.
+        Desde Set/2026 os dealers voltaram ao foco e são coletados localmente
+        (``ACTIVE_PLATFORMS["dealers"]=True``), então cada dealer não-on_hold
+        entra na lista de esperados por turno. Antes eles ficavam de fora com o
+        flag em False — o ponto cego que deixou a parada da VM em Ago/2026 sem
+        alerta. Com o PC coletor como dono único (job ``local_manha``/
+        ``local_tarde``/``local_noite`` em `utils/pipeline_registry.py`), o
+        supervisor de execução também os cobra pelo contrato do job.
     """
     expected: List[str] = []
     for key, active in ACTIVE_PLATFORMS.items():
@@ -913,7 +911,7 @@ def _build_report(
         e summary é dict com totais {pass, warn, fail, critical_fail}.
     """
     expected = _expected_platforms()
-    turnos = [turno_filter] if turno_filter else ["Abertura", "Fechamento"]
+    turnos = [turno_filter] if turno_filter else ["Abertura", "Tarde", "Fechamento"]
 
     rows: List[Dict] = []
     summary = {
@@ -1314,9 +1312,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--turno",
-        choices=["Abertura", "Fechamento"],
+        choices=["Abertura", "Tarde", "Fechamento"],
         default=None,
-        help="Filtra por turno (padrão: ambos)",
+        help="Filtra por turno (padrão: os três — Abertura/Tarde/Fechamento)",
     )
     parser.add_argument(
         "--no-notify",

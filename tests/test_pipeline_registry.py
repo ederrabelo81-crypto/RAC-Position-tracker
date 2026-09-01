@@ -29,11 +29,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.pipeline_registry import (  # noqa: E402
-    DIAS_UTEIS,
-    EXEC_ACTIONS,
     EXEC_EXTERNO,
     EXEC_LOCAL,
-    EXEC_VM,
     EXECUTORES,
     JOBS,
     JOBS_POR_ID,
@@ -63,34 +60,37 @@ class TestRegistroCoerente:
 
 
 class TestDivisaoDeTrabalho:
-    """A divisão entre as três máquinas é a regra de negócio central."""
+    """Desde Set/2026 o PC local é o dono único da coleta de oferta/posição."""
 
     @pytest.mark.parametrize(
         "plataforma",
-        ["Mercado Livre", "Magalu", "Shopee", "Casas Bahia"],
+        [
+            "Mercado Livre", "Amazon", "Magalu", "Casas Bahia",
+            "Google Shopping", "Leroy Merlin", "Shopee",
+        ],
     )
-    def test_plataformas_com_antibot_sao_do_pc_local(self, plataforma):
-        """ML/Magalu/Shopee/CB exigem IP residencial e Chrome logado.
+    @pytest.mark.parametrize("turno", ["Abertura", "Tarde", "Fechamento"])
+    def test_toda_plataforma_e_do_pc_local_nos_tres_turnos(self, plataforma, turno):
+        """Um coletor só, três turnos: o dono de cada (plataforma, turno) é o PC.
 
-        Cobradas do Actions, o alerta apontaria para a máquina errada — e o
-        conserto sugerido (re-disparar o workflow) devolveria zero linha com
-        aparência de sucesso.
+        Cobrada de outra máquina, o alerta apontaria para o lugar errado — e o
+        conserto sugerido (re-disparar um workflow que não coleta mais)
+        devolveria zero linha com aparência de sucesso.
         """
-        dono = dono_da_plataforma(plataforma, "Abertura")
+        dono = dono_da_plataforma(plataforma, turno)
         assert dono is not None
         assert dono.executor == EXEC_LOCAL
 
-    @pytest.mark.parametrize("plataforma", ["Amazon", "Leroy Merlin", "Google Shopping"])
-    def test_plataformas_de_datacenter_sao_do_actions(self, plataforma):
-        dono = dono_da_plataforma(plataforma, "Abertura")
-        assert dono is not None
-        assert dono.executor == EXEC_ACTIONS
+    @pytest.mark.parametrize("turno", ["Abertura", "Tarde", "Fechamento"])
+    def test_dealers_tem_dono_e_e_o_pc_local(self, turno):
+        """Dealers voltaram ao foco e são coletados localmente (IP residencial).
 
-    def test_dealers_tem_dono_e_e_a_vm(self):
-        """O ponto cego que motivou o registro inteiro."""
-        dono = dono_da_plataforma("dealers", "Abertura")
+        O ponto cego que motivou o registro (dealers órfãos quando a VM parou)
+        continua fechado: agora eles têm dono explícito em cada turno.
+        """
+        dono = dono_da_plataforma("dealers", turno)
         assert dono is not None
-        assert dono.executor == EXEC_VM
+        assert dono.executor == EXEC_LOCAL
 
     def test_toda_plataforma_ativa_do_config_tem_dono(self):
         """Ligar uma plataforma no config sem dar dono a ela reprova aqui."""
@@ -121,16 +121,21 @@ class TestJanelasEHorarios:
     def test_briefing_declara_a_dependencia_do_pricetrack(self):
         assert "gh_pricetrack_d1" in JOBS_POR_ID["briefing_0700"].depende_de
 
-    def test_bestsellers_so_em_dia_util(self):
-        """Sábado e domingo têm calendário promocional próprio.
+    def test_coleta_local_roda_todo_dia_nos_tres_turnos(self):
+        """As três coletas locais são esperadas todos os dias da semana.
 
-        Cobrar a lista no fim de semana geraria alerta todo sábado — e o alerta
-        que é vermelho todo fim de semana deixa de ser lido.
+        Sem calendário de dia útil: oferta/posição é foto do dia, não série
+        semanal, então fim de semana também conta.
         """
-        bestsellers = JOBS_POR_ID["local_bestsellers"]
-        assert bestsellers.dias == DIAS_UTEIS
-        assert not bestsellers.esperado_em(date(2026, 8, 29))  # sábado
-        assert bestsellers.esperado_em(date(2026, 8, 28))      # sexta
+        for jid, horario in (
+            ("local_manha", (8, 0)),
+            ("local_tarde", (14, 0)),
+            ("local_noite", (20, 0)),
+        ):
+            job = JOBS_POR_ID[jid]
+            assert job.horario_brt == horario
+            assert job.esperado_em(date(2026, 8, 29))  # sábado
+            assert job.esperado_em(date(2026, 8, 28))  # sexta
 
     def test_jobs_do_dia_exclui_consumidores_por_padrao(self):
         """O briefing não bate ponto: cobrá-lo como coletor seria falso."""
