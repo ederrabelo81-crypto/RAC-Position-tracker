@@ -11470,6 +11470,18 @@ def page_bestsellers() -> None:
 # Page registry & grouped navigation
 # ---------------------------------------------------------------------------
 
+def page_pricetrack_precos() -> None:
+    """Página 💰 Preços 9K/12K — hook ao vivo na API do PriceTrack.
+
+    Delega para o pacote `pricetrack_dashboard` (peer, analytics, gráficos):
+    tiers Low/Mid/High (Inverter Lite / AI AirVolution / AI Ecomaster) e a
+    variação Midea (mín/máx/moda/média) por 9K e 12K. Import adiado para não
+    puxar o pacote no load do app quando a página não está aberta.
+    """
+    from pricetrack_dashboard.app import render_page
+    render_page(embedded=True)
+
+
 PAGES = {
     "🏠 Overview":                 page_overview,
     "📅 Daily Price Vision":       page_daily_vision,
@@ -11477,6 +11489,7 @@ PAGES = {
     "📊 Results":                  page_results,
     "📈 Price Evolution":           page_price_evolution,
     "📊 Market Analytics":         page_market_analytics,
+    "💰 Preços 9K/12K":            page_pricetrack_precos,
     "🥇 Mais Vendidos":            page_bestsellers,
     "🗂️ Ficha do Produto":         page_product_sheet,
     "🏆 BuyBox Position":          page_buybox_position,
@@ -11501,6 +11514,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "📊 Results",
         "📈 Price Evolution",
         "📊 Market Analytics",
+        "💰 Preços 9K/12K",
         "🥇 Mais Vendidos",
         "🗂️ Ficha do Produto",
         "🏆 BuyBox Position",

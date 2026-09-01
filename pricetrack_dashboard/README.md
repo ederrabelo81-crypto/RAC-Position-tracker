@@ -26,11 +26,27 @@ do projeto.
 
 ## Como rodar
 
-Numa máquina com acesso de rede a `api.pricetrack.com.br` (ex.: o PC coletor):
+Numa máquina com acesso de rede a `api.pricetrack.com.br` (ex.: o PC coletor).
+Defina a key primeiro:
+
+```powershell
+# Windows / PowerShell (o PC coletor)
+$env:PRICETRACK_API_KEY = "sua-key"
+# Linux/Mac:  export PRICETRACK_API_KEY=sua-key
+# ou, melhor: .streamlit/secrets.toml  →  PRICETRACK_API_KEY = "sua-key"
+```
+
+**No painel do projeto (recomendado)** — a página vive dentro do dashboard
+principal, no grupo **INSIGHTS → 💰 Preços 9K/12K**:
 
 ```bash
 pip install -r requirements_app.txt          # streamlit, plotly, pandas, requests
-export PRICETRACK_API_KEY=...                 # ou em .streamlit/secrets.toml
+streamlit run app.py
+```
+
+**Standalone** (só esta página, sem o resto do painel):
+
+```bash
 streamlit run pricetrack_dashboard/app.py
 ```
 
