@@ -9,6 +9,10 @@ streamlit>=1.35.0
 plotly>=5.20.0
 pandas>=2.2.2
 supabase>=2.3.0
+# Hook ao vivo do dashboard PriceTrack (pricetrack_dashboard/) — o cliente
+# pricetrack_api usa requests para bater na API. Sem isto, o dashboard cai
+# sempre em modo Demo no Streamlit Cloud.
+requests>=2.31.0
 python-dotenv==1.0.1
 loguru==0.7.2
 anthropic>=0.40.0

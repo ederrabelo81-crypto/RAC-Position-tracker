@@ -64,4 +64,4 @@ jobs:
 
       - name: Rodar a suíte
         # Os mesmos três caminhos que o CLAUDE.md manda rodar localmente.
-        run: pytest tests/ pricetrack_api/tests pricetrack_importer/tests -q
+        run: pytest tests/ pricetrack_api/tests pricetrack_importer/tests pricetrack_dashboard/tests -q
