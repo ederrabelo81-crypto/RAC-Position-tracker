@@ -5,6 +5,7 @@ from pricetrack_api.models import Offer
 
 from pricetrack_dashboard.analytics import (
     analyze,
+    analyze_with_fallback,
     compute_stats,
     daily_series,
     filter_offers,
@@ -261,6 +262,109 @@ class TestDailySeries:
         series = daily_series({})
         assert all(not s.points for s in series)
         assert all(not s.has_data for s in series)
+
+
+class TestAnalyzeWithFallback:
+    def test_pools_all_offers_in_the_period_not_just_one_day(self):
+        rows_by_date = {
+            "2026-08-30": [_offer("42EBVCA09M5", "MIDEA", 1700),
+                           _offer("S3-Q09AAQAK", "LG", 2000)],
+            "2026-08-31": [_offer("42EBVCA09M5", "MIDEA", 1800),
+                           _offer("S3-Q09AAQAK", "LG", 2200)],
+        }
+        a = analyze_with_fallback(rows_by_date, ["2026-08-30", "2026-08-31"])
+        low9 = a.tier(TIER_LOW, CAP_9K)
+        assert low9.midea.count == 2
+        assert low9.midea.minimum == 1700 and low9.midea.maximum == 1800
+        assert low9.peers.minimum == 2000 and low9.peers.maximum == 2200
+
+    def test_no_fallback_needed_leaves_tier_untouched(self):
+        rows_by_date = {
+            "2026-08-31": [_offer("42EBVCA09M5", "MIDEA", 1700),
+                           _offer("S3-Q09AAQAK", "LG", 2000)],
+        }
+        a = analyze_with_fallback(rows_by_date, ["2026-08-31"])
+        low9 = a.tier(TIER_LOW, CAP_9K)
+        assert low9.fallback_date is None
+        assert low9.peers.mode == 2000
+
+    def test_falls_back_to_last_day_with_peer_data_when_period_is_empty(self):
+        # 08-31 só tem Midea (ex.: filtro deixou só um concorrente que não
+        # compete em Low/9K) — sem oferta de concorrente no período pedido.
+        rows_by_date = {
+            "2026-08-25": [_offer("42EBVCA09M5", "MIDEA", 1600),
+                           _offer("S3-Q09AAQAK", "LG", 1900)],
+            "2026-08-31": [_offer("42EBVCA09M5", "MIDEA", 1700)],
+        }
+        a = analyze_with_fallback(rows_by_date, ["2026-08-31"])
+        low9 = a.tier(TIER_LOW, CAP_9K)
+        assert not low9.peers.is_empty
+        assert low9.fallback_date == "2026-08-25"
+        # Mercado + Midea vêm do MESMO dia (08-25) — nunca mistura Midea do
+        # período pedido com concorrente de outro dia.
+        assert low9.peers.mode == 1900
+        assert low9.midea.mode == 1600
+
+    def test_picks_the_most_recent_day_with_data_among_several(self):
+        rows_by_date = {
+            "2026-08-20": [_offer("42EBVCA09M5", "MIDEA", 1500),
+                           _offer("S3-Q09AAQAK", "LG", 1850)],
+            "2026-08-25": [_offer("42EBVCA09M5", "MIDEA", 1600),
+                           _offer("S3-Q09AAQAK", "LG", 1900)],
+            "2026-08-31": [],
+        }
+        a = analyze_with_fallback(rows_by_date, ["2026-08-31"])
+        low9 = a.tier(TIER_LOW, CAP_9K)
+        assert low9.fallback_date == "2026-08-25"
+
+    def test_no_data_anywhere_in_lookback_stays_sem_oferta(self):
+        rows_by_date = {"2026-08-31": [_offer("42EBVCA09M5", "MIDEA", 1700)]}
+        a = analyze_with_fallback(rows_by_date, ["2026-08-31"])
+        low9 = a.tier(TIER_LOW, CAP_9K)
+        assert low9.peers.is_empty
+        assert low9.fallback_date is None
+
+    def test_respects_lookback_dates_boundary(self):
+        """Um dia com dado que existe em ``rows_by_date`` mas fica FORA de
+        ``lookback_dates`` não pode virar fallback — é o caso da janela
+        quente do Supabase, que não tem por que crescer sem limite."""
+        rows_by_date = {
+            "2026-08-01": [_offer("42EBVCA09M5", "MIDEA", 1600),
+                           _offer("S3-Q09AAQAK", "LG", 1900)],
+            "2026-08-31": [_offer("42EBVCA09M5", "MIDEA", 1700)],
+        }
+        a = analyze_with_fallback(
+            rows_by_date, ["2026-08-31"], lookback_dates=["2026-08-30"],
+        )
+        low9 = a.tier(TIER_LOW, CAP_9K)
+        assert low9.peers.is_empty
+        assert low9.fallback_date is None
+
+    def test_model_level_fallback_when_tier_has_other_data(self):
+        # Low/9K tem PHILCO em dois modelos (PAC9FC e PAC9FB). Período só
+        # traz PAC9FC — PAC9FB fica vazio, mas o tier em si não está vazio
+        # (peers != empty), então não é o fallback de tier que age aqui.
+        rows_by_date = {
+            "2026-08-20": [_offer("PAC9FB", "PHILCO", 2100)],
+            "2026-08-31": [_offer("42EBVCA09M5", "MIDEA", 1700),
+                           _offer("PAC9FC", "PHILCO", 1800)],
+        }
+        a = analyze_with_fallback(rows_by_date, ["2026-08-31"])
+        low9 = a.tier(TIER_LOW, CAP_9K)
+        assert low9.fallback_date is None       # o tier tinha dado próprio
+        pac9fb = next(m for m in low9.models if m.model_label == "PAC9FB")
+        assert pac9fb.stats.mode == 2100
+        assert pac9fb.fallback_date == "2026-08-20"
+        pac9fc = next(m for m in low9.models if m.model_label == "PAC9FC")
+        assert pac9fc.fallback_date is None     # este já tinha dado no período
+
+    def test_still_missing_after_fallback_keeps_empty_stats(self):
+        rows_by_date = {"2026-08-31": [_offer("42EBVCA09M5", "MIDEA", 1700)]}
+        a = analyze_with_fallback(rows_by_date, ["2026-08-31"])
+        low9 = a.tier(TIER_LOW, CAP_9K)
+        empty_models = [m for m in low9.models if m.stats.is_empty]
+        assert empty_models  # LG e Philco continuam sem dado (nenhum lookback)
+        assert all(m.fallback_date is None for m in empty_models)
 
 
 class TestFilterOffers:

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import statistics
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, Iterable, List, Optional
 
 from pricetrack_api.models import Offer
@@ -111,6 +111,9 @@ class ModelResult:
     model_label: str                # primeiro código — rótulo de exibição
     is_midea: bool
     stats: PriceStats
+    fallback_date: Optional[str] = None  # setado por analyze_with_fallback quando
+                                          # este modelo não casou no período pedido
+                                          # e os números vêm de um dia anterior
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +128,10 @@ class TierResult:
     peers: PriceStats               # todas as ofertas casadas, exceto Midea
     brands: List[BrandResult]       # quebra por marca, Midea primeiro
     models: List[ModelResult]       # quebra por modelo exato (lista peer-to-peer)
+    fallback_date: Optional[str] = None  # setado por analyze_with_fallback quando
+                                          # este (tier, capacidade) não teve NENHUMA
+                                          # oferta de concorrente no período pedido
+                                          # e os números vêm de um dia anterior
 
     @property
     def midea_vs_market_delta(self) -> Optional[float]:
@@ -330,6 +337,108 @@ def analyze(
         missing=missing,
     )
     return Analysis(collection_date=collection_date, tiers=tiers, coverage=coverage)
+
+
+def analyze_with_fallback(
+    rows_by_date: Dict[str, Iterable[Offer]],
+    period_dates: Iterable[str],
+    lookback_dates: Optional[Iterable[str]] = None,
+) -> Analysis:
+    """Como ``analyze()``, mas com fallback para o último dado disponível.
+
+    O período pedido (``period_dates``) é agrupado numa análise só — o
+    cálculo (mín/máx/moda/média) usa TODAS as ofertas do intervalo, não um
+    dia isolado. Quando um (tier, capacidade) não tem NENHUMA oferta de
+    concorrente casada nesse período (``tr.peers.is_empty`` — o gatilho de
+    "Sem oferta casada" na UI), busca dia a dia, do mais recente para o mais
+    antigo em ``lookback_dates``, o último dia com dado para aquele
+    (tier, capacidade) e usa ele inteiro (mercado + Midea juntos, do MESMO
+    dia) — misturar Midea de um dia com concorrentes de outro inventaria um
+    delta que ninguém observou. O mesmo fallback roda por modelo individual
+    (``ModelResult``) para os casos em que o tier tem dado mas um modelo
+    específico do peer não — cada modelo busca seu próprio último dia, já
+    que o dia de fallback do tier pode não ser o mais recente para aquele
+    modelo em particular (ex.: a própria Midea, que não conta como "peer").
+
+    Args:
+        rows_by_date: ``{data ISO: ofertas daquele dia}`` — cobre tanto o
+            período pedido quanto a janela de lookback.
+        period_dates: datas ISO do período selecionado (1 ou mais dias).
+        lookback_dates: datas ISO candidatas a fallback (antes do período);
+            ``None`` usa todas as chaves de ``rows_by_date`` fora do período.
+
+    Sem lookback disponível (ou sem dado nele), o resultado é idêntico a
+    ``analyze()`` sobre o período agrupado — nenhum tier ganha
+    ``fallback_date``.
+    """
+    period_dates = list(period_dates)
+    period_set = set(period_dates)
+    period_offers = [o for d in period_dates for o in rows_by_date.get(d, [])]
+    label = period_dates[-1] if period_dates else None
+    primary = analyze(period_offers, collection_date=label)
+
+    candidates = lookback_dates if lookback_dates is not None else rows_by_date.keys()
+    before = sorted(
+        {d for d in candidates if d not in period_set and rows_by_date.get(d)},
+        reverse=True,
+    )
+    if not before:
+        return primary
+
+    day_cache: Dict[str, Analysis] = {}
+
+    def _day_analysis(d: str) -> Analysis:
+        if d not in day_cache:
+            day_cache[d] = analyze(rows_by_date.get(d, []), collection_date=d)
+        return day_cache[d]
+
+    new_tiers: List[TierResult] = []
+    for tr in primary.tiers:
+        if tr.peers.is_empty:
+            for d in before:
+                day_tr = _day_analysis(d).tier(tr.tier, tr.capacity)
+                if day_tr is not None and not day_tr.peers.is_empty:
+                    tr = replace(
+                        day_tr,
+                        fallback_date=d,
+                        models=[
+                            replace(m, fallback_date=d) if not m.stats.is_empty else m
+                            for m in day_tr.models
+                        ],
+                    )
+                    break
+
+        if any(m.stats.is_empty for m in tr.models):
+            new_models: List[ModelResult] = []
+            for m in tr.models:
+                if not m.stats.is_empty:
+                    new_models.append(m)
+                    continue
+                found = m
+                for d in before:
+                    day_tr = _day_analysis(d).tier(tr.tier, tr.capacity)
+                    if day_tr is None:
+                        continue
+                    match = next(
+                        (dm for dm in day_tr.models
+                         if dm.brand.upper() == m.brand.upper()
+                         and dm.model_raw == m.model_raw
+                         and not dm.stats.is_empty),
+                        None,
+                    )
+                    if match is not None:
+                        found = replace(match, fallback_date=d)
+                        break
+                new_models.append(found)
+            new_models.sort(key=lambda mr: (
+                not mr.is_midea,
+                mr.stats.mode if mr.stats.mode is not None else float("inf"),
+            ))
+            tr = replace(tr, models=new_models)
+
+        new_tiers.append(tr)
+
+    return replace(primary, tiers=new_tiers)
 
 
 # ── Série temporal — Midea (moda) × Peers (mediana) ─────────────────────────
