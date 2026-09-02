@@ -47,7 +47,9 @@ class TestAggregateOffersMissingSku:
         ])
         agg, rejections = ptai.aggregate_offers(df, "2026-06-10")
         assert rejections.get("MISSING_SKU") == 2
-        assert rejections.get("NO_PRICE") == 1
+        # NO_PRICE virou NO_CASH_PRICE: agora só preço À VISTA conta como preço
+        # (o fallback antigo aceitava preço a prazo e misturava as bases).
+        assert rejections.get("NO_CASH_PRICE") == 1
         assert list(agg["sku"].unique()) == ["42MACA09S5"]
 
     def test_todas_sem_sku_retorna_vazio(self):
@@ -166,3 +168,138 @@ class TestShouldRedownload:
         assert ptai._should_redownload(
             "nao-e-data", file_exists=True, today=self._TODAY
         ) is False
+
+
+class TestBaseDePrecoBestCash:
+    """A base gravada é o MENOR à vista (spot vs PIX), nunca o spot sozinho.
+
+    Regressão do bug encontrado em 02/09/2026: o painel do PriceTrack mostrava
+    R$ 2.229 para a Dufrio no Ecomaster 12K (Magazine Luiza, PIX -10%) e a
+    tabela guardava R$ 2.476,67 — o spot. Todo consumidor a jusante (piso de
+    mercado, buy box, violação de MAP, briefing) herdava o erro.
+    """
+
+    def test_pix_menor_que_spot_vence(self):
+        df = pd.DataFrame([_offer(spot_price=2476.67, pix_price=2229.00)])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        row = agg.iloc[0]
+        assert row["min_price"] == 2229.00
+        assert row["spot_min_price"] == 2476.67
+        assert row["pix_min_price"] == 2229.00
+
+    def test_spot_menor_que_pix_vence(self):
+        df = pd.DataFrame([_offer(spot_price=1899.00, pix_price=1999.00)])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        assert agg.iloc[0]["min_price"] == 1899.00
+
+    def test_sem_pix_usa_spot(self):
+        df = pd.DataFrame([_offer(spot_price=1899.00, pix_price=None)])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        assert agg.iloc[0]["min_price"] == 1899.00
+
+    def test_preco_a_prazo_nunca_vira_preco(self):
+        """A prazo é outra base — somá-lo ao à vista inventa um preço."""
+        df = pd.DataFrame([
+            _offer(spot_price=None, pix_price=None, forward_price=3200.0),
+        ])
+        agg, rejections = ptai.aggregate_offers(df, "2026-09-01")
+        assert agg.empty
+        assert rejections.get("NO_CASH_PRICE") == 1
+        assert rejections.get("FORWARD_PRICE_ONLY") == 1
+
+    def test_preco_zero_ou_negativo_nao_vira_piso(self):
+        df = pd.DataFrame([
+            _offer(spot_price=0.0, pix_price=None),
+            _offer(spot_price=-1.0, pix_price=None),
+            _offer(spot_price=1999.0, pix_price=None),
+        ])
+        agg, rejections = ptai.aggregate_offers(df, "2026-09-01")
+        assert agg.iloc[0]["min_price"] == 1999.0
+        assert rejections.get("NO_CASH_PRICE") == 2
+
+    def test_linha_carimba_a_base(self):
+        df = pd.DataFrame([_offer(spot_price=1999.0)])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        assert (agg["price_basis"] == ptai.PRICE_BASIS_BEST_CASH).all()
+
+
+class TestDisponibilidade:
+    """Oferta UNAVAILABLE não compete no piso — mas a listagem não some."""
+
+    def test_indisponivel_fora_do_preco(self):
+        df = pd.DataFrame([
+            _offer(spot_price=2400.0, status="AVAILABLE"),
+            _offer(spot_price=999.0, status="UNAVAILABLE"),   # arrastaria o piso
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        row = agg.iloc[0]
+        assert row["min_price"] == 2400.0
+        assert row["obs_count"] == 1
+        assert row["unavailable_count"] == 1
+
+    def test_grupo_so_indisponivel_sobrevive_sem_preco(self):
+        df = pd.DataFrame([_offer(spot_price=2400.0, status="UNAVAILABLE")])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        row = agg.iloc[0]
+        assert pd.isna(row["min_price"])
+        assert pd.isna(row["mode_price"])       # nunca 0.0
+        assert row["obs_count"] == 0
+        assert row["unavailable_count"] == 1
+
+    def test_sem_coluna_status_tudo_conta(self):
+        """Export sem `status`: nada a excluir (comportamento anterior)."""
+        df = pd.DataFrame([_offer(spot_price=2400.0)])
+        assert "status" not in df.columns
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        assert agg.iloc[0]["min_price"] == 2400.0
+        assert agg.iloc[0]["unavailable_count"] == 0
+
+    def test_status_em_branco_conta_como_disponivel(self):
+        """Descartar por carimbo ausente perderia oferta real em silêncio."""
+        df = pd.DataFrame([
+            _offer(spot_price=2400.0, status=""),
+            _offer(spot_price=2500.0, status="AVAILABLE"),
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        row = agg.iloc[0]
+        assert row["min_price"] == 2400.0
+        assert row["obs_count"] == 2
+        assert row["unavailable_count"] == 0
+
+
+class TestUltimaColeta:
+    """`last_price` reproduz o painel ("Preço exibido: última coleta")."""
+
+    def test_pega_a_hora_mais_alta_da_janela(self):
+        df = pd.DataFrame([
+            _offer(spot_price=2476.67, collection_hour=9),
+            _offer(spot_price=2287.78, collection_hour=20),
+            _offer(spot_price=2432.22, collection_hour=14),
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        by_turno = {t: g.iloc[0] for t, g in agg.groupby("turno")}
+        # Diário: última coleta do dia é a das 20h
+        assert by_turno["Diário"]["last_price"] == 2287.78
+        assert by_turno["Diário"]["last_hour"] == 20
+        assert by_turno["Diário"]["min_price"] == 2287.78
+        # Manhã: só a das 9h entra na janela
+        assert by_turno["Manhã"]["last_price"] == 2476.67
+        assert by_turno["Manhã"]["last_hour"] == 9
+
+    def test_last_difere_de_min_quando_o_preco_sobe_no_dia(self):
+        """O caso que fazia painel e dashboard não fecharem."""
+        df = pd.DataFrame([
+            _offer(spot_price=2000.0, collection_hour=9),
+            _offer(spot_price=2500.0, collection_hour=20),
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        row = agg[agg["turno"] == "Diário"].iloc[0]
+        assert row["min_price"] == 2000.0     # piso do dia
+        assert row["last_price"] == 2500.0    # o que o painel mostra
+
+    def test_sem_hora_ainda_tem_last_price(self):
+        df = pd.DataFrame([_offer(spot_price=1999.0)])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        row = agg.iloc[0]
+        assert row["last_price"] == 1999.0
+        assert pd.isna(row["last_hour"])

@@ -54,7 +54,9 @@ from pricetrack_dashboard.data_source import (  # noqa: E402
     _supabase_client,
     demo_offers,
     fetch_live,
-    fetch_supabase_range,
+    fetch_supabase_range_detailed,
+    PRICE_BASIS_BEST_CASH,
+    PRICE_BASIS_SPOT_LEGACY,
     peer_brands,
     supabase_configured,
     supabase_latest_date,
@@ -64,6 +66,17 @@ from pricetrack_dashboard.peer import (  # noqa: E402
     TIER_MIDEA_LINE,
     TIER_ORDER,
 )
+
+# ── Turnos de `pricetrack_daily` ─────────────────────────────────────────────
+# A tabela guarda três recortes por dia (migração 003): "Diário" (dia inteiro),
+# "Manhã" (08–12h BRT) e "Tarde" (18–22h BRT). Até Set/2026 esta página lia
+# "Diário" fixo, sem seletor — então não havia como reproduzir o painel do
+# PriceTrack, que é sempre olhado num turno específico, e a divergência ficava
+# sem explicação na tela.
+TURNO_DIARIO = "Diário"
+TURNO_MANHA = "Manhã"
+TURNO_TARDE = "Tarde"
+TURNO_OPTIONS = [TURNO_DIARIO, TURNO_MANHA, TURNO_TARDE]
 
 # ── Paleta ───────────────────────────────────────────────────────────────────
 MIDEA_BLUE = "#0B3D91"
@@ -450,30 +463,45 @@ def render_peer_to_peer_list(analysis: Analysis) -> None:
 
 
 # ── Janela de datas (período + evolução + fallback) ──────────────────────────
-def _fetch_range_dict(start_iso: str, end_iso: str, use_brand_filter: bool) -> dict:
+def _fetch_range_dict(
+    start_iso: str, end_iso: str, use_brand_filter: bool, turno: str = TURNO_DIARIO,
+) -> dict:
     """Lê ``pricetrack_daily`` de ``start_iso`` a ``end_iso`` e serializa para
-    dict (corpo compartilhado dos loaders cacheados abaixo)."""
+    dict (corpo compartilhado dos loaders cacheados abaixo).
+
+    Devolve ``{"by_date": {...}, "price_basis": {...}}``: o carimbo de base
+    viaja junto com as ofertas porque é ele que diz se a janela mistura dado
+    corrigido com dado da base antiga — sem isso a tela não teria como avisar.
+    """
     brands = peer_brands() if use_brand_filter else []
-    rows_by_date = fetch_supabase_range(
-        start_iso, end_iso, brands=brands if brands else None,
+    result = fetch_supabase_range_detailed(
+        start_iso, end_iso, brands=brands if brands else None, turno=turno,
     )
-    return {d: [_offer_to_dict(o) for o in offs] for d, offs in rows_by_date.items()}
+    return {
+        "by_date": {d: [_offer_to_dict(o) for o in offs]
+                    for d, offs in result.by_date.items()},
+        "price_basis": result.price_basis,
+    }
 
 
 @st.cache_data(show_spinner=False, ttl=900)
-def _load_series_supabase(end_date_iso: str, days: int, use_brand_filter: bool) -> dict:
+def _load_series_supabase(
+    end_date_iso: str, days: int, use_brand_filter: bool, turno: str = TURNO_DIARIO,
+) -> dict:
     """Lê N dias de ``pricetrack_daily`` e serializa para dict (cacheável)."""
     end = date.fromisoformat(end_date_iso)
     start = end - timedelta(days=days - 1)
-    return _fetch_range_dict(start.isoformat(), end_date_iso, use_brand_filter)
+    return _fetch_range_dict(start.isoformat(), end_date_iso, use_brand_filter, turno)
 
 
 @st.cache_data(show_spinner=False, ttl=900)
-def _load_window_supabase(start_iso: str, end_iso: str, use_brand_filter: bool) -> dict:
+def _load_window_supabase(
+    start_iso: str, end_iso: str, use_brand_filter: bool, turno: str = TURNO_DIARIO,
+) -> dict:
     """Lê um intervalo arbitrário de ``pricetrack_daily`` — usado para o
     período pedido nos tiers (que pode ser um range) somado à janela de
     lookback do fallback (dias antes do período)."""
-    return _fetch_range_dict(start_iso, end_iso, use_brand_filter)
+    return _fetch_range_dict(start_iso, end_iso, use_brand_filter, turno)
 
 
 def _demo_window(start_iso: str, end_iso: str) -> dict:
@@ -568,7 +596,7 @@ def _hot_window_days_safe() -> int:
 
 def render_peer_evolution(
     source_label: str, collection_date: Optional[str], use_brand_filter: bool,
-    keep_brands=None, marketplaces=None, sellers=None,
+    keep_brands=None, marketplaces=None, sellers=None, turno: str = TURNO_DIARIO,
 ) -> None:
     st.subheader("Evolução — Midea (moda) × Peers (mediana)")
     st.caption(
@@ -601,9 +629,14 @@ def render_peer_evolution(
             )
         try:
             with st.spinner(f"Lendo {days} dias de pricetrack_daily…"):
-                payload = _load_series_supabase(end_iso, days, use_brand_filter)
+                payload = _load_series_supabase(
+                    end_iso, days, use_brand_filter, turno)
             rows_by_date = {d: [_dict_to_offer(x) for x in offs]
-                            for d, offs in payload.items()}
+                            for d, offs in payload.get("by_date", {}).items()}
+            # A janela da evolução é maior que a dos cards, então pode alcançar
+            # dias da base antiga que os cards nem leem — o aviso é repetido
+            # aqui de propósito, junto do gráfico que a mistura distorce.
+            render_price_basis_notice(payload.get("price_basis", {}))
         except Exception as exc:  # noqa: BLE001
             st.error(f"Falha lendo a série do Supabase: {type(exc).__name__}: {exc}")
             return
@@ -703,7 +736,7 @@ def _normalize_date_range(value, fallback: date) -> tuple:
 def _controls(embedded: bool) -> tuple:
     """Renderiza os controles (fonte, data/período, filtro).
 
-    Retorna ``(source, date_range, use_brand_filter, use_latest)`` onde
+    Retorna ``(source, date_range, use_brand_filter, use_latest, turno)`` onde
     ``source`` é um dos rótulos SRC_* e ``date_range`` é ``(start_iso,
     end_iso)`` — os dois iguais para um único dia. Com "Data mais recente"
     marcado e fonte ao vivo, o ``date_range`` é só um placeholder: o
@@ -765,6 +798,16 @@ def _controls(embedded: bool) -> tuple:
             "Filtrar marcas do peer", value=True, key="pt_brandfilter",
             help="Filtra pelas marcas do peer (mais rápido).")
 
+        turno = c3.selectbox(
+            "Turno", TURNO_OPTIONS, index=0, key="pt_turno",
+            help="Recorte do dia em `pricetrack_daily`: Diário = dia inteiro; "
+                 "Manhã = coletas 08–12h; Tarde = coletas 18–22h (BRT). "
+                 "Use o mesmo turno do painel do PriceTrack para comparar "
+                 "número com número.",
+        )
+        if source == SRC_LIVE and turno != TURNO_DIARIO:
+            c3.caption("ℹ️ Turno só vale para a fonte 🟢 Supabase.")
+
         if c4.button("🔄 Atualizar", use_container_width=True, key="pt_refresh"):
             _load_live.clear()
             _supabase_latest.clear()
@@ -780,7 +823,7 @@ def _controls(embedded: bool) -> tuple:
         if source == SRC_LIVE and use_range:
             st.caption("ℹ️ Intervalo de datas não é suportado na API ao vivo — "
                        "usando só a data selecionada.")
-    return source, date_range, use_brand_filter, use_latest
+    return source, date_range, use_brand_filter, use_latest, turno
 
 
 def _iso_to_date(iso: Optional[str]):
@@ -807,11 +850,14 @@ def _period_dates(start_iso: str, end_iso: str) -> List[str]:
 
 def _load_window(
     source: str, date_range: tuple, use_brand_filter: bool, use_latest: bool,
-    fallback_days: int,
+    fallback_days: int, turno: str = TURNO_DIARIO,
 ):
     """Carrega o período pedido + uma janela de lookback antes dele (fallback).
 
-    Retorna ``(rows_by_date, period_dates, source_label, days_back)``:
+    Retorna ``(rows_by_date, period_dates, source_label, days_back, basis)``,
+    onde ``basis`` é ``{price_basis: nº de linhas}`` do que foi lido — é o que
+    permite avisar na tela quando a janela mistura a base de preço corrigida
+    com o histórico gravado na base errada.
     ``rows_by_date`` cobre tanto o período quanto o lookback (``Offer``s já
     desserializados, indexados por data ISO); ``period_dates`` são as datas
     do período pedido pelo usuário (as demais chaves de ``rows_by_date`` são
@@ -826,6 +872,7 @@ def _load_window(
     period_dates = _period_dates(start_iso, end_iso)
     demo = False
     days_back = 0
+    basis: dict = {}
 
     if source == SRC_DEMO:
         window_start = (date.fromisoformat(start_iso) - timedelta(days=fallback_days)).isoformat()
@@ -835,8 +882,11 @@ def _load_window(
         window_start = (date.fromisoformat(start_iso) - timedelta(days=fallback_days)).isoformat()
         try:
             with st.spinner("Lendo pricetrack_daily do Supabase…"):
-                payload = _load_window_supabase(window_start, end_iso, use_brand_filter)
-            rows_by_date = {d: [_dict_to_offer(x) for x in offs] for d, offs in payload.items()}
+                payload = _load_window_supabase(
+                    window_start, end_iso, use_brand_filter, turno)
+            basis = payload.get("price_basis", {})
+            rows_by_date = {d: [_dict_to_offer(x) for x in offs]
+                            for d, offs in payload.get("by_date", {}).items()}
             if not rows_by_date:
                 st.warning(
                     "⚠️ Sem dados em `pricetrack_daily` para o período "
@@ -857,6 +907,7 @@ def _load_window(
             days_back = payload["days_back"]
             rows_by_date = {resolved_date: offers}
             period_dates = [resolved_date]
+            basis = {PRICE_BASIS_BEST_CASH: len(offers)}
         except Exception as exc:  # noqa: BLE001
             st.error(f"Falha no hook ao vivo: {type(exc).__name__}: {exc}\n\n"
                      "A API de coleta é lenta (~2min). Prefira a fonte Supabase. "
@@ -872,7 +923,7 @@ def _load_window(
             days_back = 0
 
     label = SRC_DEMO if demo else source
-    return rows_by_date, period_dates, label, days_back
+    return rows_by_date, period_dates, label, days_back, ({} if demo else basis)
 
 
 # ── Filtros de Marca / Marketplace / Vendedor (client-side) ──────────────────
@@ -931,6 +982,49 @@ def _render_offer_filters(offers, embedded: bool):
 
 
 # ── Corpo da página (reutilizável no painel do projeto) ──────────────────────
+def render_price_basis_notice(basis: dict) -> None:
+    """Avisa quando a leitura traz linhas da base de preço antiga.
+
+    ``spot_legacy`` são linhas gravadas antes da correção de Set/2026: o preço
+    é o `spotPrice` (à vista cheio), não o menor entre spot e PIX que o painel
+    do PriceTrack mostra — em marketplace com desconto PIX (Magazine Luiza,
+    10%) fica ~10% acima do preço real. Misturado com `best_cash` na mesma
+    janela, o degrau da virada aparece como se fosse movimento de mercado.
+
+    Silencioso quando tudo é `best_cash` — aviso que aparece sempre vira
+    decoração e para de ser lido.
+    """
+    if not basis:
+        return
+    legacy = int(basis.get(PRICE_BASIS_SPOT_LEGACY, 0))
+    good = int(basis.get(PRICE_BASIS_BEST_CASH, 0))
+    if not legacy:
+        return
+    total = legacy + good
+    reimport = (
+        "Corrija reimportando os dias afetados do NDJSON bruto:\n\n"
+        "```\npython scripts/pricetrack_api_import.py --force "
+        "--start AAAA-MM-DD --end AAAA-MM-DD\n```"
+    )
+    if good:
+        st.error(
+            f"⛔ **Bases de preço misturadas** — {legacy:,} de {total:,} linhas "
+            f"desta janela estão na base antiga (`spot_legacy`: preço à vista "
+            f"cheio, sem o desconto PIX, e com oferta indisponível somada ao "
+            f"piso). As outras {good:,} estão em `best_cash`. Comparar um dia "
+            f"com o outro NÃO é válido: o degrau da virada parece mercado.\n\n"
+            + reimport
+        )
+    else:
+        st.warning(
+            f"⚠️ **Base de preço antiga** — as {legacy:,} linhas desta janela "
+            "são `spot_legacy`: o preço é o à vista cheio (`spotPrice`), não o "
+            "menor entre à vista e PIX que o painel do PriceTrack exibe. Em "
+            "marketplace com desconto PIX o número fica ~10% acima do real.\n\n"
+            + reimport
+        )
+
+
 def render_page(embedded: bool = False) -> None:
     """Renderiza a página inteira (controles + tiers + variação Midea).
 
@@ -942,10 +1036,10 @@ def render_page(embedded: bool = False) -> None:
         "Ar-condicionado Só Frio (CO), tiers competitivos peer to peer. "
         "Fonte padrão: Supabase (import diário do PriceTrack); API ao vivo opcional."
     )
-    source, date_range, use_brand_filter, use_latest = _controls(embedded)
+    source, date_range, use_brand_filter, use_latest, turno = _controls(embedded)
     fallback_days = _hot_window_days_safe() if source != SRC_LIVE else 0
-    rows_by_date, period_dates, source_label, days_back = _load_window(
-        source, date_range, use_brand_filter, use_latest, fallback_days,
+    rows_by_date, period_dates, source_label, days_back, price_basis = _load_window(
+        source, date_range, use_brand_filter, use_latest, fallback_days, turno,
     )
 
     # Amostra p/ montar os multiselects de Marca/Marketplace/Vendedor: a
@@ -979,18 +1073,32 @@ def render_page(embedded: bool = False) -> None:
         )
     elif is_range:
         origem = "Supabase" if source_label == SRC_SUPABASE else "API ao vivo"
+        turno_txt = f" · turno: {turno}" if source_label == SRC_SUPABASE else ""
         st.info(
-            f"📅 **{period_label}** ({len(period_dates)} dias) · fonte: {origem} · "
-            f"{analysis.coverage.matched_offers} ofertas casadas no peer de "
-            f"{analysis.coverage.total_offers} lidas no período (soma dos dias)."
+            f"📅 **{period_label}** ({len(period_dates)} dias) · fonte: {origem}"
+            f"{turno_txt} · {analysis.coverage.matched_offers} ofertas casadas "
+            f"no peer de {analysis.coverage.total_offers} lidas no período "
+            f"(soma dos dias)."
         )
     else:
         freshness = {0: "hoje", 1: "ontem"}.get(days_back, f"há {days_back} dias")
         origem = "Supabase" if source_label == SRC_SUPABASE else "API ao vivo"
+        turno_txt = f" · turno: {turno}" if source_label == SRC_SUPABASE else ""
         st.info(
-            f"📅 **{period_label}** ({freshness}) · fonte: {origem} · "
+            f"📅 **{period_label}** ({freshness}) · fonte: {origem}{turno_txt} · "
             f"{analysis.coverage.matched_offers} ofertas casadas no peer "
             f"de {analysis.coverage.total_offers} lidas."
+        )
+
+    render_price_basis_notice(price_basis)
+
+    if source_label != SRC_DEMO:
+        st.caption(
+            "💵 Preço = **melhor à vista da última coleta** da janela (menor "
+            "entre à vista e PIX), a mesma base que o painel do PriceTrack "
+            "exibe com À Vista + PIX + Menor. Linhas antigas sem esse dado caem "
+            "para o piso do dia. Uma linha de `pricetrack_daily` é uma "
+            "listagem-dia agregada, não uma oferta."
         )
 
     render_tier_section(analysis)
@@ -1015,7 +1123,7 @@ def render_page(embedded: bool = False) -> None:
     st.divider()
     render_peer_evolution(source_label, period_dates[-1] if period_dates else None,
                           use_brand_filter, keep_brands=keep_brands,
-                          marketplaces=mkts, sellers=sellers)
+                          marketplaces=mkts, sellers=sellers, turno=turno)
 
     with st.expander("🔎 Cobertura do peer (diagnóstico de casamento)"):
         cov = analysis.coverage

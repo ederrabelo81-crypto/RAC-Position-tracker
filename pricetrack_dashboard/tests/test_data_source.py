@@ -231,3 +231,51 @@ class TestFetchSupabaseRange:
         by_date = ds.fetch_supabase_range("2026-08-25", "2026-08-25", client=fake)
         assert len(by_date["2026-08-25"]) == 4   # truncado no teto, não nas 6 reais
         assert len(warnings) == 1 and "teto" in warnings[0]
+
+
+# ── Base de preço (migração 006) ─────────────────────────────────────────────
+
+class TestRepresentativePrice:
+    """Qual coluna de ``pricetrack_daily`` vira o preço da oferta sintética."""
+
+    def test_last_price_vence_min_price(self):
+        """`last_price` é a última coleta — o que o painel do PriceTrack exibe.
+
+        Antes esta função começava por `min_price` (piso da janela inteira), e
+        quando o preço mexia no dia o dashboard não fechava com o painel sem
+        nada na tela explicando por quê.
+        """
+        row = {"last_price": 2500.0, "min_price": 2000.0, "mode_price": 2100.0}
+        assert ds._representative_price(row) == 2500.0
+
+    def test_cai_para_min_price_em_linha_legada(self):
+        # Linhas anteriores à migração 006 não têm `last_price`.
+        row = {"min_price": 2000.0, "mode_price": 2100.0}
+        assert ds._representative_price(row) == 2000.0
+
+    def test_ignora_last_price_fora_da_faixa_plausivel(self):
+        row = {"last_price": 9.0, "min_price": 2000.0}
+        assert ds._representative_price(row) == 2000.0
+
+    def test_grupo_so_indisponivel_nao_vira_oferta(self):
+        # Preços NULL = nenhuma observação AVAILABLE; não entra em piso/média.
+        row = {"last_price": None, "min_price": None,
+               "mode_price": None, "avg_price": None}
+        assert ds._representative_price(row) is None
+        assert ds._row_to_offer(row) is None
+
+
+class TestBasisCounter:
+    def test_conta_por_base(self):
+        rows = [
+            {"price_basis": "best_cash"},
+            {"price_basis": "best_cash"},
+            {"price_basis": "spot_legacy"},
+        ]
+        assert ds._basis_counter(rows) == {"best_cash": 2, "spot_legacy": 1}
+
+    def test_linha_sem_carimbo_conta_como_legada(self):
+        """Ausência de carimbo NUNCA é lida como 'provavelmente está certo'."""
+        assert ds._basis_counter([{}, {"price_basis": None}]) == {
+            ds.PRICE_BASIS_SPOT_LEGACY: 2
+        }
