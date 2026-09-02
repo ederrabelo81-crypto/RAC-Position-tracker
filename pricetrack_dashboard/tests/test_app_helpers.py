@@ -64,6 +64,97 @@ class TestMideaBadge:
         assert "1.000,00" in html and "▲" not in html and "▼" not in html
 
 
+class TestTierTableUsesPeersNotMarket:
+    """Regressão de produção: `_tier_table`/`_tier_card_html` mostravam o
+    modal de `tr.market` (Midea + concorrentes juntos) como "modal do
+    mercado" — como a Midea está sempre presente e domina o empate de moda
+    (preço MAP repetido entre ofertas), o número parecia não reagir ao
+    filtro de Marca (selecionar só um concorrente não movia o modal). As
+    colunas "mercado" da tabela têm que vir de `tr.peers` (só concorrentes)."""
+
+    def test_modal_and_piso_mercado_come_from_peers(self):
+        import pandas as pd
+        from pricetrack_dashboard.analytics import analyze, filter_offers
+
+        offers = demo_offers()
+        only_elgin = filter_offers(offers, keep_brands={"ELGIN"})
+        analysis = analyze(only_elgin)
+        df = app._tier_table(analysis)
+
+        for tr in analysis.tiers:
+            row = df[(df["Tier"] == tr.tier)
+                     & (df["Capacidade"] == app.CAP_LABEL[tr.capacity])].iloc[0]
+            assert pd.isna(row["Modal mercado"]) == (tr.peers.mode is None)
+            if tr.peers.mode is not None:
+                assert row["Modal mercado"] == tr.peers.mode
+                assert row["Piso mercado"] == tr.peers.minimum
+            assert row["Ofertas"] == tr.peers.count
+
+    def test_card_html_big_number_is_peers_mode(self):
+        """A linha grande do card ("Modal do mercado") tem que ser o modal
+        dos concorrentes, não o de `market` (que inclui a Midea)."""
+        from pricetrack_dashboard.analytics import analyze, filter_offers
+
+        offers = demo_offers()
+        only_elgin = filter_offers(offers, keep_brands={"ELGIN"})
+        tr = analyze(only_elgin).tier("Low", "9K")
+        html = app._tier_card_html(tr)
+        big_number_line = html.split("Modal do mercado</div>")[1].split("</div>")[0]
+        assert app._brl_cents(tr.peers.mode) in big_number_line
+
+    def test_empty_gate_checks_peers_not_market(self):
+        """Regressão do achado do cubic no PR #338: o guard de `render_tier_
+        section` que decide entre mostrar o card ou "Sem oferta casada"
+        também precisa olhar `tr.peers` — se continuasse em `tr.market`
+        (que a Midea sempre preenche), um filtro que deixa só Midea sem
+        nenhum concorrente casado renderizaria o card com "—" em vez da
+        mensagem de "sem oferta"."""
+        from pricetrack_dashboard.analytics import analyze, filter_offers
+        from pricetrack_dashboard.peer import CAP_9K, TIER_HIGH
+
+        offers = demo_offers()
+        # Elgin não compete no tier High/9K (peer.py não lista Elgin lá) —
+        # só a Midea casa; nenhum concorrente sobra.
+        only_elgin = filter_offers(offers, keep_brands={"ELGIN"})
+        tr = analyze(only_elgin).tier(TIER_HIGH, CAP_9K)
+        assert not tr.market.is_empty   # Midea casou
+        assert tr.peers.is_empty        # mas nenhum concorrente
+
+    def test_render_tier_section_shows_sem_oferta_casada_when_peers_empty(self):
+        """Regressão de verdade (achado do cubic sobre o teste anterior: ele
+        só olhava os campos de `analyze`, então continuaria verde mesmo se
+        alguém revertesse o guard de `render_tier_section` para
+        `tr.market.is_empty`). Aqui `render_tier_section` roda de verdade via
+        `AppTest`: filtrando só Elgin, todo (tier, capacidade) em que o peer
+        não lista Elgin como concorrente tem que cair no
+        `st.info("Sem oferta casada")`, não no card."""
+        from streamlit.testing.v1 import AppTest
+
+        def _script():
+            from pricetrack_dashboard.analytics import analyze, filter_offers
+            from pricetrack_dashboard.app import render_tier_section
+            from pricetrack_dashboard.data_source import demo_offers
+
+            only_elgin = filter_offers(demo_offers(), keep_brands={"ELGIN"})
+            render_tier_section(analyze(only_elgin))
+
+        at = AppTest.from_function(_script)
+        at.run()
+        assert not at.exception
+        infos = [i.value for i in at.info]
+
+        # Deriva do próprio contrato do peer (não hardcoda "2"): o peer muda
+        # de trimestre, e travar num número fixo quebraria o teste — sem
+        # nenhum defeito real — na primeira atualização de `_PEER_RAW`.
+        from pricetrack_dashboard.peer import CAP_ORDER, PEER, TIER_ORDER
+
+        expected_empty = sum(
+            not any(model.brand == "ELGIN" for model in PEER[tier][cap].models)
+            for tier in TIER_ORDER for cap in CAP_ORDER
+        )
+        assert infos.count("Sem oferta casada") == expected_empty
+
+
 class TestPeerToPeerDataframe:
     def _analysis(self):
         from pricetrack_dashboard.analytics import analyze

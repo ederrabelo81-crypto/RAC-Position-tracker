@@ -217,13 +217,13 @@ def _tier_card_html(tr) -> str:
         f'text-transform:uppercase;color:{MARKET_GREY};font-weight:700;">'
         'Modal do mercado</div>'
         f'<div style="font-size:1.5rem;font-weight:800;margin:2px 0 6px;">'
-        f'{_brl_cents(tr.market.mode)}</div>'
+        f'{_brl_cents(tr.peers.mode)}</div>'
         f'<div style="margin-bottom:6px;">'
         f'{_midea_badge_html(tr.midea.mode, tr.midea_vs_market_delta)}</div>'
         f'<div style="font-size:0.78rem;color:{MARKET_GREY};">'
-        f'Piso mercado {_brl_cents(tr.market.minimum)} · '
+        f'Piso mercado {_brl_cents(tr.peers.minimum)} · '
         f'Midea piso {_brl_cents(tr.midea.minimum)} · '
-        f'{tr.market.count} ofertas</div>'
+        f'{tr.peers.count} ofertas</div>'
         '</div>'
     )
 
@@ -232,9 +232,12 @@ def render_tier_section(analysis: Analysis) -> None:
     st.subheader("Preços por tier — Low / Mid / High")
     st.caption(
         "Cada tier é a linha Midea e o grupo de concorrentes do mesmo ponto de "
-        "preço (peer to peer). **Modal** = preço mais frequente do dia; "
-        "**Piso** = mínimo. ▼ verde = Midea mais barata que o modal do mercado; "
-        "▲ vermelho = mais cara."
+        "preço (peer to peer). **Mercado** = ofertas dos concorrentes que "
+        "passaram no filtro de Marca/Marketplace/Vendedor acima — Midea nunca "
+        "entra nesse cálculo, é sempre a âncora comparada a ele (por isso, ao "
+        "filtrar só uma marca, o mercado passa a ser aquela marca). **Modal** = "
+        "preço mais frequente do dia; **Piso** = mínimo. ▼ verde = Midea mais "
+        "barata que o modal do mercado; ▲ vermelho = mais cara."
     )
     for cap in CAP_ORDER:
         st.markdown(f"#### {CAP_LABEL[cap]}")
@@ -243,7 +246,7 @@ def render_tier_section(analysis: Analysis) -> None:
             tr = analysis.tier(tier, cap)
             with col:
                 st.markdown(f"**{_tier_header(tier)}**")
-                if tr is None or tr.market.is_empty:
+                if tr is None or tr.peers.is_empty:
                     st.info("Sem oferta casada")
                     continue
                 st.html(_tier_card_html(tr))
@@ -257,9 +260,9 @@ def _tier_table(analysis: Analysis) -> pd.DataFrame:
             "Tier": tr.tier,
             "Linha Midea": tr.midea_line,
             "Capacidade": CAP_LABEL[tr.capacity],
-            "Ofertas": tr.market.count,
-            "Modal mercado": tr.market.mode,
-            "Piso mercado": tr.market.minimum,
+            "Ofertas": tr.peers.count,
+            "Modal mercado": tr.peers.mode,
+            "Piso mercado": tr.peers.minimum,
             "Modal Midea": tr.midea.mode,
             "Piso Midea": tr.midea.minimum,
             "Δ Midea vs mercado": tr.midea_vs_market_delta,
