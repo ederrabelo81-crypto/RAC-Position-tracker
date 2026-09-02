@@ -99,7 +99,20 @@ class TestTierTableUsesPeersNotMarket:
         only_elgin = filter_offers(offers, keep_brands={"ELGIN"})
         tr = analyze(only_elgin).tier("Low", "9K")
         html = app._tier_card_html(tr)
-        big_number_line = html.split("Modal do mercado</div>")[1].split("</div>")[0]
+        # Badge de confiança pode estar presente (🟢/🟡/🔴) após "Modal do mercado"
+        # O big number está no próximo <div> após o título/badge
+        assert "Modal do mercado" in html
+        # Após "Modal do mercado", há o badge e depois </div>, então pegamos
+        # o conteúdo entre o primeiro e segundo </div> após o título
+        parts = html.split("Modal do mercado")
+        assert len(parts) > 1
+        after_title = parts[1]
+        # Pega o conteúdo após o primeiro </div> (que fecha o título+badge)
+        after_title_div = after_title.split("</div>", 1)
+        assert len(after_title_div) > 1
+        big_number_section = after_title_div[1]
+        # Agora extrai o big number que está no próximo <div>...</div>
+        big_number_line = big_number_section.split("<div")[1].split("</div>")[0]
         assert app._brl_cents(tr.peers.mode) in big_number_line
 
     def test_empty_gate_checks_peers_not_market(self):
