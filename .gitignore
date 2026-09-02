@@ -1,1 +1,36 @@
-(pricetrack_dashboard/analytics.py, pricetrack_dashboard/app.py are source files, so output nothing)
+```
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dependencies
+.venv/
+venv/
+.env
+.env.local
+.env.*
+
+# Tests
+.pytest_cache/
+.coverage
+coverage/
+
+# Logs
+*.log
+
+# Temp files
+*.tmp
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+target/
+```
