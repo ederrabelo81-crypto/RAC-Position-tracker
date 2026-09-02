@@ -92,6 +92,8 @@ class LiveResult:
     #: {price_basis: nº de linhas} do que foi lido. Mais de uma chave = a
     #: janela mistura bases de preço e nenhuma comparação entre elas vale.
     price_basis: Dict[str, int] = field(default_factory=dict)
+    #: {id da oferta: base} — permite recontar depois dos filtros da tela.
+    basis_by_id: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +105,8 @@ class RangeResult:
     #: caso perigoso: a série de evolução emendaria bases diferentes e o degrau
     #: do dia da correção pareceria movimento de mercado.
     price_basis: Dict[str, int] = field(default_factory=dict)
+    #: {id da oferta: base} — permite recontar depois dos filtros da tela.
+    basis_by_id: Dict[str, str] = field(default_factory=dict)
 
 
 def find_latest_date(
@@ -188,6 +192,7 @@ def fetch_live(
         # Ao vivo o preço sai de `effective_price` (menor à vista, só
         # AVAILABLE) — a mesma base `best_cash` que o import corrigido grava.
         price_basis={PRICE_BASIS_BEST_CASH: len(offers)},
+        basis_by_id={o.id: PRICE_BASIS_BEST_CASH for o in offers},
     )
 
 
@@ -313,6 +318,16 @@ def _paged_select(build_query, max_rows: int) -> Tuple[List[Dict[str, Any]], boo
     return [], False
 
 
+def _basis_of_row(row: Dict[str, Any]) -> str:
+    """Base de preço de uma linha, normalizada para o vocabulário conhecido."""
+    raw = str(row.get("price_basis") or "").strip()
+    if not raw:
+        return PRICE_BASIS_SPOT_LEGACY
+    if raw in _KNOWN_BASES:
+        return raw
+    return f"{PRICE_BASIS_UNKNOWN}:{raw}"
+
+
 def _basis_counter(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
     """Conta as bases de preço presentes nas linhas lidas.
 
@@ -326,15 +341,24 @@ def _basis_counter(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
     """
     counts: Dict[str, int] = defaultdict(int)
     for row in rows:
-        raw = str(row.get("price_basis") or "").strip()
-        if not raw:
-            key = PRICE_BASIS_SPOT_LEGACY
-        elif raw in _KNOWN_BASES:
-            key = raw
-        else:
-            key = f"{PRICE_BASIS_UNKNOWN}:{raw}"
-        counts[key] += 1
+        counts[_basis_of_row(row)] += 1
     return dict(counts)
+
+
+def _basis_by_offer(rows: Sequence[Dict[str, Any]]) -> Dict[str, str]:
+    """``{id da oferta: base}`` — para recontar DEPOIS dos filtros da tela.
+
+    O contador da leitura vale para tudo que veio do banco; os filtros de
+    Marca/Marketplace/Vendedor rodam client-side, depois. Sem este mapa, um
+    recorte que sobrou inteiro numa base só ainda seria bloqueado como
+    "bases misturadas" por causa de linhas que o usuário já tinha filtrado.
+    """
+    out: Dict[str, str] = {}
+    for row in rows:
+        offer = _row_to_offer(row)
+        if offer is not None:
+            out[offer.id] = _basis_of_row(row)
+    return out
 
 
 def _row_to_offer(row: Dict[str, Any]) -> Optional[Offer]:
@@ -439,7 +463,7 @@ def fetch_supabase(
         days_back = 0
     return LiveResult(
         offers=offers, collection_date=collection_date, days_back=days_back,
-        price_basis=_basis_counter(rows),
+        price_basis=_basis_counter(rows), basis_by_id=_basis_by_offer(rows),
     )
 
 
@@ -507,7 +531,10 @@ def fetch_supabase_range_detailed(
         d = str(row.get("collection_date") or "")[:10]
         if d:
             by_date[d].append(offer)
-    return RangeResult(by_date=dict(by_date), price_basis=_basis_counter(rows))
+    return RangeResult(
+        by_date=dict(by_date), price_basis=_basis_counter(rows),
+        basis_by_id=_basis_by_offer(rows),
+    )
 
 
 def fetch_supabase_range(
