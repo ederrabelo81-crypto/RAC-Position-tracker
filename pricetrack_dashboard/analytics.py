@@ -50,6 +50,29 @@ class PriceStats:
     def is_empty(self) -> bool:
         return self.count == 0
 
+    @property
+    def confidence_badge(self) -> str:
+        """Indicador visual de confiança da amostra baseado no nº de ofertas.
+
+        🟢 Robusta: ≥30 ofertas
+        🟡 Moderada: 10–29 ofertas
+        🔴 Fraca: <10 ofertas (alerta de amostra pequena)
+        """
+        if self.count >= 30:
+            return "🟢"
+        if self.count >= 10:
+            return "🟡"
+        return "🔴"
+
+    @property
+    def confidence_label(self) -> str:
+        """Rótulo textual do nível de confiança."""
+        if self.count >= 30:
+            return "robusta"
+        if self.count >= 10:
+            return "moderada"
+        return "fraca"
+
     def to_dict(self) -> dict:
         return {
             "count": self.count,

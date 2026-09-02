@@ -200,13 +200,17 @@ def _midea_badge_html(midea_value: Optional[float], delta: Optional[float]) -> s
 
 
 def _tier_card_html(tr) -> str:
+    # Badge de confiança da amostra (🟢/🟡/🔴)
+    badge = tr.peers.confidence_badge
+    tooltip = f"Amostra {tr.peers.confidence_label}: {tr.peers.count} ofertas"
+    
     return (
         '<div style="border-left:4px solid ' + MIDEA_ACCENT + '; '
         'padding:10px 14px; background:rgba(30,136,229,0.06); '
         'border-radius:8px; margin-bottom:8px;">'
         f'<div style="font-size:0.72rem;letter-spacing:0.06em;'
         f'text-transform:uppercase;color:{MARKET_GREY};font-weight:700;">'
-        'Modal do mercado</div>'
+        f'Modal do mercado <span title="{tooltip}">{badge}</span></div>'
         f'<div style="font-size:1.5rem;font-weight:800;margin:2px 0 6px;">'
         f'{_brl_cents(tr.peers.mode)}</div>'
         f'<div style="margin-bottom:6px;">'
@@ -348,6 +352,7 @@ def render_midea_table(analysis: Analysis) -> None:
         rows.append({
             "Linha": tr.midea_line,
             "Capacidade": CAP_LABEL[tr.capacity],
+            "Confiança": f"{s.confidence_badge} {s.confidence_label}",
             "Ofertas": s.count,
             "Mínimo": s.minimum,
             "Máximo": s.maximum,
@@ -377,6 +382,7 @@ def _peer_to_peer_dataframe(analysis: Analysis, tier: str) -> pd.DataFrame:
                 "Marca": _brand_label(mr.brand),
                 "Modelo": mr.model_label,
                 "BTU": CAP_SHORT[cap],
+                "Confiança": f"{mr.stats.confidence_badge}",
                 "Mín": mr.stats.minimum,
                 "Média": mr.stats.mean,
                 "Moda": mr.stats.mode,
@@ -418,6 +424,7 @@ def render_peer_to_peer_list(analysis: Analysis) -> None:
         n_total = len(df)
         n_with_data = int((df["n"] > 0).sum())
         n_fallback = int((df["Dado de"] != "").sum())
+        n_weak_sample = int((df["Confiança"] == "🔴").sum())
         if n_with_data < n_total:
             st.caption(
                 f"⚠️ {n_total - n_with_data} de {n_total} modelos do peer sem "
@@ -427,7 +434,16 @@ def render_peer_to_peer_list(analysis: Analysis) -> None:
             st.caption(
                 f"ℹ️ {n_fallback} de {n_total} modelos sem oferta casada no "
                 "período selecionado — mostrando o último dado disponível de "
-                "cada um (coluna 'Dado de'); os demais são do período pedido."
+                "cada um."
+            )
+        if n_weak_sample and n_with_data > 0:
+            st.caption(
+                f"🔴 {n_weak_sample} de {n_with_data} modelos com oferta têm "
+                "**amostra fraca** (<10 ofertas) — interpretar com cautela."
+            )
+        elif n_fallback:
+            st.caption(
+                f"Cada um (coluna 'Dado de'); os demais são do período pedido."
             )
         else:
             st.caption(f"Todos os {n_total} modelos do peer tinham preço no período selecionado.")
