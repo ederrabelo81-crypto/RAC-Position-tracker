@@ -141,8 +141,10 @@ pricetrack_dashboard/
   Diagnóstico completo e receita de reimport: [`docs/PRICETRACK_FIDELIDADE.md`](../docs/PRICETRACK_FIDELIDADE.md).
 - ⚠️ **Uma linha de `pricetrack_daily` não é uma oferta** — é uma listagem-dia
   agregada (N coletas colapsadas em min/média/moda/máx, contadas em
-  `obs_count`). Por isso o "máximo" da variação Midea é o máximo **dos
-  mínimos** das listagens, não o maior preço observado no dia.
+  `obs_count`). A página reduz cada linha a **um** preço representativo
+  (`last_price`; `min_price` no legado), então o "máximo" da variação Midea é o
+  maior preço **representativo entre as listagens**, não o maior preço
+  observado no dia — este último está em `max_price`, que a página não usa.
 
 ## Testes
 

@@ -56,10 +56,14 @@ except ImportError:
 _RAW_DIR = _PROJECT_ROOT / "imports" / "pricetrack" / "api" / "raw"
 
 # Grafias aceitas por campo (o NDJSON usa snake_case, o OpenAPI camelCase).
+# `generic` espelha `_GENERIC_PRICE_FIELDS` do importador: sem ele a auditoria
+# ignoraria um preço que o import de fato grava, e o confronto acusaria a chave
+# como AUSENTE. Auditor que não replica a regra do auditado audita outra coisa.
 _FIELDS = {
     "spot": ("spot_price", "spotPrice"),
     "pix": ("pix_price", "pixPrice"),
     "forward": ("forward_price", "forwardPrice"),
+    "generic": ("price", "sale_price", "salePrice", "preco", "valor"),
     "rrp": ("price_from", "priceFrom"),
     "status": ("status",),
     "hour": ("collection_hour", "collectionHour"),
@@ -89,10 +93,48 @@ def _price(raw: Dict[str, Any], key: str) -> Optional[float]:
     return price if price > 0 else None
 
 
-def _cash(spot: Optional[float], pix: Optional[float]) -> Optional[float]:
-    """Menor à vista — a base `best_cash`, o que o painel exibe e o cliente paga."""
+def _cash(spot: Optional[float], pix: Optional[float],
+          generic: Optional[float] = None) -> Optional[float]:
+    """Menor à vista — a base `best_cash`, o que o painel exibe e o cliente paga.
+
+    ``generic`` só entra onde spot E pix faltam, exatamente como no importador.
+    """
     candidates = [p for p in (spot, pix) if p is not None]
-    return min(candidates) if candidates else None
+    if candidates:
+        return min(candidates)
+    return generic
+
+
+def _is_available(raw: Dict[str, Any]) -> bool:
+    """True só para `status` EXATAMENTE AVAILABLE (mesma régua do importador).
+
+    Um status novo ou inesperado não é "disponível": tratar desconhecido como
+    comprável é o mesmo erro de base que esta auditoria existe para achar.
+    """
+    return str(_pick(raw, "status") or "").strip().upper() == "AVAILABLE"
+
+
+def _hour(raw: Dict[str, Any]) -> Optional[int]:
+    """`collection_hour` normalizada para int (o NDJSON já trouxe string)."""
+    value = _pick(raw, "hour")
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _in_turno(raw: Dict[str, Any], turno: str) -> bool:
+    """A observação cai na janela do turno? (mesmas horas do importador.)"""
+    if turno == "Diário":
+        return True
+    hour = _hour(raw)
+    if hour is None:
+        return False           # sem hora, a oferta só entra no Diário
+    if turno == "Manhã":
+        return 8 <= hour <= 12
+    if turno == "Tarde":
+        return 18 <= hour <= 22
+    return True
 
 
 def _brl(value: Optional[float]) -> str:
@@ -142,21 +184,23 @@ def print_offers(rows: List[Dict[str, Any]], limit: int) -> None:
     print(header)
     print("-" * 118)
 
+    # A hora vai normalizada para int na chave: o NDJSON pode trazê-la como
+    # string, e ordenar tipos misturados estoura TypeError (ou, se todas forem
+    # string, ordena "10" antes de "9").
     ordered = sorted(
         rows,
         key=lambda r: (
             str(_pick(r, "marketplace") or ""), str(_pick(r, "seller") or ""),
-            _pick(r, "hour") if _pick(r, "hour") is not None else -1,
+            _hour(r) if _hour(r) is not None else -1,
         ),
     )
     for raw in ordered[:limit]:
         spot, pix = _price(raw, "spot"), _price(raw, "pix")
-        hour = _pick(raw, "hour")
-        available = str(_pick(raw, "status") or "").upper() != "UNAVAILABLE"
-        # Indisponível conserva o preço no histórico mas NÃO tem à vista
-        # efetivo — não compete no piso. Marcar aqui evita ler a coluna como
-        # se a oferta estivesse comprável.
-        cash = _brl(_cash(spot, pix)) if available else "(indisp.)"
+        hour = _hour(raw)
+        # Só AVAILABLE tem à vista efetivo — status desconhecido não é
+        # "comprável". Mesma régua do importador.
+        cash = (_brl(_cash(spot, pix, _price(raw, "generic")))
+                if _is_available(raw) else "(indisp.)")
         print(
             f"{(hour if hour is not None else '—'):>4} "
             f"{str(_pick(raw, 'status') or '—'):<12} "
@@ -178,51 +222,59 @@ def print_summary(rows: List[Dict[str, Any]]) -> None:
         return
 
     per_mkt: Dict[str, Dict[str, Any]] = defaultdict(
-        lambda: {"n": 0, "pix_wins": 0, "sem_pix": 0, "gaps": [],
+        lambda: {"n": 0, "avail": 0, "pix_wins": 0, "sem_pix": 0, "gaps": [],
                  "forward_only": 0, "unavailable": 0}
     )
     for raw in rows:
         mkt = str(_pick(raw, "marketplace") or "—")
         bucket = per_mkt[mkt]
         bucket["n"] += 1
-        if str(_pick(raw, "status") or "").upper() == "UNAVAILABLE":
+        if not _is_available(raw):
+            # Indisponível não entra no preço importado, então também não entra
+            # na conta do erro: somá-la superestimaria a margem atribuída à
+            # base antiga, que é justamente o número que este resumo defende.
             bucket["unavailable"] += 1
+            continue
+        bucket["avail"] += 1
         spot, pix = _price(raw, "spot"), _price(raw, "pix")
         if pix is None:
             bucket["sem_pix"] += 1
         elif spot is not None and pix < spot:
             bucket["pix_wins"] += 1
             bucket["gaps"].append((spot - pix) / spot * 100)
-        if _cash(spot, pix) is None and _price(raw, "forward") is not None:
+        if _cash(spot, pix, _price(raw, "generic")) is None and _price(raw, "forward") is not None:
             bucket["forward_only"] += 1
 
     print(f"\n{'═' * 100}")
     print("RESUMO POR MARKETPLACE — o tamanho do erro da base antiga (`spot_legacy`)")
     print("═" * 100)
-    print(f"{'marketplace':<24} {'ofertas':>8} {'PIX < spot':>14} {'desc.médio':>11} "
+    # Todo percentual é sobre `avail`, não sobre `n`: o preço importado só olha
+    # AVAILABLE, então diluir a conta com indisponível descreveria um erro que
+    # a base não comete.
+    print(f"{'marketplace':<24} {'dispon.':>8} {'PIX < spot':>14} {'desc.médio':>11} "
           f"{'sem PIX':>9} {'só a prazo':>11} {'indisp.':>9}")
     print("-" * 100)
     for mkt, b in sorted(per_mkt.items(), key=lambda kv: -kv[1]["n"]):
         gap = sum(b["gaps"]) / len(b["gaps"]) if b["gaps"] else None
-        pct_pix = f"{b['pix_wins'] / b['n'] * 100:.0f}%" if b["n"] else "—"
+        pct_pix = f"{b['pix_wins'] / b['avail'] * 100:.0f}%" if b["avail"] else "—"
         pix_col = f"{b['pix_wins']:,} ({pct_pix})"
         gap_col = f"{gap:.1f}%" if gap is not None else "—"
         print(
-            f"{mkt[:24]:<24} {b['n']:>8,} {pix_col:>14} {gap_col:>11} "
+            f"{mkt[:24]:<24} {b['avail']:>8,} {pix_col:>14} {gap_col:>11} "
             f"{b['sem_pix']:>9,} {b['forward_only']:>11,} {b['unavailable']:>9,}"
         )
 
-    total = sum(b["n"] for b in per_mkt.values())
+    avail = sum(b["avail"] for b in per_mkt.values())
     pix_wins = sum(b["pix_wins"] for b in per_mkt.values())
     all_gaps = [g for b in per_mkt.values() for g in b["gaps"]]
     print("-" * 100)
-    total_col = f"{pix_wins:,} ({pix_wins / total * 100:.0f}%)" if total else "—"
-    print(f"{'TOTAL':<24} {total:>8,} {total_col:>14}")
-    if all_gaps:
+    total_col = f"{pix_wins:,} ({pix_wins / avail * 100:.0f}%)" if avail else "—"
+    print(f"{'TOTAL':<24} {avail:>8,} {total_col:>14}")
+    if all_gaps and avail:
         print(
-            f"\n→ Em {pix_wins:,} de {total:,} ofertas ({pix_wins / total * 100:.1f}%) "
-            f"o PIX é menor que o spot, com desconto médio de "
-            f"{sum(all_gaps) / len(all_gaps):.1f}%.\n"
+            f"\n→ Em {pix_wins:,} de {avail:,} ofertas disponíveis "
+            f"({pix_wins / avail * 100:.1f}%) o PIX é menor que o spot, com "
+            f"desconto médio de {sum(all_gaps) / len(all_gaps):.1f}%.\n"
             f"  Essa é exatamente a margem que a base antiga gravava a mais: "
             f"ela usava o spot,\n  o painel mostra o PIX."
         )
@@ -244,67 +296,104 @@ def compare_db(rows: List[Dict[str, Any]], collection_date: str, turno: str) -> 
         print("\n[--comparar] SUPABASE_URL/SUPABASE_KEY ausentes — pulei o confronto.")
         return
 
-    # Chaves observadas no bruto (o que a API entregou).
+    # ── O que a API entregou, recortado pela MESMA janela do banco ──────────
+    # Sem `_in_turno` o bruto varria o dia inteiro enquanto o banco vinha
+    # filtrado por turno: o menor de outro turno gerava divergência falsa.
     esperado: Dict[tuple, Dict[str, Any]] = {}
     for raw in rows:
-        if str(_pick(raw, "status") or "").upper() == "UNAVAILABLE":
+        if not _is_available(raw) or not _in_turno(raw, turno):
             continue
-        cash = _cash(_price(raw, "spot"), _price(raw, "pix"))
+        cash = _cash(_price(raw, "spot"), _price(raw, "pix"), _price(raw, "generic"))
         if cash is None:
             continue
-        k = (str(_pick(raw, "sku") or ""), str(_pick(raw, "marketplace") or ""),
-             str(_pick(raw, "seller") or ""))
-        slot = esperado.setdefault(k, {"min": cash, "obs": 0})
+        # A chave é a UNIQUE da tabela — inclui `brand`. Sem ela, dois grupos
+        # do banco (marcas distintas no mesmo sku/marketplace/seller) colapsam
+        # num só e o piso esperado mistura linhas que nunca foram agregadas
+        # juntas.
+        k = (str(_pick(raw, "brand") or "").upper(), str(_pick(raw, "sku") or ""),
+             str(_pick(raw, "marketplace") or ""), str(_pick(raw, "seller") or ""))
+        hour = _hour(raw)
+        slot = esperado.setdefault(
+            k, {"min": cash, "obs": 0, "last": cash, "last_hour": -1}
+        )
         slot["min"] = min(slot["min"], cash)
         slot["obs"] += 1
+        # `last` = observação da hora mais alta (o que o painel exibe); empate
+        # de hora fica com a última do arquivo, como no importador.
+        if hour is None or hour >= slot["last_hour"]:
+            slot["last"] = cash
+            slot["last_hour"] = hour if hour is not None else slot["last_hour"]
 
+    # ── O que o banco guardou (paginado: um dia passa de 1.000 linhas) ──────
     client = create_client(url, key)
-    resp = (
-        client.table("pricetrack_daily")
-        .select("sku,marketplace,seller,min_price,last_price,price_basis,obs_count")
-        .eq("collection_date", collection_date)
-        .eq("turno", turno)
-        .execute()
-    )
-    banco = {
-        (str(r.get("sku") or ""), str(r.get("marketplace") or ""),
-         str(r.get("seller") or "")): r
-        for r in (getattr(resp, "data", None) or [])
-    }
+    banco: Dict[tuple, Dict[str, Any]] = {}
+    offset, page_size = 0, 1000
+    while True:
+        resp = (
+            client.table("pricetrack_daily")
+            .select("brand,sku,marketplace,seller,min_price,last_price,"
+                    "price_basis,obs_count")
+            .eq("collection_date", collection_date)
+            .eq("turno", turno)
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        page = getattr(resp, "data", None) or []
+        for r in page:
+            banco[(str(r.get("brand") or "").upper(), str(r.get("sku") or ""),
+                   str(r.get("marketplace") or ""), str(r.get("seller") or ""))] = r
+        if len(page) < page_size:
+            break
+        offset += page_size
 
-    print(f"\n{'═' * 104}")
+    print(f"\n{'═' * 116}")
     print(f"BRUTO DA API × pricetrack_daily — {collection_date} · turno {turno}")
-    print("═" * 104)
-    print(f"{'seller':<22} {'marketplace':<18} {'piso bruto':>12} {'min_price':>12} "
-          f"{'last_price':>12} {'base':>13} {'Δ':>8}")
-    print("-" * 104)
+    print("═" * 116)
+    print(f"{'seller':<20} {'marketplace':<16} {'piso bruto':>11} {'min_price':>11} "
+          f"{'últ. bruto':>11} {'last_price':>11} {'base':>13} {'Δ piso':>8} {'Δ últ.':>8}")
+    print("-" * 116)
+
+    def _delta(esperado_v: Optional[float], banco_v: Optional[float]):
+        if not esperado_v or banco_v is None:
+            return None
+        return (banco_v - esperado_v) / esperado_v * 100
+
     divergentes = 0
-    for k, exp in sorted(esperado.items(), key=lambda kv: kv[0][2]):
+    for k, exp in sorted(esperado.items(), key=lambda kv: kv[0][3]):
+        seller, mkt = k[3], k[2]
         row = banco.get(k)
         if row is None:
-            print(f"{k[2][:22]:<22} {k[1][:18]:<18} {_brl(exp['min']):>12} "
-                  f"{'AUSENTE':>12} {'—':>12} {'—':>13} {'—':>8}")
+            print(f"{seller[:20]:<20} {mkt[:16]:<16} {_brl(exp['min']):>11} "
+                  f"{'AUSENTE':>11} {_brl(exp['last']):>11} {'—':>11} "
+                  f"{'—':>13} {'—':>8} {'—':>8}")
             divergentes += 1
             continue
         db_min = float(row["min_price"]) if row.get("min_price") is not None else None
-        delta = (db_min - exp["min"]) / exp["min"] * 100 if db_min else None
-        if delta is not None and abs(delta) >= 0.01:
+        db_last = float(row["last_price"]) if row.get("last_price") is not None else None
+        d_min = _delta(exp["min"], db_min)
+        # `last_price` só existe depois da migração 006 — em linha legada não há
+        # o que comparar, e cobrar isso marcaria o histórico inteiro como
+        # divergente por um motivo que não é o erro que procuramos.
+        d_last = _delta(exp["last"], db_last) if db_last is not None else None
+        if ((d_min is not None and abs(d_min) >= 0.01)
+                or (d_last is not None and abs(d_last) >= 0.01)):
             divergentes += 1
         print(
-            f"{k[2][:22]:<22} {k[1][:18]:<18} {_brl(exp['min']):>12} "
-            f"{_brl(db_min):>12} "
-            f"{_brl(float(row['last_price']) if row.get('last_price') is not None else None):>12} "
+            f"{seller[:20]:<20} {mkt[:16]:<16} {_brl(exp['min']):>11} "
+            f"{_brl(db_min):>11} {_brl(exp['last']):>11} {_brl(db_last):>11} "
             f"{str(row.get('price_basis') or 'sem carimbo'):>13} "
-            f"{(f'{delta:+.1f}%' if delta is not None else '—'):>8}"
+            f"{(f'{d_min:+.1f}%' if d_min is not None else '—'):>8} "
+            f"{(f'{d_last:+.1f}%' if d_last is not None else '—'):>8}"
         )
-    print("-" * 104)
+    print("-" * 116)
     if divergentes:
         print(f"\n⛔ {divergentes} de {len(esperado)} chaves divergem do bruto. "
               f"Δ positivo = o banco está ACIMA\n   do preço real. Reimporte o dia:\n"
               f"   python scripts/pricetrack_api_import.py --force "
               f"--start {collection_date} --end {collection_date}")
     else:
-        print(f"\n✅ As {len(esperado)} chaves batem com o bruto da API.")
+        print(f"\n✅ As {len(esperado)} chaves batem com o bruto da API "
+              f"(piso e última coleta).")
 
 
 def backfill_status() -> int:

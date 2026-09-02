@@ -34,7 +34,7 @@ import random
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -78,6 +78,8 @@ def peer_brands() -> List[str]:
 #: comparável** com a nova: em marketplace com desconto PIX ela fica ~10% acima.
 PRICE_BASIS_BEST_CASH = "best_cash"
 PRICE_BASIS_SPOT_LEGACY = "spot_legacy"
+#: Prefixo para carimbo que esta versão não conhece — nunca comparável.
+PRICE_BASIS_UNKNOWN = "desconhecida"
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,16 +240,100 @@ def _representative_price(row: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+#: Bases que esta versão do dashboard sabe interpretar. Qualquer outro valor
+#: (uma base futura lida por código antigo) é colapsado em ``PRICE_BASIS_UNKNOWN``
+#: — tratar carimbo desconhecido como comparável é como não ter carimbo nenhum.
+_KNOWN_BASES = frozenset({PRICE_BASIS_BEST_CASH, PRICE_BASIS_SPOT_LEGACY})
+
+
+#: Colunas que só existem depois da migração 006. Quando o banco ainda não a
+#: recebeu, o PostgREST recusa o select inteiro — e o dashboard, que trata
+#: qualquer exceção de leitura como "fonte indisponível", cairia em modo Demo
+#: com um Supabase perfeitamente válido do outro lado. Por isso a leitura tenta
+#: de novo sem elas e marca o que voltou como `spot_legacy`, que é a verdade:
+#: banco sem a migração é banco com a base de preço antiga.
+_MIGRATION_006_COLUMNS = ("price_basis", "last_price", "obs_count")
+
+_SELECT_BASE = (
+    "collection_date,turno,brand,sku,title,marketplace,seller,"
+    "seller_canonical,min_price,avg_price,mode_price,max_price,id"
+)
+_SELECT_WITH_006 = (
+    "collection_date,turno,brand,sku,title,marketplace,seller,"
+    "seller_canonical,min_price,avg_price,mode_price,max_price,"
+    "price_basis,last_price,obs_count,id"
+)
+
+
+def _is_missing_006_error(exc: Exception) -> bool:
+    """True se o erro do PostgREST é 'coluna da migração 006 não existe'."""
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in ("pgrst204", "42703", "could not find", "does not exist")
+    ) and any(col in text for col in _MIGRATION_006_COLUMNS)
+
+
+def _paged_select(build_query, max_rows: int) -> Tuple[List[Dict[str, Any]], bool]:
+    """Pagina um select do PostgREST, com fallback pré-migração 006.
+
+    ``build_query(select_cols)`` devolve o query builder já filtrado.
+
+    Returns:
+        ``(linhas, truncado)`` — ``truncado`` é True quando a leitura parou no
+        teto ``max_rows`` em vez de numa página curta, ou seja, pode haver
+        linha no intervalo que não lemos.
+    """
+    for select_cols in (_SELECT_WITH_006, _SELECT_BASE):
+        rows: List[Dict[str, Any]] = []
+        offset = 0
+        try:
+            while offset < max_rows:
+                resp = (
+                    build_query(select_cols)
+                    .range(offset, offset + _SUPABASE_PAGE - 1)
+                    .execute()
+                )
+                page = getattr(resp, "data", None) or []
+                rows.extend(page)
+                if len(page) < _SUPABASE_PAGE:
+                    return rows, False
+                offset += _SUPABASE_PAGE
+            return rows, True          # saiu pelo teto: pode faltar linha
+        except Exception as exc:  # noqa: BLE001
+            if select_cols is _SELECT_WITH_006 and _is_missing_006_error(exc):
+                logger.warning(
+                    "pricetrack_daily sem as colunas da migração 006 "
+                    f"({', '.join(_MIGRATION_006_COLUMNS)}) — lendo o schema "
+                    "legado. As linhas contam como `spot_legacy`: banco sem a "
+                    "migração é banco com a base de preço antiga."
+                )
+                continue
+            raise
+    return [], False
+
+
 def _basis_counter(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
     """Conta as bases de preço presentes nas linhas lidas.
 
     Linha sem ``price_basis`` é do histórico anterior à migração 006 e conta
     como ``spot_legacy`` — a base errada. Chamador algum deve tratar ausência
     de carimbo como "provavelmente está certo".
+
+    Carimbo presente mas fora de ``_KNOWN_BASES`` vira ``PRICE_BASIS_UNKNOWN``,
+    preservando a grafia crua no nome (``desconhecida:<valor>``) para o aviso
+    da UI conseguir dizer o que encontrou.
     """
     counts: Dict[str, int] = defaultdict(int)
     for row in rows:
-        counts[str(row.get("price_basis") or PRICE_BASIS_SPOT_LEGACY)] += 1
+        raw = str(row.get("price_basis") or "").strip()
+        if not raw:
+            key = PRICE_BASIS_SPOT_LEGACY
+        elif raw in _KNOWN_BASES:
+            key = raw
+        else:
+            key = f"{PRICE_BASIS_UNKNOWN}:{raw}"
+        counts[key] += 1
     return dict(counts)
 
 
@@ -332,25 +418,16 @@ def fetch_supabase(
         if not collection_date:
             raise RuntimeError("Sem dados em pricetrack_daily para o turno.")
 
-    rows: List[Dict[str, Any]] = []
-    offset = 0
-    while offset < _SUPABASE_MAX_ROWS:
+    def _build(select_cols: str):
         q = (
             client.table("pricetrack_daily")
-            .select("collection_date,turno,brand,sku,title,marketplace,seller,"
-                    "seller_canonical,min_price,avg_price,mode_price,max_price,"
-                    "price_basis,last_price,obs_count,id")
+            .select(select_cols)
             .eq("collection_date", collection_date)
             .eq("turno", turno)
         )
-        if brand_filter:
-            q = q.in_("brand", brand_filter)
-        resp = q.range(offset, offset + _SUPABASE_PAGE - 1).execute()
-        page = getattr(resp, "data", None) or []
-        rows.extend(page)
-        if len(page) < _SUPABASE_PAGE:
-            break
-        offset += _SUPABASE_PAGE
+        return q.in_("brand", brand_filter) if brand_filter else q
+
+    rows, _ = _paged_select(_build, _SUPABASE_MAX_ROWS)
 
     offers = [o for o in (_row_to_offer(r) for r in rows) if o is not None]
 
@@ -403,31 +480,17 @@ def fetch_supabase_range_detailed(
         )
     brand_filter = [b.upper() for b in (brands if brands is not None else peer_brands())]
 
-    rows: List[Dict[str, Any]] = []
-    offset = 0
-    truncated = False
-    while offset < _SUPABASE_RANGE_MAX_ROWS:
+    def _build(select_cols: str):
         q = (
             client.table("pricetrack_daily")
-            .select("collection_date,turno,brand,sku,title,marketplace,seller,"
-                    "seller_canonical,min_price,avg_price,mode_price,max_price,"
-                    "price_basis,last_price,obs_count,id")
+            .select(select_cols)
             .gte("collection_date", start_date)
             .lte("collection_date", end_date)
             .eq("turno", turno)
         )
-        if brand_filter:
-            q = q.in_("brand", brand_filter)
-        resp = q.range(offset, offset + _SUPABASE_PAGE - 1).execute()
-        page = getattr(resp, "data", None) or []
-        rows.extend(page)
-        if len(page) < _SUPABASE_PAGE:
-            break
-        offset += _SUPABASE_PAGE
-    else:
-        # Saiu do while por ter atingido o teto, não porque a última página
-        # veio curta — pode haver mais linhas no intervalo que não lemos.
-        truncated = True
+        return q.in_("brand", brand_filter) if brand_filter else q
+
+    rows, truncated = _paged_select(_build, _SUPABASE_RANGE_MAX_ROWS)
 
     if truncated:
         logger.warning(

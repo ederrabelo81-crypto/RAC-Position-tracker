@@ -1064,6 +1064,10 @@ python scripts/pricetrack_api_import.py --force --start 2026-07-28 --end 2026-09
    é rejeitada com motivo (`FORWARD_PRICE_ONLY`), não convertida.
 3. **Indisponível não compete** no piso — mas a linha sobrevive com preço
    `NULL` e `unavailable_count > 0` (apagar perderia o share of shelf).
+   `status` é comparado **estritamente** contra `AVAILABLE`: valor inesperado
+   conta como indisponível (com WARNING nomeando a grafia). Única exceção,
+   deliberada: export **sem a coluna** `status` — aí não há o que filtrar e
+   tudo entra, com WARNING.
 4. **Uma linha de `pricetrack_daily` não é uma oferta**: é N coletas do dia
    colapsadas (`obs_count`). O painel mostra a **última coleta**
    (`last_price`); `min_price` é o piso da janela — outra pergunta.

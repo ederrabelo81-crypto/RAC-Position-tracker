@@ -57,6 +57,7 @@ from pricetrack_dashboard.data_source import (  # noqa: E402
     fetch_supabase_range_detailed,
     PRICE_BASIS_BEST_CASH,
     PRICE_BASIS_SPOT_LEGACY,
+    PRICE_BASIS_UNKNOWN,
     peer_brands,
     supabase_configured,
     supabase_latest_date,
@@ -140,13 +141,19 @@ def _load_live(collection_date: Optional[str], use_brand_filter: bool) -> dict:
 
 
 @st.cache_data(show_spinner=False, ttl=900)
-def _supabase_latest() -> Optional[str]:
-    """Data mais recente disponível no Supabase (para default do calendário)."""
+def _supabase_latest(turno: str = TURNO_DIARIO) -> Optional[str]:
+    """Data mais recente COM AQUELE TURNO (default do calendário).
+
+    O turno entra na consulta, não só na leitura: cada turno tem sua própria
+    última data em `pricetrack_daily`, e resolver a data pelo "Diário" para
+    depois consultar "Tarde" devolve uma janela vazia sempre que o turno
+    escolhido está atrasado ou ausente naquele dia.
+    """
     client = _supabase_client()
     if client is None:
         return None
     try:
-        return supabase_latest_date(client)
+        return supabase_latest_date(client, turno)
     except Exception:  # noqa: BLE001
         return None
 
@@ -634,9 +641,12 @@ def render_peer_evolution(
             rows_by_date = {d: [_dict_to_offer(x) for x in offs]
                             for d, offs in payload.get("by_date", {}).items()}
             # A janela da evolução é maior que a dos cards, então pode alcançar
-            # dias da base antiga que os cards nem leem — o aviso é repetido
-            # aqui de propósito, junto do gráfico que a mistura distorce.
-            render_price_basis_notice(payload.get("price_basis", {}))
+            # dias da base antiga que os cards nem leem — a checagem é repetida
+            # aqui de propósito, junto do gráfico que a mistura distorce. Uma
+            # série que emenda duas bases desenha o degrau da virada como se
+            # fosse tendência de mercado, que é o pior formato possível do erro.
+            if not render_price_basis_notice(payload.get("price_basis", {})):
+                return
         except Exception as exc:  # noqa: BLE001
             st.error(f"Falha lendo a série do Supabase: {type(exc).__name__}: {exc}")
             return
@@ -761,6 +771,20 @@ def _controls(embedded: bool) -> tuple:
                  "PriceTrack, porém responde em ~2min por consulta.",
         )
 
+        # O turno é lido ANTES da data porque a data default depende dele: a
+        # "mais recente" tem de ser a última data COM AQUELE TURNO. Lendo o
+        # último dia de "Diário" e consultando "Tarde" nele, um turno atrasado
+        # ou ausente devolvia janela vazia em vez da última data disponível.
+        turno = c3.selectbox(
+            "Turno", TURNO_OPTIONS, index=0, key="pt_turno",
+            help="Recorte do dia em `pricetrack_daily`: Diário = dia inteiro; "
+                 "Manhã = coletas 08–12h; Tarde = coletas 18–22h (BRT). "
+                 "Use o mesmo turno do painel do PriceTrack para comparar "
+                 "número com número.",
+        )
+        if source == SRC_LIVE and turno != TURNO_DIARIO:
+            c3.caption("ℹ️ Turno só vale para a fonte 🟢 Supabase.")
+
         use_latest = c2.checkbox(
             "Data mais recente", value=True, key="pt_latest",
             help="Usa a última data disponível. Desmarque para escolher no calendário.")
@@ -772,7 +796,7 @@ def _controls(embedded: bool) -> tuple:
                  "Indisponível na API ao vivo (lenta demais para várias datas).",
             disabled=use_latest or not range_supported,
         )
-        default_day = _supabase_latest() if source == SRC_SUPABASE else None
+        default_day = _supabase_latest(turno) if source == SRC_SUPABASE else None
         default_day_d = _iso_to_date(default_day) or date.today()
 
         if use_latest:
@@ -797,16 +821,6 @@ def _controls(embedded: bool) -> tuple:
         use_brand_filter = c3.checkbox(
             "Filtrar marcas do peer", value=True, key="pt_brandfilter",
             help="Filtra pelas marcas do peer (mais rápido).")
-
-        turno = c3.selectbox(
-            "Turno", TURNO_OPTIONS, index=0, key="pt_turno",
-            help="Recorte do dia em `pricetrack_daily`: Diário = dia inteiro; "
-                 "Manhã = coletas 08–12h; Tarde = coletas 18–22h (BRT). "
-                 "Use o mesmo turno do painel do PriceTrack para comparar "
-                 "número com número.",
-        )
-        if source == SRC_LIVE and turno != TURNO_DIARIO:
-            c3.caption("ℹ️ Turno só vale para a fonte 🟢 Supabase.")
 
         if c4.button("🔄 Atualizar", use_container_width=True, key="pt_refresh"):
             _load_live.clear()
@@ -982,47 +996,74 @@ def _render_offer_filters(offers, embedded: bool):
 
 
 # ── Corpo da página (reutilizável no painel do projeto) ──────────────────────
-def render_price_basis_notice(basis: dict) -> None:
-    """Avisa quando a leitura traz linhas da base de preço antiga.
+def render_price_basis_notice(basis: dict) -> bool:
+    """Avisa sobre a base de preço lida. Retorna False se NÃO se pode agregar.
 
     ``spot_legacy`` são linhas gravadas antes da correção de Set/2026: o preço
     é o `spotPrice` (à vista cheio), não o menor entre spot e PIX que o painel
     do PriceTrack mostra — em marketplace com desconto PIX (Magazine Luiza,
-    10%) fica ~10% acima do preço real. Misturado com `best_cash` na mesma
-    janela, o degrau da virada aparece como se fosse movimento de mercado.
+    10%) fica ~10% acima do preço real.
+
+    Uma janela com **uma** base só é agregável: `spot_legacy` puro dá um número
+    consistente (errado em ~10%, e o aviso diz isso), `best_cash` puro dá o
+    número certo. Uma janela **misturada** não é agregável de jeito nenhum —
+    piso, moda e média sairiam de duas réguas diferentes e o degrau da virada
+    apareceria como movimento de mercado. Nesse caso a função devolve False e o
+    chamador não renderiza análise: um aviso vermelho acima de um número
+    inválido ainda é um número inválido, e é o número que as pessoas copiam.
 
     Silencioso quando tudo é `best_cash` — aviso que aparece sempre vira
     decoração e para de ser lido.
     """
     if not basis:
-        return
+        return True
     legacy = int(basis.get(PRICE_BASIS_SPOT_LEGACY, 0))
     good = int(basis.get(PRICE_BASIS_BEST_CASH, 0))
-    if not legacy:
-        return
-    total = legacy + good
+    # Carimbo que esta versão não conhece conta como não-comparável.
+    unknown = {k: v for k, v in basis.items()
+               if k.startswith(PRICE_BASIS_UNKNOWN)}
+    n_unknown = sum(int(v) for v in unknown.values())
+    total = legacy + good + n_unknown
     reimport = (
         "Corrija reimportando os dias afetados do NDJSON bruto:\n\n"
         "```\npython scripts/pricetrack_api_import.py --force "
         "--start AAAA-MM-DD --end AAAA-MM-DD\n```"
     )
-    if good:
+
+    if n_unknown:
         st.error(
-            f"⛔ **Bases de preço misturadas** — {legacy:,} de {total:,} linhas "
-            f"desta janela estão na base antiga (`spot_legacy`: preço à vista "
-            f"cheio, sem o desconto PIX, e com oferta indisponível somada ao "
-            f"piso). As outras {good:,} estão em `best_cash`. Comparar um dia "
-            f"com o outro NÃO é válido: o degrau da virada parece mercado.\n\n"
+            f"⛔ **Base de preço desconhecida** — {n_unknown:,} de {total:,} "
+            f"linhas trazem um `price_basis` que esta versão do dashboard não "
+            f"sabe interpretar ({', '.join(sorted(unknown))}). Sem saber a "
+            f"régua, nenhum piso ou modal é confiável — a análise não foi "
+            f"calculada. Atualize o dashboard ou confira o import."
+        )
+        return False
+
+    if legacy and good:
+        st.error(
+            f"⛔ **Bases de preço misturadas — análise não calculada.** "
+            f"{legacy:,} de {total:,} linhas desta janela estão na base antiga "
+            f"(`spot_legacy`: à vista cheio, sem o desconto PIX, com oferta "
+            f"indisponível somada ao piso) e {good:,} em `best_cash`. Piso, "
+            f"modal e média sairiam de duas réguas diferentes, e o degrau da "
+            f"virada pareceria movimento de mercado.\n\n"
+            f"Escolha um período inteiro numa base só, ou termine o reimport.\n\n"
             + reimport
         )
-    else:
+        return False
+
+    if legacy:
         st.warning(
             f"⚠️ **Base de preço antiga** — as {legacy:,} linhas desta janela "
             "são `spot_legacy`: o preço é o à vista cheio (`spotPrice`), não o "
             "menor entre à vista e PIX que o painel do PriceTrack exibe. Em "
-            "marketplace com desconto PIX o número fica ~10% acima do real.\n\n"
+            "marketplace com desconto PIX o número fica ~10% acima do real. "
+            "Os números abaixo são consistentes entre si, mas altos nessa "
+            "medida.\n\n"
             + reimport
         )
+    return True
 
 
 def render_page(embedded: bool = False) -> None:
@@ -1090,7 +1131,11 @@ def render_page(embedded: bool = False) -> None:
             f"de {analysis.coverage.total_offers} lidas."
         )
 
-    render_price_basis_notice(price_basis)
+    if not render_price_basis_notice(price_basis):
+        # Base não agregável: o aviso já explicou. Renderizar os cards mesmo
+        # assim entregaria um número inválido logo abaixo do alerta — e é o
+        # número que as pessoas copiam para o relatório, não o alerta.
+        return
 
     if source_label != SRC_DEMO:
         st.caption(

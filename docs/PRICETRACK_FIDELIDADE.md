@@ -127,10 +127,18 @@ preços de cada coleta.
 - Preço = `min(spotPrice, pixPrice)`, saneados (≤ 0 vira ausente).
   **`forwardPrice` nunca vira preço** — quem só tem preço a prazo é rejeitado
   com o motivo `FORWARD_PRICE_ONLY` no `rejection_log`.
-- **`status` filtra**: só observação `AVAILABLE` entra em preço. Grupo 100%
-  indisponível **permanece** na tabela com preços `NULL` e
-  `unavailable_count > 0` — a listagem existiu (share of shelf), só não
-  competiu por preço.
+- **`status` filtra**: só `AVAILABLE` (estrito — valor inesperado conta como
+  indisponível, com WARNING nomeando a grafia). Grupo 100% indisponível
+  **permanece** na tabela com preços `NULL` e `unavailable_count > 0` — a
+  listagem existiu (share of shelf), só não competiu por preço; vale inclusive
+  quando a oferta indisponível vem **sem preço nenhum**, que é o caso comum.
+  Única exceção: export sem a coluna `status`, aí não há o que filtrar e tudo
+  entra, com WARNING.
+- **Agrupamento pela UNIQUE da tabela** (`brand, sku, marketplace, seller` —
+  sem `title`): agrupar por título também gerava duas linhas para a mesma
+  chave do banco quando o marketplace mudava o título no meio do dia, e o
+  upsert descartava uma delas em silêncio. O título gravado é o mais frequente
+  da janela.
 - Colunas novas: `price_basis`, `last_price`, `last_hour`, `spot_min_price`,
   `pix_min_price`, `obs_count`, `unavailable_count`.
 - `_mode` de grupo vazio devolve `NULL`, não `0.0` (moda R$ 0,00 seria lida
@@ -149,10 +157,15 @@ da virada pareceria movimento de mercado.
 psql "$SUPABASE_DSN" -f migrations/006_pricetrack_price_basis.sql
 ```
 
-> O importador **não quebra** se a migração ainda não rodou: ele detecta as
-> colunas ausentes, grava só as legadas (o preço já sai corrigido) e loga o
-> comando da migração. Mas sem `price_basis` a linha corrigida fica
-> indistinguível do histórico errado — aplique antes do reimport.
+> O importador **aborta** se a migração não rodou, de propósito: gravar sem
+> `price_basis` produziria linha corrigida sem carimbo, que o `DEFAULT` da
+> própria migração marcaria depois como `spot_legacy` — dado certo rotulado
+> como errado, sem como saber qual era qual. Abortar não perde nada: o NDJSON
+> segue em disco e o import roda de novo depois da migração.
+>
+> Na **leitura** é o contrário: o dashboard relê com o schema legado quando as
+> colunas faltam e carimba o que voltou como `spot_legacy`. Sem isso, um
+> Supabase perfeitamente válido apareceria como "Demo" só por não ter migrado.
 
 ### Leitura — `pricetrack_dashboard/`
 
@@ -160,8 +173,11 @@ psql "$SUPABASE_DSN" -f migrations/006_pricetrack_price_basis.sql
   janela** — o que o painel exibe), caindo para `min_price` só em linha legada.
 - **Seletor de turno** (Diário / Manhã / Tarde) — para comparar número com
   número contra o painel.
-- Aviso na tela quando a janela lida traz linhas `spot_legacy`, e **erro** (não
-  aviso) quando ela mistura as duas bases.
+- **Avisa** quando a janela é toda `spot_legacy` (números consistentes entre
+  si, altos em ~10% onde há PIX) e **não calcula nada** quando ela mistura as
+  duas bases ou traz um carimbo desconhecido: piso, modal e média sairiam de
+  duas réguas diferentes. Aviso vermelho acima de um número inválido ainda é
+  um número inválido — e é o número que as pessoas copiam para o relatório.
 - Legenda explicando que uma linha de `pricetrack_daily` é uma listagem-dia
   agregada, não uma oferta.
 
@@ -239,3 +255,9 @@ janela pega as duas bases.
    achando que produziu "moda do mercado" — e o rótulo na tela mente.
 5. **O que o painel mostra é a última coleta.** Piso da janela é outra
    pergunta, legítima, mas com outro nome.
+6. **Agrupamento e armazenamento falam a mesma chave.** Agregar por uma chave
+   mais fina que a `UNIQUE` da tabela não dá mais detalhe: dá colisão de
+   upsert, e a linha perdedora some com tudo que ela agregava.
+7. **Duas bases não se somam — nem sob aviso.** Onde a janela mistura
+   `spot_legacy` com `best_cash`, a análise não é calculada. O alerta protege
+   quem lê a tela; o número inválido é o que sai no relatório.

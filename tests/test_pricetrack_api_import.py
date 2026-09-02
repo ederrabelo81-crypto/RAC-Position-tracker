@@ -205,7 +205,8 @@ class TestBaseDePrecoBestCash:
         agg, rejections = ptai.aggregate_offers(df, "2026-09-01")
         assert agg.empty
         assert rejections.get("NO_CASH_PRICE") == 1
-        assert rejections.get("FORWARD_PRICE_ONLY") == 1
+        # `_` = diagnóstico, subconjunto de NO_CASH_PRICE (fora do total).
+        assert rejections.get("_FORWARD_PRICE_ONLY") == 1
 
     def test_preco_zero_ou_negativo_nao_vira_piso(self):
         df = pd.DataFrame([
@@ -246,6 +247,35 @@ class TestDisponibilidade:
         assert row["obs_count"] == 0
         assert row["unavailable_count"] == 1
 
+    def test_indisponivel_SEM_preco_tambem_mantem_o_grupo(self):
+        """O caso real: oferta fora do ar normalmente vem sem preço nenhum.
+
+        Filtrar por preço antes de agrupar apagava justamente esses grupos —
+        o oposto do prometido (indisponível não compete no piso, mas não some).
+        """
+        df = pd.DataFrame([
+            _offer(spot_price=None, pix_price=None, status="UNAVAILABLE"),
+        ])
+        agg, rejections = ptai.aggregate_offers(df, "2026-09-01")
+        assert len(agg) >= 1
+        row = agg.iloc[0]
+        assert pd.isna(row["min_price"])
+        assert row["title"] != ""               # `title` é NOT NULL na tabela
+        assert row["obs_count"] == 0
+        assert row["unavailable_count"] == 1
+        assert "NO_CASH_PRICE" not in rejections
+
+    def test_status_desconhecido_nao_e_disponivel(self):
+        df = pd.DataFrame([
+            _offer(spot_price=1500.0, status="PENDING"),
+            _offer(spot_price=2400.0, status="AVAILABLE"),
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        row = agg.iloc[0]
+        assert row["min_price"] == 2400.0       # 1500 não entra no piso
+        assert row["obs_count"] == 1
+        assert row["unavailable_count"] == 1
+
     def test_sem_coluna_status_tudo_conta(self):
         """Export sem `status`: nada a excluir (comportamento anterior)."""
         df = pd.DataFrame([_offer(spot_price=2400.0)])
@@ -254,17 +284,22 @@ class TestDisponibilidade:
         assert agg.iloc[0]["min_price"] == 2400.0
         assert agg.iloc[0]["unavailable_count"] == 0
 
-    def test_status_em_branco_conta_como_disponivel(self):
-        """Descartar por carimbo ausente perderia oferta real em silêncio."""
+    def test_status_em_branco_nao_entra_no_preco(self):
+        """Coluna presente e valor vazio = status desconhecido, não disponível.
+
+        O ponto da correção é o preço significar exatamente uma coisa; "não sei
+        se dá para comprar" não entra num piso de mercado. Nada some em
+        silêncio: a observação é contada em `unavailable_count`.
+        """
         df = pd.DataFrame([
             _offer(spot_price=2400.0, status=""),
             _offer(spot_price=2500.0, status="AVAILABLE"),
         ])
         agg, _ = ptai.aggregate_offers(df, "2026-09-01")
         row = agg.iloc[0]
-        assert row["min_price"] == 2400.0
-        assert row["obs_count"] == 2
-        assert row["unavailable_count"] == 0
+        assert row["min_price"] == 2500.0
+        assert row["obs_count"] == 1
+        assert row["unavailable_count"] == 1
 
 
 class TestUltimaColeta:
@@ -303,3 +338,51 @@ class TestUltimaColeta:
         row = agg.iloc[0]
         assert row["last_price"] == 1999.0
         assert pd.isna(row["last_hour"])
+
+
+class TestChaveDeAgrupamento:
+    """O agrupamento tem de falar a mesma chave que a UNIQUE da tabela."""
+
+    def test_dois_titulos_no_mesmo_grupo_viram_uma_linha(self):
+        """Antes viravam DUAS linhas agregadas com a mesma chave do banco.
+
+        O upsert (`on_conflict` sem `title`) resolvia o conflito guardando só a
+        última do lote — a outra sumia em silêncio, levando junto as coletas
+        que ela agregava.
+        """
+        df = pd.DataFrame([
+            _offer(spot_price=2400.0, collection_hour=9),
+            _offer(spot_price=2200.0, collection_hour=20,
+                   product_name="Ar Condicionado Split Midea 9000 Btus Frio 220V"),
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        diario = agg[agg["turno"] == "Diário"]
+        assert len(diario) == 1
+        row = diario.iloc[0]
+        assert row["min_price"] == 2200.0
+        assert row["obs_count"] == 2            # nenhuma coleta perdida
+        assert row["title"]                     # título representativo
+
+
+class TestAliasDeCampo:
+    def test_segunda_grafia_preenche_quando_a_primeira_e_nula(self):
+        """Parar na primeira grafia descartava o valor válido da segunda."""
+        df = pd.DataFrame([{**_offer(), "spot_price": None, "spotPrice": 1999.0}])
+        agg, _ = ptai.aggregate_offers(df, "2026-09-01")
+        assert agg.iloc[0]["min_price"] == 1999.0
+
+
+class TestRejeicoesNaoSeSobrepoem:
+    def test_forward_only_e_diagnostico_nao_entra_no_total(self):
+        """`_FORWARD_PRICE_ONLY` é subconjunto de `NO_CASH_PRICE`.
+
+        Somar os dois contaria a mesma oferta duas vezes em `rows_rejected`.
+        """
+        df = pd.DataFrame([
+            _offer(spot_price=None, pix_price=None, forward_price=3200.0),
+        ])
+        _, rejections = ptai.aggregate_offers(df, "2026-09-01")
+        assert rejections["NO_CASH_PRICE"] == 1
+        assert rejections["_FORWARD_PRICE_ONLY"] == 1
+        total = sum(v for k, v in rejections.items() if not k.startswith("_"))
+        assert total == 1

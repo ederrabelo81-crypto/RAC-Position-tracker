@@ -214,8 +214,8 @@ TURNO_TARDE_HOURS: Set[int] = set(range(18, 23))   # 18, 19, 20, 21, 22
 PRICE_BASIS_BEST_CASH = "best_cash"       # menor entre spot e PIX, só AVAILABLE
 PRICE_BASIS_SPOT_LEGACY = "spot_legacy"   # base antiga (≤ 01/09/2026)
 
-# Colunas da migração 006. Se a migração ainda não foi aplicada, o insert cai
-# de volta para o subconjunto legado em vez de derrubar o import inteiro.
+# Colunas da migração 006. Sem elas o import ABORTA (ver `insert_rows`): uma
+# linha corrigida sem carimbo de base é pior que import nenhum.
 _MIGRATION_006_COLUMNS = (
     "price_basis", "last_price", "last_hour",
     "spot_min_price", "pix_min_price", "obs_count", "unavailable_count",
@@ -244,18 +244,24 @@ def _pick_text(df: pd.DataFrame, lookup: Dict[str, str],
 def _pick_numeric(
     df: pd.DataFrame, lookup: Dict[str, str], candidates: Tuple[str, ...]
 ) -> pd.Series:
-    """Primeira coluna numérica encontrada, saneada. NaN quando nenhuma existe.
+    """Coalesce das colunas candidatas, saneada. NaN quando nenhuma existe.
+
+    Os candidatos são GRAFIAS do mesmo campo lógico (``spot_price`` vs
+    ``spotPrice``), então o valor de qualquer uma serve. Coalescemos todas as
+    presentes em vez de parar na primeira: um export que traga as duas grafias
+    com a primeira nula perderia o preço válido da segunda — oferta rejeitada
+    ou preço subestimado, em silêncio.
 
     Saneamento espelha ``pricetrack_api.normalize.clean_price``: não-numérico,
     ±inf e valores ≤ 0 viram NaN (preço ausente) — nunca 0.0, que contaminaria
     mínimos e médias.
     """
-    nan = pd.Series([float("nan")] * len(df), index=df.index, dtype="float64")
+    out = pd.Series([float("nan")] * len(df), index=df.index, dtype="float64")
     for cand in candidates:
         if cand in lookup:
             col = pd.to_numeric(df[lookup[cand]], errors="coerce")
-            return col.where(col > 0).replace([float("inf"), float("-inf")], float("nan"))
-    return nan
+            out = out.fillna(col)
+    return out.where(out > 0).replace([float("inf"), float("-inf")], float("nan"))
 
 
 def _cash_price(spot: pd.Series, pix: pd.Series, generic: pd.Series) -> pd.Series:
@@ -382,18 +388,21 @@ def aggregate_offers(
 
     status = _pick_text(df, lookup, _STATUS_FIELDS).str.upper().str.strip()
     if _STATUS_FIELDS[0] in lookup:
-        # Só um status EXPLICITAMENTE diferente de AVAILABLE exclui a oferta.
-        # Status em branco (campo é NOT NULL no schema, mas defende-se contra
-        # linha capenga) conta como disponível: descartar por ausência de
-        # carimbo perderia oferta real em silêncio, que é pior do que manter
-        # uma de status desconhecido.
-        blanks = int(status.eq("").sum())
-        if blanks:
+        # Estritamente AVAILABLE. Status desconhecido NÃO é "disponível": o
+        # ponto desta correção é que o preço signifique exatamente uma coisa, e
+        # "não sei se dá para comprar" não entra num piso de mercado. Nada some
+        # em silêncio — o que não é AVAILABLE entra em `unavailable_count`, e
+        # valor inesperado vira WARNING nomeando as grafias vistas.
+        unexpected = sorted(
+            set(status[~status.isin(("AVAILABLE", "UNAVAILABLE"))].unique())
+        )
+        if unexpected:
             logger.warning(
-                f"{collection_date} — {blanks:,} oferta(s) com `status` vazio; "
-                f"tratadas como disponíveis."
+                f"{collection_date} — `status` com valor(es) fora de "
+                f"AVAILABLE/UNAVAILABLE: {unexpected}. Tratados como "
+                f"indisponíveis (fora do preço, contados em unavailable_count)."
             )
-        available = status.eq("AVAILABLE") | status.eq("")
+        available = status.eq("AVAILABLE")
     else:
         # Export sem coluna de status: nada a filtrar, tudo conta como
         # disponível (mantém o comportamento anterior em vez de zerar o dia).
@@ -419,15 +428,22 @@ def aggregate_offers(
     })
 
     before = len(work)
-    work = work.dropna(subset=["_price"])
+    # Descarta APENAS a observação que não consegue ser preço: disponível e sem
+    # à vista. A indisponível segue viva mesmo sem preço — é ela que sustenta o
+    # `unavailable_count` e mantém a listagem na tabela quando o grupo inteiro
+    # esteve fora do ar. Filtrar por `_price` antes de agrupar (como a primeira
+    # versão fazia) apagava justamente esses grupos, que é o oposto do
+    # prometido: indisponível não compete no piso, mas não desaparece.
+    work = work[work["_price"].notna() | ~work["_available"]]
     dropped_no_price = before - len(work)
     if dropped_no_price:
         rejections["NO_CASH_PRICE"] = dropped_no_price
     if n_forward_only:
-        # Sub-motivo informativo (subconjunto de NO_CASH_PRICE): deixa visível
-        # no rejection_log quantas ofertas o fallback antigo teria convertido
-        # em preço a prazo travestido de à vista.
-        rejections["FORWARD_PRICE_ONLY"] = n_forward_only
+        # Diagnóstico, NÃO um motivo de rejeição próprio: é um subconjunto de
+        # NO_CASH_PRICE. Vai com prefixo `_` para ficar fora da soma de
+        # `rows_rejected` em `_process_date` — senão a oferta só-a-prazo seria
+        # contada duas vezes no total de rejeitadas.
+        rejections["_FORWARD_PRICE_ONLY"] = n_forward_only
 
     if work.empty:
         logger.warning(
@@ -466,7 +482,22 @@ def aggregate_offers(
         logger.warning(f"{collection_date} — 0 linhas válidas após filtro de SKU.")
         return pd.DataFrame(), rejections
 
-    group_keys = ["brand", "sku", "title", "marketplace", "seller"]
+    # A chave de agrupamento é EXATAMENTE a UNIQUE de `pricetrack_daily`
+    # (collection_date, turno, brand, sku, marketplace, seller) — sem `title`.
+    # Agrupar por título também, como a primeira versão fazia, produzia duas
+    # linhas agregadas para o mesmo grupo do banco quando o marketplace mudava
+    # o título no meio do dia; o upsert então resolvia o conflito guardando só
+    # a última do lote e a outra sumia em silêncio, levando junto as coletas
+    # que ela agregava. Agrupamento e armazenamento têm de falar da mesma chave.
+    group_keys = ["brand", "sku", "marketplace", "seller"]
+
+    def _title_of(series: pd.Series) -> str:
+        """Título representativo do grupo: o mais frequente na janela."""
+        titles = series.dropna()
+        titles = titles[titles.astype(str).str.strip() != ""]
+        if titles.empty:
+            return ""
+        return str(titles.mode().iloc[0])
 
     def _agg_turno(rows: pd.DataFrame, turno: str) -> pd.DataFrame:
         """Agrega uma janela do dia. Preço só de observação AVAILABLE."""
@@ -482,6 +513,10 @@ def aggregate_offers(
             pix_min_price=("_pix", "min"),
             obs_count=("_price", "size"),
         )
+        # Título vem de TODAS as observações do grupo (inclusive as
+        # indisponíveis): grupo 100% indisponível fica sem preço, mas não pode
+        # ficar sem título — `title` é NOT NULL na tabela.
+        titles = rows.groupby(group_keys)["title"].agg(_title_of).rename("title")
 
         # `last_price` = o preço da ÚLTIMA coleta da janela, que é o que o
         # painel do PriceTrack exibe ("Preço exibido: última coleta"). Sem ele
@@ -505,7 +540,8 @@ def aggregate_offers(
         # preços NULL — a listagem existiu (share of shelf), só não competiu
         # por preço. Foi o que a base antiga escondeu ao somar indisponível
         # dentro do mínimo de mercado.
-        a = pd.concat([stats, last, unav_count], axis=1).reset_index()
+        a = pd.concat([titles, stats, last, unav_count], axis=1).reset_index()
+        a["title"] = a["title"].fillna("")
         a["obs_count"] = a["obs_count"].fillna(0).astype(int)
         a["unavailable_count"] = a["unavailable_count"].fillna(0).astype(int)
         a["collection_date"] = collection_date
@@ -629,11 +665,8 @@ def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
 
     client = _supabase_client()
     inserted = 0
-    drop_new_columns = False
     for i in range(0, len(records), _BATCH_SIZE):
         batch = records[i : i + _BATCH_SIZE]
-        if drop_new_columns:
-            batch = _strip_migration_006(batch)
         try:
             # Upsert idempotente: o conflict target casa a UNIQUE de
             # pricetrack_daily (migration 003 inclui `turno`), então
@@ -645,39 +678,24 @@ def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
             ).execute()
             inserted += len(batch)
         except Exception as e:
-            if not drop_new_columns and _is_unknown_column_error(e):
-                # Migração 006 ainda não aplicada. O preço já está na base
-                # CERTA (best_cash) — só as colunas de diagnóstico não cabem.
-                # Grava sem elas e avisa alto: sem `price_basis` ninguém
-                # consegue separar linha corrigida de linha da base antiga.
-                logger.warning(
-                    "pricetrack_daily sem as colunas da migração 006 "
-                    f"({', '.join(_MIGRATION_006_COLUMNS)}). Gravando só as "
-                    "colunas legadas — o preço já é `best_cash`, mas SEM o "
-                    "carimbo `price_basis` a linha fica indistinguível do "
-                    "histórico errado. Aplique: "
-                    "psql \"$SUPABASE_DSN\" -f migrations/006_pricetrack_price_basis.sql"
-                )
-                drop_new_columns = True
-                try:
-                    client.table(_TABLE).upsert(
-                        _strip_migration_006(batch),
-                        on_conflict="collection_date,turno,brand,sku,marketplace,seller",
-                    ).execute()
-                    inserted += len(batch)
-                    continue
-                except Exception as retry_exc:  # noqa: BLE001 — logado abaixo
-                    e = retry_exc
+            if _is_unknown_column_error(e):
+                # Migração 006 ausente. Abortamos em vez de gravar sem as
+                # colunas novas: uma linha `best_cash` sem o carimbo
+                # `price_basis` seria depois rotulada `spot_legacy` pelo
+                # DEFAULT da própria migração — dado CERTO marcado como errado,
+                # sem como recuperar qual era qual. Falhar aqui não perde nada:
+                # o NDJSON continua em disco e o import roda de novo depois.
+                raise RuntimeError(
+                    "pricetrack_daily não tem as colunas da migração 006 "
+                    f"({', '.join(_MIGRATION_006_COLUMNS)}). O import foi "
+                    "ABORTADO de propósito: gravar agora produziria linha "
+                    "corrigida sem carimbo de base, que a migração depois "
+                    "marcaria como `spot_legacy`. Aplique e rode de novo:\n"
+                    "  psql \"$SUPABASE_DSN\" -f "
+                    "migrations/006_pricetrack_price_basis.sql"
+                ) from e
             logger.error(f"Erro ao inserir lote {i//_BATCH_SIZE + 1}: {e}")
     return inserted
-
-
-def _strip_migration_006(batch: List[Dict]) -> List[Dict]:
-    """Remove as colunas da migração 006 de um lote (fallback pré-migração)."""
-    return [
-        {k: v for k, v in row.items() if k not in _MIGRATION_006_COLUMNS}
-        for row in batch
-    ]
 
 
 def _is_unknown_column_error(exc: Exception) -> bool:
@@ -894,7 +912,11 @@ def _process_date(
         # rejeições. NÃO usamos rows_raw - rows_agg: com o split de turno o
         # df_agg tem até 3 linhas por grupo (Diário/Manhã/Tarde) e é agregado,
         # então aquela diferença confunde "colapso por agregação" com "rejeição".
-        rows_rejected = int(sum(rejections.values()))
+        # Chaves com `_` são diagnóstico (subconjunto de outro motivo) e ficam
+        # fora do total — somá-las contaria a mesma oferta duas vezes.
+        rows_rejected = int(
+            sum(v for k, v in rejections.items() if not k.startswith("_"))
+        )
         logger.info(f"{collection_date} — {rows_agg:,} linhas AC agregadas "
                     f"({rows_rejected:,} ofertas cruas descartadas pelos filtros)")
 

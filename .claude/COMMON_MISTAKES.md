@@ -384,8 +384,15 @@ o painel.
 
 **Regra dura:** preço nunca é implícito. Toda linha carimba `price_basis`, e
 **ausência de carimbo se lê como base antiga**, nunca como "provavelmente está
-certo". Preço a prazo não preenche buraco de preço à vista — sem à vista, a
-linha é rejeitada com motivo (`FORWARD_PRICE_ONLY`), não convertida.
+certo". Preço a prazo não preenche buraco de preço à vista — sem à vista a
+linha é rejeitada (`NO_CASH_PRICE`, com o diagnóstico `_FORWARD_PRICE_ONLY`),
+nunca convertida.
+
+**O que "à vista" inclui:** `spotPrice` e `pixPrice` (o menor dos dois) e, só
+onde os DOIS faltam, os genéricos `price`/`sale_price`/`preco`/`valor` — rede
+de segurança para o dia em que o export mudar de schema. `forwardPrice` está
+fora dessa lista de propósito, e é a única exclusão que importa: os genéricos
+são preço à vista sob outro nome, o a prazo é outra base.
 
 **Cuidado com o degrau:** corrigir a ingestão sem carimbar a base emenda dado
 certo com dado errado na série de evolução, e o salto do dia da virada parece

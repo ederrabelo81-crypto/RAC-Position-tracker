@@ -66,4 +66,11 @@ COMMENT ON COLUMN pricetrack_daily.unavailable_count IS
 -- duas bases numa série só (degrau artificial de ~10% no dia da correção).
 UPDATE pricetrack_daily SET price_basis = 'spot_legacy' WHERE price_basis IS NULL;
 
-CREATE INDEX IF NOT EXISTS idx_ptd_price_basis ON pricetrack_daily(price_basis);
+-- CONCURRENTLY: `CREATE INDEX` comum toma lock que bloqueia ESCRITA na tabela
+-- durante toda a construção, e em 1M de linhas isso derruba um import que
+-- esteja rodando. CONCURRENTLY não pode rodar dentro de bloco de transação —
+-- `psql -f` não abre um, então o comando abaixo funciona; se você aplicar esta
+-- migração por uma ferramenta que envolve tudo numa transação, rode esta
+-- última linha à parte.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ptd_price_basis
+    ON pricetrack_daily(price_basis);
