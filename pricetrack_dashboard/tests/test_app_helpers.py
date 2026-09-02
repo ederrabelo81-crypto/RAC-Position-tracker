@@ -120,6 +120,31 @@ class TestTierTableUsesPeersNotMarket:
         assert not tr.market.is_empty   # Midea casou
         assert tr.peers.is_empty        # mas nenhum concorrente
 
+    def test_render_tier_section_shows_sem_oferta_casada_when_peers_empty(self):
+        """Regressão de verdade (achado do cubic sobre o teste anterior: ele
+        só olhava os campos de `analyze`, então continuaria verde mesmo se
+        alguém revertesse o guard de `render_tier_section` para
+        `tr.market.is_empty`). Aqui `render_tier_section` roda de verdade via
+        `AppTest`: filtrando só Elgin, High/9K e High/12K não têm concorrente
+        (peer.py não lista Elgin no tier High) e têm que cair no
+        `st.info("Sem oferta casada")`, não no card."""
+        from streamlit.testing.v1 import AppTest
+
+        def _script():
+            from pricetrack_dashboard.analytics import analyze, filter_offers
+            from pricetrack_dashboard.app import render_tier_section
+            from pricetrack_dashboard.data_source import demo_offers
+
+            only_elgin = filter_offers(demo_offers(), keep_brands={"ELGIN"})
+            render_tier_section(analyze(only_elgin))
+
+        at = AppTest.from_function(_script)
+        at.run()
+        assert not at.exception
+        infos = [i.value for i in at.info]
+        # High/9K e High/12K: Elgin não compete lá, só a Midea casa.
+        assert infos.count("Sem oferta casada") == 2
+
 
 class TestPeerToPeerDataframe:
     def _analysis(self):
