@@ -3,16 +3,22 @@ from __future__ import annotations
 
 from pricetrack_api.models import Offer
 
-from pricetrack_dashboard.analytics import analyze, compute_stats, daily_series
+from pricetrack_dashboard.analytics import (
+    analyze,
+    compute_stats,
+    daily_series,
+    filter_offers,
+)
 from pricetrack_dashboard.peer import CAP_9K, CAP_12K, TIER_HIGH, TIER_LOW
 
 
-def _offer(sku, brand, spot, status="AVAILABLE", pix=None, title="", name=""):
+def _offer(sku, brand, spot, status="AVAILABLE", pix=None, title="", name="",
+           marketplace="MERCADO LIVRE", seller="seller"):
     return Offer(
         id=f"o-{sku}-{spot}-{status}", sku=sku, title=title or f"{brand} {sku}",
         product_name=name or f"{brand} {sku}", brand=brand,
         category="AR CONDICIONADO", subcategory="SPLIT", family="", color=None,
-        marketplace="MERCADO LIVRE", seller="seller",
+        marketplace=marketplace, seller=seller,
         spot_price=spot, forward_price=None, pix_price=pix, price_from=None,
         installment_number=None, installment_value=None, status=status,
         collection_date=None, collection_hour=None,
@@ -237,3 +243,45 @@ class TestDailySeries:
         series = daily_series({})
         assert all(not s.points for s in series)
         assert all(not s.has_data for s in series)
+
+
+class TestFilterOffers:
+    def _mix(self):
+        return [
+            _offer("42EBVCA09M5", "MIDEA", 1700, marketplace="AMAZON", seller="Midea Store"),
+            _offer("S3-Q09AAQAK", "LG", 1900, marketplace="AMAZON", seller="LG Oficial"),
+            _offer("PAC9FC", "PHILCO", 2000, marketplace="MAGALU", seller="Zé"),
+        ]
+
+    def test_none_keeps_everything(self):
+        offers = self._mix()
+        assert len(filter_offers(offers)) == 3
+
+    def test_brand_filter_keeps_midea_plus_selected(self):
+        # Só LG selecionado → Midea (sempre) + LG; Philco cai.
+        out = filter_offers(self._mix(), keep_brands={"LG"})
+        brands = sorted(o.brand for o in out)
+        assert brands == ["LG", "MIDEA"]
+
+    def test_brand_filter_never_drops_midea_even_if_not_listed(self):
+        out = filter_offers(self._mix(), keep_brands={"ELGIN"})  # nenhum casa exceto Midea
+        assert [o.brand for o in out] == ["MIDEA"]
+
+    def test_marketplace_filter_applies_to_all_brands_including_midea(self):
+        out = filter_offers(self._mix(), marketplaces={"MAGALU"})
+        assert [o.brand for o in out] == ["PHILCO"]  # só a oferta MAGALU sobra
+
+    def test_seller_filter(self):
+        out = filter_offers(self._mix(), sellers={"LG Oficial"})
+        assert len(out) == 1 and out[0].brand == "LG"
+
+    def test_filters_are_case_insensitive(self):
+        out = filter_offers(self._mix(), marketplaces={"amazon"}, keep_brands={"lg"})
+        brands = sorted(o.brand for o in out)
+        assert brands == ["LG", "MIDEA"]  # Midea+LG na Amazon; Philco (MAGALU) fora
+
+    def test_combined_filters(self):
+        out = filter_offers(self._mix(), keep_brands={"LG", "PHILCO"},
+                            marketplaces={"AMAZON"})
+        # AMAZON: Midea + LG (Philco está no MAGALU → cai pelo marketplace).
+        assert sorted(o.brand for o in out) == ["LG", "MIDEA"]

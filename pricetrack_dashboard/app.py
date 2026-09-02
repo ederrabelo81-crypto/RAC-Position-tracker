@@ -47,6 +47,7 @@ from pricetrack_dashboard.analytics import (  # noqa: E402
     TierSeries,
     analyze,
     daily_series,
+    filter_offers,
 )
 from pricetrack_dashboard.data_source import (  # noqa: E402
     _supabase_client,
@@ -518,13 +519,14 @@ def _hot_window_days_safe() -> int:
 
 
 def render_peer_evolution(
-    analysis: Analysis, source_label: str, collection_date: Optional[str],
-    use_brand_filter: bool,
+    source_label: str, collection_date: Optional[str], use_brand_filter: bool,
+    keep_brands=None, marketplaces=None, sellers=None,
 ) -> None:
     st.subheader("Evolução — Midea (moda) × Peers (mediana)")
     st.caption(
         "Série diária por tier/capacidade: linha azul cheia é a moda Midea; "
-        "linha laranja tracejada é a mediana dos peers (concorrentes, sem Midea)."
+        "linha laranja tracejada é a mediana dos peers (concorrentes, sem Midea). "
+        "Respeita os filtros de Marca/Marketplace/Vendedor acima."
     )
     if source_label == SRC_LIVE:
         st.info(
@@ -558,8 +560,16 @@ def render_peer_evolution(
             st.error(f"Falha lendo a série do Supabase: {type(exc).__name__}: {exc}")
             return
 
+    # Mesmos filtros das outras seções, aplicados a cada dia da janela.
+    rows_by_date = {
+        d: filter_offers(offs, keep_brands=keep_brands,
+                         marketplaces=marketplaces, sellers=sellers)
+        for d, offs in rows_by_date.items()
+    }
+    rows_by_date = {d: offs for d, offs in rows_by_date.items() if offs}
+
     if not rows_by_date:
-        st.info("Sem dados no intervalo.")
+        st.info("Sem dados no intervalo (após os filtros).")
         return
 
     series = daily_series(rows_by_date)
@@ -680,10 +690,12 @@ def _date_to_iso(d) -> Optional[str]:
     return d.isoformat() if hasattr(d, "isoformat") else None
 
 
-def _load_analysis(source: str, collection_date, use_brand_filter):
-    """Carrega ofertas da fonte escolhida → (analysis, source_label, date, days_back).
+def _load_offers(source: str, collection_date, use_brand_filter):
+    """Carrega ofertas CRUAS da fonte → (offers, source_label, date, days_back).
 
-    Cai para Demo (com aviso) quando a fonte escolhida falha.
+    Cai para Demo (com aviso) quando a fonte escolhida falha. O ``analyze`` é
+    feito pelo chamador, depois de aplicar os filtros de Marca/Marketplace/
+    Vendedor — assim os filtros valem para todas as seções.
     """
     demo = False
     date_out: Optional[str] = None
@@ -714,7 +726,62 @@ def _load_analysis(source: str, collection_date, use_brand_filter):
             offers, demo = demo_offers(), True
 
     label = SRC_DEMO if demo else source
-    return analyze(offers, collection_date=date_out), label, date_out, days_back
+    return offers, label, date_out, days_back
+
+
+# ── Filtros de Marca / Marketplace / Vendedor (client-side) ──────────────────
+def _distinct(offers, attr: str) -> list:
+    """Valores distintos não-vazios de um atributo das ofertas, ordenados."""
+    seen = {getattr(o, attr) for o in offers if getattr(o, attr)}
+    return sorted(seen, key=str.casefold)
+
+
+def _peer_competitor_brands(offers) -> list:
+    """Concorrentes do peer presentes nas ofertas (Midea nunca entra na lista)."""
+    present = {(o.brand or "").upper() for o in offers}
+    comp = [b for b in peer_brands() if b != "MIDEA" and b in present]
+    return sorted(comp, key=str.casefold)
+
+
+def _selection_or_none(selected: list, options: list):
+    """Recorte só quando é subconjunto próprio e não-vazio; senão None (=Todos).
+
+    Espelha o "Todos" do PriceTrack: nada selecionado, ou tudo selecionado,
+    não filtra.
+    """
+    if not selected or len(selected) >= len(options):
+        return None
+    return set(selected)
+
+
+def _render_offer_filters(offers, embedded: bool):
+    """Multiselects Marcas / Marketplace / Vendedor. Retorna as 3 seleções
+    (cada uma como set p/ filtrar, ou None p/ "Todos")."""
+    brand_opts = _peer_competitor_brands(offers)
+    mkt_opts = _distinct(offers, "marketplace")
+    seller_opts = _distinct(offers, "seller")
+
+    container = st.container() if embedded else st.sidebar
+    with container:
+        c1, c2, c3 = st.columns(3) if embedded else (st, st, st)
+        brands_sel = c1.multiselect(
+            "Marcas (vs Midea)", brand_opts, default=brand_opts, key="pt_f_brands",
+            help="Midea está sempre presente; escolha os concorrentes a comparar. "
+                 "Ex.: só Elgin → Midea vs Elgin em todas as seções.")
+        mkt_sel = c2.multiselect(
+            "Marketplace", mkt_opts, default=mkt_opts, key="pt_f_mkt")
+        seller_sel = c3.multiselect(
+            "Vendedor", seller_opts, default=seller_opts, key="pt_f_seller")
+        st.caption(
+            "ℹ️ Filtro *Grupo* (1P / Lojas Oficiais / 3P) não disponível: o "
+            "export do PriceTrack em `pricetrack_daily` não traz essa "
+            "classificação (só marketplace e vendedor)."
+        )
+    return (
+        _selection_or_none(brands_sel, brand_opts),
+        _selection_or_none(mkt_sel, mkt_opts),
+        _selection_or_none(seller_sel, seller_opts),
+    )
 
 
 # ── Corpo da página (reutilizável no painel do projeto) ──────────────────────
@@ -730,9 +797,16 @@ def render_page(embedded: bool = False) -> None:
         "Fonte padrão: Supabase (import diário do PriceTrack); API ao vivo opcional."
     )
     source, collection_date_in, use_brand_filter = _controls(embedded)
-    analysis, source_label, collection_date, days_back = _load_analysis(
+    offers, source_label, collection_date, days_back = _load_offers(
         source, collection_date_in, use_brand_filter
     )
+
+    # Filtros Marca/Marketplace/Vendedor — aplicados antes do analyze, valem
+    # para todas as seções (cards, lista peer-to-peer e evolução).
+    keep_brands, mkts, sellers = _render_offer_filters(offers, embedded)
+    offers = filter_offers(offers, keep_brands=keep_brands,
+                           marketplaces=mkts, sellers=sellers)
+    analysis = analyze(offers, collection_date=collection_date)
 
     if source_label == SRC_DEMO:
         st.warning(
@@ -768,7 +842,8 @@ def render_page(embedded: bool = False) -> None:
     render_peer_to_peer_list(analysis)
 
     st.divider()
-    render_peer_evolution(analysis, source_label, collection_date, use_brand_filter)
+    render_peer_evolution(source_label, collection_date, use_brand_filter,
+                          keep_brands=keep_brands, marketplaces=mkts, sellers=sellers)
 
     with st.expander("🔎 Cobertura do peer (diagnóstico de casamento)"):
         cov = analysis.coverage

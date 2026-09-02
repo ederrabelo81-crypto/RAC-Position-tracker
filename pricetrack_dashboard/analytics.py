@@ -167,6 +167,46 @@ class Analysis:
         return None
 
 
+# ── Filtros de oferta (Marcas / Marketplace / Vendedor) ──────────────────────
+
+def _norm(value: Optional[str]) -> str:
+    return (value or "").strip().upper()
+
+
+def filter_offers(
+    offers: Iterable[Offer],
+    keep_brands: Optional[Iterable[str]] = None,
+    marketplaces: Optional[Iterable[str]] = None,
+    sellers: Optional[Iterable[str]] = None,
+) -> List[Offer]:
+    """Recorta ofertas por marca / marketplace / vendedor, antes do ``analyze``.
+
+    Regras (comparação sempre case-insensitive, aparadas):
+      * **Marcas** — ``keep_brands`` é o conjunto de CONCORRENTES a manter.
+        ``None`` mantém todas as marcas. **Midea nunca é descartada pela marca**
+        (é sempre a âncora da comparação); ``keep_brands`` restringe só os peers.
+      * **Marketplace / Vendedor** — ``None``/vazio mantém tudo; um conjunto
+        mantém só as ofertas cujo campo casa. Esses filtros valem para TODAS as
+        marcas, Midea inclusa (recortar "só Amazon" deve valer para a Midea
+        também).
+    """
+    keep = {_norm(b) for b in keep_brands} if keep_brands is not None else None
+    mkts = {_norm(m) for m in marketplaces} if marketplaces else None
+    slrs = {_norm(s) for s in sellers} if sellers else None
+
+    out: List[Offer] = []
+    for o in offers:
+        if mkts is not None and _norm(o.marketplace) not in mkts:
+            continue
+        if slrs is not None and _norm(o.seller) not in slrs:
+            continue
+        is_midea = _norm(o.brand) == "MIDEA"
+        if not is_midea and keep is not None and _norm(o.brand) not in keep:
+            continue
+        out.append(o)
+    return out
+
+
 def analyze(
     offers: Iterable[Offer],
     collection_date: Optional[str] = None,

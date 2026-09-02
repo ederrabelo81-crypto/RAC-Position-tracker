@@ -205,7 +205,10 @@ def _row_to_offer(row: Dict[str, Any]) -> Optional[Offer]:
         brand=str(row.get("brand") or "").upper(),
         category="", subcategory="", family="", color=None,
         marketplace=str(row.get("marketplace") or ""),
-        seller=str(row.get("seller") or ""),
+        # seller_canonical colapsa grafias do mesmo lojista (FRIOPECAS=FRIOPEÇAS
+        # =LOJA OFICIAL FRIOPEÇAS) — dropdown de Vendedor mais limpo. Cai para
+        # `seller` cru quando a coluna não vem (ex.: amostra de teste).
+        seller=str(row.get("seller_canonical") or row.get("seller") or ""),
         spot_price=price, forward_price=None, pix_price=None, price_from=None,
         installment_number=None, installment_value=None,
         status="AVAILABLE",
@@ -267,7 +270,7 @@ def fetch_supabase(
         q = (
             client.table("pricetrack_daily")
             .select("collection_date,turno,brand,sku,title,marketplace,seller,"
-                    "min_price,avg_price,mode_price,max_price,id")
+                    "seller_canonical,min_price,avg_price,mode_price,max_price,id")
             .eq("collection_date", collection_date)
             .eq("turno", turno)
         )
@@ -334,7 +337,7 @@ def fetch_supabase_range(
         q = (
             client.table("pricetrack_daily")
             .select("collection_date,turno,brand,sku,title,marketplace,seller,"
-                    "min_price,avg_price,mode_price,max_price,id")
+                    "seller_canonical,min_price,avg_price,mode_price,max_price,id")
             .gte("collection_date", start_date)
             .lte("collection_date", end_date)
             .eq("turno", turno)

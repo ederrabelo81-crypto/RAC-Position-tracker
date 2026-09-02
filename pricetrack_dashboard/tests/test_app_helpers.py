@@ -157,3 +157,44 @@ class TestSeriesFigure:
         assert len(fig.data) == 2
         names = {tr.name for tr in fig.data}
         assert names == {"Midea (moda)", "Peers (mediana)"}
+
+
+class TestOfferFilterHelpers:
+    def _mix(self):
+        from pricetrack_api.models import Offer
+
+        def o(brand, mkt, seller):
+            return Offer(
+                id=f"{brand}-{mkt}-{seller}", sku="", title="", product_name="",
+                brand=brand, category="", subcategory="", family="", color=None,
+                marketplace=mkt, seller=seller, spot_price=1000.0,
+                forward_price=None, pix_price=None, price_from=None,
+                installment_number=None, installment_value=None,
+                status="AVAILABLE", collection_date=None, collection_hour=None,
+                image_url="", screenshot_url=None, url="",
+            )
+        return [
+            o("MIDEA", "AMAZON", "Midea Store"),
+            o("LG", "AMAZON", "LG Oficial"),
+            o("PHILCO", "MAGALU", "Zé Loja"),
+            o("BRASTEMP", "MAGALU", "Fulano"),   # marca fora do peer
+        ]
+
+    def test_competitor_brands_excludes_midea_and_non_peer(self):
+        brands = app._peer_competitor_brands(self._mix())
+        assert "MIDEA" not in brands          # âncora nunca vira opção
+        assert "BRASTEMP" not in brands       # fora do peer não entra
+        assert "LG" in brands and "PHILCO" in brands
+
+    def test_distinct_marketplaces_sorted_unique(self):
+        assert app._distinct(self._mix(), "marketplace") == ["AMAZON", "MAGALU"]
+
+    def test_distinct_sellers(self):
+        assert app._distinct(self._mix(), "seller") == \
+            ["Fulano", "LG Oficial", "Midea Store", "Zé Loja"]
+
+    def test_selection_or_none_full_or_empty_is_none(self):
+        opts = ["A", "B", "C"]
+        assert app._selection_or_none(opts, opts) is None      # tudo = Todos
+        assert app._selection_or_none([], opts) is None        # nada = Todos
+        assert app._selection_or_none(["A"], opts) == {"A"}    # subconjunto filtra
