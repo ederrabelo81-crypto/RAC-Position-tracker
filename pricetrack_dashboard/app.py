@@ -246,7 +246,7 @@ def render_tier_section(analysis: Analysis) -> None:
             tr = analysis.tier(tier, cap)
             with col:
                 st.markdown(f"**{_tier_header(tier)}**")
-                if tr is None or tr.market.is_empty:
+                if tr is None or tr.peers.is_empty:
                     st.info("Sem oferta casada")
                     continue
                 st.html(_tier_card_html(tr))

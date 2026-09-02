@@ -102,6 +102,24 @@ class TestTierTableUsesPeersNotMarket:
         big_number_line = html.split("Modal do mercado</div>")[1].split("</div>")[0]
         assert app._brl_cents(tr.peers.mode) in big_number_line
 
+    def test_empty_gate_checks_peers_not_market(self):
+        """Regressão do achado do cubic no PR #338: o guard de `render_tier_
+        section` que decide entre mostrar o card ou "Sem oferta casada"
+        também precisa olhar `tr.peers` — se continuasse em `tr.market`
+        (que a Midea sempre preenche), um filtro que deixa só Midea sem
+        nenhum concorrente casado renderizaria o card com "—" em vez da
+        mensagem de "sem oferta"."""
+        from pricetrack_dashboard.analytics import analyze, filter_offers
+        from pricetrack_dashboard.peer import CAP_9K, TIER_HIGH
+
+        offers = demo_offers()
+        # Elgin não compete no tier High/9K (peer.py não lista Elgin lá) —
+        # só a Midea casa; nenhum concorrente sobra.
+        only_elgin = filter_offers(offers, keep_brands={"ELGIN"})
+        tr = analyze(only_elgin).tier(TIER_HIGH, CAP_9K)
+        assert not tr.market.is_empty   # Midea casou
+        assert tr.peers.is_empty        # mas nenhum concorrente
+
 
 class TestPeerToPeerDataframe:
     def _analysis(self):
