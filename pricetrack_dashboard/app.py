@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 from datetime import date, timedelta
-from typing import Optional
+from typing import List, Optional
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -45,7 +46,7 @@ from pricetrack_api.models import Offer  # noqa: E402
 from pricetrack_dashboard.analytics import (  # noqa: E402
     Analysis,
     TierSeries,
-    analyze,
+    analyze_with_fallback,
     daily_series,
     filter_offers,
 )
@@ -53,7 +54,6 @@ from pricetrack_dashboard.data_source import (  # noqa: E402
     _supabase_client,
     demo_offers,
     fetch_live,
-    fetch_supabase,
     fetch_supabase_range,
     peer_brands,
     supabase_configured,
@@ -104,27 +104,18 @@ def _brl_cents(value: Optional[float]) -> str:
     return "R$ " + s
 
 
+def _fmt_br_date(iso: Optional[str]) -> str:
+    """ISO -> dd/mm/aaaa; devolve a string original se não for uma data."""
+    d = _iso_to_date(iso)
+    return d.strftime("%d/%m/%Y") if d else (iso or "—")
+
+
 # ── Carga de dados (cacheada) ────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=900)
 def _load_live(collection_date: Optional[str], use_brand_filter: bool) -> dict:
     """Puxa ao vivo da API e serializa para dict (cacheável). TTL 15 min."""
     brands = peer_brands() if use_brand_filter else []
     result = fetch_live(
-        collection_date=collection_date,
-        brands=brands if brands else None,
-    )
-    return {
-        "offers": [_offer_to_dict(o) for o in result.offers],
-        "collection_date": result.collection_date,
-        "days_back": result.days_back,
-    }
-
-
-@st.cache_data(show_spinner=False, ttl=900)
-def _load_supabase(collection_date: Optional[str], use_brand_filter: bool) -> dict:
-    """Lê pricetrack_daily do Supabase e serializa. TTL 15 min."""
-    brands = peer_brands() if use_brand_filter else []
-    result = fetch_supabase(
         collection_date=collection_date,
         brands=brands if brands else None,
     )
@@ -250,6 +241,12 @@ def render_tier_section(analysis: Analysis) -> None:
                     st.info("Sem oferta casada")
                     continue
                 st.html(_tier_card_html(tr))
+                if tr.fallback_date:
+                    st.caption(
+                        "⚠️ Sem oferta casada no período selecionado — "
+                        f"mostrando o último dado disponível "
+                        f"({_fmt_br_date(tr.fallback_date)})."
+                    )
         st.divider()
 
 
@@ -266,6 +263,7 @@ def _tier_table(analysis: Analysis) -> pd.DataFrame:
             "Modal Midea": tr.midea.mode,
             "Piso Midea": tr.midea.minimum,
             "Δ Midea vs mercado": tr.midea_vs_market_delta,
+            "Dado de": _fmt_br_date(tr.fallback_date) if tr.fallback_date else "",
         })
     return pd.DataFrame(rows)
 
@@ -384,6 +382,7 @@ def _peer_to_peer_dataframe(analysis: Analysis, tier: str) -> pd.DataFrame:
                 "Moda": mr.stats.mode,
                 "Máx": mr.stats.maximum,
                 "n": mr.stats.count,
+                "Dado de": _fmt_br_date(mr.fallback_date) if mr.fallback_date else "",
                 "_is_midea": mr.is_midea,
             })
     return pd.DataFrame(rows)
@@ -418,36 +417,66 @@ def render_peer_to_peer_list(analysis: Analysis) -> None:
 
         n_total = len(df)
         n_with_data = int((df["n"] > 0).sum())
+        n_fallback = int((df["Dado de"] != "").sum())
         if n_with_data < n_total:
             st.caption(
                 f"⚠️ {n_total - n_with_data} de {n_total} modelos do peer sem "
-                "oferta casada nesta data."
+                "oferta casada, mesmo com fallback do histórico recente."
+            )
+        elif n_fallback:
+            st.caption(
+                f"ℹ️ {n_fallback} de {n_total} modelos sem oferta casada no "
+                "período selecionado — mostrando o último dado disponível de "
+                "cada um (coluna 'Dado de'); os demais são do período pedido."
             )
         else:
-            st.caption(f"Todos os {n_total} modelos do peer tinham preço nesta data.")
+            st.caption(f"Todos os {n_total} modelos do peer tinham preço no período selecionado.")
 
 
-# ── Evolução — Midea (moda) × Peers (mediana) ────────────────────────────────
+# ── Janela de datas (período + evolução + fallback) ──────────────────────────
+def _fetch_range_dict(start_iso: str, end_iso: str, use_brand_filter: bool) -> dict:
+    """Lê ``pricetrack_daily`` de ``start_iso`` a ``end_iso`` e serializa para
+    dict (corpo compartilhado dos loaders cacheados abaixo)."""
+    brands = peer_brands() if use_brand_filter else []
+    rows_by_date = fetch_supabase_range(
+        start_iso, end_iso, brands=brands if brands else None,
+    )
+    return {d: [_offer_to_dict(o) for o in offs] for d, offs in rows_by_date.items()}
+
+
 @st.cache_data(show_spinner=False, ttl=900)
 def _load_series_supabase(end_date_iso: str, days: int, use_brand_filter: bool) -> dict:
     """Lê N dias de ``pricetrack_daily`` e serializa para dict (cacheável)."""
-    brands = peer_brands() if use_brand_filter else []
     end = date.fromisoformat(end_date_iso)
     start = end - timedelta(days=days - 1)
-    rows_by_date = fetch_supabase_range(
-        start.isoformat(), end.isoformat(), brands=brands if brands else None,
-    )
-    return {d: [_offer_to_dict(o) for o in offs] for d, offs in rows_by_date.items()}
+    return _fetch_range_dict(start.isoformat(), end_date_iso, use_brand_filter)
+
+
+@st.cache_data(show_spinner=False, ttl=900)
+def _load_window_supabase(start_iso: str, end_iso: str, use_brand_filter: bool) -> dict:
+    """Lê um intervalo arbitrário de ``pricetrack_daily`` — usado para o
+    período pedido nos tiers (que pode ser um range) somado à janela de
+    lookback do fallback (dias antes do período)."""
+    return _fetch_range_dict(start_iso, end_iso, use_brand_filter)
+
+
+def _demo_window(start_iso: str, end_iso: str) -> dict:
+    """Amostra sintética cobrindo um intervalo (Demo — tiers/fallback/evolução)."""
+    start, end = date.fromisoformat(start_iso), date.fromisoformat(end_iso)
+    out: dict = {}
+    d, i = start, 0
+    while d <= end:
+        out[d.isoformat()] = demo_offers(seed=1000 + i)
+        d += timedelta(days=1)
+        i += 1
+    return out
 
 
 def _demo_series(end_date_iso: str, days: int) -> dict:
     """Amostra sintética multi-dia (para a evolução renderizar em modo Demo)."""
     end = date.fromisoformat(end_date_iso)
-    out = {}
-    for i in range(days):
-        d = (end - timedelta(days=days - 1 - i)).isoformat()
-        out[d] = demo_offers(seed=1000 + i)
-    return out
+    start = end - timedelta(days=days - 1)
+    return _demo_window(start.isoformat(), end_date_iso)
 
 
 def _series_figure(ts: TierSeries) -> go.Figure:
@@ -628,11 +657,41 @@ SRC_LIVE = "🔴 API ao vivo (lento)"
 SRC_DEMO = "🟡 Demo (offline)"
 
 
-def _controls(embedded: bool) -> tuple:
-    """Renderiza os controles (fonte, data, filtro).
+# Span default do seletor de intervalo (só define o range inicial mostrado
+# no calendário — o usuário pode alargar/encurtar livremente).
+_RANGE_DEFAULT_SPAN_DAYS = 6
 
-    Retorna ``(source, collection_date, use_brand_filter)`` onde ``source`` é um
-    dos rótulos SRC_* e ``collection_date`` é ISO ou None (mais recente).
+
+def _normalize_date_range(value, fallback: date) -> tuple:
+    """Normaliza o retorno do ``date_input`` em modo intervalo p/ (start, end).
+
+    O widget só devolve uma tupla de 2 quando as duas pontas já foram
+    clicadas; enquanto isso, devolve uma tupla de 1 (ou um ``date`` solto) —
+    tratado aqui como um intervalo de 1 dia só, para nunca quebrar a página
+    no meio da seleção do usuário.
+    """
+    if isinstance(value, (tuple, list)):
+        if len(value) >= 2:
+            start, end = value[0], value[1]
+        elif len(value) == 1:
+            start = end = value[0]
+        else:
+            start = end = fallback
+    else:
+        start = end = value or fallback
+    if start > end:
+        start, end = end, start
+    return start, end
+
+
+def _controls(embedded: bool) -> tuple:
+    """Renderiza os controles (fonte, data/período, filtro).
+
+    Retorna ``(source, date_range, use_brand_filter, use_latest)`` onde
+    ``source`` é um dos rótulos SRC_* e ``date_range`` é ``(start_iso,
+    end_iso)`` — os dois iguais para um único dia. Com "Data mais recente"
+    marcado e fonte ao vivo, o ``date_range`` é só um placeholder: o
+    carregamento resolve a data mais recente sondando a própria API.
     """
     supa_ok = _supabase_present()
     api_ok = _api_key_present()
@@ -643,7 +702,7 @@ def _controls(embedded: bool) -> tuple:
     with container:
         if not embedded:
             st.header("Fonte de dados")
-        cols = st.columns([1.6, 1.4, 1.4, 0.8]) if embedded else [st] * 4
+        cols = st.columns([1.4, 1.8, 1.2, 0.8]) if embedded else [st] * 4
         c1, c2, c3, c4 = cols
 
         source = c1.radio(
@@ -656,12 +715,35 @@ def _controls(embedded: bool) -> tuple:
         use_latest = c2.checkbox(
             "Data mais recente", value=True, key="pt_latest",
             help="Usa a última data disponível. Desmarque para escolher no calendário.")
+        range_supported = source != SRC_LIVE
+        use_range = c2.checkbox(
+            "Intervalo de datas", value=False, key="pt_range",
+            help="Soma as ofertas de TODOS os dias do período no cálculo "
+                 "(mín/máx/moda/média) — em vez de olhar só um dia isolado. "
+                 "Indisponível na API ao vivo (lenta demais para várias datas).",
+            disabled=use_latest or not range_supported,
+        )
         default_day = _supabase_latest() if source == SRC_SUPABASE else None
         default_day_d = _iso_to_date(default_day) or date.today()
-        picked = c2.date_input(
-            "Data", value=default_day_d, format="YYYY-MM-DD",
-            key="pt_datepick", disabled=use_latest)
-        collection_date = None if use_latest else _date_to_iso(picked)
+
+        if use_latest:
+            c2.date_input(
+                "Data", value=default_day_d, format="YYYY-MM-DD",
+                key="pt_datepick_latest", disabled=True)
+            start_d = end_d = default_day_d
+        elif use_range and range_supported:
+            picked = c2.date_input(
+                "Período", format="YYYY-MM-DD", key="pt_datepick_range",
+                value=(default_day_d - timedelta(days=_RANGE_DEFAULT_SPAN_DAYS),
+                       default_day_d),
+            )
+            start_d, end_d = _normalize_date_range(picked, default_day_d)
+        else:
+            picked = c2.date_input(
+                "Data", value=default_day_d, format="YYYY-MM-DD", key="pt_datepick")
+            start_d = end_d = picked
+
+        date_range = (_date_to_iso(start_d), _date_to_iso(end_d))
 
         use_brand_filter = c3.checkbox(
             "Filtrar marcas do peer", value=True, key="pt_brandfilter",
@@ -669,9 +751,9 @@ def _controls(embedded: bool) -> tuple:
 
         if c4.button("🔄 Atualizar", use_container_width=True, key="pt_refresh"):
             _load_live.clear()
-            _load_supabase.clear()
             _supabase_latest.clear()
             _load_series_supabase.clear()
+            _load_window_supabase.clear()
             st.rerun()
 
         if source == SRC_SUPABASE and not supa_ok:
@@ -679,7 +761,10 @@ def _controls(embedded: bool) -> tuple:
                        "`SUPABASE_KEY` (env ou `.streamlit/secrets.toml`).")
         if source == SRC_LIVE and not api_ok:
             st.caption("🔴 `PRICETRACK_API_KEY` não configurada (env ou secrets).")
-    return source, collection_date, use_brand_filter
+        if source == SRC_LIVE and use_range:
+            st.caption("ℹ️ Intervalo de datas não é suportado na API ao vivo — "
+                       "usando só a data selecionada.")
+    return source, date_range, use_brand_filter, use_latest
 
 
 def _iso_to_date(iso: Optional[str]):
@@ -693,43 +778,85 @@ def _date_to_iso(d) -> Optional[str]:
     return d.isoformat() if hasattr(d, "isoformat") else None
 
 
-def _load_offers(source: str, collection_date, use_brand_filter):
-    """Carrega ofertas CRUAS da fonte → (offers, source_label, date, days_back).
+def _period_dates(start_iso: str, end_iso: str) -> List[str]:
+    """Todas as datas ISO entre ``start_iso`` e ``end_iso``, inclusive."""
+    start, end = date.fromisoformat(start_iso), date.fromisoformat(end_iso)
+    out = []
+    d = start
+    while d <= end:
+        out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
 
-    Cai para Demo (com aviso) quando a fonte escolhida falha. O ``analyze`` é
-    feito pelo chamador, depois de aplicar os filtros de Marca/Marketplace/
-    Vendedor — assim os filtros valem para todas as seções.
+
+def _load_window(
+    source: str, date_range: tuple, use_brand_filter: bool, use_latest: bool,
+    fallback_days: int,
+):
+    """Carrega o período pedido + uma janela de lookback antes dele (fallback).
+
+    Retorna ``(rows_by_date, period_dates, source_label, days_back)``:
+    ``rows_by_date`` cobre tanto o período quanto o lookback (``Offer``s já
+    desserializados, indexados por data ISO); ``period_dates`` são as datas
+    do período pedido pelo usuário (as demais chaves de ``rows_by_date`` são
+    só candidatas a fallback); ``days_back`` só é significativo quando o
+    período é de 1 dia só (freshness "hoje"/"ontem"/"há N dias").
+
+    Cai para Demo (com aviso) quando a fonte escolhida falha. Filtros de
+    Marca/Marketplace/Vendedor são aplicados pelo chamador, depois deste
+    carregamento — assim valem tanto para o período quanto para o fallback.
     """
+    start_iso, end_iso = date_range
+    period_dates = _period_dates(start_iso, end_iso)
     demo = False
-    date_out: Optional[str] = None
     days_back = 0
 
     if source == SRC_DEMO:
-        offers, demo = demo_offers(), True
+        window_start = (date.fromisoformat(start_iso) - timedelta(days=fallback_days)).isoformat()
+        rows_by_date = _demo_window(window_start, end_iso)
+        demo = True
     elif source == SRC_SUPABASE:
+        window_start = (date.fromisoformat(start_iso) - timedelta(days=fallback_days)).isoformat()
         try:
             with st.spinner("Lendo pricetrack_daily do Supabase…"):
-                payload = _load_supabase(collection_date, use_brand_filter)
-            offers = [_dict_to_offer(d) for d in payload["offers"]]
-            date_out, days_back = payload["collection_date"], payload["days_back"]
+                payload = _load_window_supabase(window_start, end_iso, use_brand_filter)
+            rows_by_date = {d: [_dict_to_offer(x) for x in offs] for d, offs in payload.items()}
+            if not rows_by_date:
+                st.warning(
+                    "⚠️ Sem dados em `pricetrack_daily` para o período "
+                    "selecionado."
+                )
         except Exception as exc:  # noqa: BLE001
             st.error(f"Falha lendo o Supabase: {type(exc).__name__}: {exc}\n\n"
                      "Confira `SUPABASE_URL`/`SUPABASE_KEY`. Caindo para Demo.")
-            offers, demo = demo_offers(), True
-    else:  # SRC_LIVE
+            rows_by_date = _demo_window(window_start, end_iso)
+            demo = True
+    else:  # SRC_LIVE — sem intervalo nem fallback (a API ao vivo é lenta demais)
+        collection_date = None if use_latest else start_iso
         try:
             with st.spinner("Puxando da API do PriceTrack (pode levar ~2min)…"):
                 payload = _load_live(collection_date, use_brand_filter)
             offers = [_dict_to_offer(d) for d in payload["offers"]]
-            date_out, days_back = payload["collection_date"], payload["days_back"]
+            resolved_date = payload["collection_date"]
+            days_back = payload["days_back"]
+            rows_by_date = {resolved_date: offers}
+            period_dates = [resolved_date]
         except Exception as exc:  # noqa: BLE001
             st.error(f"Falha no hook ao vivo: {type(exc).__name__}: {exc}\n\n"
                      "A API de coleta é lenta (~2min). Prefira a fonte Supabase. "
                      "Caindo para Demo.")
-            offers, demo = demo_offers(), True
+            rows_by_date = {end_iso: demo_offers()}
+            period_dates = [end_iso]
+            demo = True
+
+    if source != SRC_LIVE and len(period_dates) == 1:
+        try:
+            days_back = max(0, (date.today() - date.fromisoformat(period_dates[0])).days)
+        except (TypeError, ValueError):
+            days_back = 0
 
     label = SRC_DEMO if demo else source
-    return offers, label, date_out, days_back
+    return rows_by_date, period_dates, label, days_back
 
 
 # ── Filtros de Marca / Marketplace / Vendedor (client-side) ──────────────────
@@ -799,28 +926,53 @@ def render_page(embedded: bool = False) -> None:
         "Ar-condicionado Só Frio (CO), tiers competitivos peer to peer. "
         "Fonte padrão: Supabase (import diário do PriceTrack); API ao vivo opcional."
     )
-    source, collection_date_in, use_brand_filter = _controls(embedded)
-    offers, source_label, collection_date, days_back = _load_offers(
-        source, collection_date_in, use_brand_filter
+    source, date_range, use_brand_filter, use_latest = _controls(embedded)
+    fallback_days = _hot_window_days_safe() if source != SRC_LIVE else 0
+    rows_by_date, period_dates, source_label, days_back = _load_window(
+        source, date_range, use_brand_filter, use_latest, fallback_days,
     )
 
-    # Filtros Marca/Marketplace/Vendedor — aplicados antes do analyze, valem
-    # para todas as seções (cards, lista peer-to-peer e evolução).
-    keep_brands, mkts, sellers = _render_offer_filters(offers, embedded)
-    offers = filter_offers(offers, keep_brands=keep_brands,
-                           marketplaces=mkts, sellers=sellers)
-    analysis = analyze(offers, collection_date=collection_date)
+    # Amostra p/ montar os multiselects de Marca/Marketplace/Vendedor: a
+    # união do PERÍODO pedido (nunca o lookback do fallback, que fica
+    # invisível para o usuário) — assim as opções cobrem qualquer dia do
+    # intervalo escolhido, não só um dia âncora.
+    period_sample = [o for d in period_dates for o in rows_by_date.get(d, [])]
+    keep_brands, mkts, sellers = _render_offer_filters(period_sample, embedded)
+
+    # Filtros Marca/Marketplace/Vendedor — aplicados antes do analyze, em TODO
+    # o intervalo carregado (período + lookback do fallback), valem para
+    # todas as seções (cards, lista peer-to-peer e evolução).
+    filtered_by_date = {
+        d: filter_offers(offs, keep_brands=keep_brands, marketplaces=mkts, sellers=sellers)
+        for d, offs in rows_by_date.items()
+    }
+    analysis = analyze_with_fallback(filtered_by_date, period_dates)
+
+    is_range = len(period_dates) > 1
+    period_label = (
+        period_dates[0] if len(period_dates) == 1
+        else f"{period_dates[0]} a {period_dates[-1]}" if period_dates
+        else "—"
+    )
+    analysis = replace(analysis, collection_date=period_label)
 
     if source_label == SRC_DEMO:
         st.warning(
             "⚠️ **Modo Demo** — dados sintéticos, apenas para visualizar o "
             "layout. Não use como referência de mercado."
         )
+    elif is_range:
+        origem = "Supabase" if source_label == SRC_SUPABASE else "API ao vivo"
+        st.info(
+            f"📅 **{period_label}** ({len(period_dates)} dias) · fonte: {origem} · "
+            f"{analysis.coverage.matched_offers} ofertas casadas no peer de "
+            f"{analysis.coverage.total_offers} lidas no período (soma dos dias)."
+        )
     else:
         freshness = {0: "hoje", 1: "ontem"}.get(days_back, f"há {days_back} dias")
         origem = "Supabase" if source_label == SRC_SUPABASE else "API ao vivo"
         st.info(
-            f"📅 **{collection_date}** ({freshness}) · fonte: {origem} · "
+            f"📅 **{period_label}** ({freshness}) · fonte: {origem} · "
             f"{analysis.coverage.matched_offers} ofertas casadas no peer "
             f"de {analysis.coverage.total_offers} lidas."
         )
@@ -845,8 +997,9 @@ def render_page(embedded: bool = False) -> None:
     render_peer_to_peer_list(analysis)
 
     st.divider()
-    render_peer_evolution(source_label, collection_date, use_brand_filter,
-                          keep_brands=keep_brands, marketplaces=mkts, sellers=sellers)
+    render_peer_evolution(source_label, period_dates[-1] if period_dates else None,
+                          use_brand_filter, keep_brands=keep_brands,
+                          marketplaces=mkts, sellers=sellers)
 
     with st.expander("🔎 Cobertura do peer (diagnóstico de casamento)"):
         cov = analysis.coverage
