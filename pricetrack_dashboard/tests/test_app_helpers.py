@@ -125,8 +125,8 @@ class TestTierTableUsesPeersNotMarket:
         só olhava os campos de `analyze`, então continuaria verde mesmo se
         alguém revertesse o guard de `render_tier_section` para
         `tr.market.is_empty`). Aqui `render_tier_section` roda de verdade via
-        `AppTest`: filtrando só Elgin, High/9K e High/12K não têm concorrente
-        (peer.py não lista Elgin no tier High) e têm que cair no
+        `AppTest`: filtrando só Elgin, todo (tier, capacidade) em que o peer
+        não lista Elgin como concorrente tem que cair no
         `st.info("Sem oferta casada")`, não no card."""
         from streamlit.testing.v1 import AppTest
 
@@ -142,8 +142,17 @@ class TestTierTableUsesPeersNotMarket:
         at.run()
         assert not at.exception
         infos = [i.value for i in at.info]
-        # High/9K e High/12K: Elgin não compete lá, só a Midea casa.
-        assert infos.count("Sem oferta casada") == 2
+
+        # Deriva do próprio contrato do peer (não hardcoda "2"): o peer muda
+        # de trimestre, e travar num número fixo quebraria o teste — sem
+        # nenhum defeito real — na primeira atualização de `_PEER_RAW`.
+        from pricetrack_dashboard.peer import CAP_ORDER, PEER, TIER_ORDER
+
+        expected_empty = sum(
+            not any(model.brand == "ELGIN" for model in PEER[tier][cap].models)
+            for tier in TIER_ORDER for cap in CAP_ORDER
+        )
+        assert infos.count("Sem oferta casada") == expected_empty
 
 
 class TestPeerToPeerDataframe:
