@@ -1,5 +1,5 @@
 """
-Dashboard de Preços RAC 9K/12K — hook ao vivo na API do PriceTrack.
+Dashboard de Preços RAC 9K/12K — Supabase (padrão) / API PriceTrack / Demo.
 
 Insights de preço do mercado de ar-condicionado 9.000 e 12.000 BTU (Só Frio),
 lidos por tier competitivo (Low/Mid/High = Inverter Lite / AI AirVolution /
@@ -7,19 +7,25 @@ AI Ecomaster), no espírito do briefing diário do projeto:
 
   • Tiers Low/Mid/High: modal (moda) e piso (mínimo) do mercado + Midea vs mercado.
   • Variação Midea: mínimo, máximo, moda e média por capacidade × linha.
+  • Lista peer-to-peer: uma linha por modelo EXATO do peer (não agregado por
+    marca) — Midea + cada concorrente, com mín/média/moda/máx/n.
+  • Evolução: série diária de modal Midea × mediana dos peers, com Delta%
+    do período e gap Midea vs peers no último dia.
 
-Rodar (numa máquina com acesso à API):
-    export PRICETRACK_API_KEY=...          # ou em .env / secrets do Streamlit
+Rodar (recomendado: dentro do painel do projeto — `streamlit run app.py`,
+menu INSIGHTS → 💰 Preços 9K/12K). Standalone:
     streamlit run pricetrack_dashboard/app.py
 
-Sem acesso à API (ex.: sandbox com egress bloqueado), use o modo Demo na
-barra lateral — dados sintéticos, marcados como demo, só para ver o layout.
+Credenciais em `.streamlit/secrets.toml` (ou env): `SUPABASE_URL`/`SUPABASE_KEY`
+(fonte padrão, rápida) e opcionalmente `PRICETRACK_API_KEY` (fonte "API ao
+vivo" — responde em ~2min por consulta, use com paciência). Sem nenhuma das
+duas, a página cai em modo Demo — dados sintéticos, marcados como tal.
 """
 from __future__ import annotations
 
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -36,12 +42,18 @@ if _REPO_ROOT not in sys.path:
 
 from pricetrack_api.models import Offer  # noqa: E402
 
-from pricetrack_dashboard.analytics import Analysis, analyze  # noqa: E402
+from pricetrack_dashboard.analytics import (  # noqa: E402
+    Analysis,
+    TierSeries,
+    analyze,
+    daily_series,
+)
 from pricetrack_dashboard.data_source import (  # noqa: E402
     _supabase_client,
     demo_offers,
     fetch_live,
     fetch_supabase,
+    fetch_supabase_range,
     peer_brands,
     supabase_configured,
     supabase_latest_date,
@@ -58,7 +70,24 @@ MIDEA_ACCENT = "#1E88E5"
 MARKET_GREY = "#8895A7"
 GOOD_GREEN = "#2E7D32"
 BAD_RED = "#C62828"
+PEERS_ORANGE = "#E08A2E"
 CAP_LABEL = {"9K": "9.000 BTU", "12K": "12.000 BTU"}
+CAP_SHORT = {"9K": "9k", "12K": "12k"}
+
+# Brands cuja grafia de marca é convencionalmente TODA MAIÚSCULA (siglas). As
+# demais viram Title Case para a lista peer-to-peer (espelha o padrão visto no
+# painel de referência: "Gree"/"Agratto"/"Philco" mas "LG"/"TCL").
+_BRAND_KEEP_UPPER = {"LG", "TCL"}
+
+
+def _brand_label(brand: str) -> str:
+    b = (brand or "").upper()
+    return b if b in _BRAND_KEEP_UPPER else b.title()
+
+
+def _pct_ptbr(value: float) -> str:
+    """Formata percentual com vírgula decimal (pt-BR): 60.2 -> '60,2'."""
+    return f"{value:.1f}".replace(".", ",")
 
 
 def _brl(value: Optional[float]) -> str:
@@ -149,12 +178,62 @@ def _tier_header(tier: str) -> str:
     return f"{tier} · {TIER_MIDEA_LINE[tier]}"
 
 
+def _midea_badge_html(midea_value: Optional[float], delta: Optional[float]) -> str:
+    """Badge 'Midea R$ X (Δ)' em HTML puro.
+
+    Não usa ``st.metric``/``st.markdown`` para esse texto: ambos tratam ``$``
+    como abertura de LaTeX inline, e como ``_brl_cents`` produz DOIS cifrões na
+    mesma string (valor + delta), o primeiro "engolia" tudo até o segundo —
+    era o defeito visto em produção ("Midea R 1.739 (R -60)", sem o "$").
+    ``st.html`` renderiza a marcação literalmente, sem esse parsing.
+
+    Seta (▼/▲) e cor: verde+seta-baixo quando Midea é mais barata que o modal
+    do mercado (bom); vermelho+seta-cima quando mais cara.
+    """
+    if midea_value is None:
+        return ""
+    if delta is None:
+        return (f'<span style="font-size:0.85rem;font-weight:600;">'
+                f'Midea {_brl_cents(midea_value)}</span>')
+    cheaper = delta < 0
+    arrow = "▼" if cheaper else ("▲" if delta > 0 else "—")
+    color = GOOD_GREEN if cheaper else (BAD_RED if delta > 0 else MARKET_GREY)
+    sign = "+" if delta > 0 else ""
+    return (
+        f'<span style="font-size:0.85rem;font-weight:600;color:{color};">'
+        f'{arrow} Midea {_brl_cents(midea_value)} '
+        f'<span style="opacity:0.8;font-weight:500;">'
+        f'({sign}{_brl_cents(delta)})</span></span>'
+    )
+
+
+def _tier_card_html(tr) -> str:
+    return (
+        '<div style="border-left:4px solid ' + MIDEA_ACCENT + '; '
+        'padding:10px 14px; background:rgba(30,136,229,0.06); '
+        'border-radius:8px; margin-bottom:8px;">'
+        f'<div style="font-size:0.72rem;letter-spacing:0.06em;'
+        f'text-transform:uppercase;color:{MARKET_GREY};font-weight:700;">'
+        'Modal do mercado</div>'
+        f'<div style="font-size:1.5rem;font-weight:800;margin:2px 0 6px;">'
+        f'{_brl_cents(tr.market.mode)}</div>'
+        f'<div style="margin-bottom:6px;">'
+        f'{_midea_badge_html(tr.midea.mode, tr.midea_vs_market_delta)}</div>'
+        f'<div style="font-size:0.78rem;color:{MARKET_GREY};">'
+        f'Piso mercado {_brl_cents(tr.market.minimum)} · '
+        f'Midea piso {_brl_cents(tr.midea.minimum)} · '
+        f'{tr.market.count} ofertas</div>'
+        '</div>'
+    )
+
+
 def render_tier_section(analysis: Analysis) -> None:
     st.subheader("Preços por tier — Low / Mid / High")
     st.caption(
         "Cada tier é a linha Midea e o grupo de concorrentes do mesmo ponto de "
         "preço (peer to peer). **Modal** = preço mais frequente do dia; "
-        "**Piso** = mínimo. Δ negativo = Midea mais barata que o modal do mercado."
+        "**Piso** = mínimo. ▼ verde = Midea mais barata que o modal do mercado; "
+        "▲ vermelho = mais cara."
     )
     for cap in CAP_ORDER:
         st.markdown(f"#### {CAP_LABEL[cap]}")
@@ -166,19 +245,7 @@ def render_tier_section(analysis: Analysis) -> None:
                 if tr is None or tr.market.is_empty:
                     st.info("Sem oferta casada")
                     continue
-                delta = tr.midea_vs_market_delta
-                st.metric(
-                    label="Modal do mercado",
-                    value=_brl(tr.market.mode),
-                    delta=(None if delta is None
-                           else f"Midea {_brl(tr.midea.mode)} ({'+' if delta > 0 else ''}{_brl(delta)})"),
-                    delta_color=("inverse"),
-                )
-                st.caption(
-                    f"Piso mercado {_brl(tr.market.minimum)} · "
-                    f"Midea piso {_brl(tr.midea.minimum)} · "
-                    f"{tr.market.count} ofertas"
-                )
+                st.html(_tier_card_html(tr))
         st.divider()
 
 
@@ -295,6 +362,221 @@ def render_midea_table(analysis: Analysis) -> None:
     )
 
 
+# ── Lista peer-to-peer — por modelo exato ────────────────────────────────────
+def _peer_to_peer_dataframe(analysis: Analysis, tier: str) -> pd.DataFrame:
+    """Uma linha por modelo exato do peer (Midea + concorrentes), 9K e 12K."""
+    rows = []
+    for cap in CAP_ORDER:
+        tr = analysis.tier(tier, cap)
+        if tr is None:
+            continue
+        for mr in tr.models:
+            rows.append({
+                "Marca": _brand_label(mr.brand),
+                "Modelo": mr.model_label,
+                "BTU": CAP_SHORT[cap],
+                "Mín": mr.stats.minimum,
+                "Média": mr.stats.mean,
+                "Moda": mr.stats.mode,
+                "Máx": mr.stats.maximum,
+                "n": mr.stats.count,
+                "_is_midea": mr.is_midea,
+            })
+    return pd.DataFrame(rows)
+
+
+def render_peer_to_peer_list(analysis: Analysis) -> None:
+    st.subheader("Lista peer-to-peer — por modelo exato")
+    st.caption(
+        f"Base `pricetrack_daily`, {analysis.collection_date or '—'}. O tier "
+        "acima soma marca+modelo; aqui a leitura é peer-to-peer por **modelo "
+        "exato** (um SKU específico do peer por linha — uma marca pode ter "
+        "mais de um modelo no mesmo tier). **Midea** vem primeiro em cada "
+        "capacidade; os demais, em moda crescente."
+    )
+    money_cols = ["Mín", "Média", "Moda", "Máx"]
+    for tier in TIER_ORDER:
+        df = _peer_to_peer_dataframe(analysis, tier)
+        if df.empty:
+            continue
+        st.markdown(f"#### {tier} — {TIER_MIDEA_LINE[tier]}")
+        is_midea_col = df["_is_midea"]
+        display_df = df.drop(columns=["_is_midea"])
+
+        def _bold_midea_rows(row, _mask=is_midea_col):
+            style = "font-weight:700" if _mask.loc[row.name] else ""
+            return [style] * len(row)
+
+        styler = display_df.style.format(
+            {c: (lambda v: _brl_cents(v) if pd.notna(v) else "—") for c in money_cols}
+        ).apply(_bold_midea_rows, axis=1)
+        st.dataframe(styler, use_container_width=True, hide_index=True)
+
+        n_total = len(df)
+        n_with_data = int((df["n"] > 0).sum())
+        if n_with_data < n_total:
+            st.caption(
+                f"⚠️ {n_total - n_with_data} de {n_total} modelos do peer sem "
+                "oferta casada nesta data."
+            )
+        else:
+            st.caption(f"Todos os {n_total} modelos do peer tinham preço nesta data.")
+
+
+# ── Evolução — Midea (moda) × Peers (mediana) ────────────────────────────────
+@st.cache_data(show_spinner=False, ttl=900)
+def _load_series_supabase(end_date_iso: str, days: int, use_brand_filter: bool) -> dict:
+    """Lê N dias de ``pricetrack_daily`` e serializa para dict (cacheável)."""
+    brands = peer_brands() if use_brand_filter else []
+    end = date.fromisoformat(end_date_iso)
+    start = end - timedelta(days=days - 1)
+    rows_by_date = fetch_supabase_range(
+        start.isoformat(), end.isoformat(), brands=brands if brands else None,
+    )
+    return {d: [_offer_to_dict(o) for o in offs] for d, offs in rows_by_date.items()}
+
+
+def _demo_series(end_date_iso: str, days: int) -> dict:
+    """Amostra sintética multi-dia (para a evolução renderizar em modo Demo)."""
+    end = date.fromisoformat(end_date_iso)
+    out = {}
+    for i in range(days):
+        d = (end - timedelta(days=days - 1 - i)).isoformat()
+        out[d] = demo_offers(seed=1000 + i)
+    return out
+
+
+def _series_figure(ts: TierSeries) -> go.Figure:
+    xs = [p.date for p in ts.points]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=xs, y=[p.midea_mode for p in ts.points],
+        mode="lines+markers", name="Midea (moda)",
+        line=dict(color=MIDEA_BLUE, width=3), marker=dict(size=5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=xs, y=[p.peers_median for p in ts.points],
+        mode="lines", name="Peers (mediana)",
+        line=dict(color=PEERS_ORANGE, width=2, dash="dash"),
+    ))
+    fig.update_layout(
+        height=280, margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_yaxes(gridcolor="rgba(136,149,167,0.2)", tickprefix="R$ ")
+    fig.update_xaxes(gridcolor="rgba(136,149,167,0.15)")
+    return fig
+
+
+def _series_span_days(ts: TierSeries) -> Optional[int]:
+    """Dias de calendário do 1º ao último ponto REAL da série (inclusive).
+
+    Nunca confiar na janela pedida pelo usuário para rotular o Delta: o
+    Supabase só guarda a janela quente (`RAC_HOT_WINDOW_DAYS`, ~15 dias por
+    padrão) — pedir 30 dias pode devolver bem menos, e rotular "Delta30d"
+    nesse caso mentiria sobre o período realmente medido.
+    """
+    dated = [p.date for p in ts.points if p.midea_mode is not None]
+    if len(dated) < 2:
+        return None
+    first, last = date.fromisoformat(dated[0]), date.fromisoformat(dated[-1])
+    return (last - first).days + 1
+
+
+def _series_caption(ts: TierSeries) -> str:
+    delta = ts.delta_pct()
+    gap = ts.gap_last()
+    span = _series_span_days(ts)
+    parts = []
+    if delta is not None:
+        trend = "subindo" if delta > 0 else ("caindo" if delta < 0 else "estável")
+        sign = "+" if delta > 0 else ""
+        label = f"Delta{span}d" if span else "Delta"
+        parts.append(
+            f"Midea {trend} no período ({label}: {sign}{_pct_ptbr(delta)}%)"
+        )
+    if gap is not None:
+        leitura = ("Midea mais barata" if gap < 0
+                   else ("Midea mais cara" if gap > 0 else "empatada"))
+        parts.append(f"gap vs mediana dos peers em {_brl_cents(gap)} ({leitura})")
+    return "; ".join(parts) if parts else "Sem dados suficientes no período."
+
+
+def _hot_window_days_safe() -> int:
+    """Dias que o Supabase mantém antes de migrar pro histórico frio (Drive).
+
+    Import isolado (não `utils.history` inteiro) para não arrastar as
+    dependências do Drive por conta de um número; qualquer falha cai no
+    default do projeto em vez de quebrar a página.
+    """
+    try:
+        from utils.history.store import hot_window_days
+        return hot_window_days()
+    except Exception:  # noqa: BLE001
+        return 15
+
+
+def render_peer_evolution(
+    analysis: Analysis, source_label: str, collection_date: Optional[str],
+    use_brand_filter: bool,
+) -> None:
+    st.subheader("Evolução — Midea (moda) × Peers (mediana)")
+    st.caption(
+        "Série diária por tier/capacidade: linha azul cheia é a moda Midea; "
+        "linha laranja tracejada é a mediana dos peers (concorrentes, sem Midea)."
+    )
+    if source_label == SRC_LIVE:
+        st.info(
+            "📈 Disponível só com a fonte 🟢 Supabase (ou 🟡 Demo) — a API ao "
+            "vivo levaria ~2min por dia, inviável para uma janela de várias datas."
+        )
+        return
+
+    days = st.select_slider(
+        "Janela (dias)", options=[7, 15, 30], value=15, key="pt_series_days")
+    end_iso = collection_date or date.today().isoformat()
+
+    if source_label == SRC_DEMO:
+        rows_by_date = _demo_series(end_iso, days)
+    else:  # SRC_SUPABASE
+        hot_days = _hot_window_days_safe()
+        if days > hot_days:
+            st.caption(
+                f"ℹ️ Pedido {days}d, mas o Supabase mantém só a janela quente "
+                f"(~{hot_days}d) de `pricetrack_daily` — dias mais antigos "
+                "vivem no histórico frio (Drive), fora do alcance desta "
+                "página. O gráfico usa os dias realmente disponíveis; a "
+                "legenda sempre informa o período real, não o pedido."
+            )
+        try:
+            with st.spinner(f"Lendo {days} dias de pricetrack_daily…"):
+                payload = _load_series_supabase(end_iso, days, use_brand_filter)
+            rows_by_date = {d: [_dict_to_offer(x) for x in offs]
+                            for d, offs in payload.items()}
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Falha lendo a série do Supabase: {type(exc).__name__}: {exc}")
+            return
+
+    if not rows_by_date:
+        st.info("Sem dados no intervalo.")
+        return
+
+    series = daily_series(rows_by_date)
+    for tier in TIER_ORDER:
+        st.markdown(f"#### {tier} ({TIER_MIDEA_LINE[tier]})")
+        cols = st.columns(len(CAP_ORDER))
+        for col, cap in zip(cols, CAP_ORDER):
+            ts = next((s for s in series if s.tier == tier and s.capacity == cap), None)
+            with col:
+                st.markdown(f"**{CAP_LABEL[cap]}**")
+                if ts is None or not ts.has_data:
+                    st.info("Sem dado no período.")
+                    continue
+                st.plotly_chart(_series_figure(ts), use_container_width=True)
+                st.caption(_series_caption(ts))
+
+
 # ── Segredos (env ou st.secrets do Streamlit Cloud) ──────────────────────────
 _SECRET_KEYS = ("PRICETRACK_API_KEY", "SUPABASE_URL", "SUPABASE_KEY")
 
@@ -373,7 +655,10 @@ def _controls(embedded: bool) -> tuple:
             help="Filtra pelas marcas do peer (mais rápido).")
 
         if c4.button("🔄 Atualizar", use_container_width=True, key="pt_refresh"):
-            _load_live.clear(); _load_supabase.clear(); _supabase_latest.clear()
+            _load_live.clear()
+            _load_supabase.clear()
+            _supabase_latest.clear()
+            _load_series_supabase.clear()
             st.rerun()
 
         if source == SRC_SUPABASE and not supa_ok:
@@ -478,6 +763,12 @@ def render_page(embedded: bool = False) -> None:
     st.divider()
     render_midea_variation(analysis)
     render_midea_table(analysis)
+
+    st.divider()
+    render_peer_to_peer_list(analysis)
+
+    st.divider()
+    render_peer_evolution(analysis, source_label, collection_date, use_brand_filter)
 
     with st.expander("🔎 Cobertura do peer (diagnóstico de casamento)"):
         cov = analysis.coverage

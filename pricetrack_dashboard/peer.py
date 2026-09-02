@@ -90,6 +90,21 @@ def normalize_code(text: str) -> str:
     return _NON_ALNUM_RE.sub("", text.upper())
 
 
+def pretty_first_token(raw: str) -> str:
+    """Primeiro código de uma célula do peer, na grafia ORIGINAL (para exibição).
+
+    ``split_model_codes`` normaliza para casamento (só A-Z0-9, sem hífen); aqui
+    mantemos a pontuação original (``"TAC-09CSGV-INV"``, não
+    ``"TAC09CSGVINV"``) — só as anotações de fase/FS são removidas.
+    """
+    cleaned = _ANNOTATION_RE.sub(" ", raw)
+    for part in re.split(r"[/+|,]", cleaned):
+        text = part.strip()
+        if text:
+            return text
+    return raw.strip()
+
+
 def split_model_codes(raw: str) -> List[str]:
     """Quebra uma célula do peer em códigos de modelo normalizados.
 
@@ -211,6 +226,9 @@ class CodeHit:
     brand: str
     is_midea: bool
     code: str
+    model_raw: str      # grafia crua da célula do peer — chave do modelo EXATO
+                         # (um brand pode ter mais de um modelo no mesmo tier/cap,
+                         # ex.: Philco PAC9FC e PAC9FB no Low/9K — `raw` os distingue)
 
 
 def _build_index() -> List[CodeHit]:
@@ -219,7 +237,7 @@ def _build_index() -> List[CodeHit]:
         for m in pt.models:
             for code in m.codes:
                 hits.append(
-                    CodeHit(pt.tier, pt.capacity, m.brand, m.is_midea, code)
+                    CodeHit(pt.tier, pt.capacity, m.brand, m.is_midea, code, m.raw)
                 )
     hits.sort(key=lambda h: len(h.code), reverse=True)
     return hits
