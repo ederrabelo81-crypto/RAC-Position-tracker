@@ -214,6 +214,11 @@ TURNO_TARDE_HOURS: Set[int] = set(range(18, 23))   # 18, 19, 20, 21, 22
 PRICE_BASIS_BEST_CASH = "best_cash"       # menor entre spot e PIX, só AVAILABLE
 PRICE_BASIS_SPOT_LEGACY = "spot_legacy"   # base antiga (≤ 01/09/2026)
 
+# Motivos que o `rejection_log` registra para diagnóstico mas que NÃO somam em
+# `rows_rejected`: cada um é subconjunto de um motivo já contado, e somá-los
+# contaria a mesma oferta duas vezes. FORWARD_PRICE_ONLY ⊂ NO_CASH_PRICE.
+_DIAGNOSTIC_REASONS = frozenset({"FORWARD_PRICE_ONLY"})
+
 # Colunas da migração 006. Sem elas o import ABORTA (ver `insert_rows`): uma
 # linha corrigida sem carimbo de base é pior que import nenhum.
 _MIGRATION_006_COLUMNS = (
@@ -440,10 +445,10 @@ def aggregate_offers(
         rejections["NO_CASH_PRICE"] = dropped_no_price
     if n_forward_only:
         # Diagnóstico, NÃO um motivo de rejeição próprio: é um subconjunto de
-        # NO_CASH_PRICE. Vai com prefixo `_` para ficar fora da soma de
-        # `rows_rejected` em `_process_date` — senão a oferta só-a-prazo seria
-        # contada duas vezes no total de rejeitadas.
-        rejections["_FORWARD_PRICE_ONLY"] = n_forward_only
+        # NO_CASH_PRICE, e somá-lo contaria a mesma oferta duas vezes em
+        # `rows_rejected`. O nome fica legível no `rejection_log`; quem exclui
+        # do total é `_DIAGNOSTIC_REASONS`, não uma convenção de prefixo.
+        rejections["FORWARD_PRICE_ONLY"] = n_forward_only
 
     if work.empty:
         logger.warning(
@@ -912,10 +917,10 @@ def _process_date(
         # rejeições. NÃO usamos rows_raw - rows_agg: com o split de turno o
         # df_agg tem até 3 linhas por grupo (Diário/Manhã/Tarde) e é agregado,
         # então aquela diferença confunde "colapso por agregação" com "rejeição".
-        # Chaves com `_` são diagnóstico (subconjunto de outro motivo) e ficam
-        # fora do total — somá-las contaria a mesma oferta duas vezes.
+        # Motivos de diagnóstico são subconjunto de outro motivo e ficam fora
+        # do total — somá-los contaria a mesma oferta duas vezes.
         rows_rejected = int(
-            sum(v for k, v in rejections.items() if not k.startswith("_"))
+            sum(v for k, v in rejections.items() if k not in _DIAGNOSTIC_REASONS)
         )
         logger.info(f"{collection_date} — {rows_agg:,} linhas AC agregadas "
                     f"({rows_rejected:,} ofertas cruas descartadas pelos filtros)")

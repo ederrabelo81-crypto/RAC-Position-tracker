@@ -488,6 +488,7 @@ def _fetch_range_dict(
         "by_date": {d: [_offer_to_dict(o) for o in offs]
                     for d, offs in result.by_date.items()},
         "price_basis": result.price_basis,
+        "basis_by_id": result.basis_by_id,
     }
 
 
@@ -622,6 +623,7 @@ def render_peer_evolution(
         "Janela (dias)", options=[7, 15, 30], value=15, key="pt_series_days")
     end_iso = collection_date or date.today().isoformat()
 
+    series_basis_by_id: dict = {}
     if source_label == SRC_DEMO:
         rows_by_date = _demo_series(end_iso, days)
     else:  # SRC_SUPABASE
@@ -640,13 +642,7 @@ def render_peer_evolution(
                     end_iso, days, use_brand_filter, turno)
             rows_by_date = {d: [_dict_to_offer(x) for x in offs]
                             for d, offs in payload.get("by_date", {}).items()}
-            # A janela da evolução é maior que a dos cards, então pode alcançar
-            # dias da base antiga que os cards nem leem — a checagem é repetida
-            # aqui de propósito, junto do gráfico que a mistura distorce. Uma
-            # série que emenda duas bases desenha o degrau da virada como se
-            # fosse tendência de mercado, que é o pior formato possível do erro.
-            if not render_price_basis_notice(payload.get("price_basis", {})):
-                return
+            series_basis_by_id = payload.get("basis_by_id", {})
         except Exception as exc:  # noqa: BLE001
             st.error(f"Falha lendo a série do Supabase: {type(exc).__name__}: {exc}")
             return
@@ -661,6 +657,17 @@ def render_peer_evolution(
 
     if not rows_by_date:
         st.info("Sem dados no intervalo (após os filtros).")
+        return
+
+    # A janela da evolução é maior que a dos cards, então pode alcançar dias da
+    # base antiga que os cards nem leem — a checagem é repetida aqui de
+    # propósito, junto do gráfico que a mistura distorce. Uma série que emenda
+    # duas bases desenha o degrau da virada como se fosse tendência de mercado,
+    # que é o pior formato possível do erro. Contada sobre o que sobrou dos
+    # filtros, como nos cards.
+    if not render_price_basis_notice(
+        _count_basis(rows_by_date, series_basis_by_id)
+    ):
         return
 
     series = daily_series(rows_by_date)
@@ -868,10 +875,11 @@ def _load_window(
 ):
     """Carrega o período pedido + uma janela de lookback antes dele (fallback).
 
-    Retorna ``(rows_by_date, period_dates, source_label, days_back, basis)``,
-    onde ``basis`` é ``{price_basis: nº de linhas}`` do que foi lido — é o que
-    permite avisar na tela quando a janela mistura a base de preço corrigida
-    com o histórico gravado na base errada.
+    Retorna ``(rows_by_date, period_dates, source_label, days_back, basis_by_id)``,
+    onde ``basis_by_id`` é ``{id da oferta: base de preço}``. O mapa vem por
+    oferta, e não já somado, porque os filtros de Marca/Marketplace/Vendedor
+    rodam DEPOIS deste carregamento: contar as bases aqui bloquearia um recorte
+    que, filtrado, sobrou inteiro numa base só.
     ``rows_by_date`` cobre tanto o período quanto o lookback (``Offer``s já
     desserializados, indexados por data ISO); ``period_dates`` são as datas
     do período pedido pelo usuário (as demais chaves de ``rows_by_date`` são
@@ -886,7 +894,7 @@ def _load_window(
     period_dates = _period_dates(start_iso, end_iso)
     demo = False
     days_back = 0
-    basis: dict = {}
+    basis_by_id: dict = {}
 
     if source == SRC_DEMO:
         window_start = (date.fromisoformat(start_iso) - timedelta(days=fallback_days)).isoformat()
@@ -898,7 +906,7 @@ def _load_window(
             with st.spinner("Lendo pricetrack_daily do Supabase…"):
                 payload = _load_window_supabase(
                     window_start, end_iso, use_brand_filter, turno)
-            basis = payload.get("price_basis", {})
+            basis_by_id = payload.get("basis_by_id", {})
             rows_by_date = {d: [_dict_to_offer(x) for x in offs]
                             for d, offs in payload.get("by_date", {}).items()}
             if not rows_by_date:
@@ -921,7 +929,7 @@ def _load_window(
             days_back = payload["days_back"]
             rows_by_date = {resolved_date: offers}
             period_dates = [resolved_date]
-            basis = {PRICE_BASIS_BEST_CASH: len(offers)}
+            basis_by_id = {o.id: PRICE_BASIS_BEST_CASH for o in offers}
         except Exception as exc:  # noqa: BLE001
             st.error(f"Falha no hook ao vivo: {type(exc).__name__}: {exc}\n\n"
                      "A API de coleta é lenta (~2min). Prefira a fonte Supabase. "
@@ -937,7 +945,8 @@ def _load_window(
             days_back = 0
 
     label = SRC_DEMO if demo else source
-    return rows_by_date, period_dates, label, days_back, ({} if demo else basis)
+    return rows_by_date, period_dates, label, days_back, (
+        {} if demo else basis_by_id)
 
 
 # ── Filtros de Marca / Marketplace / Vendedor (client-side) ──────────────────
@@ -996,6 +1005,23 @@ def _render_offer_filters(offers, embedded: bool):
 
 
 # ── Corpo da página (reutilizável no painel do projeto) ──────────────────────
+def _count_basis(offers_by_date: dict, basis_by_id: dict) -> dict:
+    """Conta as bases das ofertas que SOBRARAM, não das que foram lidas.
+
+    Os filtros de Marca/Marketplace/Vendedor são client-side e rodam depois da
+    leitura. Contar na leitura bloquearia como "bases misturadas" um recorte
+    que, já filtrado, ficou inteiro numa base só — e o usuário não teria como
+    sair disso a não ser mudando de período.
+    """
+    counts: dict = {}
+    for offers in offers_by_date.values():
+        for offer in offers:
+            basis = basis_by_id.get(offer.id)
+            if basis:
+                counts[basis] = counts.get(basis, 0) + 1
+    return counts
+
+
 def render_price_basis_notice(basis: dict) -> bool:
     """Avisa sobre a base de preço lida. Retorna False se NÃO se pode agregar.
 
@@ -1079,7 +1105,7 @@ def render_page(embedded: bool = False) -> None:
     )
     source, date_range, use_brand_filter, use_latest, turno = _controls(embedded)
     fallback_days = _hot_window_days_safe() if source != SRC_LIVE else 0
-    rows_by_date, period_dates, source_label, days_back, price_basis = _load_window(
+    rows_by_date, period_dates, source_label, days_back, basis_by_id = _load_window(
         source, date_range, use_brand_filter, use_latest, fallback_days, turno,
     )
 
@@ -1097,6 +1123,10 @@ def render_page(embedded: bool = False) -> None:
         d: filter_offers(offs, keep_brands=keep_brands, marketplaces=mkts, sellers=sellers)
         for d, offs in rows_by_date.items()
     }
+    # A base é contada sobre o que sobrou dos filtros — e só sobre os dias que
+    # a análise realmente usa (período + fallback), não sobre a leitura inteira.
+    price_basis = _count_basis(filtered_by_date, basis_by_id)
+
     analysis = analyze_with_fallback(filtered_by_date, period_dates)
 
     is_range = len(period_dates) > 1

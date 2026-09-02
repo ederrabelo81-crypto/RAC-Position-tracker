@@ -321,3 +321,29 @@ class TestFetchSupabaseUsaLastPrice:
     def test_base_desconhecida_nao_passa_como_conhecida(self):
         weird = dict(self._ROW, price_basis="base_do_futuro")
         assert ds._basis_counter([weird]) == {"desconhecida:base_do_futuro": 1}
+
+
+class TestBasisPorOferta:
+    """O mapa id→base permite recontar DEPOIS dos filtros da tela."""
+
+    _ROW = {
+        "collection_date": "2026-09-01", "turno": "Diário", "brand": "MIDEA",
+        "sku": "42EZVCA12M5", "title": "AR 12000 AI ECOMASTER",
+        "marketplace": "MAGAZINE LUIZA", "seller": "DUFRIO",
+        "seller_canonical": "DUFRIO", "id": 1,
+        "min_price": 2059.0, "last_price": 2229.0,
+        "price_basis": "best_cash",
+    }
+
+    def test_mapeia_cada_oferta_para_sua_base(self):
+        legacy = dict(self._ROW, id=2, seller="LEVEROS",
+                      seller_canonical="LEVEROS", price_basis="spot_legacy")
+        fake = _FakeSupabase([dict(self._ROW), legacy])
+        result = ds.fetch_supabase("2026-09-01", brands=["MIDEA"], client=fake)
+        assert result.basis_by_id == {"1": "best_cash", "2": "spot_legacy"}
+
+    def test_linha_sem_preco_fica_fora_do_mapa(self):
+        """Só oferta que virou `Offer` entra — o mapa é casado por id."""
+        sem_preco = {k: v for k, v in self._ROW.items()
+                     if k not in ("min_price", "last_price")}
+        assert ds._basis_by_offer([sem_preco]) == {}

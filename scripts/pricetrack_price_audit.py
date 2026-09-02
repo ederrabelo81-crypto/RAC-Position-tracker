@@ -63,7 +63,12 @@ _FIELDS = {
     "spot": ("spot_price", "spotPrice"),
     "pix": ("pix_price", "pixPrice"),
     "forward": ("forward_price", "forwardPrice"),
-    "generic": ("price", "sale_price", "salePrice", "preco", "valor"),
+    # O importador resolve por `lookup[c.lower()]`, então uma grafia lá cobre
+    # todas as caixas. Aqui a chave do dict é casada exata — por isso as
+    # variantes vêm listadas uma a uma, senão o auditor diz "sem preço"
+    # onde o import gravou um.
+    "generic": ("price", "sale_price", "salePrice", "saleprice",
+                "preco", "valor"),
     "rrp": ("price_from", "priceFrom"),
     "status": ("status",),
     "hour": ("collection_hour", "collectionHour"),
@@ -105,12 +110,28 @@ def _cash(spot: Optional[float], pix: Optional[float],
     return generic
 
 
-def _is_available(raw: Dict[str, Any]) -> bool:
+def _has_status_column(rows: List[Dict[str, Any]]) -> bool:
+    """O export traz o campo `status` em ALGUMA oferta?
+
+    O importador decide isso pela presença da COLUNA no DataFrame — se ela não
+    existe, ele não tem o que filtrar e conta tudo como disponível. A auditoria
+    tem de usar a mesma régua, por arquivo e não por linha: julgar registro a
+    registro faria o auditor rejeitar todo um export sem `status` e reportar
+    zero oferta disponível num dia perfeitamente normal.
+    """
+    return any("status" in raw for raw in rows)
+
+
+def _is_available(raw: Dict[str, Any], has_status_column: bool = True) -> bool:
     """True só para `status` EXATAMENTE AVAILABLE (mesma régua do importador).
 
     Um status novo ou inesperado não é "disponível": tratar desconhecido como
-    comprável é o mesmo erro de base que esta auditoria existe para achar.
+    comprável é o mesmo erro de base que esta auditoria existe para achar. Mas
+    export SEM a coluna é outro caso — aí não há o que filtrar, e o importador
+    conta tudo; ``has_status_column=False`` reproduz isso.
     """
+    if not has_status_column:
+        return True
     return str(_pick(raw, "status") or "").strip().upper() == "AVAILABLE"
 
 
@@ -175,6 +196,7 @@ def print_offers(rows: List[Dict[str, Any]], limit: int) -> None:
     if not rows:
         print("Nenhuma oferta casou os filtros.")
         return
+    has_status = _has_status_column(rows)
 
     print(f"\n{'═' * 118}")
     print("OFERTAS CRUAS DA API — uma linha por coleta (não por listagem)")
@@ -200,7 +222,7 @@ def print_offers(rows: List[Dict[str, Any]], limit: int) -> None:
         # Só AVAILABLE tem à vista efetivo — status desconhecido não é
         # "comprável". Mesma régua do importador.
         cash = (_brl(_cash(spot, pix, _price(raw, "generic")))
-                if _is_available(raw) else "(indisp.)")
+                if _is_available(raw, has_status) else "(indisp.)")
         print(
             f"{(hour if hour is not None else '—'):>4} "
             f"{str(_pick(raw, 'status') or '—'):<12} "
@@ -221,6 +243,7 @@ def print_summary(rows: List[Dict[str, Any]]) -> None:
     if not rows:
         return
 
+    has_status = _has_status_column(rows)
     per_mkt: Dict[str, Dict[str, Any]] = defaultdict(
         lambda: {"n": 0, "avail": 0, "pix_wins": 0, "sem_pix": 0, "gaps": [],
                  "forward_only": 0, "unavailable": 0}
@@ -229,7 +252,7 @@ def print_summary(rows: List[Dict[str, Any]]) -> None:
         mkt = str(_pick(raw, "marketplace") or "—")
         bucket = per_mkt[mkt]
         bucket["n"] += 1
-        if not _is_available(raw):
+        if not _is_available(raw, has_status):
             # Indisponível não entra no preço importado, então também não entra
             # na conta do erro: somá-la superestimaria a margem atribuída à
             # base antiga, que é justamente o número que este resumo defende.
@@ -299,9 +322,10 @@ def compare_db(rows: List[Dict[str, Any]], collection_date: str, turno: str) -> 
     # ── O que a API entregou, recortado pela MESMA janela do banco ──────────
     # Sem `_in_turno` o bruto varria o dia inteiro enquanto o banco vinha
     # filtrado por turno: o menor de outro turno gerava divergência falsa.
+    has_status = _has_status_column(rows)
     esperado: Dict[tuple, Dict[str, Any]] = {}
     for raw in rows:
-        if not _is_available(raw) or not _in_turno(raw, turno):
+        if not _is_available(raw, has_status) or not _in_turno(raw, turno):
             continue
         cash = _cash(_price(raw, "spot"), _price(raw, "pix"), _price(raw, "generic"))
         if cash is None:
@@ -310,19 +334,31 @@ def compare_db(rows: List[Dict[str, Any]], collection_date: str, turno: str) -> 
         # do banco (marcas distintas no mesmo sku/marketplace/seller) colapsam
         # num só e o piso esperado mistura linhas que nunca foram agregadas
         # juntas.
-        k = (str(_pick(raw, "brand") or "").upper(), str(_pick(raw, "sku") or ""),
-             str(_pick(raw, "marketplace") or ""), str(_pick(raw, "seller") or ""))
+        # `.strip()` em todos os campos: o importador normaliza com
+        # `_pick_text(...).str.strip()` antes de agrupar. Sem o mesmo tratamento,
+        # um espaço sobrando no export desalinha a chave e o confronto acusa
+        # AUSENTE para uma linha que está no banco.
+        k = (str(_pick(raw, "brand") or "").strip().upper(),
+             str(_pick(raw, "sku") or "").strip(),
+             str(_pick(raw, "marketplace") or "").strip(),
+             str(_pick(raw, "seller") or "").strip())
         hour = _hour(raw)
         slot = esperado.setdefault(
-            k, {"min": cash, "obs": 0, "last": cash, "last_hour": -1}
+            k, {"min": cash, "obs": 0, "last": cash, "last_hour": None}
         )
         slot["min"] = min(slot["min"], cash)
         slot["obs"] += 1
         # `last` = observação da hora mais alta (o que o painel exibe); empate
-        # de hora fica com a última do arquivo, como no importador.
-        if hour is None or hour >= slot["last_hour"]:
+        # de hora fica com a última do arquivo, como no importador — que ordena
+        # com `na_position="first"`, ou seja, hora AUSENTE vai para o início e
+        # nunca vence uma hora numérica. Só quando o grupo inteiro está sem hora
+        # é que a última do arquivo prevalece.
+        if hour is None:
+            if slot["last_hour"] is None:
+                slot["last"] = cash
+        elif slot["last_hour"] is None or hour >= slot["last_hour"]:
             slot["last"] = cash
-            slot["last_hour"] = hour if hour is not None else slot["last_hour"]
+            slot["last_hour"] = hour
 
     # ── O que o banco guardou (paginado: um dia passa de 1.000 linhas) ──────
     client = create_client(url, key)
@@ -340,8 +376,10 @@ def compare_db(rows: List[Dict[str, Any]], collection_date: str, turno: str) -> 
         )
         page = getattr(resp, "data", None) or []
         for r in page:
-            banco[(str(r.get("brand") or "").upper(), str(r.get("sku") or ""),
-                   str(r.get("marketplace") or ""), str(r.get("seller") or ""))] = r
+            banco[(str(r.get("brand") or "").strip().upper(),
+                   str(r.get("sku") or "").strip(),
+                   str(r.get("marketplace") or "").strip(),
+                   str(r.get("seller") or "").strip())] = r
         if len(page) < page_size:
             break
         offset += page_size

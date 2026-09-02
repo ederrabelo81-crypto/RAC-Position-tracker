@@ -205,8 +205,8 @@ class TestBaseDePrecoBestCash:
         agg, rejections = ptai.aggregate_offers(df, "2026-09-01")
         assert agg.empty
         assert rejections.get("NO_CASH_PRICE") == 1
-        # `_` = diagnóstico, subconjunto de NO_CASH_PRICE (fora do total).
-        assert rejections.get("_FORWARD_PRICE_ONLY") == 1
+        # Diagnóstico: subconjunto de NO_CASH_PRICE, fora do total.
+        assert rejections.get("FORWARD_PRICE_ONLY") == 1
 
     def test_preco_zero_ou_negativo_nao_vira_piso(self):
         df = pd.DataFrame([
@@ -374,15 +374,58 @@ class TestAliasDeCampo:
 
 class TestRejeicoesNaoSeSobrepoem:
     def test_forward_only_e_diagnostico_nao_entra_no_total(self):
-        """`_FORWARD_PRICE_ONLY` é subconjunto de `NO_CASH_PRICE`.
+        """`FORWARD_PRICE_ONLY` é subconjunto de `NO_CASH_PRICE`.
 
         Somar os dois contaria a mesma oferta duas vezes em `rows_rejected`.
+        O nome fica legível no log; quem exclui do total é a lista explícita.
         """
         df = pd.DataFrame([
             _offer(spot_price=None, pix_price=None, forward_price=3200.0),
         ])
         _, rejections = ptai.aggregate_offers(df, "2026-09-01")
         assert rejections["NO_CASH_PRICE"] == 1
-        assert rejections["_FORWARD_PRICE_ONLY"] == 1
-        total = sum(v for k, v in rejections.items() if not k.startswith("_"))
+        assert rejections["FORWARD_PRICE_ONLY"] == 1
+        assert "FORWARD_PRICE_ONLY" in ptai._DIAGNOSTIC_REASONS
+        total = sum(v for k, v in rejections.items()
+                    if k not in ptai._DIAGNOSTIC_REASONS)
         assert total == 1
+
+
+class TestParidadeComOAuditor:
+    """O auditor tem de aplicar exatamente a régua do importador.
+
+    Auditor mais frouxo perde o erro; auditor mais rígido inventa divergência.
+    Nos dois casos ele deixa de ser prova.
+    """
+
+    def test_grafias_genericas_do_auditor_cobrem_as_do_importador(self):
+        import importlib.util as _ilu
+        spec = _ilu.spec_from_file_location(
+            "ptaudit",
+            Path(__file__).resolve().parent.parent / "scripts"
+            / "pricetrack_price_audit.py",
+        )
+        audit = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(audit)
+
+        # O importador resolve por lookup lowercase; o auditor casa a chave
+        # exata. Toda grafia aceita lá tem de existir aqui, em alguma caixa.
+        auditor = {g.lower() for g in audit._FIELDS["generic"]}
+        for grafia in ptai._GENERIC_PRICE_FIELDS:
+            assert grafia.lower() in auditor, grafia
+
+    def test_sem_coluna_status_os_dois_contam_tudo(self):
+        import importlib.util as _ilu
+        spec = _ilu.spec_from_file_location(
+            "ptaudit",
+            Path(__file__).resolve().parent.parent / "scripts"
+            / "pricetrack_price_audit.py",
+        )
+        audit = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(audit)
+
+        raw = {"sku": "X", "spot_price": 100.0}     # sem `status`
+        assert audit._has_status_column([raw]) is False
+        assert audit._is_available(raw, False) is True
+        # com a coluna presente, status ausente na linha NÃO é disponível
+        assert audit._is_available(raw, True) is False
