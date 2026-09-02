@@ -12,7 +12,7 @@ name: PriceTrack Daily Import
 # Logo, este workflow só precisa disparar o comando uma vez por dia.
 #
 # Schedule (UTC) — ESCADA DE TRÊS TENTATIVAS (Ago/2026):
-#   06:20 UTC = 03:20 BRT  → 1ª tentativa (com --force: fecha o dia)
+#   03:01 UTC = 00:01 BRT  → 1ª tentativa (com --force: fecha o dia)
 #   07:20 UTC = 04:20 BRT  → 2ª tentativa (no-op se D-1 já entrou)
 #   08:20 UTC = 05:20 BRT  → 3ª tentativa + auto-heal dos últimos 14 dias
 #
@@ -26,8 +26,8 @@ name: PriceTrack Daily Import
 # ele ainda não tinha rodado.
 #
 # Uma tentativa uma hora antes do consumidor não tem folga nenhuma para um
-# agendamento que atrasa horas. Três tentativas espaçadas, a partir das 03:20,
-# dão ~3h40 de margem até o briefing, e o minuto :20 evita a fila do minuto 0.
+# agendamento que atrasa horas. Três tentativas espaçadas, a partir das 00:01,
+# dão ~7 horas de margem até o briefing, e o minuto :01 evita a fila do minuto 0.
 # O script já é idempotente (`date_exists()` pula data presente), então as
 # tentativas 2 e 3 custam segundos quando a 1ª funcionou.
 #
@@ -47,7 +47,7 @@ name: PriceTrack Daily Import
 
 on:
   schedule:
-    - cron: '20 6 * * *'   # 03:20 BRT — 1ª tentativa (força e fecha o dia)
+    - cron: '1 3 * * *'    # 00:01 BRT — 1ª tentativa (força e fecha o dia)
     - cron: '20 7 * * *'   # 04:20 BRT — 2ª tentativa (no-op se D-1 já entrou)
     - cron: '20 8 * * *'   # 05:20 BRT — 3ª tentativa + auto-heal de 14 dias
   workflow_dispatch:
