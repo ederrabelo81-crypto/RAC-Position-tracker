@@ -147,6 +147,24 @@ class TestPeersStats:
         assert low9.peers.is_empty
         assert low9.midea_vs_peers_delta is None
 
+    def test_midea_vs_market_delta_uses_peers_not_midea(self):
+        """Regressão de produção: o filtro de Marca (só um concorrente, ex.
+        Elgin) não movia o modal/delta do "mercado" porque ``market``
+        incluía a própria Midea — e como a Midea está sempre presente e
+        costuma repetir preço entre ofertas (MAP), ela vencia o empate do
+        modal independente de qual concorrente estava selecionado. O modal
+        e o delta do "mercado" têm que vir de ``peers`` (só concorrentes)."""
+        offers = [
+            _offer("42EBVCA09M5", "MIDEA", 1700),
+            _offer("42EBVCA09M5", "MIDEA", 1700),
+            _offer("45HJFI09C2WB", "ELGIN", 1900),
+            _offer("S3-Q09AAQAK", "LG", 2200),
+        ]
+        only_elgin = filter_offers(offers, keep_brands={"ELGIN"})
+        low9 = analyze(only_elgin).tier(TIER_LOW, CAP_9K)
+        assert low9.peers.mode == 1900  # não 1700 (preço da própria Midea)
+        assert low9.midea_vs_market_delta == -200.0
+
 
 class TestModelResults:
     def test_lists_every_peer_model_including_without_data(self):

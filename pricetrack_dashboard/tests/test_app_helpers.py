@@ -64,6 +64,45 @@ class TestMideaBadge:
         assert "1.000,00" in html and "▲" not in html and "▼" not in html
 
 
+class TestTierTableUsesPeersNotMarket:
+    """Regressão de produção: `_tier_table`/`_tier_card_html` mostravam o
+    modal de `tr.market` (Midea + concorrentes juntos) como "modal do
+    mercado" — como a Midea está sempre presente e domina o empate de moda
+    (preço MAP repetido entre ofertas), o número parecia não reagir ao
+    filtro de Marca (selecionar só um concorrente não movia o modal). As
+    colunas "mercado" da tabela têm que vir de `tr.peers` (só concorrentes)."""
+
+    def test_modal_and_piso_mercado_come_from_peers(self):
+        import pandas as pd
+        from pricetrack_dashboard.analytics import analyze, filter_offers
+
+        offers = demo_offers()
+        only_elgin = filter_offers(offers, keep_brands={"ELGIN"})
+        analysis = analyze(only_elgin)
+        df = app._tier_table(analysis)
+
+        for tr in analysis.tiers:
+            row = df[(df["Tier"] == tr.tier)
+                     & (df["Capacidade"] == app.CAP_LABEL[tr.capacity])].iloc[0]
+            assert pd.isna(row["Modal mercado"]) == (tr.peers.mode is None)
+            if tr.peers.mode is not None:
+                assert row["Modal mercado"] == tr.peers.mode
+                assert row["Piso mercado"] == tr.peers.minimum
+            assert row["Ofertas"] == tr.peers.count
+
+    def test_card_html_big_number_is_peers_mode(self):
+        """A linha grande do card ("Modal do mercado") tem que ser o modal
+        dos concorrentes, não o de `market` (que inclui a Midea)."""
+        from pricetrack_dashboard.analytics import analyze, filter_offers
+
+        offers = demo_offers()
+        only_elgin = filter_offers(offers, keep_brands={"ELGIN"})
+        tr = analyze(only_elgin).tier("Low", "9K")
+        html = app._tier_card_html(tr)
+        big_number_line = html.split("Modal do mercado</div>")[1].split("</div>")[0]
+        assert app._brl_cents(tr.peers.mode) in big_number_line
+
+
 class TestPeerToPeerDataframe:
     def _analysis(self):
         from pricetrack_dashboard.analytics import analyze

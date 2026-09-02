@@ -128,10 +128,19 @@ class TierResult:
 
     @property
     def midea_vs_market_delta(self) -> Optional[float]:
-        """Modal Midea − modal mercado (negativo = Midea mais barata)."""
-        if self.midea.mode is None or self.market.mode is None:
+        """Modal Midea − modal dos concorrentes (negativo = Midea mais barata).
+
+        Compara com ``peers`` (concorrentes, sem Midea) e não com ``market``
+        (que inclui a própria Midea): Midea está sempre presente e, em geral,
+        tem o maior número de ofertas no mesmo preço (MAP) — se o "mercado"
+        incluísse a própria Midea, o modal do mercado ficaria ancorado no
+        preço dela e o delta travaria perto de zero **independente de qual
+        concorrente o filtro de Marca selecionou**, escondendo o efeito do
+        filtro (era o defeito visto em produção).
+        """
+        if self.midea.mode is None or self.peers.mode is None:
             return None
-        return round(self.midea.mode - self.market.mode, 2)
+        return round(self.midea.mode - self.peers.mode, 2)
 
     @property
     def midea_vs_peers_delta(self) -> Optional[float]:
