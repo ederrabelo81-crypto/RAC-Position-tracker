@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence
 
+from loguru import logger
+
 from pricetrack_api import PriceTrackClient, PriceTrackSettings
 from pricetrack_api.exceptions import PriceTrackNoCollectionError
 from pricetrack_api.models import CollectQuery, Offer
@@ -43,7 +45,13 @@ _PRICE_MAX_BRL = 60_000.0
 
 # PostgREST devolve no máximo ~1000 linhas por request; paginamos por range.
 _SUPABASE_PAGE = 1000
-_SUPABASE_MAX_ROWS = 20_000
+_SUPABASE_MAX_ROWS = 20_000          # teto para 1 dia (fetch_supabase) — de sobra
+# Teto para o intervalo de dias (fetch_supabase_range — gráfico de evolução).
+# Bem mais alto que o de 1 dia: sem filtro de marca, 15-30 dias de
+# `pricetrack_daily` podem passar de 20k linhas fácil, e um teto baixo aqui
+# truncava a janela em silêncio (o gráfico calculava a tendência com menos
+# dias do que o pedido, sem avisar ninguém).
+_SUPABASE_RANGE_MAX_ROWS = 300_000
 
 
 def peer_brands() -> List[str]:
@@ -321,7 +329,8 @@ def fetch_supabase_range(
 
     rows: List[Dict[str, Any]] = []
     offset = 0
-    while offset < _SUPABASE_MAX_ROWS:
+    truncated = False
+    while offset < _SUPABASE_RANGE_MAX_ROWS:
         q = (
             client.table("pricetrack_daily")
             .select("collection_date,turno,brand,sku,title,marketplace,seller,"
@@ -338,6 +347,17 @@ def fetch_supabase_range(
         if len(page) < _SUPABASE_PAGE:
             break
         offset += _SUPABASE_PAGE
+    else:
+        # Saiu do while por ter atingido o teto, não porque a última página
+        # veio curta — pode haver mais linhas no intervalo que não lemos.
+        truncated = True
+
+    if truncated:
+        logger.warning(
+            f"pricetrack_dashboard.fetch_supabase_range: teto de "
+            f"{_SUPABASE_RANGE_MAX_ROWS} linhas atingido para {start_date}..{end_date} "
+            "— a série de evolução pode estar incompleta nesse intervalo."
+        )
 
     by_date: Dict[str, List[Offer]] = defaultdict(list)
     for row in rows:

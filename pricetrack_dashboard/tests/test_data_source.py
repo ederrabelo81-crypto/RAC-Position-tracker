@@ -56,29 +56,32 @@ class TestReadTimeoutFloor:
 # ── Fonte Supabase ────────────────────────────────────────────────────────────
 
 class _FakeQuery:
-    """Query builder dublê: encadeia .eq/.in_/.range/.order/.limit e .execute."""
+    """Query builder dublê: encadeia .eq/.gte/.lte/.in_/.range/.order/.limit e
+    .execute() — os filtros REALMENTE recortam `self._rows` (não só registram
+    a chamada), para os testes comprovarem que o filtro é aplicado, não só
+    que o método foi chamado."""
 
     def __init__(self, rows):
-        self._rows = rows
-        self.filters = {}
+        self._rows = list(rows)
 
     def select(self, *a, **k):
         return self
 
     def eq(self, col, val):
-        self.filters[col] = val
+        self._rows = [r for r in self._rows if r.get(col) == val]
         return self
 
     def gte(self, col, val):
-        self.filters[f"{col}__gte"] = val
+        self._rows = [r for r in self._rows if (r.get(col) or "") >= val]
         return self
 
     def lte(self, col, val):
-        self.filters[f"{col}__lte"] = val
+        self._rows = [r for r in self._rows if (r.get(col) or "") <= val]
         return self
 
     def in_(self, col, vals):
-        self.filters[col] = list(vals)
+        vals = list(vals)
+        self._rows = [r for r in self._rows if r.get(col) in vals]
         return self
 
     def order(self, *a, **k):
@@ -154,7 +157,7 @@ class TestFetchSupabase:
             ds.fetch_supabase(collection_date="2026-08-31")
 
     def test_latest_date_helper(self):
-        fake = _FakeSupabase([{"collection_date": "2026-08-31"}])
+        fake = _FakeSupabase([{"collection_date": "2026-08-31", "turno": "Diário"}])
         assert ds.supabase_latest_date(fake) == "2026-08-31"
 
 
@@ -171,6 +174,20 @@ class TestFetchSupabaseRange:
         assert len(by_date["2026-08-25"]) == 2
         assert len(by_date["2026-08-26"]) == 1
 
+    def test_excludes_rows_outside_the_requested_date_range(self):
+        """Regressão: o fake antigo não filtrava de verdade por .gte/.lte —
+        um regression que removesse esses filtros de fetch_supabase_range
+        ainda passaria. Aqui a linha de fora do intervalo tem que sumir."""
+        rows = [
+            {**_daily_row("42EBVCA09M5", "t", "MIDEA", 1700), "collection_date": "2026-08-25"},
+            {**_daily_row("42EBVCA09M5", "t", "MIDEA", 1800), "collection_date": "2026-08-10"},
+            {**_daily_row("42EBVCA09M5", "t", "MIDEA", 1900), "collection_date": "2026-09-05"},
+        ]
+        fake = _FakeSupabase(rows)
+        by_date = ds.fetch_supabase_range("2026-08-20", "2026-08-31", client=fake)
+        assert set(by_date.keys()) == {"2026-08-25"}
+        assert "2026-08-10" not in by_date and "2026-09-05" not in by_date
+
     def test_drops_offers_without_plausible_price(self):
         rows = [{**_daily_row("X", "t", "MIDEA", 9999999), "collection_date": "2026-08-25"}]
         fake = _FakeSupabase(rows)
@@ -183,3 +200,34 @@ class TestFetchSupabaseRange:
         import pytest
         with pytest.raises(RuntimeError):
             ds.fetch_supabase_range("2026-08-25", "2026-08-26")
+
+    def test_paginates_past_a_single_page_without_truncating(self, monkeypatch):
+        """Mais linhas do que 1 página, mas dentro do teto — nada truncado."""
+        monkeypatch.setattr(ds, "_SUPABASE_PAGE", 2)
+        monkeypatch.setattr(ds, "_SUPABASE_RANGE_MAX_ROWS", 100)
+        rows = [
+            {**_daily_row(f"X{i}", "t", "MIDEA", 1000 + i), "collection_date": "2026-08-25"}
+            for i in range(5)
+        ]
+        fake = _FakeSupabase(rows)
+        warnings = []
+        monkeypatch.setattr(ds.logger, "warning", lambda msg: warnings.append(msg))
+        by_date = ds.fetch_supabase_range("2026-08-25", "2026-08-25", client=fake)
+        assert len(by_date["2026-08-25"]) == 5
+        assert warnings == []
+
+    def test_warns_when_row_cap_is_reached(self, monkeypatch):
+        """Regressão do achado do cubic: teto atingido não pode ficar em
+        silêncio — tem que logar um aviso, não só devolver dado incompleto."""
+        monkeypatch.setattr(ds, "_SUPABASE_PAGE", 2)
+        monkeypatch.setattr(ds, "_SUPABASE_RANGE_MAX_ROWS", 4)
+        rows = [
+            {**_daily_row(f"X{i}", "t", "MIDEA", 1000 + i), "collection_date": "2026-08-25"}
+            for i in range(6)
+        ]
+        fake = _FakeSupabase(rows)
+        warnings = []
+        monkeypatch.setattr(ds.logger, "warning", lambda msg: warnings.append(msg))
+        by_date = ds.fetch_supabase_range("2026-08-25", "2026-08-25", client=fake)
+        assert len(by_date["2026-08-25"]) == 4   # truncado no teto, não nas 6 reais
+        assert len(warnings) == 1 and "teto" in warnings[0]

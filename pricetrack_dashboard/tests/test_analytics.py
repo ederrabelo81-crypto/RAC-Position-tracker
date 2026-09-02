@@ -144,10 +144,13 @@ class TestPeersStats:
 
 class TestModelResults:
     def test_lists_every_peer_model_including_without_data(self):
+        from pricetrack_dashboard.peer import PEER
+
         offers = [_offer("42EBVCA09M5", "MIDEA", 1700)]
         low9 = analyze(offers).tier(TIER_LOW, CAP_9K)
-        # 9 modelos definidos no peer para Low/9K (Midea + 8 concorrentes).
-        assert len(low9.models) == 9
+        # Um ModelResult por modelo definido no peer (não um número fixo — o
+        # peer muda de trimestre; deriva do próprio contrato, não hardcoded).
+        assert len(low9.models) == len(PEER[TIER_LOW][CAP_9K].models)
         midea_rows = [m for m in low9.models if m.is_midea]
         assert len(midea_rows) == 1 and midea_rows[0].stats.count == 1
         empty_rows = [m for m in low9.models if not m.is_midea]
@@ -221,11 +224,14 @@ class TestDailySeries:
         assert low9.delta_pct() is None
 
     def test_missing_date_produces_no_point(self):
-        # Dia sem nenhuma oferta casada no peer não entra no dict de entrada;
-        # simula com um dict que já reflete isso (lacuna, sem interpolar).
-        series = daily_series({"2026-08-25": [_offer("42EBVCA09M5", "MIDEA", 1000)]})
+        # 08-26 ausente do dict de entrada (dia sem oferta casada no peer) —
+        # a série tem que pular a lacuna, nunca interpolar um ponto pra ela.
+        series = daily_series({
+            "2026-08-25": [_offer("42EBVCA09M5", "MIDEA", 1000)],
+            "2026-08-27": [_offer("42EBVCA09M5", "MIDEA", 1100)],
+        })
         low9 = next(s for s in series if s.tier == TIER_LOW and s.capacity == CAP_9K)
-        assert len(low9.points) == 1
+        assert [p.date for p in low9.points] == ["2026-08-25", "2026-08-27"]
 
     def test_empty_series_has_no_points_and_no_data(self):
         series = daily_series({})

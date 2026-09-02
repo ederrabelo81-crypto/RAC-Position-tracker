@@ -469,21 +469,52 @@ def _series_figure(ts: TierSeries) -> go.Figure:
     return fig
 
 
-def _series_caption(ts: TierSeries, days: int) -> str:
+def _series_span_days(ts: TierSeries) -> Optional[int]:
+    """Dias de calendário do 1º ao último ponto REAL da série (inclusive).
+
+    Nunca confiar na janela pedida pelo usuário para rotular o Delta: o
+    Supabase só guarda a janela quente (`RAC_HOT_WINDOW_DAYS`, ~15 dias por
+    padrão) — pedir 30 dias pode devolver bem menos, e rotular "Delta30d"
+    nesse caso mentiria sobre o período realmente medido.
+    """
+    dated = [p.date for p in ts.points if p.midea_mode is not None]
+    if len(dated) < 2:
+        return None
+    first, last = date.fromisoformat(dated[0]), date.fromisoformat(dated[-1])
+    return (last - first).days + 1
+
+
+def _series_caption(ts: TierSeries) -> str:
     delta = ts.delta_pct()
     gap = ts.gap_last()
+    span = _series_span_days(ts)
     parts = []
     if delta is not None:
         trend = "subindo" if delta > 0 else ("caindo" if delta < 0 else "estável")
         sign = "+" if delta > 0 else ""
+        label = f"Delta{span}d" if span else "Delta"
         parts.append(
-            f"Midea {trend} no período (Delta{days}d: {sign}{_pct_ptbr(delta)}%)"
+            f"Midea {trend} no período ({label}: {sign}{_pct_ptbr(delta)}%)"
         )
     if gap is not None:
         leitura = ("Midea mais barata" if gap < 0
                    else ("Midea mais cara" if gap > 0 else "empatada"))
         parts.append(f"gap vs mediana dos peers em {_brl_cents(gap)} ({leitura})")
     return "; ".join(parts) if parts else "Sem dados suficientes no período."
+
+
+def _hot_window_days_safe() -> int:
+    """Dias que o Supabase mantém antes de migrar pro histórico frio (Drive).
+
+    Import isolado (não `utils.history` inteiro) para não arrastar as
+    dependências do Drive por conta de um número; qualquer falha cai no
+    default do projeto em vez de quebrar a página.
+    """
+    try:
+        from utils.history.store import hot_window_days
+        return hot_window_days()
+    except Exception:  # noqa: BLE001
+        return 15
 
 
 def render_peer_evolution(
@@ -509,6 +540,15 @@ def render_peer_evolution(
     if source_label == SRC_DEMO:
         rows_by_date = _demo_series(end_iso, days)
     else:  # SRC_SUPABASE
+        hot_days = _hot_window_days_safe()
+        if days > hot_days:
+            st.caption(
+                f"ℹ️ Pedido {days}d, mas o Supabase mantém só a janela quente "
+                f"(~{hot_days}d) de `pricetrack_daily` — dias mais antigos "
+                "vivem no histórico frio (Drive), fora do alcance desta "
+                "página. O gráfico usa os dias realmente disponíveis; a "
+                "legenda sempre informa o período real, não o pedido."
+            )
         try:
             with st.spinner(f"Lendo {days} dias de pricetrack_daily…"):
                 payload = _load_series_supabase(end_iso, days, use_brand_filter)
@@ -534,7 +574,7 @@ def render_peer_evolution(
                     st.info("Sem dado no período.")
                     continue
                 st.plotly_chart(_series_figure(ts), use_container_width=True)
-                st.caption(_series_caption(ts, days))
+                st.caption(_series_caption(ts))
 
 
 # ── Segredos (env ou st.secrets do Streamlit Cloud) ──────────────────────────

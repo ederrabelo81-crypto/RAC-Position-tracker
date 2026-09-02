@@ -70,9 +70,14 @@ class TestPeerToPeerDataframe:
         return analyze(demo_offers(), collection_date="2026-08-31")
 
     def test_one_row_per_model_both_capacities(self):
+        from pricetrack_dashboard.peer import CAP_9K, CAP_12K, PEER, TIER_LOW
+
         df = app._peer_to_peer_dataframe(self._analysis(), "Low")
-        # 9 modelos (Low) x 2 capacidades = 18 linhas.
-        assert len(df) == 18
+        # Uma linha por modelo definido no peer para cada capacidade — deriva
+        # do próprio contrato (o peer muda de trimestre), não um número fixo.
+        expected = (len(PEER[TIER_LOW][CAP_9K].models)
+                    + len(PEER[TIER_LOW][CAP_12K].models))
+        assert len(df) == expected
         assert set(df["BTU"]) == {"9k", "12k"}
 
     def test_midea_first_within_each_capacity_block(self):
@@ -104,9 +109,9 @@ class TestSeriesCaption:
             SeriesPoint("2026-08-01", 1000.0, 1200.0, 5, 5),
             SeriesPoint("2026-08-02", 1100.0, 1150.0, 5, 5),
         ])
-        caption = app._series_caption(ts, 15)
+        caption = app._series_caption(ts)
         assert "subindo" in caption
-        assert "Delta15d" in caption
+        assert "Delta2d" in caption  # 2 pontos, 1 dia de diferença = span de 2
         assert "Midea mais barata" in caption
 
     def test_falling_trend_and_gap_pricier(self):
@@ -114,13 +119,29 @@ class TestSeriesCaption:
             SeriesPoint("2026-08-01", 1200.0, 1000.0, 5, 5),
             SeriesPoint("2026-08-02", 1000.0, 900.0, 5, 5),
         ])
-        caption = app._series_caption(ts, 7)
+        caption = app._series_caption(ts)
         assert "caindo" in caption
         assert "Midea mais cara" in caption
 
     def test_insufficient_data_message(self):
         ts = self._series([])
-        assert app._series_caption(ts, 15) == "Sem dados suficientes no período."
+        assert app._series_caption(ts) == "Sem dados suficientes no período."
+
+    def test_label_reflects_real_span_not_a_requested_window(self):
+        """Regressão: nunca rotular pelo tamanho de janela pedido pelo
+        usuário — só os dados REALMENTE disponíveis (a série pode ser mais
+        curta que o pedido por causa da janela quente do Supabase)."""
+        ts = self._series([
+            SeriesPoint("2026-08-01", 1000.0, 1200.0, 5, 5),
+            SeriesPoint("2026-08-10", 1100.0, 1150.0, 5, 5),
+        ])
+        caption = app._series_caption(ts)
+        assert "Delta10d" in caption   # 01 -> 10 de agosto = 10 dias, não 15/30
+        assert "Delta15d" not in caption and "Delta30d" not in caption
+
+    def test_span_none_with_single_point(self):
+        ts = self._series([SeriesPoint("2026-08-01", 1000.0, 1200.0, 5, 5)])
+        assert app._series_span_days(ts) is None
 
 
 class TestSeriesFigure:
