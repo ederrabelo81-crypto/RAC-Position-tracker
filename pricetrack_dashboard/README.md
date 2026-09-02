@@ -18,6 +18,26 @@ As três entregam o mesmo formato de oferta, então as análises (tiers + varia�
 Midea) rodam iguais sobre qualquer uma. Seletor de data em **calendário**
 (default: data mais recente disponível).
 
+## Filtros
+
+Multiselects que recortam **todas** as seções (aplicados client-side, antes da
+agregação — inclusive na série de evolução, dia a dia):
+
+- **Marcas (vs Midea)** — os concorrentes do peer. A **Midea está sempre
+  presente** (é a âncora da comparação) e não aparece na lista. Selecionar só
+  Elgin, por exemplo, faz todas as seções lerem **Midea vs Elgin**.
+- **Marketplace** — recorta por marketplace; vale para todas as marcas, Midea
+  inclusa.
+- **Vendedor** — recorta por lojista (usa `seller_canonical`, que colapsa
+  grafias do mesmo dealer).
+
+Convenção "Todos" (como no PriceTrack): nada ou tudo selecionado = sem filtro.
+
+> **Grupo (1P / Lojas Oficiais / 3P Marketplace / Outros 3P) não é oferecido** —
+> o export do PriceTrack que alimenta `pricetrack_daily` traz só `marketplace` e
+> `seller`, sem a classificação de grupo (ela existe apenas no painel web do
+> PriceTrack). Para tê-lo aqui seria preciso incluí-lo no pipeline de import.
+
 ## O que a página mostra
 
 1. **Preços por tier — Low / Mid / High.** Cada tier é a linha Midea e o grupo
