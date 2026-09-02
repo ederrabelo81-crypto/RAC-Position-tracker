@@ -976,6 +976,7 @@ def run(
     concurrent: int = _MAX_CONCURRENT,
     categories: Optional[List[str]] = None,
     gaps_only: bool = False,
+    local_only: bool = False,
 ) -> None:
     _DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     progress = load_progress()
@@ -1007,6 +1008,16 @@ def run(
             f"[{start} → {end}]: {', '.join(dates_to_process) or 'nenhuma'}"
         )
 
+    # ── Modo local-only: processa SÓ arquivos em cache, pula API ────────────
+    if local_only:
+        cached_dates = [ds for ds in dates_to_process if _offers_dest(ds).exists()]
+        skipped_local = len(dates_to_process) - len(cached_dates)
+        logger.info(
+            f"[local-only] {len(cached_dates)} data(s) em cache, "
+            f"{skipped_local} puladas (sem arquivo local)"
+        )
+        dates_to_process = cached_dates
+
     total = len(dates_to_process)
     logger.info(
         f"Datas a importar: {total} ({start} → {end}); "
@@ -1017,7 +1028,11 @@ def run(
         return
 
     # ── Fase 1: downloads em lote (até `concurrent` exports em voo) ────────
-    if dry_run:
+    if local_only:
+        # Modo local-only: pula a API, marca tudo como cached
+        logger.info("[local-only] Pulando downloads — usando apenas arquivos em cache")
+        download_statuses = {ds: "cached" for ds in dates_to_process}
+    elif dry_run:
         download_statuses = {
             ds: ("dry_run" if _should_redownload(ds, _offers_dest(ds).exists())
                  else "cached")
@@ -1128,6 +1143,12 @@ def main() -> None:
             "Ex: --categories 'AR CONDICIONADO' CLIMATIZACAO"
         ),
     )
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Processa APENAS arquivos NDJSON.gz já em cache (pula API, útil quando rate-limited). "
+             "Ignora datas sem arquivo local.",
+    )
     args = parser.parse_args()
     categories = [c.upper().strip() for c in args.categories]
 
@@ -1174,6 +1195,7 @@ def main() -> None:
     logger.info(f"  Período: {start_date} → {end_date} ({days} dias)")
     logger.info(f"  Dry-run: {args.dry_run}")
     logger.info(f"  Force:   {args.force}")
+    logger.info(f"  Local-only: {args.local_only}")
     logger.info(f"  Upload:  {not args.no_upload}")
     logger.info(f"  Arquivos: {_DOWNLOAD_DIR}")
     logger.info(f"  Seller map: {'sim' if _HAS_SELLER_MAP else 'fallback'}")
@@ -1191,6 +1213,7 @@ def main() -> None:
         concurrent=args.concurrent,
         categories=categories,
         gaps_only=args.gaps_only,
+        local_only=args.local_only,
     )
 
 
