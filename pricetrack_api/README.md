@@ -181,6 +181,13 @@ effective_price(offer)        # None se status == UNAVAILABLE
   (nunca 0.0 contaminando mínimos/médias).
 - Ofertas `UNAVAILABLE` mantêm o histórico de preço mas não têm preço efetivo.
 
+> ⚠️ **Este contrato vale para quem escreve preço em qualquer lugar.**
+> `scripts/pricetrack_api_import.py` não o seguia até Set/2026: gravava o
+> `spotPrice` em vez de `best_cash` e caía em `forwardPrice` (a prazo) quando
+> não havia à vista — ~10% acima do painel onde há desconto PIX, com base
+> parcelada misturada na mesma série. Ao mexer no preço, mexa nas duas pontas.
+> Diagnóstico: [`docs/PRICETRACK_FIDELIDADE.md`](../docs/PRICETRACK_FIDELIDADE.md).
+
 ## Observabilidade
 
 Cada coleta emite um `CollectionMetrics` (log estruturado via

@@ -353,3 +353,63 @@ backfill não passou.
 `bestsellers/models.py` `__post_init__()`; `utils/supabase_maintenance.py`
 `normalize_platforms_sellers_in_supabase()`; `app.py`
 `_apply_seller_canonical()`/`_expand_sellers()`; `tests/test_seller_names.py`
+
+## 24. Colapsar os 4 preços da API num só, sem dizer qual (02/09/2026)
+
+❌ **Errado — `scripts/pricetrack_api_import.py` até 01/09/2026**
+```python
+_PRICE_FIELDS = ("spot_price", "pix_price", "price", "forward_price", ...)
+price = NaN
+for cand in _PRICE_FIELDS:            # primeiro não-nulo vence
+    price = price.fillna(to_numeric(df[lookup[cand]]))
+agg = work.groupby(...)["_price"].agg(min=..., mean=..., mode=...)
+```
+
+✅ **Certo**
+```python
+cash = pd.concat([spot, pix], axis=1).min(axis=1)   # best_cash: o MENOR à vista
+avail = rows[rows["_available"]]                    # UNAVAILABLE não compete
+a["price_basis"] = PRICE_BASIS_BEST_CASH            # a linha diz de onde veio
+```
+
+**Why:** a API não devolve "um preço" — devolve `spotPrice`, `pixPrice`,
+`forwardPrice`, `priceFrom`, `status` e `collectionHour` por coleta. Aquele
+`fillna` em cadeia produziu **três** defeitos num só lugar: gravava o `spot`
+quando o painel (e o comprador) veem o **PIX** — ~10% a mais em toda a Magazine
+Luiza; caía em `forward_price` quando faltava à vista, **misturando preço a
+prazo na mesma série** de mín/média/moda; e nunca olhava `status`, então oferta
+indisponível puxava o piso de mercado. Ninguém percebeu por 36 dias
+(1.004.567 linhas) porque o número **parecia** plausível — só não fechava com
+o painel.
+
+**Regra dura:** preço nunca é implícito. Toda linha carimba `price_basis`, e
+**ausência de carimbo se lê como base antiga**, nunca como "provavelmente está
+certo". Preço a prazo não preenche buraco de preço à vista — sem à vista a
+linha é rejeitada (`NO_CASH_PRICE`, com o diagnóstico `_FORWARD_PRICE_ONLY`),
+nunca convertida.
+
+**O que "à vista" inclui:** `spotPrice` e `pixPrice` (o menor dos dois) e, só
+onde os DOIS faltam, os genéricos `price`/`sale_price`/`preco`/`valor` — rede
+de segurança para o dia em que o export mudar de schema. `forwardPrice` está
+fora dessa lista de propósito, e é a única exclusão que importa: os genéricos
+são preço à vista sob outro nome, o a prazo é outra base.
+
+**Cuidado com o degrau:** corrigir a ingestão sem carimbar a base emenda dado
+certo com dado errado na série de evolução, e o salto do dia da virada parece
+movimento de mercado. Por isso a migração 006 entra com
+`DEFAULT 'spot_legacy'` e o dashboard **dá erro** (não aviso) quando a janela
+lida mistura as duas.
+
+**E ainda:** uma linha de `pricetrack_daily` **não é uma oferta** — é N coletas
+do dia colapsadas (`obs_count`). Quem trata a linha como observação produz
+"moda dos pisos" achando que produziu "moda do mercado". O painel mostra a
+**última coleta** (`last_price`); piso da janela (`min_price`) é outra
+pergunta, com outro nome.
+
+**Files:** `scripts/pricetrack_api_import.py` (`_cash_price`, `_pick_numeric`,
+`aggregate_offers`); `migrations/006_pricetrack_price_basis.sql`;
+`pricetrack_dashboard/data_source.py` (`_representative_price`,
+`_basis_counter`); `pricetrack_dashboard/app.py`
+(`render_price_basis_notice`); `scripts/pricetrack_price_audit.py`;
+`tests/test_pricetrack_api_import.py`; diagnóstico completo em
+`docs/PRICETRACK_FIDELIDADE.md`

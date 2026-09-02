@@ -231,3 +231,93 @@ class TestFetchSupabaseRange:
         by_date = ds.fetch_supabase_range("2026-08-25", "2026-08-25", client=fake)
         assert len(by_date["2026-08-25"]) == 4   # truncado no teto, não nas 6 reais
         assert len(warnings) == 1 and "teto" in warnings[0]
+
+
+# ── Base de preço (migração 006) ─────────────────────────────────────────────
+
+class TestRepresentativePrice:
+    """Qual coluna de ``pricetrack_daily`` vira o preço da oferta sintética."""
+
+    def test_last_price_vence_min_price(self):
+        """`last_price` é a última coleta — o que o painel do PriceTrack exibe.
+
+        Antes esta função começava por `min_price` (piso da janela inteira), e
+        quando o preço mexia no dia o dashboard não fechava com o painel sem
+        nada na tela explicando por quê.
+        """
+        row = {"last_price": 2500.0, "min_price": 2000.0, "mode_price": 2100.0}
+        assert ds._representative_price(row) == 2500.0
+
+    def test_cai_para_min_price_em_linha_legada(self):
+        # Linhas anteriores à migração 006 não têm `last_price`.
+        row = {"min_price": 2000.0, "mode_price": 2100.0}
+        assert ds._representative_price(row) == 2000.0
+
+    def test_ignora_last_price_fora_da_faixa_plausivel(self):
+        row = {"last_price": 9.0, "min_price": 2000.0}
+        assert ds._representative_price(row) == 2000.0
+
+    def test_grupo_so_indisponivel_nao_vira_oferta(self):
+        # Preços NULL = nenhuma observação AVAILABLE; não entra em piso/média.
+        row = {"last_price": None, "min_price": None,
+               "mode_price": None, "avg_price": None}
+        assert ds._representative_price(row) is None
+        assert ds._row_to_offer(row) is None
+
+
+class TestBasisCounter:
+    def test_conta_por_base(self):
+        rows = [
+            {"price_basis": "best_cash"},
+            {"price_basis": "best_cash"},
+            {"price_basis": "spot_legacy"},
+        ]
+        assert ds._basis_counter(rows) == {"best_cash": 2, "spot_legacy": 1}
+
+    def test_linha_sem_carimbo_conta_como_legada(self):
+        """Ausência de carimbo NUNCA é lida como 'provavelmente está certo'."""
+        assert ds._basis_counter([{}, {"price_basis": None}]) == {
+            ds.PRICE_BASIS_SPOT_LEGACY: 2
+        }
+
+
+class TestFetchSupabaseUsaLastPrice:
+    """O caminho real (Supabase → Offer) tem de entregar `last_price`."""
+
+    _ROW = {
+        "collection_date": "2026-09-01", "turno": "Diário", "brand": "MIDEA",
+        "sku": "42EZVCA12M5", "title": "AR CONDICIONADO 12000 AI ECOMASTER",
+        "marketplace": "MAGAZINE LUIZA", "seller": "DUFRIO",
+        "seller_canonical": "DUFRIO", "id": 1,
+        # piso do dia ≠ última coleta: é o caso que fazia painel e dashboard
+        # divergirem sem nada na tela explicando.
+        "min_price": 2059.0, "last_price": 2229.0,
+        "avg_price": 2159.0, "mode_price": 2059.0, "max_price": 2229.0,
+        "price_basis": "best_cash", "obs_count": 3,
+    }
+
+    def test_oferta_sai_com_o_preco_da_ultima_coleta(self):
+        fake = _FakeSupabase([dict(self._ROW)])
+        result = ds.fetch_supabase("2026-09-01", brands=["MIDEA"], client=fake)
+        assert [o.spot_price for o in result.offers] == [2229.0]
+        assert result.price_basis == {"best_cash": 1}
+
+    def test_linha_legada_cai_para_o_piso(self):
+        legacy = {k: v for k, v in self._ROW.items()
+                  if k not in ("last_price", "price_basis", "obs_count")}
+        fake = _FakeSupabase([legacy])
+        result = ds.fetch_supabase("2026-09-01", brands=["MIDEA"], client=fake)
+        assert [o.spot_price for o in result.offers] == [2059.0]
+        # Sem carimbo = base antiga; nunca "provavelmente está certo".
+        assert result.price_basis == {ds.PRICE_BASIS_SPOT_LEGACY: 1}
+
+    def test_janela_misturada_reporta_as_duas_bases(self):
+        legacy = dict(self._ROW, seller="LEVEROS", seller_canonical="LEVEROS",
+                      id=2, price_basis="spot_legacy")
+        fake = _FakeSupabase([dict(self._ROW), legacy])
+        result = ds.fetch_supabase("2026-09-01", brands=["MIDEA"], client=fake)
+        assert result.price_basis == {"best_cash": 1, "spot_legacy": 1}
+
+    def test_base_desconhecida_nao_passa_como_conhecida(self):
+        weird = dict(self._ROW, price_basis="base_do_futuro")
+        assert ds._basis_counter([weird]) == {"desconhecida:base_do_futuro": 1}

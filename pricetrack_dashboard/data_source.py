@@ -12,18 +12,29 @@ opção; a sonda de data e o timeout foram endurecidos, mas o endpoint é lento.
 página renderizar sem rede/credencial. Marcada como demo na UI.
 
 Todas as fontes entregam ``list[Offer]``, então ``analytics.analyze`` roda igual
-em cima das três. Em ``pricetrack_daily`` cada linha é uma listagem do dia; a
-oferta sintética usa ``min_price`` (melhor à vista daquela listagem) como preço,
-mantendo a semântica de piso/modal do resto do painel.
+em cima das três.
+
+Em ``pricetrack_daily`` **cada linha é uma listagem-dia agregada**, não uma
+oferta: por trás dela há N coletas (``obs_count``), colapsadas em
+min/média/moda/máx. A oferta sintética usa ``last_price`` — o preço da ÚLTIMA
+coleta da janela, que é o que o painel do PriceTrack mostra ("Preço exibido:
+última coleta"). Linhas anteriores à migração 006 não têm ``last_price`` e caem
+para ``min_price`` (o piso da janela), que só coincide com o painel quando o
+preço não mexeu no dia.
+
+⚠️ Uma linha ``price_basis='spot_legacy'`` foi gravada com a base de preço
+errada (spot em vez do menor entre spot e PIX) e **não é comparável** com uma
+``best_cash``. ``LiveResult.price_basis`` conta as bases lidas para que a UI
+consiga avisar em vez de emendar as duas numa série só.
 """
 from __future__ import annotations
 
 import os
 import random
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -60,6 +71,17 @@ def peer_brands() -> List[str]:
     return sorted(brands)
 
 
+#: Base de preço de uma linha de ``pricetrack_daily`` (migração 006).
+#: ``best_cash`` = menor entre spot e PIX, só ofertas AVAILABLE — a base que o
+#: painel do PriceTrack exibe. ``spot_legacy`` = base antiga (spot com fallback
+#: para preço a prazo, indisponível incluída), gravada até 01/09/2026 e **não
+#: comparável** com a nova: em marketplace com desconto PIX ela fica ~10% acima.
+PRICE_BASIS_BEST_CASH = "best_cash"
+PRICE_BASIS_SPOT_LEGACY = "spot_legacy"
+#: Prefixo para carimbo que esta versão não conhece — nunca comparável.
+PRICE_BASIS_UNKNOWN = "desconhecida"
+
+
 @dataclass(frozen=True, slots=True)
 class LiveResult:
     """Resultado de um pull ao vivo."""
@@ -67,6 +89,20 @@ class LiveResult:
     offers: List[Offer]
     collection_date: Optional[str]
     days_back: int                  # 0 = hoje, 1 = ontem, ...
+    #: {price_basis: nº de linhas} do que foi lido. Mais de uma chave = a
+    #: janela mistura bases de preço e nenhuma comparação entre elas vale.
+    price_basis: Dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RangeResult:
+    """Leitura de um intervalo de dias, agrupada por data."""
+
+    by_date: Dict[str, List[Offer]]
+    #: {price_basis: nº de linhas} de TODO o intervalo. Duas chaves aqui é o
+    #: caso perigoso: a série de evolução emendaria bases diferentes e o degrau
+    #: do dia da correção pareceria movimento de mercado.
+    price_basis: Dict[str, int] = field(default_factory=dict)
 
 
 def find_latest_date(
@@ -148,7 +184,10 @@ def fetch_live(
     )
     offers = list(client.iter_offers(query))
     return LiveResult(
-        offers=offers, collection_date=collection_date, days_back=days_back
+        offers=offers, collection_date=collection_date, days_back=days_back,
+        # Ao vivo o preço sai de `effective_price` (menor à vista, só
+        # AVAILABLE) — a mesma base `best_cash` que o import corrigido grava.
+        price_basis={PRICE_BASIS_BEST_CASH: len(offers)},
     )
 
 
@@ -177,8 +216,18 @@ def supabase_configured() -> bool:
 
 
 def _representative_price(row: Dict[str, Any]) -> Optional[float]:
-    """Preço-observação de uma listagem: melhor à vista (min), com fallbacks."""
-    for col in ("min_price", "mode_price", "avg_price"):
+    """Preço-observação de uma listagem, na ordem que reconcilia com o painel.
+
+    ``last_price`` primeiro: é o preço da ÚLTIMA coleta da janela, exatamente o
+    que o painel do PriceTrack exibe ("Preço exibido: última coleta"). Antes
+    esta função começava por ``min_price``, que é o **piso da janela inteira** —
+    quando o preço mexia no dia os dois divergiam e o painel não fechava com o
+    dashboard, sem nada na tela explicando por quê.
+
+    ``min_price`` segue como fallback para as linhas gravadas antes da migração
+    006 (que não têm ``last_price``), e ``mode``/``avg`` para linha capenga.
+    """
+    for col in ("last_price", "min_price", "mode_price", "avg_price"):
         v = row.get(col)
         if v is None:
             continue
@@ -191,8 +240,113 @@ def _representative_price(row: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+#: Bases que esta versão do dashboard sabe interpretar. Qualquer outro valor
+#: (uma base futura lida por código antigo) é colapsado em ``PRICE_BASIS_UNKNOWN``
+#: — tratar carimbo desconhecido como comparável é como não ter carimbo nenhum.
+_KNOWN_BASES = frozenset({PRICE_BASIS_BEST_CASH, PRICE_BASIS_SPOT_LEGACY})
+
+
+#: Colunas que só existem depois da migração 006. Quando o banco ainda não a
+#: recebeu, o PostgREST recusa o select inteiro — e o dashboard, que trata
+#: qualquer exceção de leitura como "fonte indisponível", cairia em modo Demo
+#: com um Supabase perfeitamente válido do outro lado. Por isso a leitura tenta
+#: de novo sem elas e marca o que voltou como `spot_legacy`, que é a verdade:
+#: banco sem a migração é banco com a base de preço antiga.
+_MIGRATION_006_COLUMNS = ("price_basis", "last_price", "obs_count")
+
+_SELECT_BASE = (
+    "collection_date,turno,brand,sku,title,marketplace,seller,"
+    "seller_canonical,min_price,avg_price,mode_price,max_price,id"
+)
+_SELECT_WITH_006 = (
+    "collection_date,turno,brand,sku,title,marketplace,seller,"
+    "seller_canonical,min_price,avg_price,mode_price,max_price,"
+    "price_basis,last_price,obs_count,id"
+)
+
+
+def _is_missing_006_error(exc: Exception) -> bool:
+    """True se o erro do PostgREST é 'coluna da migração 006 não existe'."""
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in ("pgrst204", "42703", "could not find", "does not exist")
+    ) and any(col in text for col in _MIGRATION_006_COLUMNS)
+
+
+def _paged_select(build_query, max_rows: int) -> Tuple[List[Dict[str, Any]], bool]:
+    """Pagina um select do PostgREST, com fallback pré-migração 006.
+
+    ``build_query(select_cols)`` devolve o query builder já filtrado.
+
+    Returns:
+        ``(linhas, truncado)`` — ``truncado`` é True quando a leitura parou no
+        teto ``max_rows`` em vez de numa página curta, ou seja, pode haver
+        linha no intervalo que não lemos.
+    """
+    for select_cols in (_SELECT_WITH_006, _SELECT_BASE):
+        rows: List[Dict[str, Any]] = []
+        offset = 0
+        try:
+            while offset < max_rows:
+                resp = (
+                    build_query(select_cols)
+                    .range(offset, offset + _SUPABASE_PAGE - 1)
+                    .execute()
+                )
+                page = getattr(resp, "data", None) or []
+                rows.extend(page)
+                if len(page) < _SUPABASE_PAGE:
+                    return rows, False
+                offset += _SUPABASE_PAGE
+            return rows, True          # saiu pelo teto: pode faltar linha
+        except Exception as exc:  # noqa: BLE001
+            if select_cols is _SELECT_WITH_006 and _is_missing_006_error(exc):
+                logger.warning(
+                    "pricetrack_daily sem as colunas da migração 006 "
+                    f"({', '.join(_MIGRATION_006_COLUMNS)}) — lendo o schema "
+                    "legado. As linhas contam como `spot_legacy`: banco sem a "
+                    "migração é banco com a base de preço antiga."
+                )
+                continue
+            raise
+    return [], False
+
+
+def _basis_counter(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    """Conta as bases de preço presentes nas linhas lidas.
+
+    Linha sem ``price_basis`` é do histórico anterior à migração 006 e conta
+    como ``spot_legacy`` — a base errada. Chamador algum deve tratar ausência
+    de carimbo como "provavelmente está certo".
+
+    Carimbo presente mas fora de ``_KNOWN_BASES`` vira ``PRICE_BASIS_UNKNOWN``,
+    preservando a grafia crua no nome (``desconhecida:<valor>``) para o aviso
+    da UI conseguir dizer o que encontrou.
+    """
+    counts: Dict[str, int] = defaultdict(int)
+    for row in rows:
+        raw = str(row.get("price_basis") or "").strip()
+        if not raw:
+            key = PRICE_BASIS_SPOT_LEGACY
+        elif raw in _KNOWN_BASES:
+            key = raw
+        else:
+            key = f"{PRICE_BASIS_UNKNOWN}:{raw}"
+        counts[key] += 1
+    return dict(counts)
+
+
 def _row_to_offer(row: Dict[str, Any]) -> Optional[Offer]:
-    """Converte uma linha de ``pricetrack_daily`` numa ``Offer`` sintética."""
+    """Converte uma linha de ``pricetrack_daily`` numa ``Offer`` sintética.
+
+    ``status`` sai como ``AVAILABLE`` porque em ``price_basis='best_cash'`` a
+    disponibilidade **já foi aplicada no import** (só observação AVAILABLE entra
+    no preço; grupo 100% indisponível chega com preço NULL e é descartado logo
+    acima). Em linha ``spot_legacy`` isso é uma promessa que o dado não cumpre:
+    a base antiga somava oferta indisponível no mínimo de mercado e não há como
+    desfazer isso na leitura — só reimportando o dia.
+    """
     price = _representative_price(row)
     if price is None:
         return None
@@ -264,24 +418,16 @@ def fetch_supabase(
         if not collection_date:
             raise RuntimeError("Sem dados em pricetrack_daily para o turno.")
 
-    rows: List[Dict[str, Any]] = []
-    offset = 0
-    while offset < _SUPABASE_MAX_ROWS:
+    def _build(select_cols: str):
         q = (
             client.table("pricetrack_daily")
-            .select("collection_date,turno,brand,sku,title,marketplace,seller,"
-                    "seller_canonical,min_price,avg_price,mode_price,max_price,id")
+            .select(select_cols)
             .eq("collection_date", collection_date)
             .eq("turno", turno)
         )
-        if brand_filter:
-            q = q.in_("brand", brand_filter)
-        resp = q.range(offset, offset + _SUPABASE_PAGE - 1).execute()
-        page = getattr(resp, "data", None) or []
-        rows.extend(page)
-        if len(page) < _SUPABASE_PAGE:
-            break
-        offset += _SUPABASE_PAGE
+        return q.in_("brand", brand_filter) if brand_filter else q
+
+    rows, _ = _paged_select(_build, _SUPABASE_MAX_ROWS)
 
     offers = [o for o in (_row_to_offer(r) for r in rows) if o is not None]
 
@@ -292,17 +438,18 @@ def fetch_supabase(
     except (TypeError, ValueError):
         days_back = 0
     return LiveResult(
-        offers=offers, collection_date=collection_date, days_back=days_back
+        offers=offers, collection_date=collection_date, days_back=days_back,
+        price_basis=_basis_counter(rows),
     )
 
 
-def fetch_supabase_range(
+def fetch_supabase_range_detailed(
     start_date: str,
     end_date: str,
     brands: Optional[Sequence[str]] = None,
     turno: str = "Diário",
     client=None,
-) -> Dict[str, List[Offer]]:
+) -> RangeResult:
     """Lê ``pricetrack_daily`` num intervalo de datas, agrupado por dia.
 
     Para o gráfico de evolução (Midea moda × mediana dos peers): uma consulta
@@ -316,8 +463,11 @@ def fetch_supabase_range(
         client: client Supabase (injetável em teste); senão monta do ambiente.
 
     Returns:
-        ``{data ISO: [Offer, ...]}`` — dias sem nenhuma linha simplesmente não
-        aparecem no dict (o chamador decide como tratar a lacuna).
+        ``RangeResult`` com ``by_date`` (``{data ISO: [Offer, ...]}`` — dias sem
+        nenhuma linha simplesmente não aparecem) e ``price_basis``, a contagem
+        de bases de preço do intervalo inteiro. Duas bases num mesmo intervalo
+        é o caso que o chamador PRECISA avisar na tela: a série emendaria dado
+        corrigido com dado da base antiga e o degrau pareceria mercado.
 
     Raises:
         RuntimeError: Supabase não configurado.
@@ -330,30 +480,17 @@ def fetch_supabase_range(
         )
     brand_filter = [b.upper() for b in (brands if brands is not None else peer_brands())]
 
-    rows: List[Dict[str, Any]] = []
-    offset = 0
-    truncated = False
-    while offset < _SUPABASE_RANGE_MAX_ROWS:
+    def _build(select_cols: str):
         q = (
             client.table("pricetrack_daily")
-            .select("collection_date,turno,brand,sku,title,marketplace,seller,"
-                    "seller_canonical,min_price,avg_price,mode_price,max_price,id")
+            .select(select_cols)
             .gte("collection_date", start_date)
             .lte("collection_date", end_date)
             .eq("turno", turno)
         )
-        if brand_filter:
-            q = q.in_("brand", brand_filter)
-        resp = q.range(offset, offset + _SUPABASE_PAGE - 1).execute()
-        page = getattr(resp, "data", None) or []
-        rows.extend(page)
-        if len(page) < _SUPABASE_PAGE:
-            break
-        offset += _SUPABASE_PAGE
-    else:
-        # Saiu do while por ter atingido o teto, não porque a última página
-        # veio curta — pode haver mais linhas no intervalo que não lemos.
-        truncated = True
+        return q.in_("brand", brand_filter) if brand_filter else q
+
+    rows, truncated = _paged_select(_build, _SUPABASE_RANGE_MAX_ROWS)
 
     if truncated:
         logger.warning(
@@ -370,7 +507,20 @@ def fetch_supabase_range(
         d = str(row.get("collection_date") or "")[:10]
         if d:
             by_date[d].append(offer)
-    return dict(by_date)
+    return RangeResult(by_date=dict(by_date), price_basis=_basis_counter(rows))
+
+
+def fetch_supabase_range(
+    start_date: str,
+    end_date: str,
+    brands: Optional[Sequence[str]] = None,
+    turno: str = "Diário",
+    client=None,
+) -> Dict[str, List[Offer]]:
+    """``fetch_supabase_range_detailed`` sem o carimbo de base (compatível)."""
+    return fetch_supabase_range_detailed(
+        start_date, end_date, brands=brands, turno=turno, client=client
+    ).by_date
 
 
 # ── Modo demo (offline) ──────────────────────────────────────────────────────

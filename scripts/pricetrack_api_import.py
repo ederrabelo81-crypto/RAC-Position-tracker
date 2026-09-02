@@ -162,13 +162,28 @@ def parse_ndjson_gz(path: Path) -> pd.DataFrame:
 # O NDJSON do export usa snake_case (spot_price, pix_price) enquanto o
 # schema OpenAPI documenta camelCase (spotPrice, pixPrice). Ambas as
 # grafias estão listadas para robustez.
-_PRICE_FIELDS = (
-    "spot_price", "spotprice",
-    "pix_price", "pixprice",
-    "price", "forward_price", "forwardprice",
-    "sale_price", "saleprice",
-    "preco", "preco_avista", "valor",
-)
+#
+# ⚠️ Base de preço — os campos são SEPARADOS de propósito (Set/2026).
+# Até 01/09/2026 havia uma tupla `_PRICE_FIELDS` única e o preço da oferta era
+# o primeiro campo não-nulo dela: `spot_price` primeiro, `pix_price` só como
+# tapa-buraco, e — o pior — `forward_price` (a prazo) quando não havia à vista.
+# Isso produzia dois erros que se somavam:
+#   1. o painel do PriceTrack exibe o MENOR à vista (À Vista + PIX + "Menor"),
+#      então em marketplace com desconto PIX (Magazine Luiza, 10%) o número
+#      gravado ficava ~10% acima do que o painel — e o comprador — vê;
+#   2. preço a prazo entrava na mesma série de min/média/moda que preço à
+#      vista, misturando bases dentro do mesmo número.
+# Agora: preço à vista = MENOR entre spot e PIX (contrato `best_cash` de
+# `pricetrack_api.normalize`). `forward` é lido só para diagnóstico e NUNCA
+# entra no preço. Ao mexer aqui, mexa também em `normalize.best_cash` — as duas
+# pontas têm de contar a mesma história.
+_SPOT_FIELDS = ("spot_price", "spotprice", "preco_avista")
+_PIX_FIELDS = ("pix_price", "pixprice")
+_FORWARD_FIELDS = ("forward_price", "forwardprice")
+# Último recurso, só se o export deixar de trazer spot E pix (mudança de
+# schema). Nunca inclui campo a prazo.
+_GENERIC_PRICE_FIELDS = ("price", "sale_price", "saleprice", "preco", "valor")
+_STATUS_FIELDS = ("status",)
 _BRAND_FIELDS = ("brand", "productbrand", "product_brand", "marca")
 _SKU_FIELDS = ("sku", "productsku", "product_sku", "sku_code", "codigo", "cod")
 _TITLE_FIELDS = ("product_name", "productname", "title", "name", "produto", "titulo")
@@ -192,13 +207,29 @@ TURNO_TARDE = "Tarde"
 TURNO_MANHA_HOURS: Set[int] = set(range(8, 13))    # 8, 9, 10, 11, 12
 TURNO_TARDE_HOURS: Set[int] = set(range(18, 23))   # 18, 19, 20, 21, 22
 
+# Base de preço carimbada em cada linha (migração 006). Sem esse carimbo não há
+# como distinguir uma linha corrigida de uma linha da base antiga, e um gráfico
+# de evolução emendaria as duas numa série só — degrau artificial de ~10% no
+# dia da correção, que é exatamente o tipo de mentira que este import combate.
+PRICE_BASIS_BEST_CASH = "best_cash"       # menor entre spot e PIX, só AVAILABLE
+PRICE_BASIS_SPOT_LEGACY = "spot_legacy"   # base antiga (≤ 01/09/2026)
+
+# Colunas da migração 006. Sem elas o import ABORTA (ver `insert_rows`): uma
+# linha corrigida sem carimbo de base é pior que import nenhum.
+_MIGRATION_006_COLUMNS = (
+    "price_basis", "last_price", "last_hour",
+    "spot_min_price", "pix_min_price", "obs_count", "unavailable_count",
+)
+
 
 def _mode(series: pd.Series) -> float:
     m = series.dropna().mode()
     if len(m) > 0:
         return float(m.iloc[0])
     v = series.dropna()
-    return float(v.mean()) if len(v) > 0 else 0.0
+    # Grupo sem nenhum preço válido devolve NaN (vira NULL na tabela), não 0.0:
+    # moda R$ 0,00 seria lida como preço real por todo consumidor a jusante.
+    return float(v.mean()) if len(v) > 0 else float("nan")
 
 
 def _pick_text(df: pd.DataFrame, lookup: Dict[str, str],
@@ -210,14 +241,42 @@ def _pick_text(df: pd.DataFrame, lookup: Dict[str, str],
     return pd.Series([default] * len(df), index=df.index, dtype="object")
 
 
-def _pick_price(df: pd.DataFrame, lookup: Dict[str, str]) -> pd.Series:
-    """Combina os candidatos de preço, preenchendo nulos com o próximo campo."""
-    price = pd.Series([float("nan")] * len(df), index=df.index, dtype="float64")
-    for cand in _PRICE_FIELDS:
+def _pick_numeric(
+    df: pd.DataFrame, lookup: Dict[str, str], candidates: Tuple[str, ...]
+) -> pd.Series:
+    """Coalesce das colunas candidatas, saneada. NaN quando nenhuma existe.
+
+    Os candidatos são GRAFIAS do mesmo campo lógico (``spot_price`` vs
+    ``spotPrice``), então o valor de qualquer uma serve. Coalescemos todas as
+    presentes em vez de parar na primeira: um export que traga as duas grafias
+    com a primeira nula perderia o preço válido da segunda — oferta rejeitada
+    ou preço subestimado, em silêncio.
+
+    Saneamento espelha ``pricetrack_api.normalize.clean_price``: não-numérico,
+    ±inf e valores ≤ 0 viram NaN (preço ausente) — nunca 0.0, que contaminaria
+    mínimos e médias.
+    """
+    out = pd.Series([float("nan")] * len(df), index=df.index, dtype="float64")
+    for cand in candidates:
         if cand in lookup:
             col = pd.to_numeric(df[lookup[cand]], errors="coerce")
-            price = price.fillna(col)
-    return price
+            out = out.fillna(col)
+    return out.where(out > 0).replace([float("inf"), float("-inf")], float("nan"))
+
+
+def _cash_price(spot: pd.Series, pix: pd.Series, generic: pd.Series) -> pd.Series:
+    """Preço à vista efetivo da oferta: o MENOR entre spot e PIX.
+
+    É o mesmo contrato de ``pricetrack_api.normalize.NormalizedPrices.best_cash``
+    e o mesmo que o painel do PriceTrack exibe com "À Vista + PIX + Menor" —
+    ou seja, o preço que o comprador de fato paga à vista.
+
+    ``generic`` só entra onde spot E pix faltam, para o caso de o export mudar
+    de schema. Preço a prazo nunca participa: somar parcelamento a uma série de
+    preço à vista inventa um número que não existe em nenhuma vitrine.
+    """
+    best = pd.concat([spot, pix], axis=1).min(axis=1)   # min ignora NaN
+    return best.fillna(generic)
 
 
 def aggregate_offers(
@@ -234,12 +293,19 @@ def aggregate_offers(
     Resolve nomes de campo de forma case-insensitive para lidar com
     snake_case do NDJSON vs camelCase do schema OpenAPI.
 
+    Preço agregado é o **menor à vista** (spot vs PIX) das observações
+    **AVAILABLE** — a base `best_cash`, que é a que o painel do PriceTrack
+    exibe. Ofertas UNAVAILABLE não entram em preço nenhum (indisponível não
+    compete no piso), mas o grupo sobrevive com preços NULL e
+    `unavailable_count` > 0: a listagem existiu, só não competiu por preço.
+
     Filtros aplicados em ordem:
       1. Categoria (campo `category`) — default: AR CONDICIONADO
-      2. Preço válido (> 0)
+      2. Preço à vista válido (> 0) — a prazo NUNCA vira preço
       3. SKU presente — linhas sem `sku` não reconciliam com o catálogo
          (join PT × coletas) e são rejeitadas, espelhando o validador do
          importador manual (MISSING_FIELD/sku). Roadmap §3 item 9.
+      4. `status` — UNAVAILABLE sai das estatísticas de preço (mas é contada)
 
     brand/title vazios são mantidos — melhor importar com identificador
     parcial do que perder a oferta.
@@ -292,12 +358,65 @@ def aggregate_offers(
     # Reconstrói lookup após filtro
     lookup = {c.lower(): c for c in df.columns}
 
-    # ── 2. Preço ─────────────────────────────────────────────────────────
-    price = _pick_price(df, lookup)
+    # ── 2. Preço à vista (menor entre spot e PIX) ────────────────────────
+    spot = _pick_numeric(df, lookup, _SPOT_FIELDS)
+    pix = _pick_numeric(df, lookup, _PIX_FIELDS)
+    forward = _pick_numeric(df, lookup, _FORWARD_FIELDS)
+    generic = _pick_numeric(df, lookup, _GENERIC_PRICE_FIELDS)
+    price = _cash_price(spot, pix, generic)
     n_with_price = int(price.notna().sum())
+
+    # Quantas ofertas o PIX de fato barateia — é a medida direta do erro que a
+    # base antiga cometia (ela gravava o spot e ignorava esse desconto).
+    n_pix_wins = int((pix.notna() & spot.notna() & (pix < spot)).sum())
+    if n_pix_wins:
+        logger.info(
+            f"{collection_date} — PIX é o menor à vista em {n_pix_wins:,} "
+            f"oferta(s); a base antiga gravava o spot nessas linhas."
+        )
+    elif pix.notna().any():
+        logger.info(f"{collection_date} — PIX presente mas nunca menor que o spot.")
+    else:
+        logger.warning(
+            f"{collection_date} — export SEM campo de PIX preenchido. O preço "
+            f"gravado é o spot; confira com scripts/pricetrack_price_audit.py."
+        )
+
+    # Ofertas que só têm preço a prazo: antes viravam "preço" via fallback
+    # (misturando base), agora são rejeitadas explicitamente.
+    n_forward_only = int((price.isna() & forward.notna()).sum())
+
+    status = _pick_text(df, lookup, _STATUS_FIELDS).str.upper().str.strip()
+    if _STATUS_FIELDS[0] in lookup:
+        # Estritamente AVAILABLE. Status desconhecido NÃO é "disponível": o
+        # ponto desta correção é que o preço signifique exatamente uma coisa, e
+        # "não sei se dá para comprar" não entra num piso de mercado. Nada some
+        # em silêncio — o que não é AVAILABLE entra em `unavailable_count`, e
+        # valor inesperado vira WARNING nomeando as grafias vistas.
+        unexpected = sorted(
+            set(status[~status.isin(("AVAILABLE", "UNAVAILABLE"))].unique())
+        )
+        if unexpected:
+            logger.warning(
+                f"{collection_date} — `status` com valor(es) fora de "
+                f"AVAILABLE/UNAVAILABLE: {unexpected}. Tratados como "
+                f"indisponíveis (fora do preço, contados em unavailable_count)."
+            )
+        available = status.eq("AVAILABLE")
+    else:
+        # Export sem coluna de status: nada a filtrar, tudo conta como
+        # disponível (mantém o comportamento anterior em vez de zerar o dia).
+        logger.warning(
+            f"{collection_date} — export sem campo `status`; nenhuma oferta "
+            f"pôde ser excluída por indisponibilidade."
+        )
+        available = pd.Series(True, index=df.index)
 
     work = pd.DataFrame({
         "_price": price,
+        "_spot": spot,
+        "_pix": pix,
+        "_available": available,
         "_hour": pd.to_numeric(
             _pick_text(df, lookup, _HOUR_FIELDS), errors="coerce"
         ).astype("Int64"),
@@ -309,16 +428,28 @@ def aggregate_offers(
     })
 
     before = len(work)
-    work = work.dropna(subset=["_price"])
-    work = work[work["_price"] > 0]
+    # Descarta APENAS a observação que não consegue ser preço: disponível e sem
+    # à vista. A indisponível segue viva mesmo sem preço — é ela que sustenta o
+    # `unavailable_count` e mantém a listagem na tabela quando o grupo inteiro
+    # esteve fora do ar. Filtrar por `_price` antes de agrupar (como a primeira
+    # versão fazia) apagava justamente esses grupos, que é o oposto do
+    # prometido: indisponível não compete no piso, mas não desaparece.
+    work = work[work["_price"].notna() | ~work["_available"]]
     dropped_no_price = before - len(work)
     if dropped_no_price:
-        rejections["NO_PRICE"] = dropped_no_price
+        rejections["NO_CASH_PRICE"] = dropped_no_price
+    if n_forward_only:
+        # Diagnóstico, NÃO um motivo de rejeição próprio: é um subconjunto de
+        # NO_CASH_PRICE. Vai com prefixo `_` para ficar fora da soma de
+        # `rows_rejected` em `_process_date` — senão a oferta só-a-prazo seria
+        # contada duas vezes no total de rejeitadas.
+        rejections["_FORWARD_PRICE_ONLY"] = n_forward_only
 
     if work.empty:
         logger.warning(
-            f"{collection_date} — 0 linhas válidas após filtro de preço.\n"
-            f"  Preço presente em {n_with_price:,}/{before:,} ofertas de AC.\n"
+            f"{collection_date} — 0 linhas válidas após filtro de preço à vista.\n"
+            f"  Preço à vista presente em {n_with_price:,}/{before:,} ofertas de AC.\n"
+            f"  ({n_forward_only:,} tinham só preço a prazo — não viram preço.)\n"
             f"  Colunas no arquivo ({len(df.columns)}): {list(df.columns)}"
         )
         sample = df.iloc[0].to_dict()
@@ -329,8 +460,8 @@ def aggregate_offers(
         return pd.DataFrame(), rejections
 
     logger.debug(
-        f"{collection_date} — preço presente em {n_with_price:,}/{before:,} ofertas AC; "
-        f"{dropped_no_price:,} descartadas sem preço"
+        f"{collection_date} — preço à vista presente em {n_with_price:,}/{before:,} "
+        f"ofertas AC; {dropped_no_price:,} descartadas sem preço à vista"
     )
 
     # ── 3. SKU obrigatório (roadmap §3 item 9) ───────────────────────────
@@ -351,19 +482,71 @@ def aggregate_offers(
         logger.warning(f"{collection_date} — 0 linhas válidas após filtro de SKU.")
         return pd.DataFrame(), rejections
 
+    # A chave de agrupamento é EXATAMENTE a UNIQUE de `pricetrack_daily`
+    # (collection_date, turno, brand, sku, marketplace, seller) — sem `title`.
+    # Agrupar por título também, como a primeira versão fazia, produzia duas
+    # linhas agregadas para o mesmo grupo do banco quando o marketplace mudava
+    # o título no meio do dia; o upsert então resolvia o conflito guardando só
+    # a última do lote e a outra sumia em silêncio, levando junto as coletas
+    # que ela agregava. Agrupamento e armazenamento têm de falar da mesma chave.
+    group_keys = ["brand", "sku", "marketplace", "seller"]
+
+    def _title_of(series: pd.Series) -> str:
+        """Título representativo do grupo: o mais frequente na janela."""
+        titles = series.dropna()
+        titles = titles[titles.astype(str).str.strip() != ""]
+        if titles.empty:
+            return ""
+        return str(titles.mode().iloc[0])
+
     def _agg_turno(rows: pd.DataFrame, turno: str) -> pd.DataFrame:
-        a = (
-            rows.groupby(["brand", "sku", "title", "marketplace", "seller"])["_price"]
-            .agg(
-                min_price="min",
-                avg_price="mean",
-                max_price="max",
-                mode_price=_mode,
-            )
-            .reset_index()
+        """Agrega uma janela do dia. Preço só de observação AVAILABLE."""
+        avail = rows[rows["_available"]]
+        unavail = rows[~rows["_available"]]
+
+        stats = avail.groupby(group_keys).agg(
+            min_price=("_price", "min"),
+            avg_price=("_price", "mean"),
+            max_price=("_price", "max"),
+            mode_price=("_price", _mode),
+            spot_min_price=("_spot", "min"),
+            pix_min_price=("_pix", "min"),
+            obs_count=("_price", "size"),
         )
+        # Título vem de TODAS as observações do grupo (inclusive as
+        # indisponíveis): grupo 100% indisponível fica sem preço, mas não pode
+        # ficar sem título — `title` é NOT NULL na tabela.
+        titles = rows.groupby(group_keys)["title"].agg(_title_of).rename("title")
+
+        # `last_price` = o preço da ÚLTIMA coleta da janela, que é o que o
+        # painel do PriceTrack exibe ("Preço exibido: última coleta"). Sem ele
+        # não há como reconciliar o dashboard com a tela: min_price é o piso da
+        # janela inteira e só coincide com o painel quando o preço não mexeu.
+        # mergesort é estável — dentro da mesma hora vale a ordem do arquivo.
+        ordered = avail.sort_values("_hour", na_position="first", kind="mergesort")
+        last = (
+            ordered.groupby(group_keys, sort=False)
+            .tail(1)
+            .set_index(group_keys)[["_price", "_hour"]]
+            .rename(columns={"_price": "last_price", "_hour": "last_hour"})
+        )
+        # Grupos duplicados no índice quebrariam o concat — não deve acontecer
+        # (tail(1) por grupo), mas garantir é barato.
+        last = last[~last.index.duplicated(keep="last")]
+
+        unav_count = unavail.groupby(group_keys).size().rename("unavailable_count")
+
+        # `outer`: um grupo que só teve observação UNAVAILABLE sobrevive com
+        # preços NULL — a listagem existiu (share of shelf), só não competiu
+        # por preço. Foi o que a base antiga escondeu ao somar indisponível
+        # dentro do mínimo de mercado.
+        a = pd.concat([titles, stats, last, unav_count], axis=1).reset_index()
+        a["title"] = a["title"].fillna("")
+        a["obs_count"] = a["obs_count"].fillna(0).astype(int)
+        a["unavailable_count"] = a["unavailable_count"].fillna(0).astype(int)
         a["collection_date"] = collection_date
         a["turno"] = turno
+        a["price_basis"] = PRICE_BASIS_BEST_CASH
         a["seller_canonical"] = a["seller"].apply(normalize_seller)
         a["source_file"] = f"api-{collection_date}"
         return a
@@ -385,6 +568,8 @@ def aggregate_offers(
         "collection_date", "turno", "brand", "sku", "title",
         "marketplace", "seller", "seller_canonical",
         "min_price", "avg_price", "mode_price", "max_price",
+        "price_basis", "last_price", "last_hour",
+        "spot_min_price", "pix_min_price", "obs_count", "unavailable_count",
         "source_file",
     ]], rejections
 
@@ -493,8 +678,33 @@ def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
             ).execute()
             inserted += len(batch)
         except Exception as e:
-            logger.error(f"Erro ao inserir lote {i//500 + 1}: {e}")
+            if _is_unknown_column_error(e):
+                # Migração 006 ausente. Abortamos em vez de gravar sem as
+                # colunas novas: uma linha `best_cash` sem o carimbo
+                # `price_basis` seria depois rotulada `spot_legacy` pelo
+                # DEFAULT da própria migração — dado CERTO marcado como errado,
+                # sem como recuperar qual era qual. Falhar aqui não perde nada:
+                # o NDJSON continua em disco e o import roda de novo depois.
+                raise RuntimeError(
+                    "pricetrack_daily não tem as colunas da migração 006 "
+                    f"({', '.join(_MIGRATION_006_COLUMNS)}). O import foi "
+                    "ABORTADO de propósito: gravar agora produziria linha "
+                    "corrigida sem carimbo de base, que a migração depois "
+                    "marcaria como `spot_legacy`. Aplique e rode de novo:\n"
+                    "  psql \"$SUPABASE_DSN\" -f "
+                    "migrations/006_pricetrack_price_basis.sql"
+                ) from e
+            logger.error(f"Erro ao inserir lote {i//_BATCH_SIZE + 1}: {e}")
     return inserted
+
+
+def _is_unknown_column_error(exc: Exception) -> bool:
+    """True se o erro do PostgREST é 'coluna X não existe' (PGRST204/42703)."""
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in ("pgrst204", "42703", "could not find", "does not exist")
+    ) and any(col in text for col in _MIGRATION_006_COLUMNS)
 
 
 def log_import(
@@ -702,7 +912,11 @@ def _process_date(
         # rejeições. NÃO usamos rows_raw - rows_agg: com o split de turno o
         # df_agg tem até 3 linhas por grupo (Diário/Manhã/Tarde) e é agregado,
         # então aquela diferença confunde "colapso por agregação" com "rejeição".
-        rows_rejected = int(sum(rejections.values()))
+        # Chaves com `_` são diagnóstico (subconjunto de outro motivo) e ficam
+        # fora do total — somá-las contaria a mesma oferta duas vezes.
+        rows_rejected = int(
+            sum(v for k, v in rejections.items() if not k.startswith("_"))
+        )
         logger.info(f"{collection_date} — {rows_agg:,} linhas AC agregadas "
                     f"({rows_rejected:,} ofertas cruas descartadas pelos filtros)")
 
@@ -713,11 +927,17 @@ def _process_date(
     # ── Inserção no Supabase ──────────────────────────────────────────────
     records = df_agg.where(pd.notnull(df_agg), None).to_dict("records")
 
-    # Converte tipos numéricos para float nativo (JSON serializable)
+    # Converte tipos numéricos para nativos (numpy/NaN não são JSON serializable).
+    # NaN precisa virar None explicitamente: `pd.notnull` não pega NaN dentro de
+    # coluna object, e um NaN chegaria ao PostgREST como o literal `NaN`.
     for r in records:
-        for k in ("min_price", "avg_price", "mode_price", "max_price"):
-            if r[k] is not None:
-                r[k] = round(float(r[k]), 2)
+        for k in ("min_price", "avg_price", "mode_price", "max_price",
+                  "last_price", "spot_min_price", "pix_min_price"):
+            v = r.get(k)
+            r[k] = None if v is None or pd.isna(v) else round(float(v), 2)
+        for k in ("last_hour", "obs_count", "unavailable_count"):
+            v = r.get(k)
+            r[k] = None if v is None or pd.isna(v) else int(v)
 
     # ── Histórico frio (Parquet no Drive) ─────────────────────────────────
     # ANTES do Supabase e independente dele: é o que faz o dia sobreviver a um

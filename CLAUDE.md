@@ -1035,6 +1035,48 @@ Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto;
 ID Produto Marketplace; ID Oferta Marketplace; ID Seller; URL Canônica; Offer Key
 ```
 
+### Preço do PriceTrack — base explícita (`price_basis`, Set/2026) 🆕
+
+O importador da API colapsava os quatro preços de cada oferta (`spotPrice`,
+`pixPrice`, `forwardPrice`, `priceFrom`) no **primeiro não-nulo**: gravava o
+`spot` quando o painel mostra o **PIX** (~10% a mais em toda a Magazine Luiza),
+caía no preço **a prazo** quando faltava à vista e **nunca filtrava `status`**.
+36 dias / 1.004.567 linhas saíram assim, e o número parecia plausível — só não
+fechava com o painel.
+
+Agora o preço é **`best_cash` = menor entre spot e PIX, só ofertas
+`AVAILABLE`** (o mesmo contrato de `pricetrack_api.normalize.effective_price`),
+e cada linha carimba `price_basis`. Migração
+`migrations/006_pricetrack_price_basis.sql` (aplicada 02/09/2026) — colunas
+`price_basis`, `last_price`, `last_hour`, `spot_min_price`, `pix_min_price`,
+`obs_count`, `unavailable_count`.
+
+```bash
+python scripts/pricetrack_price_audit.py --data 2026-09-01   # o que a API entrega, cru
+python scripts/pricetrack_price_audit.py --status-backfill   # quanto ainda está errado
+python scripts/pricetrack_api_import.py --force --start 2026-07-28 --end 2026-09-01
+```
+
+**Regras duras:**
+1. Base de preço nunca é implícita — **ausência de `price_basis` se lê como
+   base antiga** (`spot_legacy`), nunca como "provavelmente está certo".
+2. **Preço a prazo não preenche buraco de preço à vista.** Sem à vista, a linha
+   é rejeitada com motivo (`FORWARD_PRICE_ONLY`), não convertida.
+3. **Indisponível não compete** no piso — mas a linha sobrevive com preço
+   `NULL` e `unavailable_count > 0` (apagar perderia o share of shelf).
+   `status` é comparado **estritamente** contra `AVAILABLE`: valor inesperado
+   conta como indisponível (com WARNING nomeando a grafia). Única exceção,
+   deliberada: export **sem a coluna** `status` — aí não há o que filtrar e
+   tudo entra, com WARNING.
+4. **Uma linha de `pricetrack_daily` não é uma oferta**: é N coletas do dia
+   colapsadas (`obs_count`). O painel mostra a **última coleta**
+   (`last_price`); `min_price` é o piso da janela — outra pergunta.
+
+⏳ **Pendente:** reimport dos 36 dias (roda no PC coletor — o PIX não existe na
+tabela, só no NDJSON bruto). Enquanto não roda, todo preço derivado do
+PriceTrack está ~10% alto onde há PIX, inclusive Buy Box/moda/mediana e a
+análise de MAP em `app.py`. Diagnóstico: `docs/PRICETRACK_FIDELIDADE.md`.
+
 ### Identidade da oferta — `utils/offer_identity.py` (Ago/2026) 🆕
 
 Antes da Fase 1 da auditoria, ASIN, MLB, `itemid` da Shopee, `productId` do

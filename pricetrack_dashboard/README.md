@@ -103,9 +103,12 @@ streamlit run app.py
 streamlit run pricetrack_dashboard/app.py
 ```
 
-- **Supabase (padrão):** lê `pricetrack_daily` da data escolhida no calendário
-  (default: mais recente). Cada linha do dia vira uma observação de preço
-  (usa `min_price` como melhor à vista). Rápido. Cache de 15 min.
+- **Supabase (padrão):** lê `pricetrack_daily` da data e do **turno** escolhidos
+  (default: data mais recente, turno Diário). Cada linha do dia vira uma
+  observação de preço, usando `last_price` — o preço da **última coleta** da
+  janela, que é o que o painel do PriceTrack exibe ("Preço exibido: última
+  coleta"). Linhas anteriores à migração 006 caem para `min_price` (piso do
+  dia). Rápido. Cache de 15 min.
 - **API ao vivo:** bate no PriceTrack; a sonda de data é filtrada por marca e o
   read timeout tem piso de 60s, mas o endpoint responde em ~2min por consulta.
 - **Demo:** sem credencial, cai em dados sintéticos (marcados como demo).
@@ -130,6 +133,18 @@ pricetrack_dashboard/
   `peer.py` contra os títulos reais da coleta.
 - **Preço** usado é o melhor à vista (`effective_price`: PIX vs spot, só se
   `AVAILABLE`). Oferta indisponível não entra em mínimo nem média.
+- **Base de preço (`price_basis`).** Linhas gravadas até 01/09/2026 estão em
+  `spot_legacy`: o preço é o `spotPrice` (à vista cheio), **não** o menor entre
+  à vista e PIX — em marketplace com desconto PIX fica ~10% acima do que o
+  painel mostra. A página avisa quando lê essas linhas e **dá erro** quando a
+  janela mistura as duas bases (a série emendaria dado certo com dado errado).
+  Diagnóstico completo e receita de reimport: [`docs/PRICETRACK_FIDELIDADE.md`](../docs/PRICETRACK_FIDELIDADE.md).
+- ⚠️ **Uma linha de `pricetrack_daily` não é uma oferta** — é uma listagem-dia
+  agregada (N coletas colapsadas em min/média/moda/máx, contadas em
+  `obs_count`). A página reduz cada linha a **um** preço representativo
+  (`last_price`; `min_price` no legado), então o "máximo" da variação Midea é o
+  maior preço **representativo entre as listagens**, não o maior preço
+  observado no dia — este último está em `max_price`, que a página não usa.
 
 ## Testes
 
