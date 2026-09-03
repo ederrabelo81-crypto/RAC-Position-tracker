@@ -53,6 +53,7 @@ from pricetrack_api import (
     ExportRequest,
     PriceTrackClient,
     PriceTrackSettings,
+    TelegramAlertSink,
 )
 
 try:
@@ -126,8 +127,13 @@ def prefetch_exports(token: str, dates: List[str], concurrent: int) -> Dict[str,
         api_key=token,
         **({} if os.getenv("PRICETRACK_DATA_DIR") else {"data_dir": _DOWNLOAD_DIR.parent}),
     )
+    # TelegramAlertSink degrada para só-log sem TELEGRAM_BOT_TOKEN/
+    # N8N_TELEGRAM_CHAT_ID; com eles, o estado "todos os slots presos por
+    # exports de terceiros" (que nenhum run destrava sozinho) vira notificação
+    # em vez de ficar só no log do Actions.
     manager = ExportManager(
-        PriceTrackClient(settings), dataset="offers", max_concurrent=concurrent
+        PriceTrackClient(settings), dataset="offers", max_concurrent=concurrent,
+        alert_sink=TelegramAlertSink(),
     )
     logger.info(
         f"Baixando {len(to_fetch)} export(s) com até {concurrent} em voo: "

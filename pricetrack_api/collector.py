@@ -208,7 +208,8 @@ class SmartCollector:
             collection_hour_execution_range=query.collection_hour_range,
         )
         manager = ExportManager(self._client, dataset=dataset,
-                                sleep_fn=self._sleep, clock=self._clock)
+                                sleep_fn=self._sleep, clock=self._clock,
+                                alert_sink=self._alert_sink)
         outcome = manager.run(request)  # levanta exceção tipada em falha
         job = outcome.job
         metrics.export_duration_seconds = round(outcome.duration_seconds, 2)

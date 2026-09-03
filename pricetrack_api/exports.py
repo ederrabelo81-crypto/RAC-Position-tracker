@@ -46,6 +46,7 @@ from .exceptions import (
     PriceTrackNoCollectionError,
 )
 from .journal import JOURNAL_FILENAME, ExportJournal
+from .metrics import AlertSink
 from .models import EXPORT_DONE, EXPORT_FAILED, ExportJob, ExportRequest
 
 OUTCOME_OK = "ok"
@@ -105,6 +106,7 @@ class ExportManager:
         sleep_fn: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         journal: Optional[ExportJournal] = None,
+        alert_sink: Optional[AlertSink] = None,
     ):
         if dataset not in ("offers", "shipping"):
             raise ValueError(f"dataset deve ser offers|shipping: {dataset!r}")
@@ -116,9 +118,16 @@ class ExportManager:
         self._sleep = sleep_fn
         self._clock = clock
         self._journal = journal or ExportJournal(settings.data_dir / JOURNAL_FILENAME)
+        # Sink de alerta para o caso "todos os slots presos por exports que não
+        # são desta execução". É o único estado que NENHUM run consegue destravar
+        # sozinho (a API não cancela export), então merece sair do log e virar
+        # notificação — mas uma vez por execução, senão o censo a cada 5min vira
+        # spam. `None` degrada para só-log, o comportamento de antes.
+        self._alert_sink = alert_sink
         self._blocked_since: Optional[float] = None
         self._last_block_log: float = 0.0
         self._last_census: float = 0.0
+        self._alerted_wedged: bool = False
 
     # ── API pública ──────────────────────────────────────────────────────
 
@@ -164,6 +173,7 @@ class ExportManager:
         self._blocked_since = None
         self._last_block_log = 0.0
         self._last_census = 0.0
+        self._alerted_wedged = False
         pending: deque[tuple[int, ExportRequest]] = deque(enumerate(requests_))
         in_flight: Dict[str, _InFlight] = {}
         self._index: Dict[str, int] = {}
@@ -456,22 +466,62 @@ class ExportManager:
             return
 
         conhecidos = self._journal.by_export_id()
+        # Um export ativo mais velho que a nossa própria paciência
+        # (`poll_timeout_seconds`) é, pela nossa definição, um zumbi: nenhuma
+        # execução vai mais esperar por ele, e ele segue segurando o slot até
+        # expirar do lado da API. Nomeá-lo como zumbi é o que responde, do
+        # próprio log, "espero mais ou já era?".
+        zumbi_limite = self._client.settings.poll_timeout_seconds
         linhas = []
+        meus = 0
         for job in ativos:
             if job.export_id in in_flight:
                 dono = "desta execução"
+                meus += 1
             elif job.export_id in conhecidos:
                 dono = f"órfão deste projeto ({conhecidos[job.export_id].collection_date})"
             else:
                 dono = "de fora deste import"
             progresso = f" {job.progress:.0f}%" if job.progress is not None else ""
-            linhas.append(f"{job.export_id} {job.status}{progresso} — {dono}")
-        logger.warning(
-            f"PriceTrack: {len(ativos)}/"
-            f"{self._client.settings.max_concurrent_exports} slot(s) de export "
-            f"ocupados na organização: {'; '.join(linhas)}. A API não expõe "
-            f"cancelamento — ou concluem, ou expiram do lado dela."
+            idade = job.age_seconds()
+            if idade is None:
+                idade_txt = ""
+            elif idade >= zumbi_limite:
+                idade_txt = f", há {idade / 3600:.1f}h — provável zumbi"
+            else:
+                idade_txt = f", há {idade / 60:.0f}min"
+            linhas.append(f"{job.export_id} {job.status}{progresso}{idade_txt} — {dono}")
+        censo = (
+            f"{len(ativos)}/{self._client.settings.max_concurrent_exports} slot(s) "
+            f"de export ocupados na organização: {'; '.join(linhas)}. A API não "
+            f"expõe cancelamento — ou concluem, ou expiram do lado dela."
         )
+        logger.warning(f"PriceTrack: {censo}")
+
+        # Escala para notificação SÓ quando esta execução está 100% travada:
+        # todos os slots cheios e NENHUM é dela. É o estado que nenhum run
+        # destrava sozinho — sem alerta, ele fica invisível até alguém abrir o
+        # log do Actions. Uma vez por execução (o censo repete a cada 5min).
+        travado_por_terceiros = (
+            meus == 0
+            and len(ativos) >= self._client.settings.max_concurrent_exports
+        )
+        if travado_por_terceiros and not self._alerted_wedged and self._alert_sink:
+            self._alerted_wedged = True
+            esperando = self._clock() - (self._blocked_since or self._clock())
+            self._alert_sink.send(
+                subject="PriceTrack: importação travada — todos os slots de export ocupados",
+                message=(
+                    f"Há {esperando / 60:.0f}min sem conseguir um slot de export, "
+                    f"e nenhum dos exports em voo é desta execução — a coleta não "
+                    f"avança sozinha.\n\n"
+                    f"Slots ocupados:\n{chr(10).join('• ' + l for l in linhas)}\n\n"
+                    f"A API do PriceTrack não expõe cancelamento: esses exports "
+                    f"precisam concluir, expirar do lado dela, ou ser cancelados "
+                    f"pelo suporte (pelos exportId acima). Diagnóstico: "
+                    f"`python -m pricetrack_api exports`."
+                ),
+            )
 
     # ── polling ──────────────────────────────────────────────────────────
 
