@@ -176,6 +176,26 @@ jobs:
           echo "  Degrau: $DEGRAU de 3 (hora UTC $HORA)"
           echo "  Force : ${FORCE_FLAG:-não}"
 
+      # ── 4a. Diário de exports — persistido ENTRE runs (Set/2026) ───────────
+      # `pricetrack_api/journal.py` só evita export duplicado/órfão quando o
+      # id sobrevive de uma execução para a outra. Isso já funciona na VM
+      # Oracle e no PC coletor (disco persistente), mas NUNCA funcionou aqui:
+      # todo run do Actions começa de um `checkout` novo, então o diário
+      # nascia vazio e o run seguinte não tinha como reconhecer um export que
+      # ELE MESMO criou — via `pipeline_guard.yml` ou uma tentativa anterior
+      # desta escada — e ficava preso em "aguardando slot" sem nunca adotar.
+      # Cache com chave única + `restore-keys` por prefixo: cada run grava sob
+      # uma chave nova (nunca colide) e lê a mais recente de qualquer run
+      # anterior — inclusive de `pipeline_guard.yml`, que restaura/salva o
+      # MESMO caminho sob o MESMO prefixo.
+      - name: Restore PriceTrack export journal
+        uses: actions/cache/restore@v4
+        with:
+          path: imports/pricetrack/api/exports_state.json
+          key: pricetrack-exports-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            pricetrack-exports-state-
+
       # ── 4b. Batida de ponto: começou ──────────────────────────────────────
       # O livro-razão (`pipeline_heartbeat`, migração 015) é o que permite ao
       # supervisor afirmar "este job NÃO rodou" — a única coisa que nenhum
@@ -263,6 +283,18 @@ jobs:
           GAP_END=$(date -u -d 'yesterday' +%F)
           python scripts/pricetrack_api_import.py \
             --start "$GAP_START" --end "$GAP_END" --gaps-only
+
+      # ── 5b2. Diário de exports — salva mesmo se o passo acima falhar ───────
+      # `if: always()` de propósito: um export que o runner mata a meio do voo
+      # (timeout, queda de rede) é exatamente o caso em que o diário mais
+      # importa — é ele que deixa a PRÓXIMA execução reconhecer o órfão em vez
+      # de criar outro export para a mesma data e brigar pelos mesmos 3 slots.
+      - name: Save PriceTrack export journal
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: imports/pricetrack/api/exports_state.json
+          key: pricetrack-exports-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       # ── 5c. Batida de ponto: terminou ─────────────────────────────────────
       # `if: always()` de propósito: o supervisor precisa saber que o job

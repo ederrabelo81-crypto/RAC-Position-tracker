@@ -134,6 +134,22 @@ jobs:
           echo "modo=$MODO" >> "$GITHUB_OUTPUT"
           echo "Modo deste run: $MODO (cron='${CRON:-manual}')"
 
+      # ── 0b. Diário de exports do PriceTrack — persistido ENTRE runs ───────
+      # Mesmo diário e mesma chave de `pricetrack_daily.yml` (Set/2026): tanto
+      # o portão (--curar) quanto a contenção chamam `pricetrack_api_import.py`
+      # num checkout novo a cada run, então sem isto o mecanismo de adoção de
+      # export órfão (`pricetrack_api/journal.py`) nunca via o que o run
+      # anterior — deste workflow OU do `pricetrack_daily.yml` — tinha criado,
+      # e cada run preso em 429 não tinha como saber que o slot ocupado era
+      # dele mesmo.
+      - name: Restore PriceTrack export journal
+        uses: actions/cache/restore@v4
+        with:
+          path: imports/pricetrack/api/exports_state.json
+          key: pricetrack-exports-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            pricetrack-exports-state-
+
       # ── 1. Portão do briefing (só no run das 06:35 BRT) ───────────────────
       # `--curar` reimporta o PriceTrack quando D-1 está faltando. É a cura que
       # cabe aqui: idempotente (upsert por data), sem browser, sem sessão, e
@@ -235,6 +251,17 @@ jobs:
           if [ -n "$RAC_GH_PAT" ]; then ARGS+=(--dispatch); fi
           python scripts/pipeline_heal.py "${ARGS[@]}" --json logs/pipeline_heal.json
           echo "heal exit=$?"
+
+      # ── 3b. Diário de exports — salva mesmo se o passo acima falhar ────────
+      # `if: always()`: um export morto no meio do voo pelo timeout deste job
+      # é justamente o caso em que o diário precisa sobreviver, para o PRÓXIMO
+      # run (deste workflow ou do `pricetrack_daily.yml`) reconhecer o órfão.
+      - name: Save PriceTrack export journal
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: imports/pricetrack/api/exports_state.json
+          key: pricetrack-exports-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       # ── 4. Degradação crônica vira ISSUE, não alerta repetido ─────────────
       # Google Shopping passou ~1 mês zerada. Um WARN por dia durante 30 dias é
