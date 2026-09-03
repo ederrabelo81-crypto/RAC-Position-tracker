@@ -176,6 +176,26 @@ jobs:
           echo "  Degrau: $DEGRAU de 3 (hora UTC $HORA)"
           echo "  Force : ${FORCE_FLAG:-não}"
 
+      # ── 4a. Diário de exports — persistido ENTRE runs (Set/2026) ───────────
+      # `pricetrack_api/journal.py` só evita export duplicado/órfão quando o
+      # id sobrevive de uma execução para a outra. Isso já funciona na VM
+      # Oracle e no PC coletor (disco persistente), mas NUNCA funcionou aqui:
+      # todo run do Actions começa de um `checkout` novo, então o diário
+      # nascia vazio e o run seguinte não tinha como reconhecer um export que
+      # ELE MESMO criou — via `pipeline_guard.yml` ou uma tentativa anterior
+      # desta escada — e ficava preso em "aguardando slot" sem nunca adotar.
+      # Cache com chave única + `restore-keys` por prefixo: cada run grava sob
+      # uma chave nova (nunca colide) e lê a mais recente de qualquer run
+      # anterior — inclusive de `pipeline_guard.yml`, que restaura/salva o
+      # MESMO caminho sob o MESMO prefixo.
+      - name: Restore PriceTrack export journal
+        uses: actions/cache/restore@v4
+        with:
+          path: imports/pricetrack/api/exports_state.json
+          key: pricetrack-exports-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            pricetrack-exports-state-
+
       # ── 4b. Batida de ponto: começou ──────────────────────────────────────
       # O livro-razão (`pipeline_heartbeat`, migração 015) é o que permite ao
       # supervisor afirmar "este job NÃO rodou" — a única coisa que nenhum
@@ -263,6 +283,78 @@ jobs:
           GAP_END=$(date -u -d 'yesterday' +%F)
           python scripts/pricetrack_api_import.py \
             --start "$GAP_START" --end "$GAP_END" --gaps-only
+
+      # ── 5b2. Diário de exports — funde com gravações concorrentes ──────────
+      # `pipeline_guard.yml` também lê e grava este mesmo diário nos runs de
+      # varredura, DE PROPÓSITO fora do grupo de concorrência
+      # `pricetrack-exports` (não atrasar o alerta por causa de um import de
+      # 50min). Sem fundir, um save por último-a-escrever-vence podia
+      # sobrescrever — e ESCONDER — um export que aquele outro run acabou de
+      # registrar, recriando o mesmo 429 eterno que este diário existe para
+      # evitar (achado do cubic no PR que introduziu o cache). A cópia local é
+      # preservada à parte, a versão mais recente do cache é buscada de novo, e
+      # as duas são fundidas por chave (a mais recente por `created_at` vence)
+      # antes de salvar. Ainda resta uma janela de poucos segundos entre o
+      # refresh e o save onde uma gravação de terceiros poderia se perder — bem
+      # menor que os minutos de janela que existiam antes, e o mesmo risco que
+      # o diário já assume em outros lugares (perder uma entrada custa, no
+      # pior caso, um export duplicado — nunca um dia de coleta perdido).
+      - name: Snapshot local export journal
+        if: always()
+        run: |
+          mkdir -p imports/pricetrack/api
+          cp imports/pricetrack/api/exports_state.json \
+             imports/pricetrack/api/exports_state.local.json 2>/dev/null || true
+
+      - name: Refresh export journal from cache (pick up concurrent writers)
+        if: always()
+        uses: actions/cache/restore@v4
+        with:
+          path: imports/pricetrack/api/exports_state.json
+          key: pricetrack-exports-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            pricetrack-exports-state-
+
+      - name: Merge local and remote export journals
+        if: always()
+        run: |
+          python -c "
+          import json
+          from pathlib import Path
+
+          local_path = Path('imports/pricetrack/api/exports_state.local.json')
+          remote_path = Path('imports/pricetrack/api/exports_state.json')
+
+          def load(p):
+              try:
+                  data = json.loads(p.read_text(encoding='utf-8'))
+              except (FileNotFoundError, json.JSONDecodeError):
+                  return {}
+              return data.get('entries') or {} if isinstance(data, dict) else {}
+
+          local = load(local_path)
+          remote = load(remote_path)
+          merged = dict(remote)
+          for key, entry in local.items():
+              other = merged.get(key)
+              if other is None or entry.get('created_at', 0) >= other.get('created_at', 0):
+                  merged[key] = entry
+
+          remote_path.parent.mkdir(parents=True, exist_ok=True)
+          remote_path.write_text(
+              json.dumps({'version': 1, 'entries': merged}, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          local_path.unlink(missing_ok=True)
+          print(f'Diario mesclado: {len(merged)} entrada(s) ({len(local)} local, {len(remote)} remoto).')
+          "
+
+      - name: Save PriceTrack export journal
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: imports/pricetrack/api/exports_state.json
+          key: pricetrack-exports-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       # ── 5c. Batida de ponto: terminou ─────────────────────────────────────
       # `if: always()` de propósito: o supervisor precisa saber que o job

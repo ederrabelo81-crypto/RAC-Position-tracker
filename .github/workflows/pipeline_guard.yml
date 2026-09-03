@@ -134,6 +134,22 @@ jobs:
           echo "modo=$MODO" >> "$GITHUB_OUTPUT"
           echo "Modo deste run: $MODO (cron='${CRON:-manual}')"
 
+      # ── 0b. Diário de exports do PriceTrack — persistido ENTRE runs ───────
+      # Mesmo diário e mesma chave de `pricetrack_daily.yml` (Set/2026): tanto
+      # o portão (--curar) quanto a contenção chamam `pricetrack_api_import.py`
+      # num checkout novo a cada run, então sem isto o mecanismo de adoção de
+      # export órfão (`pricetrack_api/journal.py`) nunca via o que o run
+      # anterior — deste workflow OU do `pricetrack_daily.yml` — tinha criado,
+      # e cada run preso em 429 não tinha como saber que o slot ocupado era
+      # dele mesmo.
+      - name: Restore PriceTrack export journal
+        uses: actions/cache/restore@v4
+        with:
+          path: imports/pricetrack/api/exports_state.json
+          key: pricetrack-exports-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            pricetrack-exports-state-
+
       # ── 1. Portão do briefing (só no run das 06:35 BRT) ───────────────────
       # `--curar` reimporta o PriceTrack quando D-1 está faltando. É a cura que
       # cabe aqui: idempotente (upsert por data), sem browser, sem sessão, e
@@ -235,6 +251,78 @@ jobs:
           if [ -n "$RAC_GH_PAT" ]; then ARGS+=(--dispatch); fi
           python scripts/pipeline_heal.py "${ARGS[@]}" --json logs/pipeline_heal.json
           echo "heal exit=$?"
+
+      # ── 3b. Diário de exports — funde com gravações concorrentes ───────────
+      # Este run de varredura roda no grupo `pipeline-guard`, FORA do grupo
+      # `pricetrack-exports` que serializa `pricetrack_daily.yml` (de propósito
+      # — não atrasar o alerta por causa de um import de 50min). Isso significa
+      # que este passo pode terminar ao mesmo tempo que um run daquele outro
+      # workflow, e um save por último-a-escrever-vence podia sobrescrever — e
+      # ESCONDER — um export que o outro acabou de registrar, recriando o
+      # mesmo 429 eterno que este diário existe para evitar (achado do cubic
+      # no PR que introduziu o cache). A cópia local é preservada à parte, a
+      # versão mais recente do cache é buscada de novo, e as duas são fundidas
+      # por chave (a mais recente por `created_at` vence) antes de salvar.
+      # Ainda resta uma janela de poucos segundos entre o refresh e o save —
+      # bem menor que os minutos de janela que existiam antes, e perder uma
+      # entrada aí custa, no pior caso, um export duplicado, nunca um dia de
+      # coleta perdido.
+      - name: Snapshot local export journal
+        if: always()
+        run: |
+          mkdir -p imports/pricetrack/api
+          cp imports/pricetrack/api/exports_state.json \
+             imports/pricetrack/api/exports_state.local.json 2>/dev/null || true
+
+      - name: Refresh export journal from cache (pick up concurrent writers)
+        if: always()
+        uses: actions/cache/restore@v4
+        with:
+          path: imports/pricetrack/api/exports_state.json
+          key: pricetrack-exports-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            pricetrack-exports-state-
+
+      - name: Merge local and remote export journals
+        if: always()
+        run: |
+          python -c "
+          import json
+          from pathlib import Path
+
+          local_path = Path('imports/pricetrack/api/exports_state.local.json')
+          remote_path = Path('imports/pricetrack/api/exports_state.json')
+
+          def load(p):
+              try:
+                  data = json.loads(p.read_text(encoding='utf-8'))
+              except (FileNotFoundError, json.JSONDecodeError):
+                  return {}
+              return data.get('entries') or {} if isinstance(data, dict) else {}
+
+          local = load(local_path)
+          remote = load(remote_path)
+          merged = dict(remote)
+          for key, entry in local.items():
+              other = merged.get(key)
+              if other is None or entry.get('created_at', 0) >= other.get('created_at', 0):
+                  merged[key] = entry
+
+          remote_path.parent.mkdir(parents=True, exist_ok=True)
+          remote_path.write_text(
+              json.dumps({'version': 1, 'entries': merged}, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          local_path.unlink(missing_ok=True)
+          print(f'Diario mesclado: {len(merged)} entrada(s) ({len(local)} local, {len(remote)} remoto).')
+          "
+
+      - name: Save PriceTrack export journal
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: imports/pricetrack/api/exports_state.json
+          key: pricetrack-exports-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       # ── 4. Degradação crônica vira ISSUE, não alerta repetido ─────────────
       # Google Shopping passou ~1 mês zerada. Um WARN por dia durante 30 dias é
