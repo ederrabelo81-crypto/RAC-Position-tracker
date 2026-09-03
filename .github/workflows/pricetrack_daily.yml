@@ -218,6 +218,11 @@ jobs:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # Alerta quando TODOS os 3 slots ficam presos por exports que não são
+          # deste run (estado que nenhuma execução destrava sozinha). Sem estes,
+          # o TelegramAlertSink degrada para só-log.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          N8N_TELEGRAM_CHAT_ID: ${{ secrets.N8N_TELEGRAM_CHAT_ID }}
           # 40min POR EXPORT (não pelo passo — quem limita o passo é o
           # `timeout-minutes: 50` acima). Serve para um export travado não
           # segurar sozinho o passo inteiro.
@@ -270,6 +275,8 @@ jobs:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          N8N_TELEGRAM_CHAT_ID: ${{ secrets.N8N_TELEGRAM_CHAT_ID }}
           # 45min POR EXPORT; o teto do passo é o `timeout-minutes: 60`.
           # Era este o passo cancelado pelo runner nos runs de 08-10/08/2026,
           # porque o import anterior já tinha gasto o orçamento de 60min do job.

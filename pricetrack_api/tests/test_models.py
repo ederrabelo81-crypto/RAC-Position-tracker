@@ -1,5 +1,5 @@
 """Models fiéis aos schemas Offer/Shipping — camelCase, snake_case, nullables."""
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -11,6 +11,7 @@ from pricetrack_api.models import (
     PageMeta,
     Shipping,
     record_id,
+    to_datetime,
     to_hour,
 )
 from .conftest import offer_payload
@@ -192,6 +193,68 @@ class TestExportModels:
         assert job.row_count == 1_200_000
         assert job.download_url_stale(ttl_seconds=3000, now=3051.0) is True
         assert job.download_url_stale(ttl_seconds=3000, now=3049.0) is False
+
+
+class TestExportJobAge:
+    """Idade do export a partir de `createdAt` — o dado que separa zumbi de lento."""
+
+    def test_created_at_parseado_com_z(self):
+        job = ExportJob.from_api({
+            "exportId": "exp-1", "status": "PROCESSING",
+            "createdAt": "2026-09-02T08:00:00Z",
+        })
+        assert job.created_at == datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+
+    def test_created_at_snake_case(self):
+        job = ExportJob.from_api({
+            "exportId": "exp-1", "status": "PROCESSING",
+            "created_at": "2026-09-02T08:00:00+00:00",
+        })
+        assert job.created_at == datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+
+    def test_age_seconds_com_now_injetado(self):
+        job = ExportJob.from_api({
+            "exportId": "exp-1", "status": "PROCESSING",
+            "createdAt": "2026-09-02T08:00:00Z",
+        })
+        agora = datetime(2026, 9, 2, 8, 30, tzinfo=timezone.utc)
+        assert job.age_seconds(now=agora) == 1800.0
+
+    def test_age_none_sem_created_at(self):
+        # A API às vezes não devolve createdAt: idade DESCONHECIDA, não zero —
+        # o censo omite a idade em vez de inventar "0min".
+        job = ExportJob.from_api({"exportId": "exp-1", "status": "PENDING"})
+        assert job.created_at is None
+        assert job.age_seconds() is None
+
+    def test_created_at_invalido_vira_none(self):
+        job = ExportJob.from_api({
+            "exportId": "exp-1", "status": "PENDING", "createdAt": "ontem",
+        })
+        assert job.created_at is None
+
+    def test_age_nunca_negativa(self):
+        job = ExportJob.from_api({
+            "exportId": "exp-1", "status": "PROCESSING",
+            "createdAt": "2026-09-02T08:00:00Z",
+        })
+        # createdAt no futuro (relógios dessincronizados) não vira idade negativa
+        antes = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
+        assert job.age_seconds(now=antes) == 0.0
+
+
+class TestToDatetime:
+    def test_z_suffix(self):
+        assert to_datetime("2026-09-02T08:00:00Z") == datetime(
+            2026, 9, 2, 8, 0, tzinfo=timezone.utc
+        )
+
+    def test_none_e_vazio(self):
+        assert to_datetime(None) is None
+        assert to_datetime("") is None
+
+    def test_invalido(self):
+        assert to_datetime("não é data") is None
 
 
 class TestRecordId:

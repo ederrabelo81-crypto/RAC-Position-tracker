@@ -149,12 +149,22 @@ def main() -> int:
             diario = ExportJournal(settings.data_dir / JOURNAL_FILENAME)
             conhecidos = diario.by_export_id()
             jobs = client.list_exports()
+            zumbi_limite = settings.poll_timeout_seconds
             for job in jobs:
                 entrada = conhecidos.get(job.export_id)
+                idade = job.age_seconds()
+                # Zumbi = export ativo mais velho que a nossa própria paciência:
+                # segura o slot (429) sem que nenhum run vá esperar por ele.
+                zumbi = (
+                    job.is_active and idade is not None and idade >= zumbi_limite
+                )
                 print(json.dumps({
                     "exportId": job.export_id, "status": job.status,
                     "progress": job.progress, "rowCount": job.row_count,
                     "fileSizeBytes": job.file_size_bytes,
+                    "createdAt": job.created_at.isoformat() if job.created_at else None,
+                    "ageHours": round(idade / 3600, 1) if idade is not None else None,
+                    "provavelZumbi": zumbi,
                     "esteProjeto": entrada is not None,
                     "collectionDate": entrada.collection_date if entrada else None,
                 }, ensure_ascii=False))

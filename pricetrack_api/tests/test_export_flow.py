@@ -13,6 +13,7 @@ from pricetrack_api.exceptions import ExportFailedError, ExportTimeoutError
 from pricetrack_api.exports import (
     OUTCOME_NO_DATA,
     OUTCOME_OK,
+    OUTCOME_TIMEOUT,
     ExportManager,
 )
 from pricetrack_api.http import HttpTransport
@@ -269,3 +270,80 @@ class TestConcurrencyLimit:
         )
         assert all(o.ok for o in outcomes)
         assert state["max_active"] == 1
+
+
+class _RecordingSink:
+    """AlertSink de teste: guarda (subject, message) de cada envio."""
+
+    def __init__(self):
+        self.sends = []
+
+    def send(self, subject: str, message: str) -> bool:
+        self.sends.append((subject, message))
+        return True
+
+
+def _stranger(eid, status="PROCESSING", created="2026-09-01T00:00:00Z"):
+    return {"exportId": eid, "status": status, "progress": 0, "createdAt": created}
+
+
+class TestWedgedSlotsAlert:
+    """Alerta quando os 3 slots estão presos por exports que NÃO são deste run.
+
+    É o estado do 429 que nenhuma execução destrava sozinha (a API não cancela
+    export). Antes ele ficava só no log do Actions; agora vira notificação — mas
+    uma única vez por execução, senão o censo a cada 5min viraria spam.
+    """
+
+    def test_alerta_uma_vez_quando_todos_slots_de_terceiros(
+        self, settings, clock, tmp_path
+    ):
+        strangers = [_stranger(f"z{i}") for i in range(3)]
+
+        def handler(call):
+            if call.method == "POST":       # todo create leva 429 (slots cheios)
+                return FakeResponse(status_code=429, json_data={"message": "limit"})
+            # GET /exports-external (censo lista a organização)
+            return FakeResponse(
+                json_data={"data": strangers, "meta": {"hasNextPage": False}}
+            )
+
+        sink = _RecordingSink()
+        manager = _manager(settings, FakeSession(handler=handler), clock,
+                           alert_sink=sink)
+        outcomes = manager.run_many(
+            [ExportRequest("2026-09-02")],
+            dest_fn=lambda r: tmp_path / "x.gz",
+        )
+
+        assert outcomes[0].status == OUTCOME_TIMEOUT   # nunca conseguiu o slot
+        assert len(sink.sends) == 1                    # alertou UMA vez, não a cada censo
+        subject, message = sink.sends[0]
+        assert "travada" in subject.lower()
+        assert "z0" in message and "z2" in message     # nomeia os exports presos
+
+    def test_censo_nao_alerta_quando_um_slot_e_nosso(self, settings, clock):
+        # 3 ativos, um deles em voo NESTA execução: o run avança sozinho quando
+        # o export dele concluir — não é o estado que ninguém destrava.
+        def handler(call):
+            return FakeResponse(json_data={"data": [
+                _stranger("meu"), _stranger("z1"), _stranger("z2"),
+            ], "meta": {"hasNextPage": False}})
+
+        sink = _RecordingSink()
+        manager = _manager(settings, FakeSession(handler=handler), clock,
+                           alert_sink=sink)
+        manager._blocked_since = clock() - 200.0       # já esperando há um tempo
+        manager._census({"meu": object()})             # "meu" está em voo
+
+        assert sink.sends == []
+
+    def test_sem_sink_nao_quebra(self, settings, clock):
+        def handler(call):
+            return FakeResponse(json_data={"data": [
+                _stranger("z1"), _stranger("z2"), _stranger("z3"),
+            ], "meta": {"hasNextPage": False}})
+
+        manager = _manager(settings, FakeSession(handler=handler), clock)
+        manager._blocked_since = clock() - 200.0
+        manager._census({})                            # alert_sink=None → só log, sem erro

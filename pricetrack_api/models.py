@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence, TypeVar
 
 T = TypeVar("T")
@@ -84,6 +84,29 @@ def to_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
     return str(value).strip()
+
+
+def to_datetime(value: Any) -> Optional[datetime]:
+    """Converte ISO 8601 (com ou sem 'Z'/offset) para datetime; None se inválido.
+
+    A API carimba ``createdAt`` em ISO com sufixo ``Z``; ``fromisoformat`` só
+    aceita ``Z`` a partir do 3.11, então normalizamos para ``+00:00`` para
+    cobrir 3.10 também. Qualquer formato que não parseie devolve None — este
+    campo é diagnóstico (idade do export no censo) e nunca deve derrubar coleta.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 STATUS_AVAILABLE = "AVAILABLE"
@@ -391,6 +414,7 @@ class ExportJob:
     row_count: Optional[int] = None
     file_size_bytes: Optional[int] = None
     progress: Optional[float] = None
+    created_at: Optional[datetime] = None     # carimbo da API (wall-clock)
     fetched_at: float = 0.0
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -406,6 +430,23 @@ class ExportJob:
         """True se a URL pré-assinada provavelmente já expirou (TTL 1h)."""
         return (now - self.fetched_at) >= ttl_seconds
 
+    def age_seconds(self, now: Optional[datetime] = None) -> Optional[float]:
+        """Idade do export em segundos de relógio de parede.
+
+        None quando a API não trouxe ``createdAt`` — é o que distingue "não sei
+        a idade" de "idade zero", e o censo do 429 mostra a idade só quando ela
+        existe. ``now`` (tz-aware) é injetável para teste; default = agora UTC.
+        """
+        if self.created_at is None:
+            return None
+        reference = now or datetime.now(timezone.utc)
+        created = self.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        return max(0.0, (reference - created).total_seconds())
+
     @classmethod
     def from_api(cls, raw: Dict[str, Any], fetched_at: float = 0.0) -> "ExportJob":
         return cls(
@@ -417,6 +458,7 @@ class ExportJob:
             row_count=to_int(pick(raw, "rowCount")),
             file_size_bytes=to_int(pick(raw, "fileSizeBytes")),
             progress=to_float(pick(raw, "progress")),
+            created_at=to_datetime(pick(raw, "createdAt", "created_at")),
             fetched_at=fetched_at,
             raw=dict(raw),
         )
