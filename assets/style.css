@@ -369,6 +369,23 @@ section[data-testid="stSidebar"] [data-testid="stTextInput"] input:focus {
     box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2) !important;
 }
 
+/* Current Streamlit renders the date/time value as react-aria segmented
+   spans (role="spinbutton") on their own white field, not the `input` above
+   (that one is now an off-screen accessibility helper). The sidebar's
+   blanket "make every span white" rule (`span:not([aria-hidden])` above)
+   still wins over it, painting the day/month/year digits white-on-white —
+   invisible except when the browser's text-selection highlight reveals them.
+   Force the field itself dark-on-white, matching the rest of the app. */
+section[data-testid="stSidebar"] [data-testid="stDateInputField"] span,
+section[data-testid="stSidebar"] [data-testid="stTimeInputField"] span {
+    color: #1e293b !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stDateInputField"]:focus-within,
+section[data-testid="stSidebar"] [data-testid="stTimeInputField"]:focus-within {
+    box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2) !important;
+}
+
 /* Sidebar number inputs */
 section[data-testid="stSidebar"] [data-testid="stNumberInput"] input {
     background: #ffffff !important;
