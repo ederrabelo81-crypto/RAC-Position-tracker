@@ -14,7 +14,8 @@ CLI do pricetrack_api.
     # Fretes
     python -m pricetrack_api collect --date 2026-07-01 --dataset shipping
 
-    # Lista exports da organização (data[0] = mais recente)
+    # Lista exports da organização (data[0] = mais recente) e diz quais são
+    # órfãos deste projeto — os que seguram slot e causam o 429 do import
     python -m pricetrack_api exports
 """
 from __future__ import annotations
@@ -38,7 +39,9 @@ except ImportError:
 from loguru import logger
 
 from pricetrack_api import (
+    JOURNAL_FILENAME,
     CollectQuery,
+    ExportJournal,
     PriceTrackClient,
     PriceTrackError,
     PriceTrackNoCollectionError,
@@ -75,7 +78,10 @@ def _build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--threshold", type=int, default=None,
                          help="Sobrescreve PRICETRACK_EXPORT_THRESHOLD_ROWS")
 
-    sub.add_parser("exports", help="Lista exports da organização")
+    sub.add_parser(
+        "exports",
+        help="Lista exports da organização (e marca os órfãos deste projeto)",
+    )
     return parser
 
 
@@ -136,15 +142,30 @@ def main() -> int:
             return 0 if result.metrics.status != "FAILED" else 1
 
         if args.command == "exports":
+            # O diário local sabe quais exports ESTE projeto criou. Cruzar as
+            # duas listas é o que responde a pergunta do 429: "quem está
+            # segurando os 3 slots?" — sem isso, um export ativo é anônimo e o
+            # operador não sabe se espera ou se o problema é de terceiros.
+            diario = ExportJournal(settings.data_dir / JOURNAL_FILENAME)
+            conhecidos = diario.by_export_id()
             jobs = client.list_exports()
             for job in jobs:
+                entrada = conhecidos.get(job.export_id)
                 print(json.dumps({
                     "exportId": job.export_id, "status": job.status,
                     "progress": job.progress, "rowCount": job.row_count,
                     "fileSizeBytes": job.file_size_bytes,
+                    "esteProjeto": entrada is not None,
+                    "collectionDate": entrada.collection_date if entrada else None,
                 }, ensure_ascii=False))
             if not jobs:
                 logger.info("Nenhum export encontrado.")
+            ativos = [j for j in jobs if j.is_active]
+            if ativos:
+                logger.info(
+                    f"{len(ativos)}/{settings.max_concurrent_exports} slot(s) "
+                    f"ocupados — enquanto durarem, novos exports levam 429."
+                )
             return 0
 
     except ValueError as e:

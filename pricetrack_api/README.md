@@ -142,6 +142,54 @@ A downloadUrl é **sempre** tratada como efêmera: além da renovação reativa
 (403/404), o cliente renova proativamente quando o snapshot DONE tem mais de
 `download_url_ttl_seconds` (50 min, margem sobre o TTL de 1h).
 
+### Diário de exports — por que o 429 deixou de travar o import
+
+A API permite **3 exports concorrentes por organização** e **não tem endpoint
+de cancelamento**: export criado roda até o fim e, enquanto roda, segura um
+slot. Enquanto o id do export vivia só na memória do processo, qualquer Ctrl+C
+largava um export órfão — e a execução seguinte, sem saber que aquele export
+era dela, criava outro para a mesma data e tomava 429. Duas ou três
+interrupções ocupavam os 3 slots e travavam todo import posterior no loop
+"aguardando slot". Foi assim que o backfill de 36 dias (2026-07-28 →
+2026-09-01) parou em 03/09/2026.
+
+`journal.py` grava `{dataset + corpo do POST} → exportId` em
+`<data_dir>/exports_state.json` **assim que o POST volta**, antes de qualquer
+espera. Na execução seguinte o `ExportManager`:
+
+| Estado do export do diário | O que faz |
+|----------------------------|-----------|
+| `DONE` | Só baixa — nenhum slot gasto, nenhum polling |
+| `PENDING`/`PROCESSING` | **Adota**: entra na fila de polling sem criar export novo |
+| `FAILED` / sumido (404) | Esquece e cria um novo |
+| Mais velho que `poll_timeout_seconds` | Esquece, cria um novo e AVISA que provavelmente é ele segurando o slot |
+
+O `submitted_at` de um export adotado reflete a idade **real**:
+`poll_timeout_seconds` é a vida máxima do export, não a paciência da execução
+da vez. A chave do diário é o corpo inteiro do POST — export filtrado
+(`marketplaces`, `collectionHourExecutionRange`) nunca adota o export cheio do
+mesmo dia, que traria menos linhas do que o pedido, em silêncio.
+
+**Regra dura:** falha do diário nunca derruba o import. Perder o diário custa
+um export duplicado; abortar custaria o dia.
+
+### O log fala sozinho enquanto espera
+
+O sintoma que fazia o operador matar runs saudáveis era um console repetindo só
+a linha do 429 a cada 30s — o polling do job em voo era `DEBUG`. Agora:
+
+- todo job em voo bate **heartbeat em INFO** (status, progresso, minutos em voo);
+- a linha do 429 é *throttled* (`_BLOCK_LOG_INTERVAL`, 60s) e diz há quanto tempo;
+- preso há mais de `_CENSUS_AFTER_SECONDS` (2 min), o manager **lista os
+  exports da organização** e nomeia o dono de cada slot: desta execução, órfão
+  deste projeto (com a data) ou de fora deste import.
+
+Para ver o mesmo censo à mão, sem esperar:
+
+```bash
+python -m pricetrack_api exports    # marca `esteProjeto` + `collectionDate`
+```
+
 ---
 
 ## Idempotência e particionamento

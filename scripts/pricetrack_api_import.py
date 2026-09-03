@@ -117,7 +117,15 @@ def prefetch_exports(token: str, dates: List[str], concurrent: int) -> Dict[str,
     if not to_fetch:
         return statuses
 
-    settings = PriceTrackSettings.from_env(api_key=token)
+    # data_dir explicitamente ABSOLUTO: além do NDJSON, é onde mora o diário
+    # de exports (`exports_state.json`), que só serve se a próxima execução o
+    # encontrar. Com o default relativo, rodar o script de outro diretório
+    # gravaria o diário em outro lugar — e a adoção do export órfão, que é o
+    # que evita o 429, silenciosamente não aconteceria.
+    settings = PriceTrackSettings.from_env(
+        api_key=token,
+        **({} if os.getenv("PRICETRACK_DATA_DIR") else {"data_dir": _DOWNLOAD_DIR.parent}),
+    )
     manager = ExportManager(
         PriceTrackClient(settings), dataset="offers", max_concurrent=concurrent
     )
@@ -129,6 +137,12 @@ def prefetch_exports(token: str, dates: List[str], concurrent: int) -> Dict[str,
         [ExportRequest(collection_date=ds) for ds in to_fetch],
         dest_fn=lambda req: _offers_dest(req.collection_date.isoformat()),
     )
+    adotados = sum(1 for o in outcomes if o.adopted)
+    if adotados:
+        logger.info(
+            f"{adotados} export(s) retomados de execução anterior (diário) — "
+            f"nenhum slot da organização foi gasto com duplicata."
+        )
     for outcome in outcomes:
         ds = outcome.request.collection_date.isoformat()
         if outcome.status == OUTCOME_OK:

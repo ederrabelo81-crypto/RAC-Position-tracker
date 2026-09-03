@@ -29,6 +29,10 @@ coverage/
 .DS_Store
 Thumbs.db
 
+# PriceTrack — diário de exports em voo (estado local, por máquina)
+imports/pricetrack/api/exports_state.json
+imports/pricetrack/api/exports_state.json.tmp
+
 # Build artifacts
 dist/
 build/

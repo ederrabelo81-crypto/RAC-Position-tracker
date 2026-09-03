@@ -44,6 +44,7 @@ from .exports import (
     ExportManager,
     ExportOutcome,
 )
+from .journal import JOURNAL_FILENAME, ExportJournal, JournalEntry
 from .metrics import (
     AlertSink,
     CollectionMetrics,
@@ -73,6 +74,7 @@ __all__ = [
     "ExportManager", "ExportOutcome",
     "OUTCOME_OK", "OUTCOME_NO_DATA", "OUTCOME_FAILED",
     "OUTCOME_TIMEOUT", "OUTCOME_ERROR",
+    "ExportJournal", "JournalEntry", "JOURNAL_FILENAME",
     # models
     "Offer", "Shipping", "Page", "PageMeta",
     "CollectQuery", "ExportRequest", "ExportJob",
