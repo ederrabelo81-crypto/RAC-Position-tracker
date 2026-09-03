@@ -4,7 +4,8 @@
 > **Domain:** Buy box, sellers & competitive insights for the air conditioning market in Brazil  
 > **Stack:** Python 3.10+, Playwright, curl_cffi, BeautifulSoup, Pandas, Supabase, Streamlit  
 > **Sub-projeto:** `magalu_shopee/` — Node.js/TypeScript + Puppeteer (Shopee — fallback)  
-> **Status:** ✅ Production | Oracle Cloud VM (Brazil East) + GitHub Actions (manual backup)
+> **Status:** ✅ Production | PC Coletor (Windows, IP residencial) + GitHub Actions (backup)  
+> **Versão:** v5.2 (Set/2026) | **Última atualização:** 03 de Setembro de 2026
 
 ---
 
