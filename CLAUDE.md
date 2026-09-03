@@ -1013,6 +1013,7 @@ fica instável (re-capturar sessão com `session_grabber.py --site shopee`).
 | `Sync API inside the asyncio loop` | Alguém abriu um 2º `sync_playwright()` na thread. Use `scrapers/playwright_runtime.acquire()/release()` — nunca `sync_playwright().start()` direto (ver COMMON_MISTAKES #21) |
 | `Target page, context or browser has been closed` em série | A janela do Chrome do `RAC_LOCAL_CHROME` foi fechada. LocalBrowser reconecta sozinha (Ago/2026). Se persiste: reabra o perfil: `python scripts/setup_local_profile.py --site magalu` |
 | Chrome CDP morto / reconexão infinita | LocalBrowser detecta e aborta (Ago/2026); fallback automático para curl_cffi. Se curl_cffi também bloqueado, retorna 0 produtos (circuit breaker após 5 keywords bloqueadas) |
+| `pricetrack_api_import.py` preso em "limite de exports concorrentes (429) — aguardando slot" | Exports órfãos de execuções interrompidas seguram os 3 slots da organização (a API não cancela export). Desde Set/2026 o import **adota** o export da execução anterior em vez de duplicá-lo (diário em `imports/pricetrack/api/exports_state.json`) e, depois de 2 min preso, lista quem segura cada slot. Para ver à mão: `python -m pricetrack_api exports` |
 | Shopee 403 em todas as keywords | Sessão vencida (>24h, agora avisada como WARNING no log): `python utils/session_grabber.py --site shopee` — ou rode com `RAC_LOCAL_CHROME=1` |
 
 ### CSV Output Columns
@@ -1055,7 +1056,18 @@ e cada linha carimba `price_basis`. Migração
 python scripts/pricetrack_price_audit.py --data 2026-09-01   # o que a API entrega, cru
 python scripts/pricetrack_price_audit.py --status-backfill   # quanto ainda está errado
 python scripts/pricetrack_api_import.py --force --start 2026-07-28 --end 2026-09-01
+python -m pricetrack_api exports                             # quem segura os 3 slots (429)
 ```
+
+> **O reimport pode ser interrompido e retomado (Set/2026).** A API do PriceTrack
+> permite 3 exports concorrentes por organização e **não tem cancelamento**: até
+> Set/2026, cada Ctrl+C largava um export órfão segurando um slot, e a execução
+> seguinte criava outro para a mesma data e tomava 429 — o loop "aguardando
+> slot" que travou o backfill dos 36 dias. Agora o id do export é gravado em
+> `imports/pricetrack/api/exports_state.json` assim que o POST volta e a próxima
+> execução **adota** o export em vez de duplicá-lo (`pricetrack_api/journal.py`).
+> O console também deixou de parecer travado: heartbeat em INFO de cada export em
+> voo e, depois de 2 min preso em 429, o censo que nomeia o dono de cada slot.
 
 **Regras duras:**
 1. Base de preço nunca é implícita — **ausência de `price_basis` se lê como

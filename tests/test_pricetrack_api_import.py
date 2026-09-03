@@ -429,3 +429,49 @@ class TestParidadeComOAuditor:
         assert audit._is_available(raw, False) is True
         # com a coluna presente, status ausente na linha NÃO é disponível
         assert audit._is_available(raw, True) is False
+
+
+class TestPrefetchDataDir:
+    """Onde o diário de exports é gravado decide se a adoção funciona.
+
+    O diário (`imports/pricetrack/api/exports_state.json`) é o que permite a
+    execução seguinte adotar um export interrompido em vez de criar outro e
+    tomar 429. Com o `data_dir` default (relativo), rodar o script de outro
+    diretório gravaria o diário em outro lugar — a adoção simplesmente não
+    aconteceria, sem nenhum erro visível.
+    """
+
+    def _captura_settings(self, monkeypatch, tmp_path):
+        capturado = {}
+
+        class FakeManager:
+            def __init__(self, client, dataset="offers", max_concurrent=None):
+                capturado["settings"] = client.settings
+
+            def run_many(self, requests_, dest_fn=None):
+                return []
+
+        monkeypatch.setattr(ptai, "ExportManager", FakeManager)
+        monkeypatch.setattr(ptai, "PriceTrackClient", lambda s: type(
+            "C", (), {"settings": s})())
+        monkeypatch.setattr(ptai, "_offers_dest",
+                            lambda ds: tmp_path / f"{ds}.ndjson.gz")
+        return capturado
+
+    def test_data_dir_e_absoluto_por_padrao(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("PRICETRACK_DATA_DIR", raising=False)
+        capturado = self._captura_settings(monkeypatch, tmp_path)
+
+        ptai.prefetch_exports("token-de-teste", ["2026-07-28"], 3)
+
+        data_dir = capturado["settings"].data_dir
+        assert data_dir.is_absolute()
+        assert data_dir == ptai._DOWNLOAD_DIR.parent
+
+    def test_env_explicito_continua_mandando(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PRICETRACK_DATA_DIR", str(tmp_path / "outro"))
+        capturado = self._captura_settings(monkeypatch, tmp_path)
+
+        ptai.prefetch_exports("token-de-teste", ["2026-07-28"], 3)
+
+        assert capturado["settings"].data_dir == tmp_path / "outro"
