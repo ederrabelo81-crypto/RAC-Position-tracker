@@ -445,7 +445,10 @@ class TestPrefetchDataDir:
         capturado = {}
 
         class FakeManager:
-            def __init__(self, client, dataset="offers", max_concurrent=None):
+            # **kwargs para acompanhar a assinatura real do ExportManager sem
+            # quebrar a cada novo parâmetro opcional (ex.: alert_sink).
+            def __init__(self, client, dataset="offers", max_concurrent=None,
+                         **kwargs):
                 capturado["settings"] = client.settings
 
             def run_many(self, requests_, dest_fn=None):
