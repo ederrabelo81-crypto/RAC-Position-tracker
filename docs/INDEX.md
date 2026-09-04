@@ -129,6 +129,7 @@ docs/COLETA_LOCAL_AUTENTICADA.md           ← Shopee/Magalu/CB no notebook (Chr
 docs/AUTOMACAO_COLETAS_AUTENTICADAS.md     ← Legado: automation via CDP + sessions
 docs/MAPA_COLETAS.md                       ← Where each collection runs + execution monitoring ⭐
 docs/PRICETRACK_INSIGHTS.md                ← PriceTrack pipeline + insight roadmap
+docs/TRACK_POSITION_SELLER.md              ← Spin-off seller-side: strategy + multi-tenant architecture (proposal)
 docs/HISTORICO_DRIVE.md                    ← Cold history in Parquet (Google Drive)
 docs/PROMPT_COWORK_DRIVE.md                ← Cowork prompt: read the Drive instead of Supabase
 docs/DIAGNOSTICO_COLETA_JUN2026.md         ← Field coverage diagnosis (buy box, ML fix)
