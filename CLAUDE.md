@@ -42,14 +42,35 @@ python main.py --platforms magalu --pages 2        # curl_cffi/browser
 python utils/session_grabber.py --site shopee
 ```
 
-### Mais Vendidos — ⏸️ DESCONTINUADO na coleta (Set/2026)
+### Mais Vendidos — ✅ COLETANDO (corrigido em 04/09/2026)
 
-> **A coleta de Mais Vendidos foi desligada em Set/2026** — o foco passou a ser
-> 100% oferta/posição, em 3 turnos locais. A tarefa `RAC_Bestsellers` foi
-> removida do agendador e o job `local_bestsellers` saiu do
-> `pipeline_registry.py`. O módulo `bestsellers/` e o `scripts/collect_bestsellers.py`
-> **continuam no repositório** e podem ser rodados à mão, mas não fazem parte da
-> rotina agendada. O texto abaixo é referência histórica do que a coleta fazia.
+> **Correção:** esta seção afirmava que a coleta tinha sido desligada em
+> Set/2026. **Está errado — ela roda e grava no Supabase todo dia.** Conferido
+> no banco em 04/09/2026: 20 dos últimos 21 dias com dado (único buraco:
+> domingo 30/08 — e não é padrão de fim de semana, porque domingo 23/08 veio
+> com 360 linhas), ~350 linhas/dia, 13 fontes reportando, incluindo o próprio
+> dia da conferência.
+>
+> O que de fato saiu foi o **agendamento** pelo `pipeline_registry.py`: o job
+> `local_bestsellers` não está no contrato e a tarefa `RAC_Bestsellers` não
+> está no agendador — mas a coleta acontece por outro caminho. **É esse o
+> problema**, não o desligamento: sem job no registro não há batida de ponto,
+> e sem batida de ponto ninguém cobra as fontes que somem.
+>
+> **E somem.** Das 20 fontes de `bestsellers/config.py`, **7 não gravam uma
+> única linha**, e nunca gravaram em toda a história da tabela:
+> `casasbahia`, `frigelar`, `arcerto`, `dufrio`, `centralar`, `leveros`,
+> `ferreiracosta`. Das 5 fontes de `referencia = relevancia`, só `engage`
+> funciona — as outras 4 estão mudas. O job termina verde, o painel mostra 13
+> fontes, e ninguém é cobrado pelas 7 ausentes: exatamente o modo de falha do
+> Google Shopping em agosto.
+>
+> **Prioridade (decisão do mantenedor, Set/2026):** as 6 ausências de **site
+> próprio** (Frigelar, Ar Certo, Dufrio, Central Ar, Leveros, Ferreira Costa)
+> **não são prioridade** — no site próprio o lojista joga sozinho e controla a
+> vitrine inteira, então ranking ali não é inteligência competitiva. A ausência
+> que importa é **Casas Bahia**, que é marketplace e é onde a disputa acontece
+> de verdade. Ela nunca coletou.
 
 A coleta de OFERTA mede preço, posição e buy box; ela **não contém volume de
 venda**. As listas "Mais Vendidos" dos varejistas são a **única variável de
@@ -111,7 +132,10 @@ coleta de oferta/posição, todas rodando a varredura completa (todas as
 plataformas + dealers, 2 páginas, todas as keywords):
 `RAC_Local_Manha` 08:00 (Abertura), `RAC_Local_Tarde` 14:00 (Tarde) e
 `RAC_Local_Noite` 20:00 (Fechamento), cada uma com catch-up no logon dentro da
-sua janela (8–11h / 12–17h / 18–23h). A tarefa `RAC_Bestsellers` foi removida.
+sua janela (8–11h / 12–17h / 18–23h). A tarefa `RAC_Bestsellers` não está no
+agendador — mas a coleta de Mais Vendidos **acontece mesmo assim** por outro
+caminho (ver a seção acima); o que falta é o job no `pipeline_registry.py`,
+para que a ausência de fonte vire alarme.
 Setup: `scripts\setup_local_scheduler.ps1`; diagnóstico:
 `scripts\check_local_scheduler.ps1`.
 
@@ -1196,6 +1220,7 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 ---
 
 *Last updated: September 1, 2026 (v5.2)*  
-*Latest changes: PC coletor como dono ÚNICO de oferta/posição em 3 turnos (08:00 Abertura / 14:00 Tarde / 20:00 Fechamento) coletando TODAS as plataformas + dealers; `get_turno()` passou a 3 turnos; Mais Vendidos descontinuado da coleta agendada; cron do `collect.yml` e VM Oracle desligados como coletores; `pipeline_registry.py` reescrito para o coletor único*  
+*Latest changes (04/09/2026): correção factual — Mais Vendidos NÃO foi descontinuado, coleta e grava todo dia (conferido no Supabase); o que falta é o job no `pipeline_registry.py`, e por isso 7 das 20 fontes estão mudas sem ninguém cobrar — a única que importa é `casasbahia` (marketplace), as outras 6 são site próprio e não são prioridade*
+*Anterior: PC coletor como dono ÚNICO de oferta/posição em 3 turnos (08:00 Abertura / 14:00 Tarde / 20:00 Fechamento) coletando TODAS as plataformas + dealers; `get_turno()` passou a 3 turnos; Mais Vendidos descontinuado da coleta agendada; cron do `collect.yml` e VM Oracle desligados como coletores; `pipeline_registry.py` reescrito para o coletor único*  
 *Anterior: Confiabilidade da pipeline — livro-razão de execução (`pipeline_heartbeat`), supervisor `pipeline_watch.py`, portão do briefing `briefing_gate.py`, contenção `pipeline_heal.py` e o mapa `docs/MAPA_COLETAS.md`; a ausência de execução virou evento*  
 *Maintained by: RAC Position Tracker Team*

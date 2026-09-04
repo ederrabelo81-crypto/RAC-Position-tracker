@@ -50,11 +50,16 @@ dedicada = apresentação, dados privados e configuração. Coleta = singular,
 compartilhada, com orçamento racionado (§2.5, §2.6).
 
 **(b) "Elasticidade de preço vs. concorrentes" não é computável com o dado
-que temos.** Elasticidade exige quantidade vendida. Não coletamos conversão, e
-o único proxy de resultado que existia — as listas de Mais Vendidos — foi
-descontinuado da coleta em Set/2026. Entregar "elasticidade" com o dado atual
-seria inventar autoridade que o número não tem. O substituto defensável está
-em §1.4.
+que temos.** Elasticidade exige quantidade vendida, e não coletamos conversão.
+
+*Correção de 04/09/2026:* a primeira versão deste documento justificava isso
+dizendo que o único proxy de resultado — Mais Vendidos — tinha sido
+descontinuado. **Está errado: a coleta roda e grava todo dia** (§3.3). Mas a
+divergência continua de pé, por um motivo melhor: **ranking é ordinal e nunca
+vira quantidade.** Saber que um SKU subiu de 7º para 3º não diz quantas
+unidades vendeu, nem quantas venderia a outro preço. O proxy serve para medir
+*direção* de resultado, não elasticidade. Entregar "elasticidade" com ele seria
+inventar autoridade que o número não tem. O substituto defensável está em §1.4.
 
 **(c) Quatro dos dezesseis sellers nomeados não existem na plataforma hoje.**
 Levantamento contra o código:
@@ -124,7 +129,7 @@ consequência dessa frase.
 | **Gap de preço** vs. vencedor da buy box | ⚠️ | bloqueado pelo `price_basis` (§6) |
 | Quem **entrou/saiu** da vitrine (offer churn) | ✅ | `offer_key` + série; falta o detector |
 | Estou **abaixo do MAP** / alguém está? | ⚠️ | tabela de referência MAP por SKU (não existe) |
-| **Elasticidade de preço** | ❌ | conversão — ver §1.4 |
+| **Elasticidade de preço** | ❌ | conversão. Mais Vendidos é proxy de *direção*, ordinal — nunca vira quantidade (§1.4) |
 | **Giro de estoque** e benchmark de giro | ❌ | ERP do tenant; benchmark cruzado tem trava legal (§4.1) |
 | **Alerta de margem** | ⚠️ | custo é privado; cálculo fica no plano do tenant |
 | **Alavanca de negociação com fornecedor** | ⚠️ | ver abaixo |
@@ -440,6 +445,20 @@ Corolário para o SLA contratual: o compromisso vendável é sobre
 **disponibilidade de leitura por plataforma/turno**, não sobre "dado completo".
 Prometer completude de uma coleta anti-bot é prometer o que não se controla.
 
+**Isto não é hipótese — está acontecendo agora, no próprio repositório.** A
+coleta de `bestsellers` roda todo dia e grava no Supabase, mas **não tem job no
+`pipeline_registry.py`**. Sem job não há batida de ponto; sem batida, ausência
+de fonte não é evento. Resultado conferido no banco em 04/09/2026: **7 das 20
+fontes declaradas nunca gravaram uma linha**, o job termina verde, o painel
+mostra 13 fontes e nada nem ninguém cobra as 7. É o modo de falha do Google
+Shopping de agosto se repetindo numa coleta que ninguém sabia que estava
+descoberta. Um tenant pagante lendo esse painel concluiria que aqueles
+concorrentes não estão no ranking — quando na verdade nós é que não olhamos.
+
+**Regra dura que decorre:** nenhuma fonte de dado entra no produto do seller
+antes de ter dono declarado no registro de execução. Coleta sem job é coleta
+que ninguém cobra.
+
 ### 2.10 DDL proposta (esboço — nada aplicado)
 
 ```sql
@@ -562,6 +581,22 @@ de um 1P: o dealer com loja própria **e** operação 3P frequentemente compete
 consigo mesmo e não enxerga isso porque os dois números moram em times
 diferentes.
 
+**O que o site próprio NÃO entrega — e por que isso não é uma lacuna.**
+Na loja própria o lojista é o único jogador: ele define o sortimento, a ordem
+da vitrine, o preço e o destaque. Ranking ali mede a **decisão dele**, não a
+competição — um "mais vendidos" do site do Dufrio diz o que o Dufrio escolheu
+empurrar, e comparar isso com o de outro dealer soma duas vitrines que nunca se
+enfrentaram. **A guerra acontece no marketplace**, onde N lojistas disputam a
+mesma página com a mesma régua.
+
+Daí a assimetria deliberada do produto: no marketplace o valor é **posição
+relativa** (buy box, rank, share de vitrine); no site próprio o valor é
+**consistência** — preço e sortimento da loja própria contra a operação do
+mesmo dealer nos marketplaces (canibalização), e MAP contra o que os 3P fazem
+com o preço. É por isso que a ausência de Frigelar, Ar Certo, Dufrio, Central
+Ar, Leveros e Ferreira Costa no `bestsellers` **não é prioridade**, enquanto a
+de Casas Bahia é (bloqueador 5).
+
 ### 3.2 O que o 3P precisa (Web Continental, Polo Ar, Ar Certo, Duzzi, Denteck, BHP…)
 
 | Prioridade | Feature | Dado hoje | Trabalho |
@@ -589,7 +624,7 @@ adiado para a fase 3.
 | `utils/offer_identity.py` (`offer_key` v1) | sim — é o que torna série possível | **reusar**; expor a versão na API |
 | `pricetrack_daily` (preço diário, `price_basis`) | sim | **corrigir primeiro** (§6) — 36 dias inconsistentes |
 | `scrapers/dealers.py` (36 lojas próprias) | sim — é a visão 1P | **reusar**; cobre 11 dos 16 sellers citados |
-| `bestsellers/` (rank ordinal, descontinuado) | seria o único sinal de resultado | **decisão pendente**: religar como proxy de saída ou assumir que não há proxy |
+| `bestsellers` (rank ordinal, **coletando todo dia**) | é o único sinal de resultado que existe | **reusar, só marketplace** — conferido no banco 04/09: 20 dos últimos 21 dias. Ver o buraco de cobertura no bloqueador 5 |
 | `pipeline_heartbeat` (livro-razão) | sim — vira portão de qualidade | **reusar** como pré-condição de toda leitura (§2.9) |
 | `screenshots` (retenção 15 dias) | evidência de MAP e de vitrine | **reusar com cuidado** — implicação de LGPD (§4.2) |
 | Custo / estoque / vendas do seller | — | **construir** via ERP (§2.7) |
@@ -732,8 +767,10 @@ custo nenhum — e sem custo o produto vira um painel de preço a mais.
 
 **Fase 0 — destravar (pré-requisito, não é produto).**
 Reimport do PriceTrack com `price_basis` correto; portão de heartbeat
-especificado; decisão sobre religar `bestsellers` como proxy de resultado.
-Sem a fase 0 o produto vende número errado.
+especificado; `bestsellers` registrado no `pipeline_registry.py` (hoje coleta
+sem job, logo sem batida de ponto — e por isso 7 fontes estão mudas sem ninguém
+cobrar); Casas Bahia destravada no Mais Vendidos. Sem a fase 0 o produto vende
+número errado.
 
 **Fase 1 — o fato com sujeito seller.**
 `seller_offer_daily`, `tenants`/`tenant_seller_claim`, RLS, `metric_registry`
@@ -773,9 +810,22 @@ o número que decide se o plano Essencial fecha a conta.
    superfície mais importante para o 1P e a menos confiável. Não entra em SLA
    sem redundância.
 4. **Cadência de 3 turnos** é o teto do que se pode prometer em alerta (§2.8).
-5. **Sem sinal de resultado.** Com `bestsellers` descontinuado, não há proxy de
-   venda. Decisão explícita necessária: religar (custo de coleta) ou assumir
-   que o produto mede **exposição e competição**, nunca **resultado**.
+5. **O sinal de resultado existe, mas está fora do livro-razão — e vaza.**
+   `bestsellers` coleta e grava todo dia (20 dos últimos 21 dias em 04/09; o
+   único buraco, domingo 30/08, não é padrão de fim de semana — domingo 23/08
+   veio cheio). O problema é que ela **não tem job no `pipeline_registry.py`**:
+   sem job não há batida de ponto, e sem batida ninguém cobra quem some. E some
+   — **7 das 20 fontes de `bestsellers/config.py` nunca gravaram uma linha em
+   toda a história da tabela**: `casasbahia`, `frigelar`, `arcerto`, `dufrio`,
+   `centralar`, `leveros`, `ferreiracosta`. Das 5 fontes de `relevancia`, só
+   `engage` responde.
+   **Só uma dessas ausências é prioridade: `casasbahia`** — é marketplace, e é
+   onde a disputa por vitrine de fato acontece. As outras 6 são site próprio,
+   onde o lojista joga sozinho: ranking ali mede a decisão dele, não a
+   competição (§3.1). Decisão do mantenedor, Set/2026.
+   Continua valendo o limite de leitura: ranking é **ordinal**, mede direção de
+   resultado, nunca quantidade — o produto mede **exposição e competição**, e o
+   Mais Vendidos é a única pista de **resultado**, não a medida dele.
 6. **Ponto único de falha físico.** Toda a coleta depende de um PC Windows
    com IP residencial. Como produto industrial-interno isso é um risco
    aceito; como SaaS com SLA para terceiros, é o risco estrutural do negócio,
