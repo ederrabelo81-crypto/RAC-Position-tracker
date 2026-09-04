@@ -4,10 +4,12 @@ App **separado** do `app.py` da raiz. O da raiz é interno (visão da indústria
 chave que lê tudo); este atende gente de fora e **não carrega chave de
 escrita**. A fronteira é a chave e a policy de RLS, não um `WHERE` no código.
 
-## Pré-requisito: a migração 016
+## Pré-requisito: a migração 016 — ✅ APLICADA em 04/09/2026
 
 O painel lê `seller_offer_daily`, `seller_coverage_daily` e
-`v_seller_buybox_share`. Elas não existem até a migração rodar:
+`v_seller_buybox_share`. **Já existem no projeto de produção** (aplicadas em
+04/09/2026, com 28/08 a 04/09 materializados: ~33 mil ofertas, 511 viradas de
+buy box). Para outro ambiente, ou para refazer:
 
 ```bash
 psql "$SUPABASE_DB_URL" -f docs/migrations/016_seller_offer_daily.sql

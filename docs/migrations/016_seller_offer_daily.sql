@@ -168,6 +168,15 @@ CREATE INDEX IF NOT EXISTS idx_sod_buybox_limpo
     ON seller_offer_daily (seller_canonical, data DESC)
     WHERE superficie = 'marketplace' AND NOT identidade_suspeita;
 
+-- Sustenta a subconsulta de `detentor_anterior` na transformação. Sem ele, a
+-- busca por "quem detinha a buy box deste produto na observação anterior" faz
+-- varredura sequencial POR LINHA: com 900 linhas de teste não aparece, com
+-- ~20 mil linhas/dia em produção a transformação estoura o timeout. Foi
+-- exatamente o que aconteceu na primeira aplicação (04/09/2026).
+CREATE INDEX IF NOT EXISTS idx_sod_detentor_anterior
+    ON seller_offer_daily (plataforma, marketplace_product_id, data DESC, turno DESC)
+    WHERE detentor_buybox AND marketplace_product_id IS NOT NULL;
+
 -- ───────────────────────────────────────────────────────────────────────────
 -- Cobertura: o que era esperado e se veio. Sem isto, ausência vira zero.
 -- ───────────────────────────────────────────────────────────────────────────
@@ -376,7 +385,13 @@ $fn$;
 -- caixa. Identidade suspeita fica fora do numerador E do denominador — chave
 -- colapsada não vira estatística.
 -- ───────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE VIEW v_seller_buybox_share AS
+-- `security_invoker = true` NÃO é detalhe: por padrão a view roda com as
+-- permissões de quem a criou e **ignora a RLS** das tabelas de baixo. Hoje a
+-- policy é leitura-para-todos e isso não vazaria nada — mas na Fase 2, quando
+-- a RLS passar a recortar por tenant, uma view sem esta cláusula entregaria as
+-- linhas de todos os tenants a qualquer um. Melhor nascer certa.
+CREATE OR REPLACE VIEW v_seller_buybox_share
+WITH (security_invoker = true) AS
 WITH universo AS (
     SELECT data, plataforma,
            count(DISTINCT marketplace_product_id) AS produtos_universo
