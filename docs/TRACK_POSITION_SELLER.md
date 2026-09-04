@@ -277,12 +277,15 @@ vira teste. `tests/test_metric_registry.py` roda em todo PR, junto da suíte que
 já existe em `.github/workflows/tests.yml`.
 
 RLS propriamente dita segue o padrão já validado na migração 012 (leitura
-liberada, escrita negada por ausência de policy), agora com claim de JWT:
+liberada, escrita negada por ausência de policy), agora com claim de JWT. Ela
+se aplica às **tabelas de controle**, que são compartilhadas por definição — o
+isolamento do TPS é o schema, não a policy (§2.1), e por isso `tenant_cost` e
+`tenant_catalog` não aparecem aqui:
 
 ```sql
-ALTER TABLE tenant_cost ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tenant_seller_claim ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant_cost_isolamento ON tenant_cost
+CREATE POLICY tenant_seller_claim_isolamento ON tenant_seller_claim
     FOR ALL
     USING      (tenant_id = (auth.jwt() ->> 'tenant_id')::uuid)
     WITH CHECK (tenant_id = (auth.jwt() ->> 'tenant_id')::uuid);
@@ -458,9 +461,15 @@ CREATE TABLE tenant_seller_claim (
     plataforma       text,                        -- NULL = todas
     modelo           text NOT NULL,               -- '1P' | '3P'
     verificado_em    timestamptz,
-    verificado_por   text,
-    PRIMARY KEY (tenant_id, seller_canonical, COALESCE(plataforma, '*'))
+    verificado_por   text
 );
+
+-- PRIMARY KEY/UNIQUE de tabela só aceita NOME DE COLUNA — `COALESCE(...)` ali
+-- é erro de sintaxe. O índice por expressão é o que funciona, e é também o
+-- único jeito de `plataforma IS NULL` ("todas") colidir consigo mesma: num
+-- UNIQUE comum, dois NULL são distintos e a linha duplicaria em silêncio.
+CREATE UNIQUE INDEX uq_tenant_seller_claim
+    ON tenant_seller_claim (tenant_id, seller_canonical, COALESCE(plataforma, '*'));
 
 -- Universo de keywords: origem por tenant, execução compartilhada.
 CREATE TABLE tenant_keyword (
@@ -496,27 +505,38 @@ CREATE TABLE seller_offer_daily (
 CREATE INDEX ON seller_offer_daily (seller_canonical, plataforma, data);
 CREATE INDEX ON seller_offer_daily (offer_key, data);
 
--- ── Plano privado (schema por tenant; abaixo o formato lógico) ──────────
-CREATE TABLE tenant_catalog (            -- de-para SKU interno ↔ oferta
-    tenant_id     uuid NOT NULL,
+-- ── Plano privado — UM SCHEMA POR TENANT ────────────────────────────────
+-- O schema É o isolamento (§2.1): aqui não há coluna `tenant_id` e não há
+-- policy de RLS. Quem chega com o schema errado não filtra mal — não alcança.
+CREATE SCHEMA tenant_dufrio;             -- um por tenant, nomeado pelo slug
+
+CREATE TABLE tenant_dufrio.catalog (     -- de-para SKU interno ↔ oferta
     sku_interno   text NOT NULL,
-    offer_key     text,
+    offer_key     text,                  -- NULL = ainda não casado
     plataforma    text,
-    origem_match  text NOT NULL,          -- 'erp'|'manual'|'sugerido'
-    confirmado_em timestamptz,            -- NULL ⇒ sugestão, não usar em margem
-    PRIMARY KEY (tenant_id, sku_interno, COALESCE(offer_key, '*'))
+    origem_match  text NOT NULL,         -- 'erp'|'manual'|'sugerido'
+    confirmado_em timestamptz            -- NULL ⇒ sugestão, não usar em margem
 );
 
-CREATE TABLE tenant_cost (               -- NUNCA sai do TPS
-    tenant_id    uuid NOT NULL,
+-- Mesma razão do claim acima: `offer_key` NULL precisa colidir consigo mesmo.
+CREATE UNIQUE INDEX uq_catalog_sku
+    ON tenant_dufrio.catalog (sku_interno, COALESCE(offer_key, '*'));
+
+CREATE TABLE tenant_dufrio.cost (        -- NUNCA sai deste schema
     sku_interno  text NOT NULL,
     vigente_de   date NOT NULL,
     custo        numeric(12,2) NOT NULL,
     moeda        text NOT NULL DEFAULT 'BRL',
-    fonte        text NOT NULL,           -- 'bling'|'tiny'|'upload'|'api'
-    PRIMARY KEY (tenant_id, sku_interno, vigente_de)
+    fonte        text NOT NULL,          -- 'bling'|'tiny'|'upload'|'api'
+    PRIMARY KEY (sku_interno, vigente_de)
 );
 ```
+
+**Se o ponto de reversão de §2.1 for atingido** (schemas demais para o
+Postgres administrar), `catalog` e `cost` viram tabelas compartilhadas com
+coluna `tenant_id` e ganham a mesma policy de RLS das tabelas de controle. As
+duas variantes são excludentes: implementar as duas dá dois caminhos de
+isolamento para a mesma linha, e o mais fraco é o que vale.
 
 ---
 
