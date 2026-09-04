@@ -40,6 +40,7 @@ from loguru import logger  # noqa: E402
 
 from utils.seller_names import SELLER_GROUPS, seller_key  # noqa: E402
 from utils.seller_surface import mapa_superficies, validar_registro  # noqa: E402
+from utils.text import now_brt  # noqa: E402
 
 
 def _cliente():
@@ -57,13 +58,18 @@ def sincronizar_referencias(client) -> None:
     """Reescreve `plataforma_superficie` e `seller_depara` a partir do Python."""
     validar_registro()
 
-    superficies = [
-        {"plataforma": p, "superficie": s} for p, s in sorted(mapa_superficies().items())
-    ]
+    mapa = mapa_superficies()
+    superficies = [{"plataforma": p, "superficie": s} for p, s in sorted(mapa.items())]
     client.table("plataforma_superficie").upsert(
         superficies, on_conflict="plataforma"
     ).execute()
-    logger.success(f"[superfície] {len(superficies)} plataformas sincronizadas")
+    # Upsert não remove: plataforma tirada do Python continuaria classificada no
+    # banco, e o fato seguiria usando a classificação velha sem ninguém ver.
+    removidas = _apagar_ausentes(client, "plataforma_superficie", "plataforma", set(mapa))
+    logger.success(
+        f"[superfície] {len(superficies)} plataformas sincronizadas"
+        + (f" · {removidas} removidas" if removidas else "")
+    )
 
     # Uma linha por grafia observada, mais o próprio canônico — a chave é
     # normalizada, então grafias que só diferem em caixa/acento colapsam aqui
@@ -76,7 +82,33 @@ def sincronizar_referencias(client) -> None:
                 pares[chave] = canonico
     depara = [{"variante_key": k, "canonical": v} for k, v in sorted(pares.items())]
     client.table("seller_depara").upsert(depara, on_conflict="variante_key").execute()
-    logger.success(f"[de-para] {len(depara)} variantes de seller sincronizadas")
+    removidas = _apagar_ausentes(client, "seller_depara", "variante_key", set(pares))
+    logger.success(
+        f"[de-para] {len(depara)} variantes de seller sincronizadas"
+        + (f" · {removidas} removidas" if removidas else "")
+    )
+
+
+def _apagar_ausentes(client, tabela: str, chave: str, atuais: set) -> int:
+    """Remove da tabela de referência as chaves que saíram do Python.
+
+    Args:
+        client: client do Supabase (precisa de chave de escrita).
+        tabela: tabela de referência a limpar.
+        chave: coluna de chave primária.
+        atuais: conjunto de chaves que o Python ainda declara.
+
+    Returns:
+        Quantidade de linhas removidas.
+    """
+    existentes = {
+        linha[chave]
+        for linha in (client.table(tabela).select(chave).execute().data or [])
+    }
+    obsoletas = sorted(existentes - atuais)
+    if obsoletas:
+        client.table(tabela).delete().in_(chave, obsoletas).execute()
+    return len(obsoletas)
 
 
 def materializar(client, dia: date) -> None:
@@ -104,12 +136,19 @@ def materializar(client, dia: date) -> None:
 
 
 def _dias(args) -> List[date]:
+    """Dias a materializar, sempre no fuso da COLETA (BRT), nunca no do host.
+
+    O turno de Fechamento roda às 20:00 BRT, que é 23:00 UTC. Num host UTC,
+    `date.today()` já virou o dia seguinte às 21:00 BRT — a janela padrão
+    materializaria amanhã e pularia a data brasileira recém-fechada.
+    """
+    hoje = now_brt().date()
     if args.data:
         return [date.fromisoformat(args.data)]
     if args.desde:
         inicio = date.fromisoformat(args.desde)
-        return [inicio + timedelta(days=i) for i in range((date.today() - inicio).days + 1)]
-    return [date.today() - timedelta(days=1), date.today()]
+        return [inicio + timedelta(days=i) for i in range((hoje - inicio).days + 1)]
+    return [hoje - timedelta(days=1), hoje]
 
 
 def main() -> None:

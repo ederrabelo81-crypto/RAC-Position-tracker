@@ -40,26 +40,53 @@ def _client():
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_ANON_KEY"])
 
 
+PAGINA = 1000  # teto por chamada do PostgREST; ler além disso exige paginar
+
+
+def _todas_as_linhas(consulta, ordenar_por: list[str]) -> list[dict]:
+    """Lê a consulta inteira, página a página.
+
+    O PostgREST devolve no máximo 1.000 linhas e **não avisa** que truncou:
+    um seller com 2.865 linhas na janela apareceria com um terço do histórico,
+    subestimando ofertas, viradas e cobertura sem nenhum sinal na tela. A
+    ordenação estável é o que garante que as páginas não se sobreponham nem
+    pulem linhas entre chamadas.
+    """
+    for coluna in ordenar_por:
+        consulta = consulta.order(coluna)
+    linhas: list[dict] = []
+    inicio = 0
+    while True:
+        lote = consulta.range(inicio, inicio + PAGINA - 1).execute().data or []
+        linhas.extend(lote)
+        if len(lote) < PAGINA:
+            return linhas
+        inicio += PAGINA
+
+
 @st.cache_data(ttl=900)
 def carregar(seller: str, desde: date) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Fato do seller, share e cobertura. TTL de 15 min — a coleta é 3x/dia."""
     cli = _client()
     d = desde.isoformat()
 
-    fato = pd.DataFrame(
+    fato = pd.DataFrame(_todas_as_linhas(
         cli.table("seller_offer_daily").select(
             "data,turno,plataforma,superficie,offer_key,produto,marca,preco,posicao_melhor,"
             "keywords_presente,detentor_buybox,detentor_anterior,virou_no_turno,"
             "qtd_sellers,identidade_suspeita"
-        ).eq("seller_canonical", seller).gte("data", d).execute().data or []
-    )
-    share = pd.DataFrame(
+        ).eq("seller_canonical", seller).gte("data", d),
+        ["data", "turno", "plataforma", "offer_key"]))
+
+    share = pd.DataFrame(_todas_as_linhas(
         cli.table("v_seller_buybox_share").select("*")
-        .eq("seller_canonical", seller).gte("data", d).execute().data or []
-    )
-    cobertura = pd.DataFrame(
-        cli.table("seller_coverage_daily").select("*").gte("data", d).execute().data or []
-    )
+        .eq("seller_canonical", seller).gte("data", d),
+        ["data", "plataforma"]))
+
+    cobertura = pd.DataFrame(_todas_as_linhas(
+        cli.table("seller_coverage_daily").select("*").gte("data", d),
+        ["data", "turno", "plataforma"]))
+
     return fato, share, cobertura
 
 
@@ -95,32 +122,43 @@ def main() -> None:
     )
 
     fato, share, cobertura = carregar(seller, desde)
-    if fato.empty:
+
+    vazio = fato.empty
+    if vazio:
+        # Sem KPI, mas as abas CONTINUAM: a de Cobertura é justamente o que
+        # separa "não houve oferta" de "a coleta não rodou", e esconder ela
+        # aqui tiraria a resposta exatamente no caso em que a pergunta importa.
         st.warning(
-            f"Sem dado para **{seller}** desde {desde:%d/%m}. Isso pode ser "
-            "ausência real de oferta **ou** coleta que não rodou — confira a "
-            "aba de cobertura antes de concluir qualquer coisa."
+            f"Sem oferta registrada para **{seller}** desde {desde:%d/%m}. "
+            "Isso pode ser ausência real **ou** coleta que não rodou — a aba "
+            "**Cobertura** abaixo diz qual dos dois."
         )
-        return
 
     # ── Só marketplace entra em KPI. Loja própria o lojista joga sozinho, e
     #    identidade suspeita é chave colapsada: nem numerador, nem denominador.
-    limpo = fato[(fato["superficie"] == "marketplace") & (~fato["identidade_suspeita"])]
+    limpo = (fato[(fato["superficie"] == "marketplace") & (~fato["identidade_suspeita"])]
+             if not vazio else fato)
 
-    c1, c2, c3, c4 = st.columns(4)
-    if not share.empty:
-        ultimo_dia = share["data"].max()
-        hoje = share[share["data"] == ultimo_dia]
-        c1.metric("Share de buy box", f"{hoje['share_buybox_pct'].mean():.1f}%",
-                  help=f"Dos produtos observados na plataforma em {ultimo_dia}, "
-                       "em quantos você detinha a caixa. Denominador à vista na tabela.")
-        c2.metric("Produtos com a caixa", int(hoje["produtos_detidos"].sum()),
-                  help=f"de {int(hoje['produtos_universo'].sum())} observados")
-    c3.metric("Ofertas monitoradas",
-              f"{limpo['offer_key'].nunique():,}".replace(",", "."))
-    viradas = int(limpo["virou_no_turno"].fillna(False).sum())
-    c4.metric("Viradas de buy box", viradas,
-              help="Produtos em que a caixa trocou de dono entre turnos.")
+    if not vazio:
+        c1, c2, c3, c4 = st.columns(4)
+        if not share.empty:
+            ultimo_dia = share["data"].max()
+            hoje = share[share["data"] == ultimo_dia]
+            detidos, universo = hoje["produtos_detidos"].sum(), hoje["produtos_universo"].sum()
+            # Share real = soma/soma. A média dos percentuais por plataforma
+            # daria outro número quando os universos diferem (Magalu 661 x
+            # ML 307), e não seria o share de nada.
+            pct = 100.0 * detidos / universo if universo else 0.0
+            c1.metric("Share de buy box", f"{pct:.1f}%",
+                      help=f"{int(detidos)} de {int(universo)} produtos com buy box "
+                           f"observada em {ultimo_dia}, somando as plataformas.")
+            c2.metric("Produtos com a caixa", int(detidos),
+                      help=f"de {int(universo)} observados")
+        c3.metric("Ofertas monitoradas",
+                  f"{limpo['offer_key'].nunique():,}".replace(",", "."))
+        viradas = int(limpo["virou_no_turno"].fillna(False).sum())
+        c4.metric("Viradas de buy box", viradas,
+                  help="Produtos em que a caixa trocou de dono entre turnos.")
 
     aba1, aba2, aba3 = st.tabs(["📈 Share de buy box", "🔄 Viradas", "🩺 Cobertura"])
 
@@ -170,12 +208,17 @@ def main() -> None:
         if cobertura.empty:
             st.warning("Sem registro de cobertura no período.")
         else:
-            resumo = (cobertura.groupby(["data", "plataforma"])
-                      .agg(turnos=("turno", "nunique"), linhas=("linhas", "sum"))
+            # Conta turno OBSERVADO. Contar linhas presentes daria cobertura
+            # completa mesmo quando as três células estão marcadas como não
+            # observadas — que é exatamente o caso que esta aba existe para expor.
+            resumo = (cobertura.assign(observado=cobertura["observado"].astype(bool))
+                      .groupby(["data", "plataforma"])
+                      .agg(turnos_observados=("observado", "sum"),
+                           linhas=("linhas", "sum"))
                       .reset_index())
-            faltantes = resumo[resumo["turnos"] < 3]
+            faltantes = resumo[resumo["turnos_observados"] < 3]
             if faltantes.empty:
-                st.success("Todos os turnos observados em todas as plataformas.")
+                st.success("Os 3 turnos foram observados em todas as plataformas.")
             else:
                 st.warning(f"{len(faltantes)} combinações data×plataforma com menos de 3 turnos.")
                 st.dataframe(faltantes, use_container_width=True, hide_index=True)

@@ -148,7 +148,12 @@ def _dealers_do_coletor() -> FrozenSet[str] | None:
     """
     try:
         from scrapers.dealers import DEALER_CONFIGS
-    except Exception:  # pragma: no cover - app magro, sem os extras de coleta
+    except (ImportError, ModuleNotFoundError):
+        # Só ausência de módulo conta como "stack não instalada". Capturar
+        # Exception aqui mascararia um erro real de import (bug no módulo,
+        # instalação parcial) como "não dá para conferir", e a validação
+        # passaria em silêncio — desligando justamente a rede de segurança
+        # que este módulo existe para ser.
         return None
     return frozenset(DEALER_CONFIGS.keys())
 
