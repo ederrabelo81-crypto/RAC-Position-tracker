@@ -38,3 +38,5 @@ dist/
 build/
 target/
 ```
+# Segredos do painel do seller
+.streamlit/secrets.toml
