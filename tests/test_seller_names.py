@@ -86,7 +86,7 @@ class TestGruposConfirmados:
     @pytest.mark.parametrize("raw,esperado", [
         ("frigelar2", "Frigelar"), ("Frigelar®", "Frigelar"),
         ("leveros3", "Leveros"), ("fastshop2", "Fast Shop"),
-        ("comprebel2", "Comprebel"), ("angeloni2", "Angeloni"),
+        ("comprebel2", "Bel Micro"), ("angeloni2", "Angeloni"),
     ])
     def test_sufixo_numerico_do_ml(self, raw, esperado):
         """O ML anexa um dígito quando o nickname já existe."""
@@ -94,7 +94,9 @@ class TestGruposConfirmados:
 
     @pytest.mark.parametrize("raw,esperado", [
         ("Belmicro Oficial", "Bel Micro"), ("BELMICRO", "Bel Micro"),
+        ("Comprebel", "Bel Micro"),
         ("Denteck Ar Condicionado", "Denteck"), ("denteck", "Denteck"),
+        ("Go Compras", "Denteck"), ("GoCompras®", "Denteck"),
         ("A.Dias", "A.Dias"), ("adias", "A.Dias"), ("A DIAS", "A.Dias"),
         ("Efácil Oficial", "E-Fácil"), ("E-FÁCIL", "E-Fácil"),
         ("bagatolionline", "Bagatoli"), ("bagatolishop", "Bagatoli"),
@@ -113,7 +115,7 @@ class TestSellerDesconhecidoPassa:
     """Seller sem identidade confirmada NÃO é chutado para grupo parecido."""
 
     @pytest.mark.parametrize("raw", [
-        "mgshopgra", "GoCompras", "Turum", "Domus", "GHOX", "mg777",
+        "mgshopgra", "Turum", "Domus", "GHOX", "mg777",
         "multiloja", "Tudão Tech Ltda", "Loja da Ferramenta",
     ])
     def test_passa_inalterado(self, raw):
@@ -218,7 +220,7 @@ class TestHelpersDoDashboard:
             "Frio Peças", "Web Continental", "mgshopgra",
         ]
         assert out["buy_box_seller"].tolist() == [
-            "Frigelar", "Clima Rio", "GoCompras",
+            "Frigelar", "Clima Rio", "Denteck",
         ]
 
     @pytest.mark.parametrize("ausente", [None, float("nan"), pd.NA])
