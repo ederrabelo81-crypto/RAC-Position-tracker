@@ -173,6 +173,15 @@ class TestVariantsFor:
     def test_aceita_variante_como_entrada(self):
         assert variants_for("friopecas") == variants_for("Frio Peças")
 
+    def test_stems_diferentes_do_gocompras_estao_todos_listados(self):
+        """`_expand_sellers` (app.py) só expande .lower()/.upper() de cada
+        entrada — espaço e ® são STEMS diferentes, não caixa, então cada um
+        precisa estar aqui ou o filtro do dashboard perde linha do histórico.
+        """
+        variantes = variants_for("Denteck")
+        for grafia in ("Go Compras", "GoCompras", "GoCompras®"):
+            assert grafia in variantes, f"{grafia!r} ausente — filtro cru perde essas linhas"
+
     def test_desconhecido_devolve_ele_mesmo(self):
         assert variants_for("mgshopgra") == ["mgshopgra"]
 

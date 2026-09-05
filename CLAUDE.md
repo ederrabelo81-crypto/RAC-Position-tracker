@@ -1155,10 +1155,13 @@ stem diferente** — "Ar Certo"/"ar-certo"/"ARCERTO" colapsam sozinhos.
 1. O nome canônico é sempre uma grafia **observada** na coleta ou o `nome` já
    padronizado em `bestsellers/config.py`. Canônico inventado parece autoridade
    que o dado não tem e some do de-para na 1ª conferência contra a tela.
-2. Variante só entra com **identidade confirmada**. Apelido opaco (`mgshopgra`,
-   `GoCompras`) passa inalterado — agrupar por semelhança de string transfere
-   buy box de um seller para outro, pior que a fragmentação que isto resolve.
-   Por isso `CLIMAMIX` ≠ Clima Rio e `Bela Magazine` ≠ Magazine Luiza.
+2. Variante só entra com **identidade confirmada**. Apelido opaco (`mgshopgra`)
+   passa inalterado — agrupar por semelhança de string transfere buy box de um
+   seller para outro, pior que a fragmentação que isto resolve. Por isso
+   `CLIMAMIX` ≠ Clima Rio e `Bela Magazine` ≠ Magazine Luiza. `GoCompras` era
+   o exemplo canônico disso até 05/09/2026, quando o mantenedor confirmou a
+   identidade (grupo "Denteck"); `Comprebel` também deixou de ser canônico
+   próprio e virou variante de "Bel Micro" na mesma confirmação.
 
 Aplicado em 4 pontos, todos pelo mesmo módulo:
 

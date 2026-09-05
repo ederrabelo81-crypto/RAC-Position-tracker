@@ -93,8 +93,15 @@ SELLER_GROUPS: Dict[str, List[str]] = {
         "Denteck", "Denteck Ar Condicionado",
         # Go Compras é a mesma loja sob outro apelido de marketplace —
         # identidade confirmada pelo mantenedor em 05/09/2026 (era o exemplo
-        # de "apelido opaco" citado no docstring deste módulo).
-        "Go Compras",
+        # de "apelido opaco" citado no docstring deste módulo). As três
+        # grafias abaixo são STEMS diferentes (espaço e ® não são só caixa),
+        # então as três precisam estar listadas: `app.py::_expand_sellers`
+        # só expande .lower()/.upper() de cada entrada explícita — ele NÃO
+        # remove espaço/símbolo como `seller_key()` faz. Sem isto, o filtro
+        # do dashboard por "Denteck" perderia ~98% do histórico (14.638 das
+        # 14.902 linhas observadas são "GoCompras"/"GoCompras®", só 264 são
+        # "Go Compras" com espaço).
+        "Go Compras", "GoCompras", "GoCompras®",
     ],
     "Leveros": [
         "Leveros", "leveros3",
