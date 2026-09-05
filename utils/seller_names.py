@@ -17,9 +17,11 @@ parece autoridade que o dado não tem — e some do de-para na primeira
 conferência manual contra a tela do marketplace.
 
 Segunda regra dura: variante só entra no mapa com identidade CONFIRMADA. Um
-apelido opaco (`mgshopgra`, `GoCompras`) fica como está até alguém abrir a
-loja no marketplace; agrupar por semelhança de string transferiria buy box de
-um seller para outro, que é pior que a fragmentação que este módulo resolve.
+apelido opaco (`mgshopgra`) fica como está até alguém abrir a loja no
+marketplace; agrupar por semelhança de string transferiria buy box de um
+seller para outro, que é pior que a fragmentação que este módulo resolve.
+`GoCompras` era o exemplo canônico disso até 05/09/2026, quando o mantenedor
+confirmou a identidade (grupo "Denteck") — ver comentário no mapa abaixo.
 
 Uso:
     from utils.seller_names import normalize_seller_name
@@ -82,9 +84,24 @@ SELLER_GROUPS: Dict[str, List[str]] = {
     ],
     "Bel Micro": [
         "Bel Micro", "Belmicro", "Belmicro Oficial",
+        # Comprebel é a mesma loja sob outra conta/apelido de marketplace —
+        # identidade confirmada pelo mantenedor em 05/09/2026 (antes vivia
+        # como grupo canônico próprio "Comprebel", fragmentando a caixa).
+        "Comprebel", "comprebel2",
     ],
     "Denteck": [
         "Denteck", "Denteck Ar Condicionado",
+        # Go Compras é a mesma loja sob outro apelido de marketplace —
+        # identidade confirmada pelo mantenedor em 05/09/2026 (era o exemplo
+        # de "apelido opaco" citado no docstring deste módulo). As três
+        # grafias abaixo são STEMS diferentes (espaço e ® não são só caixa),
+        # então as três precisam estar listadas: `app.py::_expand_sellers`
+        # só expande .lower()/.upper() de cada entrada explícita — ele NÃO
+        # remove espaço/símbolo como `seller_key()` faz. Sem isto, o filtro
+        # do dashboard por "Denteck" perderia ~98% do histórico (14.638 das
+        # 14.902 linhas observadas são "GoCompras"/"GoCompras®", só 264 são
+        # "Go Compras" com espaço).
+        "Go Compras", "GoCompras", "GoCompras®",
     ],
     "Leveros": [
         "Leveros", "leveros3",
@@ -116,9 +133,6 @@ SELLER_GROUPS: Dict[str, List[str]] = {
     ],
     "Bagatoli": [
         "Bagatoli", "bagatolionline", "bagatolishop",
-    ],
-    "Comprebel": [
-        "Comprebel", "comprebel2",
     ],
     "Ultrafeu": [
         "Ultrafeu", "loja-ultrafeu",
