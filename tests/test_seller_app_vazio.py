@@ -143,21 +143,27 @@ def test_seller_com_dado_segue_renderizando():
 
 
 if __name__ == "__main__":
+    # Marcadores em ASCII puro, de propósito: este runner é para rodar à mão no
+    # PC coletor (Windows). Com o stdout redirecionado ou em pipe, o Python usa
+    # a codificação da locale (cp1252 em pt-BR) em vez do console, e um emoji
+    # levanta `UnicodeEncodeError` na PRÓPRIA linha de status — dentro de um
+    # `except`, isso derruba o script justamente quando ele tinha de reportar a
+    # falha. Acento passa (está no cp1252); símbolo fora do BMP latino, não.
     falhas = 0
     for nome, fn in sorted(
             (n, f) for n, f in globals().items() if n.startswith("test_")):
         try:
             fn()
-            print(f"PASS  ✅  {nome}")
+            print(f"PASS   {nome}")
         except AssertionError as erro:
             falhas += 1
-            print(f"FAIL  ❌  {nome}\n        {erro}")
+            print(f"FAIL   {nome}\n        {erro}")
         except Exception as erro:  # noqa: BLE001
             # Sem este ramo o runner standalone não cumpre o "PASS/FAIL + exit
             # code" que o docstring promete: uma exceção que não é assertiva
             # (o AppTest falhando ao subir, um import quebrado) abortaria o
             # script com traceback cru e nem contaria como falha.
             falhas += 1
-            print(f"ERROR 💥  {nome}\n        {type(erro).__name__}: {erro}")
+            print(f"ERROR  {nome}\n        {type(erro).__name__}: {erro}")
     print("PASS" if not falhas else f"FAIL ({falhas})")
     sys.exit(1 if falhas else 0)
