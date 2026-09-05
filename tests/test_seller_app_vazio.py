@@ -113,13 +113,20 @@ def test_seller_sem_linha_nao_derruba_a_pagina():
     assert any("Sem oferta registrada" in w.value for w in at.warning)
 
 
-def test_seller_sem_linha_aponta_o_secret_desatualizado():
-    """Cobertura não distingue 'nome errado' de 'não coletou' — a tela tem de dizer."""
+def test_seller_sem_linha_levanta_a_hipotese_do_secret_desatualizado():
+    """Cobertura não distingue 'nome errado' de 'não coletou' — a tela tem de dizer.
+
+    Como HIPÓTESE, não como diagnóstico: seller novo, dia parado e coleta que
+    não rodou dão exatamente este mesmo estado. Daí `st.info` condicionado a
+    "se a coleta rodou", e não um `st.error` afirmando o que ninguém sabe.
+    """
     at = _rodar("Comprebel", [])
-    erros = " ".join(e.value for e in at.error)
-    assert "SELLER" in erros and "Comprebel" in erros, (
+    assert not at.error, "a hipótese não pode se apresentar como erro apurado"
+    avisos = " ".join(i.value for i in at.info)
+    assert "SELLER" in avisos and "Comprebel" in avisos, (
         "sem esta mensagem o sintoma fica indistinguível de 'a coleta não rodou' "
-        "e o conserto (Settings → Secrets) não aparece em lugar nenhum")
+        "e a única causa com conserto fora do banco não aparece na tela")
+    assert "Cobertura" in avisos, "a mensagem tem de mandar descartar as outras duas antes"
     legendas = " ".join(c.value for c in at.caption)
     assert "Web Continental" in legendas, "listar os nomes válidos é o caminho de saída"
 
@@ -131,6 +138,8 @@ def test_seller_com_dado_segue_renderizando():
     assert len(at.tabs) == 5
     assert not at.error
     assert not any("Sem oferta registrada" in w.value for w in at.warning)
+    assert not any("SELLER" in i.value for i in at.info), (
+        "a hipótese do secret só cabe quando NÃO veio linha nenhuma")
 
 
 if __name__ == "__main__":
@@ -139,9 +148,16 @@ if __name__ == "__main__":
             (n, f) for n, f in globals().items() if n.startswith("test_")):
         try:
             fn()
-            print(f"PASS  {nome}")
+            print(f"PASS  ✅  {nome}")
         except AssertionError as erro:
             falhas += 1
-            print(f"FAIL  {nome}: {erro}")
+            print(f"FAIL  ❌  {nome}\n        {erro}")
+        except Exception as erro:  # noqa: BLE001
+            # Sem este ramo o runner standalone não cumpre o "PASS/FAIL + exit
+            # code" que o docstring promete: uma exceção que não é assertiva
+            # (o AppTest falhando ao subir, um import quebrado) abortaria o
+            # script com traceback cru e nem contaria como falha.
+            falhas += 1
+            print(f"ERROR 💥  {nome}\n        {type(erro).__name__}: {erro}")
     print("PASS" if not falhas else f"FAIL ({falhas})")
     sys.exit(1 if falhas else 0)

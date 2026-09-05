@@ -44,7 +44,7 @@ O caminho mais curto para um link apresentável, e gratuito.
    `.streamlit/secrets.toml`.
 3. Deploy. Sai uma URL `https://<nome>.streamlit.app`.
 
-**Três coisas para conferir antes de mandar o link:**
+**Quatro coisas para conferir antes de mandar o link:**
 
 - **A chave é a `anon`, nunca a `service_role`.** O segredo do Streamlit Cloud
   é visível a quem administra o app, e a `service_role` ignora RLS: vazá-la dá

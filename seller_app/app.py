@@ -262,21 +262,33 @@ def main() -> None:
             "**Cobertura** abaixo diz qual dos dois."
         )
         if st.secrets.get("SELLER"):
-            # TERCEIRA causa, e a aba Cobertura não distingue esta: instância
-            # travada num nome que a canonização aposentou. O de-para
-            # (`utils.seller_names`) colapsa grafias num canônico — quando
-            # "Comprebel" passa a ser variante de "Bel Micro", ou "GoCompras"
-            # de "Denteck", o secret que ainda nomeia a grafia velha aponta
-            # para um seller que deixou de existir e o PostgREST devolve `[]`
-            # com HTTP 200. Sem esta mensagem o sintoma fica indistinguível de
-            # "não coletou", e o conserto (Settings → Secrets) não aparece em
-            # lugar nenhum da tela.
-            st.error(
-                f"O secret `SELLER` trava esta instância em **{seller}**, e esse "
-                "nome não tem **nenhuma** linha na janela. Confira se ele ainda é "
-                "o nome **canônico** do lojista: quando uma grafia é reconhecida "
-                "como variante de outra, o canônico muda e o secret velho passa a "
-                "apontar para um seller inexistente."
+            # TERCEIRA causa possível, que a aba Cobertura NÃO consegue
+            # descartar: instância travada num nome que a canonização
+            # aposentou. O de-para (`utils.seller_names`) colapsa grafias num
+            # canônico — quando "Comprebel" passa a ser variante de
+            # "Bel Micro", ou "GoCompras" de "Denteck", o secret que ainda
+            # nomeia a grafia velha aponta para um seller que deixou de
+            # existir e o PostgREST devolve `[]` com HTTP 200.
+            #
+            # É HIPÓTESE, não diagnóstico, e o texto tem de dizer isso: seller
+            # novo, dia parado e coleta que não rodou produzem exatamente este
+            # mesmo estado. Afirmar "o nome está errado" mandaria o operador
+            # mexer no secret certo. O que não dá é ficar calado — esta é a
+            # única das três causas com conserto fora do banco, e ela não
+            # aparece em lugar nenhum da tela.
+            #
+            # Não dá para estreitar pelo `mercado`: a view sai do próprio
+            # `seller_offer_daily`, então seller ausente do fato está ausente
+            # da view por construção — a checagem seria sempre verdadeira e
+            # não separaria nada. Quem separa de fato é a aba Cobertura, para
+            # as outras duas causas.
+            st.info(
+                f"**Se a coleta rodou** (veja a aba Cobertura), sobra conferir o "
+                f"nome. Esta instância está travada em **{seller}** pelo secret "
+                "`SELLER`, comparado **literalmente** com `seller_canonical` — e "
+                "a canonização aposenta grafias: quando uma vira variante de "
+                "outra, o canônico muda e o secret velho passa a apontar para um "
+                "seller que não existe mais, sem erro nenhum na resposta."
             )
             if not mercado.empty:
                 nomes = (mercado.groupby("seller_canonical")["produtos_detidos"]
