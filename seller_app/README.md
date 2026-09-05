@@ -53,6 +53,15 @@ O caminho mais curto para um link apresentável, e gratuito.
   quando o papel `anon` existe. Confira que a leitura funciona pela `anon` —
   RLS ligada **sem** policy responde `[]` com HTTP 200, sem erro e sem log, e o
   painel fica indistinguível de "não coletou".
+- **`SELLER` tem de ser o nome CANÔNICO, e ele muda.** O secret é comparado
+  literalmente com `seller_canonical`; a canonização
+  (`utils/seller_names.py`) colapsa grafias num canônico e às vezes aposenta
+  uma — "Comprebel" virou variante de "Bel Micro" e "GoCompras" de "Denteck"
+  em 05/09/2026. Secret na grafia velha → o PostgREST devolve `[]` com HTTP
+  200 e o painel fica vazio. Depois de mexer no de-para, confira os secrets
+  de toda instância travada (o painel agora acusa isso na tela, mas quem
+  conserta é você).
+
 - **App público é público.** O Community Cloud gratuito não restringe quem
   abre o link; o `SENHA` do secrets é um cadeado de demo, não autenticação. Para
   um piloto pago, veja abaixo.
