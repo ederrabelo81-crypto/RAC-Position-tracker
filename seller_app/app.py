@@ -34,11 +34,22 @@ Segredos (`.streamlit/secrets.toml` local, ou o painel do Streamlit Cloud):
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
 import pandas as pd
 import streamlit as st
 from supabase import create_client
+
+# As duas funções puras da janela moram fora do runtime do Streamlit
+# (`seller_app/janela.py`), o que as deixa testáveis sem subir o painel. O
+# import tem dois caminhos porque o app é carregado de dois jeitos: `streamlit
+# run seller_app/app.py` põe `seller_app/` no sys.path (import direto do
+# módulo irmão); importado com a raiz do repo no path (testes), resolve como
+# pacote de namespace.
+try:
+    from janela import dias_max as _dias_max, janela as _janela
+except ModuleNotFoundError:  # pragma: no cover - depende de como o app é carregado
+    from seller_app.janela import dias_max as _dias_max, janela as _janela
 
 st.set_page_config(page_title="Track Position Seller", page_icon="📦", layout="wide")
 
@@ -190,35 +201,6 @@ def intervalo_dados() -> tuple[date | None, date | None]:
         return date.fromisoformat(linha[0]["data"]) if linha else None
 
     return _borda(False), _borda(True)
-
-
-def _dias_max(intervalo: tuple[date | None, date | None]) -> int:
-    """Teto do slider = dias de histórico que EXISTEM (limitado a [4, 60]).
-
-    Fixar o teto em 60 fazia a metade de cima do slider ser inerte quando o
-    histórico é curto — a origem do sintoma relatado. Amarrar o teto ao span
-    real deixa todo o curso do slider mexer no dado, e o teto cresce sozinho
-    conforme a coleta acumula dias. O piso 4 garante `min < max` para o
-    `st.slider` (o mínimo é 3) mesmo com um ou dois dias só de dado.
-    """
-    min_data, max_data = intervalo
-    if not min_data or not max_data:
-        return 60
-    span = (max_data - min_data).days + 1
-    return max(4, min(60, span))
-
-
-def _janela(dias: int, intervalo: tuple[date | None, date | None]) -> date:
-    """`desde` da janela, ancorado no último dia COM dado, não em hoje.
-
-    Ancorar em `max_data` remove a zona morta que o atraso da coleta abria no
-    fim baixo do slider: "3 dias" passa a valer 3 dias de dado real, não 3
-    dias contados a partir de um hoje que ainda não coletou. Sem histórico
-    nenhum, cai no comportamento antigo (âncora em hoje) para não quebrar.
-    """
-    _, max_data = intervalo
-    ancora = max_data or date.today()
-    return ancora - timedelta(days=dias)
 
 
 def _legenda_janela(dias: int, intervalo: tuple[date | None, date | None]) -> None:
