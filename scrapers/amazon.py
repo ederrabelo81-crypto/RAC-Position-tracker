@@ -36,8 +36,10 @@ from utils.amazon_sellers import (
     extract_seller_from_pdp,
     is_amazon_self,
     pdp_budget,
+    pdp_fresh,
     resolution_enabled,
 )
+from utils.seller_names import normalize_seller_name
 from utils.text import parse_price, parse_rating, parse_review_count
 
 _SELECTORS = {
@@ -104,6 +106,12 @@ class AmazonScraper(BaseScraper):
     # IP inteiro do datacenter está em blacklist.
     _MAX_BROWSER_ROTATIONS = 2
 
+    # PDPs seguidos sem "Vendido por" que caracterizam falha SISTÊMICA (layout
+    # novo ou bloqueio) em vez de produto fora do ar. Aborta a resolução em vez
+    # de varrer a lista inteira abrindo página que não vai revelar nada — o
+    # mesmo teto de bestsellers/sources/amazon.py. Só usado no modo fresh.
+    _MAX_PDP_FALHAS_SEGUIDAS = 5
+
     def __init__(self, headless: bool = True) -> None:
         super().__init__(headless=headless)
         # Flag pública lida em main._run_scraper pra abortar keywords restantes
@@ -111,9 +119,20 @@ class AmazonScraper(BaseScraper):
         self.captcha_hit: bool = False
         self._rotations_done: int = 0
         # Resolução de buy box via PDP — cache carregado sob demanda e
-        # orçamento contado por execução do scraper, não por página.
+        # orçamento contado por execução do scraper, não por página. No modo
+        # "observação do dia" (RAC_AMAZON_PDP_FRESH) o cache de disco é ignorado
+        # e o teto default é praticamente ilimitado (ver utils/amazon_sellers).
+        self._pdp_fresh: bool = pdp_fresh()
         self._seller_cache: Optional[AmazonSellerCache] = None
-        self._pdp_budget_left: int = pdp_budget()
+        self._pdp_budget_left: int = pdp_budget(fresh=self._pdp_fresh)
+        # Estado do modo fresh, no NÍVEL DA EXECUÇÃO (não da página):
+        # `_resolve_buybox_via_pdp` roda uma vez por página, então o cache de
+        # ASINs lidos e a detecção de bloqueio sistêmico precisam sobreviver
+        # entre páginas/keywords — senão o mesmo ASIN reabre um PDP em cada
+        # página e um bloqueio geral só é notado dentro de uma página.
+        self._pdp_fresh_lidos: Dict[str, Optional[str]] = {}
+        self._pdp_fresh_falhas_seguidas: int = 0
+        self._pdp_fresh_abortado: bool = False
 
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
@@ -439,6 +458,12 @@ class AmazonScraper(BaseScraper):
         if not pendentes:
             return
 
+        # Modo "observação do dia": sem cache persistente, resolve a lista
+        # inteira. É o modo do coletor Amazon-only que alimenta o seller_app.
+        if self._pdp_fresh:
+            self._resolve_buybox_fresh(pendentes)
+            return
+
         if self._seller_cache is None:
             self._seller_cache = AmazonSellerCache()
         cache = self._seller_cache
@@ -450,8 +475,7 @@ class AmazonScraper(BaseScraper):
 
             conhecido = cache.get(asin)
             if conhecido:
-                rec["Buy Box Seller"] = conhecido
-                rec["Tipo Seller"] = "1P" if is_amazon_self(conhecido) else "3P"
+                self._gravar_seller(rec, conhecido)
                 resolvidos_cache += 1
                 continue
 
@@ -462,8 +486,7 @@ class AmazonScraper(BaseScraper):
             nome = self._fetch_pdp_seller(asin)
             if nome:
                 cache.put(asin, nome)
-                rec["Buy Box Seller"] = nome
-                rec["Tipo Seller"] = "1P" if is_amazon_self(nome) else "3P"
+                self._gravar_seller(rec, nome)
                 resolvidos_pdp += 1
             else:
                 cache.mark_failed(asin, "PDP sem 'Vendido por'")
@@ -481,6 +504,85 @@ class AmazonScraper(BaseScraper):
                 f"({len(pendentes)} pendentes · orçamento restante "
                 f"{self._pdp_budget_left})"
             )
+
+    @staticmethod
+    def _gravar_seller(rec: Dict[str, Any], nome: str) -> None:
+        """Grava o vendedor resolvido no registro, já CANÔNICO.
+
+        O tipo (1P/3P) sai do nome BRUTO (o set `_AMAZON_SELF` reconhece as
+        grafias cruas da própria Amazon); o campo de exibição sai canonizado
+        (`utils/seller_names`), como toda linha nascida em `_build_record` —
+        senão a mesma loja apareceria com uma grafia aqui e outra na SERP, e o
+        share de buy box do seller_app fatiaria um vendedor em vários.
+        """
+        rec["Buy Box Seller"] = normalize_seller_name(nome) or nome
+        rec["Tipo Seller"] = "1P" if is_amazon_self(nome) else "3P"
+
+    def _resolve_buybox_fresh(self, pendentes: List[Dict[str, Any]]) -> None:
+        """Resolve a buy box abrindo o PDP de CADA ASIN, sem cache persistente.
+
+        Modo "observação do dia" (``RAC_AMAZON_PDP_FRESH``): espelha
+        ``bestsellers/sources/amazon.py::_resolve_sellers_via_pdp``. A leitura é
+        refeita a cada execução porque ``seller`` aqui é a observação do dia, e
+        o objetivo do seller_app é justamente ver a buy box MUDAR de dono — um
+        cache sem validade congelaria a série no vencedor da 1ª resolução.
+
+        O único cache é POR EXECUÇÃO: ASIN repetido entre páginas/keywords custa
+        um PDP só, e a falha (None) também é memorizada para não reabrir o mesmo
+        PDP morto. ``_MAX_PDP_FALHAS_SEGUIDAS`` PDPs seguidos sem vendedor
+        abortam a resolução (layout novo ou bloqueio), deixando o restante com o
+        campo vazio — nunca herdado.
+
+        Args:
+            pendentes: registros sem buy box e com ``_asin``; alterados no lugar.
+
+        Note:
+            O cache de ASINs lidos, o contador de falhas seguidas e o flag de
+            abort são de instância (execução), não locais: o método roda uma vez
+            por página, e cross-page dedup + detecção de bloqueio dependem de
+            estado que sobreviva entre as chamadas.
+        """
+        lidos = self._pdp_fresh_lidos
+        abertos = 0
+        resolvidos = 0
+
+        for rec in pendentes:
+            asin = rec["_asin"]
+
+            if asin in lidos:
+                nome = lidos[asin]
+            elif self._pdp_budget_left <= 0 or self._pdp_fresh_abortado:
+                continue
+            else:
+                self._pdp_budget_left -= 1
+                abertos += 1
+                nome = self._fetch_pdp_seller(asin)
+                lidos[asin] = nome
+                if nome:
+                    self._pdp_fresh_falhas_seguidas = 0
+                else:
+                    self._pdp_fresh_falhas_seguidas += 1
+                    if self._pdp_fresh_falhas_seguidas >= self._MAX_PDP_FALHAS_SEGUIDAS:
+                        logger.error(
+                            f"[{self.platform_name}] "
+                            f"{self._pdp_fresh_falhas_seguidas} PDPs seguidos sem "
+                            "'Vendido por' — layout novo do bloco de compra ou "
+                            "bloqueio. Abortando a resolução do run; os itens "
+                            "restantes ficam sem seller (campo vazio, não herdado)."
+                        )
+                        self._pdp_fresh_abortado = True
+
+            if nome:
+                self._gravar_seller(rec, nome)
+                resolvidos += 1
+
+        registrar = logger.success if resolvidos else logger.warning
+        registrar(
+            f"[{self.platform_name}] Buy box (observação do dia): "
+            f"{resolvidos}/{len(pendentes)} itens da página com seller "
+            f"({abertos} PDPs abertos · {len(lidos)} ASINs distintos no run · "
+            f"orçamento restante {self._pdp_budget_left})."
+        )
 
     def _fetch_pdp_seller(self, asin: str) -> Optional[str]:
         """

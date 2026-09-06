@@ -51,6 +51,19 @@ ENV_ENABLED = "RAC_AMAZON_PDP_BUYBOX"
 #: Env que limita PDPs por execução.
 ENV_BUDGET = "RAC_AMAZON_PDP_BUDGET"
 DEFAULT_BUDGET = 40
+#: Env do modo "observação do dia": abre o PDP de CADA item, sem cache
+#: persistente, exatamente como a coleta de Mais Vendidos (bestsellers/sources/
+#: amazon.py). É o modo do coletor Amazon-only na nuvem que alimenta o
+#: seller_app: a buy box precisa poder MUDAR de dono de um dia para o outro, e o
+#: cache ASIN→vendedor de `AmazonSellerCache` não tem validade — herdaria para
+#: sempre o vencedor da 1ª resolução e a série registraria uma buy box que
+#: ninguém observou. Ligar este modo troca o cache de disco por um cache POR
+#: EXECUÇÃO e resolve a lista inteira (sem o teto de 40 do modo estável).
+ENV_FRESH = "RAC_AMAZON_PDP_FRESH"
+#: Sentinela de "sem teto" para o contador de orçamento por execução do modo
+#: fresh — grande o bastante para nunca truncar a lista deste nicho, mas finito
+#: para o decremento e o log continuarem valendo.
+BUDGET_ILIMITADO = 10 ** 9
 
 #: Nomes que representam a própria Amazon (1P), em PT-BR e EN.
 _AMAZON_SELF = {
@@ -183,17 +196,45 @@ def extract_seller_from_pdp(html: str) -> Optional[str]:
     return None
 
 
+def _env_ligado(nome: str) -> bool:
+    return os.getenv(nome, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def pdp_fresh() -> bool:
+    """True se o modo "observação do dia" está ligado (``RAC_AMAZON_PDP_FRESH``).
+
+    Neste modo o scraper abre o PDP de cada ASIN sem tocar o cache persistente,
+    resolvendo a lista inteira — ver ``ENV_FRESH``.
+    """
+    return _env_ligado(ENV_FRESH)
+
+
 def resolution_enabled() -> bool:
-    """True se a resolução via PDP está ligada por env (default: desligada)."""
-    return os.getenv(ENV_ENABLED, "").strip().lower() in ("1", "true", "yes", "on")
+    """True se a resolução via PDP deve rodar.
+
+    Ligada pelo modo estável (``RAC_AMAZON_PDP_BUYBOX``, com cache e teto) OU
+    pelo modo "observação do dia" (``RAC_AMAZON_PDP_FRESH``, sem cache). Default:
+    desligada nos dois — a coleta da Amazon segue estável sem opt-in.
+    """
+    return _env_ligado(ENV_ENABLED) or pdp_fresh()
 
 
-def pdp_budget() -> int:
-    """Teto de PDPs por execução (``RAC_AMAZON_PDP_BUDGET``, default 40)."""
+def pdp_budget(fresh: bool = False) -> int:
+    """Teto de PDPs por execução (``RAC_AMAZON_PDP_BUDGET``).
+
+    Args:
+        fresh: no modo "observação do dia" o default é praticamente ilimitado
+            (a lista já é limitada por keywords × páginas), como em
+            ``bestsellers``; no modo estável o default é 40, porque ali um teto
+            baixo é a rede de proteção que impede um PDP travado de derrubar uma
+            coleta que hoje entrega dado.
+
+    Um valor explícito na env sempre vence (inclusive 0, que desliga os PDPs).
+    """
     raw = os.getenv(ENV_BUDGET, "").strip()
     if raw.isdigit() and int(raw) >= 0:
         return int(raw)
-    return DEFAULT_BUDGET
+    return BUDGET_ILIMITADO if fresh else DEFAULT_BUDGET
 
 
 class AmazonSellerCache:

@@ -213,24 +213,28 @@ DIAS_UTEIS: Tuple[int, ...] = (0, 1, 2, 3, 4)
 # ---------------------------------------------------------------------------
 # Divisão de trabalho (o "porquê" de cada linha está em docs/MAPA_COLETAS.md):
 #
-#   PC local  → coletor ÚNICO de OFERTA/POSIÇÃO desde Set/2026. Roda TODAS as
-#               plataformas (ML, Amazon, Magalu, Casas Bahia, Google Shopping,
-#               Leroy, Shopee e os dealers) em três turnos: 8h (Abertura),
-#               14h (Tarde) e 20h (Fechamento). É o único caminho com IP
-#               residencial e Chrome logado, que ML/Magalu/Shopee exigem — e
-#               concentrar tudo nele evita o dado fantasma que a coleta de
-#               marketplace em IP de datacenter produzia (0 linha com cara de
-#               sucesso).
-#   Actions   → NÃO coleta mais marketplace (o cron do collect.yml foi
-#               desligado). Segue dono apenas do import do PriceTrack e do
-#               watchdog de dado.
+#   PC local  → coletor de OFERTA/POSIÇÃO desde Set/2026. Roda ML, Magalu,
+#               Casas Bahia, Google Shopping, Leroy, Shopee e os dealers em três
+#               turnos: 8h (Abertura), 14h (Tarde) e 20h (Fechamento). É o único
+#               caminho com IP residencial e Chrome logado, que ML/Magalu/Shopee
+#               exigem — e concentrar isso nele evita o dado fantasma que a
+#               coleta de marketplace em IP de datacenter produzia (0 linha com
+#               cara de sucesso).
+#   Actions   → dono do import do PriceTrack, do watchdog de dado E, desde
+#               Set/2026, de um coletor Amazon-only (gh_amazon_*) nos mesmos três
+#               turnos. A Amazon saiu do PC porque roda de IP de datacenter e a
+#               leitura de buy box é cara (um PDP por item, toda execução):
+#               isolá-la num job dedicado na nuvem deixa a varredura do PC leve e
+#               dá ao seller_app a buy box da Amazon. O cron de marketplace do
+#               collect.yml segue desligado — só a Amazon voltou ao Actions.
 #   VM Oracle → desativada como coletora (o cron foi removido). O executor
 #               permanece documentado em EXECUTORES caso volte a ser usado.
 #
-# Um turno = um dono. Cada (plataforma, turno) tem exatamente um job cobrado,
-# e os três turnos locais não se sobrepõem, então não há redundância a
-# declarar aqui — a resiliência agora vem dos três horários do próprio PC e do
-# gatilho de catch-up no logon, não de uma segunda máquina.
+# Um turno = um dono. Cada (plataforma, turno) tem exatamente um job cobrado. A
+# Amazon é cobrada dos três jobs gh_amazon_* (nuvem); as demais plataformas, dos
+# três jobs locais. Nenhum par (plataforma, turno) tem dois donos, então não há
+# redundância a declarar aqui — a resiliência de cada máquina vem dos seus três
+# horários e do catch-up no logon (PC) ou do re-dispatch manual (Actions).
 # ---------------------------------------------------------------------------
 
 JOBS: Tuple[JobSpec, ...] = (
@@ -281,6 +285,84 @@ JOBS: Tuple[JobSpec, ...] = (
             "pior que monitor nenhum, porque ninguém desconfia do silêncio."
         ),
     ),
+    # ── GitHub Actions — coletor Amazon-only (buy box via PDP) ─────────────
+    # A Amazon roda de IP de datacenter (diferente de ML/Magalu/Shopee/Casas
+    # Bahia) e a leitura de buy box é cara (um PDP por item, toda execução) —
+    # por isso foi tirada da varredura do PC e virou um job dedicado na nuvem,
+    # nos MESMOS três turnos. É a fonte da buy box da Amazon no seller_app.
+    # RAC_TURNO crava o turno do cron (Actions atrasa), então um run tardio não
+    # grava o turno errado nem bate ponto como o job errado.
+    JobSpec(
+        id="gh_amazon_abertura",
+        nome="Coleta Amazon (buy box PDP) — turno Abertura (08:00)",
+        executor=EXEC_ACTIONS,
+        workflow="collect_amazon_sellers.yml",
+        gatilho=".github/workflows/collect_amazon_sellers.yml (cron 11:00 UTC)",
+        comando="RAC_TURNO=Abertura RAC_AMAZON_PDP_FRESH=1 python main.py --platforms amazon --pages 2",
+        horario_brt=(8, 0),
+        dias=TODOS_OS_DIAS,
+        # Tolerância e deadline largos porque o cron do Actions é best effort
+        # (atrasos rotineiros de 35–80 min). O turno gravado não sofre com isso
+        # (RAC_TURNO o crava); o deadline só decide quando a AUSÊNCIA vira alerta.
+        tolerancia_min=120,
+        deadline_min=300,
+        destino="coletas (Amazon, turno Abertura)",
+        turno="Abertura",
+        plataformas=("Amazon",),
+        severidade=SEV_IMPORTANTE,
+        remediacao=(
+            "Actions → Coleta Amazon Sellers → Run workflow (turno Abertura) "
+            "(ou: RAC_TURNO=Abertura RAC_AMAZON_PDP_FRESH=1 python main.py "
+            "--platforms amazon --pages 2)"
+        ),
+        observacao=(
+            "Buy box da Amazon só existe no PDP: este job abre o PDP de cada "
+            "item, toda execução, sem cache (observação do dia). Alimenta o "
+            "seller_app, que mede a buy box MUDANDO de dono."
+        ),
+    ),
+    JobSpec(
+        id="gh_amazon_tarde",
+        nome="Coleta Amazon (buy box PDP) — turno Tarde (14:00)",
+        executor=EXEC_ACTIONS,
+        workflow="collect_amazon_sellers.yml",
+        gatilho=".github/workflows/collect_amazon_sellers.yml (cron 17:00 UTC)",
+        comando="RAC_TURNO=Tarde RAC_AMAZON_PDP_FRESH=1 python main.py --platforms amazon --pages 2",
+        horario_brt=(14, 0),
+        dias=TODOS_OS_DIAS,
+        tolerancia_min=120,
+        deadline_min=300,
+        destino="coletas (Amazon, turno Tarde)",
+        turno="Tarde",
+        plataformas=("Amazon",),
+        severidade=SEV_IMPORTANTE,
+        remediacao=(
+            "Actions → Coleta Amazon Sellers → Run workflow (turno Tarde) "
+            "(ou: RAC_TURNO=Tarde RAC_AMAZON_PDP_FRESH=1 python main.py "
+            "--platforms amazon --pages 2)"
+        ),
+    ),
+    JobSpec(
+        id="gh_amazon_fechamento",
+        nome="Coleta Amazon (buy box PDP) — turno Fechamento (20:00)",
+        executor=EXEC_ACTIONS,
+        workflow="collect_amazon_sellers.yml",
+        gatilho=".github/workflows/collect_amazon_sellers.yml (cron 23:00 UTC)",
+        comando="RAC_TURNO=Fechamento RAC_AMAZON_PDP_FRESH=1 python main.py --platforms amazon --pages 2",
+        horario_brt=(20, 0),
+        dias=TODOS_OS_DIAS,
+        tolerancia_min=120,
+        deadline_min=300,
+        destino="coletas (Amazon, turno Fechamento)",
+        turno="Fechamento",
+        plataformas=("Amazon",),
+        severidade=SEV_IMPORTANTE,
+        remediacao=(
+            "Actions → Coleta Amazon Sellers → Run workflow (turno Fechamento) "
+            "(ou: RAC_TURNO=Fechamento RAC_AMAZON_PDP_FRESH=1 python main.py "
+            "--platforms amazon --pages 2)"
+        ),
+    ),
     # ── PC local (Windows) — coletor único de oferta/posição ───────────────
     # As três coletas do dia rodam a MESMA varredura completa (todas as
     # plataformas, todas as keywords, 2 páginas). Elas se distinguem só pelo
@@ -301,7 +383,11 @@ JOBS: Tuple[JobSpec, ...] = (
         destino="coletas (turno Abertura)",
         turno="Abertura",
         plataformas=(
-            "Mercado Livre", "Amazon", "Magalu", "Casas Bahia",
+            # Amazon saiu daqui em Set/2026: virou dono de um coletor Amazon-only
+            # no GitHub Actions (gh_amazon_*), que abre o PDP de cada item para
+            # ler a buy box (seller_app). Um turno = um dono, então ela não pode
+            # constar nas duas máquinas.
+            "Mercado Livre", "Magalu", "Casas Bahia",
             "Google Shopping", "Leroy Merlin", "Shopee", "dealers",
         ),
         severidade=SEV_CRITICO,
@@ -330,7 +416,11 @@ JOBS: Tuple[JobSpec, ...] = (
         destino="coletas (turno Tarde)",
         turno="Tarde",
         plataformas=(
-            "Mercado Livre", "Amazon", "Magalu", "Casas Bahia",
+            # Amazon saiu daqui em Set/2026: virou dono de um coletor Amazon-only
+            # no GitHub Actions (gh_amazon_*), que abre o PDP de cada item para
+            # ler a buy box (seller_app). Um turno = um dono, então ela não pode
+            # constar nas duas máquinas.
+            "Mercado Livre", "Magalu", "Casas Bahia",
             "Google Shopping", "Leroy Merlin", "Shopee", "dealers",
         ),
         severidade=SEV_IMPORTANTE,
@@ -349,7 +439,11 @@ JOBS: Tuple[JobSpec, ...] = (
         destino="coletas (turno Fechamento)",
         turno="Fechamento",
         plataformas=(
-            "Mercado Livre", "Amazon", "Magalu", "Casas Bahia",
+            # Amazon saiu daqui em Set/2026: virou dono de um coletor Amazon-only
+            # no GitHub Actions (gh_amazon_*), que abre o PDP de cada item para
+            # ler a buy box (seller_app). Um turno = um dono, então ela não pode
+            # constar nas duas máquinas.
+            "Mercado Livre", "Magalu", "Casas Bahia",
             "Google Shopping", "Leroy Merlin", "Shopee", "dealers",
         ),
         severidade=SEV_IMPORTANTE,

@@ -29,6 +29,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.pipeline_registry import (  # noqa: E402
+    EXEC_ACTIONS,
     EXEC_EXTERNO,
     EXEC_LOCAL,
     EXECUTORES,
@@ -60,18 +61,19 @@ class TestRegistroCoerente:
 
 
 class TestDivisaoDeTrabalho:
-    """Desde Set/2026 o PC local é o dono único da coleta de oferta/posição."""
+    """Set/2026: o PC local coleta oferta/posição; a Amazon migrou para um job
+    Amazon-only no GitHub Actions (buy box via PDP para o seller_app)."""
 
     @pytest.mark.parametrize(
         "plataforma",
         [
-            "Mercado Livre", "Amazon", "Magalu", "Casas Bahia",
+            "Mercado Livre", "Magalu", "Casas Bahia",
             "Google Shopping", "Leroy Merlin", "Shopee",
         ],
     )
     @pytest.mark.parametrize("turno", ["Abertura", "Tarde", "Fechamento"])
     def test_toda_plataforma_e_do_pc_local_nos_tres_turnos(self, plataforma, turno):
-        """Um coletor só, três turnos: o dono de cada (plataforma, turno) é o PC.
+        """O dono de cada (plataforma, turno) — exceto Amazon — é o PC local.
 
         Cobrada de outra máquina, o alerta apontaria para o lugar errado — e o
         conserto sugerido (re-disparar um workflow que não coleta mais)
@@ -80,6 +82,20 @@ class TestDivisaoDeTrabalho:
         dono = dono_da_plataforma(plataforma, turno)
         assert dono is not None
         assert dono.executor == EXEC_LOCAL
+
+    @pytest.mark.parametrize("turno", ["Abertura", "Tarde", "Fechamento"])
+    def test_amazon_e_do_github_actions_nos_tres_turnos(self, turno):
+        """A Amazon é cobrada do coletor Amazon-only na nuvem, não do PC.
+
+        Ela saiu da varredura do PC (roda de IP de datacenter e a leitura de
+        buy box é cara, um PDP por item); o dono passou a ser o job gh_amazon_*
+        do Actions em cada turno. Cobrar a Amazon do PC mandaria o alerta para a
+        máquina errada quando ela sumisse.
+        """
+        dono = dono_da_plataforma("Amazon", turno)
+        assert dono is not None
+        assert dono.executor == EXEC_ACTIONS
+        assert dono.id == f"gh_amazon_{turno.lower()}"
 
     @pytest.mark.parametrize("turno", ["Abertura", "Tarde", "Fechamento"])
     def test_dealers_tem_dono_e_e_o_pc_local(self, turno):

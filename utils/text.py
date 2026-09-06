@@ -8,6 +8,7 @@ Responsabilidades:
   - Inferir categoria da keyword buscada
 """
 
+import os
 import re
 from datetime import datetime
 from typing import Optional
@@ -16,6 +17,17 @@ from zoneinfo import ZoneInfo
 from config import TURNO_ABERTURA_MAX_HOUR, TURNO_TARDE_MAX_HOUR
 
 BRT = ZoneInfo("America/Sao_Paulo")
+
+#: Env que FIXA o turno de uma execução, ignorando o relógio. Existe para o
+#: agendador ser dono do turno em vez do horário de início: o cron do GitHub
+#: Actions é best effort (atrasos rotineiros de 35–80 min, às vezes horas), e
+#: `get_turno()` decide pela HORA — um run das 8h (Abertura) que entra na fila e
+#: só arranca às 12h gravaria "Tarde" e ainda bateria ponto como o job errado.
+#: O PC coletor não define esta variável e segue no relógio (as janelas do
+#: local_scheduled_collect.bat já o protegem); os jobs agendados na nuvem a
+#: cravam por cron. Valor inválido é ignorado (cai no relógio), nunca aceito.
+ENV_TURNO = "RAC_TURNO"
+TURNOS_VALIDOS = ("Abertura", "Tarde", "Fechamento")
 
 
 def now_brt() -> datetime:
@@ -461,7 +473,29 @@ def get_turno(hora: Optional[datetime] = None) -> str:
         senão                                 → 'Fechamento' (coleta das 20h)
 
     Se hora não fornecida, usa horário atual em Brasília (independente do SO).
+
+    A variável de ambiente ``RAC_TURNO`` (ver ``ENV_TURNO``) tem precedência
+    sobre o relógio: um valor válido ('Abertura'/'Tarde'/'Fechamento') é
+    devolvido como está. É como um run agendado na nuvem crava o turno do cron
+    em vez de depender do horário — potencialmente atrasado — em que o job
+    conseguiu começar. Valor ausente ou inválido cai no cálculo pelo relógio.
     """
+    fixo = os.getenv(ENV_TURNO, "").strip()
+    if fixo:
+        for turno in TURNOS_VALIDOS:
+            if fixo.lower() == turno.lower():
+                return turno
+        # Valor definido mas irreconhecível: não silenciar — gravar o turno
+        # errado é pior que cair no relógio, então avisamos e seguimos por hora.
+        try:
+            from loguru import logger
+            logger.warning(
+                f"{ENV_TURNO}={fixo!r} não é um turno válido "
+                f"({', '.join(TURNOS_VALIDOS)}) — ignorando e usando o relógio."
+            )
+        except Exception:
+            pass
+
     h = hora if hora else now_brt()
     if h.hour <= TURNO_ABERTURA_MAX_HOUR:
         return "Abertura"

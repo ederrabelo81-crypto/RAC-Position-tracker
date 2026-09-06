@@ -18,14 +18,17 @@ import json
 import pytest
 
 from utils.amazon_sellers import (
+    BUDGET_ILIMITADO,
     DEFAULT_BUDGET,
     AmazonSellerCache,
     clean_seller_name,
     extract_seller_from_pdp,
     is_amazon_self,
     pdp_budget,
+    pdp_fresh,
     resolution_enabled,
 )
+from utils.seller_names import normalize_seller_name
 
 
 class TestDesligadaPorPadrao:
@@ -321,3 +324,125 @@ class TestQuarentenaPersiste:
         assert cache_path.exists(), "quarentena precisa chegar ao disco"
         recarregado = AmazonSellerCache(path=cache_path)
         assert recarregado.should_retry("B0MORTO1234") is False
+
+
+class TestModoFreshEnv:
+    """RAC_AMAZON_PDP_FRESH liga o modo "observação do dia"."""
+
+    def test_default_desligado(self, monkeypatch):
+        monkeypatch.delenv("RAC_AMAZON_PDP_FRESH", raising=False)
+        assert pdp_fresh() is False
+
+    @pytest.mark.parametrize("valor", ["1", "true", "on", "YES"])
+    def test_env_liga(self, monkeypatch, valor):
+        monkeypatch.setenv("RAC_AMAZON_PDP_FRESH", valor)
+        assert pdp_fresh() is True
+
+    def test_fresh_liga_resolution_mesmo_sem_buybox_env(self, monkeypatch):
+        """Fresh é opt-in próprio: dispensa RAC_AMAZON_PDP_BUYBOX."""
+        monkeypatch.delenv("RAC_AMAZON_PDP_BUYBOX", raising=False)
+        monkeypatch.setenv("RAC_AMAZON_PDP_FRESH", "1")
+        assert resolution_enabled() is True
+
+    def test_orcamento_fresh_e_ilimitado_por_default(self, monkeypatch):
+        monkeypatch.delenv("RAC_AMAZON_PDP_BUDGET", raising=False)
+        assert pdp_budget(fresh=True) == BUDGET_ILIMITADO
+        # O modo estável mantém o teto de 40 — a rede de proteção da coleta.
+        assert pdp_budget(fresh=False) == DEFAULT_BUDGET
+
+    def test_teto_explicito_vence_no_fresh(self, monkeypatch):
+        monkeypatch.setenv("RAC_AMAZON_PDP_BUDGET", "7")
+        assert pdp_budget(fresh=True) == 7
+
+
+class TestResolucaoFresh:
+    """O coletor Amazon-only: PDP de cada item, sem cache, canonizado."""
+
+    @pytest.fixture
+    def scraper(self, monkeypatch):
+        from scrapers.amazon import AmazonScraper
+
+        monkeypatch.setenv("RAC_AMAZON_PDP_FRESH", "1")
+        monkeypatch.delenv("RAC_AMAZON_PDP_BUDGET", raising=False)
+        s = AmazonScraper()
+        assert s._pdp_fresh is True
+        return s
+
+    @staticmethod
+    def _registros(asins):
+        return [{"Buy Box Seller": None, "_asin": a} for a in asins]
+
+    def test_abre_pdp_de_cada_asin_distinto(self, scraper, monkeypatch):
+        chamadas = []
+        monkeypatch.setattr(
+            scraper, "_fetch_pdp_seller",
+            lambda asin: chamadas.append(asin) or f"Loja {asin}",
+        )
+        registros = self._registros(["B0AAAA0001", "B0BBBB0002", "B0CCCC0003"])
+        scraper._resolve_buybox_via_pdp(registros)
+
+        assert chamadas == ["B0AAAA0001", "B0BBBB0002", "B0CCCC0003"]
+        assert all(r["Buy Box Seller"] for r in registros)
+
+    def test_nao_toca_cache_persistente(self, scraper, monkeypatch):
+        """Nada de disco no modo fresh: herdar congelaria a série."""
+        monkeypatch.setattr(scraper, "_fetch_pdp_seller", lambda asin: "LojaX")
+        scraper._resolve_buybox_via_pdp(self._registros(["B0AAAA0001"]))
+        assert scraper._seller_cache is None
+
+    def test_asin_repetido_custa_um_pdp_so(self, scraper, monkeypatch):
+        chamadas = []
+        monkeypatch.setattr(
+            scraper, "_fetch_pdp_seller",
+            lambda asin: chamadas.append(asin) or "LojaX",
+        )
+        # Mesmo ASIN em duas páginas/keywords → um PDP, duas linhas resolvidas.
+        registros = self._registros(["B0AAAA0001", "B0AAAA0001"])
+        scraper._resolve_buybox_via_pdp(registros)
+
+        assert chamadas == ["B0AAAA0001"]
+        assert all(r["Buy Box Seller"] for r in registros)
+
+    def test_nome_sai_canonico(self, scraper, monkeypatch):
+        """O vendedor do PDP nasce canônico, como toda linha de _build_record."""
+        bruto = "friopecas"
+        monkeypatch.setattr(scraper, "_fetch_pdp_seller", lambda asin: bruto)
+        registros = self._registros(["B0AAAA0001"])
+        scraper._resolve_buybox_via_pdp(registros)
+        assert registros[0]["Buy Box Seller"] == normalize_seller_name(bruto)
+
+    def test_amazon_propria_e_1p(self, scraper, monkeypatch):
+        monkeypatch.setattr(scraper, "_fetch_pdp_seller", lambda asin: "Amazon.com.br")
+        registros = self._registros(["B0AAAA0001"])
+        scraper._resolve_buybox_via_pdp(registros)
+        assert registros[0]["Tipo Seller"] == "1P"
+
+    def test_falhas_seguidas_abortam(self, scraper, monkeypatch):
+        """N PDPs seguidos sem vendedor abortam — layout novo ou bloqueio."""
+        chamadas = []
+        monkeypatch.setattr(
+            scraper, "_fetch_pdp_seller",
+            lambda asin: chamadas.append(asin) or None,
+        )
+        registros = self._registros([f"B0DEAD{i:04d}" for i in range(20)])
+        scraper._resolve_buybox_via_pdp(registros)
+
+        assert len(chamadas) == scraper._MAX_PDP_FALHAS_SEGUIDAS
+        assert all(r["Buy Box Seller"] is None for r in registros)
+
+    def test_teto_explicito_trunca(self, monkeypatch):
+        from scrapers.amazon import AmazonScraper
+
+        monkeypatch.setenv("RAC_AMAZON_PDP_FRESH", "1")
+        monkeypatch.setenv("RAC_AMAZON_PDP_BUDGET", "2")
+        s = AmazonScraper()
+        chamadas = []
+        monkeypatch.setattr(
+            s, "_fetch_pdp_seller",
+            lambda asin: chamadas.append(asin) or "LojaX",
+        )
+        registros = self._registros(["B0AAAA0001", "B0BBBB0002", "B0CCCC0003"])
+        s._resolve_buybox_via_pdp(registros)
+
+        assert len(chamadas) == 2, "teto explícito vale também no fresh"
+        assert sum(1 for r in registros if r["Buy Box Seller"]) == 2

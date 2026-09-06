@@ -15,8 +15,9 @@
 ::     (StartWhenAvailable / gatilho de logon) FORA da janela e PULADA em vez de
 ::     gravar dados com o turno errado.
 ::   - Todos os 3 turnos rodam a MESMA varredura: 2 paginas, TODAS as keywords
-::     (sem filtro de prioridade) e TODAS as plataformas (ML, Amazon, Magalu,
-::     Casas Bahia, Google Shopping, Leroy, Shopee e dealers).
+::     (sem filtro de prioridade) e as plataformas do PC (ML, Magalu, Casas
+::     Bahia, Google Shopping, Leroy, Shopee e dealers). Amazon NAO entra aqui
+::     desde Set/2026: roda no GitHub Actions (collect_amazon_sellers.yml).
 ::   - Marcador diario logs\coleta_<slot>_<data>.done: o gatilho de logon pode
 ::     disparar varias vezes ao dia sem duplicar a coleta. O marcador so e
 ::     gravado em caso de SUCESSO - se a coleta das 08:00 falhar, o proximo

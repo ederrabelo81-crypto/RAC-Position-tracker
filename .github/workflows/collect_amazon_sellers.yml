@@ -1,0 +1,220 @@
+name: Coleta Amazon Sellers
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Coletor Amazon-only de OFERTA/POSIÇÃO com buy box via PDP (Set/2026).
+#
+# Por que existe (separado do collect.yml e do PC coletor):
+#   - A buy box da Amazon NÃO aparece na SERP — só no PDP. Para o seller_app
+#     medir a buy box mudando de dono, é preciso abrir o PDP de cada item a
+#     cada execução (RAC_AMAZON_PDP_FRESH=1), sem cache que congele o vendedor.
+#   - Isso é caro (um PDP por item). A Amazon roda de IP de datacenter (ao
+#     contrário de ML/Magalu/Shopee/Casas Bahia), então dá para tirá-la da
+#     varredura do PC e isolá-la aqui — o PC fica leve e a Amazon ganha a
+#     leitura de buy box que o seller_app precisa.
+#   - Posse no contrato: gh_amazon_abertura/tarde/fechamento em
+#     utils/pipeline_registry.py. A Amazon saiu dos jobs local_* de propósito
+#     (um turno = um dono); o teste tests/test_pipeline_registry.py reprova o PR
+#     se ela voltar a ter dois donos.
+#
+# Três turnos, iguais aos do PC (8h/14h/20h BRT). O cron do Actions é best
+# effort (atrasos rotineiros de 35–80 min), então o turno gravado NÃO vem do
+# relógio: cada cron crava RAC_TURNO, e get_turno() o respeita — um run das 8h
+# que só arranca às 12h ainda grava "Abertura" e bate ponto como o job certo.
+#
+# Variáveis obrigatórias (Settings → Secrets and variables → Actions):
+#   SUPABASE_URL / SUPABASE_KEY  —  projeto + chave service_role (escrita)
+#   GDRIVE_*                     —  histórico frio no Drive (ver docs/HISTORICO_DRIVE.md)
+#   TELEGRAM_BOT_TOKEN / N8N_TELEGRAM_CHAT_ID  —  alerta de falha (opcional)
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '0 11 * * *'   # 08:00 BRT → turno Abertura
+    - cron: '0 17 * * *'   # 14:00 BRT → turno Tarde
+    - cron: '0 23 * * *'   # 20:00 BRT → turno Fechamento
+  workflow_dispatch:
+    inputs:
+      turno:
+        description: 'Turno gravado (Abertura/Tarde/Fechamento; vazio = pelo relógio, sem bater ponto)'
+        required: false
+        default: ''
+      pages:
+        description: 'Páginas por keyword (1–5)'
+        required: false
+        default: '2'
+
+env:
+  PYTHON_VERSION: '3.11'
+  TZ: America/Sao_Paulo
+
+# Não deixar dois runs Amazon se atropelarem (um cron atrasado alcançando o
+# próximo). O run em andamento termina; o novo espera.
+concurrency:
+  group: coleta-amazon-sellers
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Coleta Amazon (buy box PDP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180   # abrir o PDP de cada ASIN soma minutos à rotina
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+
+      # ── Parâmetros do run (schedule vs. manual) ────────────────────────────
+      # O turno vem do CRON que AGENDOU o run, não do relógio de início — é o
+      # que impede um run atrasado de gravar o turno errado. RAC_TURNO carrega
+      # esse turno para get_turno(); RAC_JOB_ID é o dono no livro-razão.
+      - name: Set run parameters
+        id: params
+        env:
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            case "$CRON" in
+              '0 11 * * *') TURNO="Abertura"   ; JOB_ID="gh_amazon_abertura"   ;;
+              '0 17 * * *') TURNO="Tarde"      ; JOB_ID="gh_amazon_tarde"      ;;
+              '0 23 * * *') TURNO="Fechamento" ; JOB_ID="gh_amazon_fechamento" ;;
+              *)            TURNO="Fechamento" ; JOB_ID="gh_amazon_fechamento" ;;
+            esac
+            PAGES="2"
+          else
+            TURNO="${{ github.event.inputs.turno }}"
+            PAGES="${{ github.event.inputs.pages }}"
+            # Dispatch manual: bate ponto só se o operador nomeou um turno
+            # válido (senão é execução avulsa que ninguém cobra).
+            case "$TURNO" in
+              Abertura)   JOB_ID="gh_amazon_abertura"   ;;
+              Tarde)      JOB_ID="gh_amazon_tarde"      ;;
+              Fechamento) JOB_ID="gh_amazon_fechamento" ;;
+              *)          JOB_ID=""                     ;;
+            esac
+          fi
+
+          echo "turno=$TURNO"     >> "$GITHUB_OUTPUT"
+          echo "job_id=$JOB_ID"   >> "$GITHUB_OUTPUT"
+          echo "pages=$PAGES"     >> "$GITHUB_OUTPUT"
+
+          echo "=== Parâmetros do run ==="
+          echo "  Turno : ${TURNO:-'(pelo relógio)'}"
+          echo "  Job   : ${JOB_ID:-'(sem batida de ponto)'}"
+          echo "  Pages : $PAGES"
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Install Playwright browsers and system dependencies
+        run: |
+          playwright install-deps chromium
+          playwright install chromium
+
+      # Display virtual: a Amazon barra menos um browser NÃO-headless, e o PDP é
+      # o passo mais sensível a bot-check da rotina.
+      - name: Install xvfb (virtual display)
+        run: sudo apt-get install -y xvfb
+
+      # ── Coleta ─────────────────────────────────────────────────────────────
+      - name: Run Amazon collector (fresh PDP buy box)
+        id: collect
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          CI: 'true'
+          # Turno cravado pelo cron (ver Set run parameters). Vazio no dispatch
+          # sem turno → get_turno() cai no relógio.
+          RAC_TURNO: ${{ steps.params.outputs.turno }}
+          # Id do job no livro-razão. Vazio → main.py não bate ponto.
+          RAC_JOB_ID: ${{ steps.params.outputs.job_id }}
+          # Modo "observação do dia": abre o PDP de cada item, sem cache
+          # persistente, canonizando o vendedor (utils/amazon_sellers.py).
+          RAC_AMAZON_PDP_FRESH: '1'
+          # Teto de segurança de PDPs por execução. O nicho de RAC tem poucos
+          # ASINs distintos, então 400 cobre a lista inteira sem risco de um
+          # PDP travado consumir as 3h de timeout. Remova esta linha para não
+          # ter teto nenhum.
+          RAC_AMAZON_PDP_BUDGET: '400'
+        run: |
+          PAGES="${{ steps.params.outputs.pages }}"
+          echo "Turno : ${{ steps.params.outputs.turno }}"
+          echo "Comando : xvfb-run -a python main.py --platforms amazon --pages $PAGES --no-headless"
+          xvfb-run -a --server-args="-screen 0 1366x768x24" \
+            python main.py --platforms amazon --pages "$PAGES" --no-headless
+
+      # ── Artefatos (CSV + histórico frio) ───────────────────────────────────
+      - name: Upload CSV artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rac-amazon-${{ steps.params.outputs.turno || 'manual' }}-${{ github.run_id }}
+          path: |
+            output/*.csv
+            output/raw_*.csv
+            data/history/**/*.parquet
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rac-amazon-logs-${{ steps.params.outputs.turno || 'manual' }}-${{ github.run_id }}
+          path: |
+            logs/*.log
+            logs/amazon_debug_*.html
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # ── Batida de fracasso do JOB (não do main.py) ─────────────────────────
+      # main.py já bate SUCCESS/PARTIAL/FAILED com contagem por plataforma. Este
+      # passo cobre só o caso em que ele NÃO chegou a bater (falha antes da
+      # coleta, cancelamento) — e exclui `collect==failure` para não sobrescrever
+      # o FAILED com motivo real que o main.py já gravou.
+      - name: Heartbeat — job failure
+        if: >-
+          (failure() || cancelled())
+          && steps.params.outputs.job_id != ''
+          && steps.collect.outcome != 'failure'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python -m utils.heartbeat --job "${{ steps.params.outputs.job_id }}" \
+            --status FAILED --detail "job Amazon do Actions falhou antes de concluir"
+
+      # ── Alerta de falha (Bot API direta, independe do Python que falhou) ────
+      - name: Notify collection failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.N8N_TELEGRAM_CHAT_ID }}
+          TURNO: ${{ steps.params.outputs.turno }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+            echo "::warning title=Alerta não enviado::TELEGRAM_BOT_TOKEN ou \
+          N8N_TELEGRAM_CHAT_ID ausente — a falha da coleta Amazon não foi notificada."
+            exit 0
+          fi
+          TEXT="🔴 <b>Coleta Amazon RAC FALHOU</b> — turno ${TURNO:-manual}
+          O job terminou em erro (coleta ou persistência). O dado coletado, se houver, segue no artifact do run.
+          Log: ${RUN_URL}"
+          curl -sS -m 30 -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            -d "parse_mode=HTML" \
+            --data-urlencode "text=${TEXT}" \
+            -o /dev/null || echo "::warning title=Alerta não enviado::curl falhou."

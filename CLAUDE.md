@@ -5,7 +5,7 @@
 > **Stack:** Python 3.10+, Playwright, curl_cffi, BeautifulSoup, Pandas, Supabase, Streamlit  
 > **Sub-projeto:** `magalu_shopee/` — Node.js/TypeScript + Puppeteer (Shopee — fallback)  
 > **Status:** ✅ Production | PC Coletor (Windows, IP residencial) + GitHub Actions (backup)  
-> **Versão:** v5.2 (Set/2026) | **Última atualização:** 03 de Setembro de 2026
+> **Versão:** v5.2 (Set/2026) | **Última atualização:** 06 de Setembro de 2026
 
 ---
 
@@ -21,12 +21,18 @@ Google Shopping, Magalu, Casas Bahia, Shopee, Leroy Merlin **e os dealers**.
 APIs JSON são preferidas ao DOM — expõem o array de sellers e o vencedor da buy
 box diretamente.
 
-> **Coletor único local + 3 turnos (Set/2026):** toda a coleta de oferta/posição
-> roda **no PC coletor** (Windows, IP residencial), em **três turnos por dia** —
-> 08:00 (Abertura), 14:00 (Tarde) e 20:00 (Fechamento). O cron do GitHub Actions
-> (`collect.yml`) e a VM Oracle foram **desligados** como coletores para não haver
-> dois donos do mesmo `(plataforma, turno)`. **Mais Vendidos** deixou de ser
-> coletado. Contrato em `utils/pipeline_registry.py`; agendamento em
+> **Coletor local + 3 turnos (Set/2026):** a coleta de oferta/posição roda **no
+> PC coletor** (Windows, IP residencial), em **três turnos por dia** — 08:00
+> (Abertura), 14:00 (Tarde) e 20:00 (Fechamento). O cron do `collect.yml` e a VM
+> Oracle seguem **desligados** como coletores. **Exceção: a Amazon.** Desde
+> Set/2026 ela saiu da varredura do PC e virou um coletor **Amazon-only no
+> GitHub Actions** (`.github/workflows/collect_amazon_sellers.yml`), nos mesmos
+> três turnos, abrindo o **PDP de cada item** para ler a buy box (alimenta o
+> `seller_app`). A Amazon roda de IP de datacenter e a leitura de buy box é cara
+> (um PDP por item), então isolá-la na nuvem deixa o PC leve; o turno é cravado
+> por `RAC_TURNO` (o cron do Actions atrasa). Um turno = um dono: a posse da
+> Amazon migrou para os jobs `gh_amazon_*` em `utils/pipeline_registry.py`.
+> **Mais Vendidos** deixou de ser coletado. Agendamento local em
 > `scripts/setup_local_scheduler.ps1`.
 
 ```bash
@@ -1009,7 +1015,7 @@ python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv --mirror
 | Platform | Status | Notes |
 |----------|--------|-------|
 | Mercado Livre | ✅ | Buy box + Loja Oficial; browser (default) ou `MLAPIScraper` (API oficial, requer `ML_APP_ID`/`ML_APP_SECRET` — usado **automaticamente** como fallback quando a keyword leva login gate). Gate: detecção é **evidência primeiro** (card na página vence a string); persistiu → HTML em `logs/ml_gate_*.html` e roteiro no log. Antídoto: `python scripts/setup_local_profile.py --site mercadolivre` |
-| Amazon | ✅ | `Qtd Sellers` de "X ofertas"; 1P vs 3P. **Buy box só existe no PDP** (a SERP não traz "Vendido por") — campo vazio por padrão em vez de vitória 1P fantasma; resolução opcional com `RAC_AMAZON_PDP_BUYBOX=1` + cache em `data/amazon_sellers.json`. ⚠️ Não confundir com a coleta de **Mais Vendidos**, que lê o PDP de todo item **a cada run** e **sem** esse cache (`RAC_BESTSELLERS_AMAZON_PDP`) |
+| Amazon | ✅ | `Qtd Sellers` de "X ofertas"; 1P vs 3P. **Buy box só existe no PDP** (a SERP não traz "Vendido por"). **Coletada no GitHub Actions** (Amazon-only, `collect_amazon_sellers.yml`, 3 turnos), NÃO no PC — dona da Amazon no `pipeline_registry` são os jobs `gh_amazon_*`. O job roda em modo **"observação do dia"** (`RAC_AMAZON_PDP_FRESH=1`): abre o PDP de **cada item, a cada run, SEM** o cache `data/amazon_sellers.json` (que congelaria o vendedor), nome canonizado — é o que dá buy box ao `seller_app`. Dois modos de resolução coexistem: `RAC_AMAZON_PDP_FRESH` (sem cache, lista inteira) e o antigo `RAC_AMAZON_PDP_BUYBOX=1` (com cache + teto de 40, para o painel interno). ⚠️ Não confundir com **Mais Vendidos** (`RAC_BESTSELLERS_AMAZON_PDP`) |
 | Leroy Merlin | ✅ | Algolia API; 1P vs 3P marketplace. Seller 3P vem como **ObjectId opaco** — resolvido via PDP ("Vendido e entregue por") com cache persistente em `data/leroy_sellers.json` (1 PDP por seller novo, não por produto). Diagnóstico: `python scripts/leroy_seller_probe.py --scan "<keyword>"` |
 | Google Shopping | ⚠️ | reCAPTCHA no browser próprio/headless. **Antídoto (Ago/2026):** `RAC_LOCAL_CHROME=1` conecta no Chrome real logado via CDP (mesmo caminho de ML/CB), com warm-up na home e resolução manual do reCAPTCHA na janela (`RAC_GOOGLE_MANUAL_CAPTCHA=0` desliga; `..._TIMEOUT` ajusta a tolerância). `Qtd Sellers` = nº de lojas comparando |
 | Magalu | ✅ Python | `scrapers/magalu.py` — browser persistente (Akamai); seller 1P vs 3P. **Automatizado**. Extração em 3 parsers sobre o mesmo HTML: `__NEXT_DATA__` → RSC (`__next_f`, App Router) → cards do DOM. Muro de login (Ago/2026) é detectado e nomeado no log; antídoto: `python scripts/setup_local_profile.py --site magalu`. Diagnóstico pelo prefixo do dump em `logs/` (`login_`/`layout_`/`vazia_`) — ver `docs/cdp_magalu_collection.md` |
@@ -1223,7 +1229,8 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 ---
 
 *Last updated: September 1, 2026 (v5.2)*  
-*Latest changes (04/09/2026): correção factual — Mais Vendidos NÃO foi descontinuado, coleta e grava todo dia (conferido no Supabase); o que falta é o job no `pipeline_registry.py`, e por isso 7 das 20 fontes estão mudas sem ninguém cobrar — a única que importa é `casasbahia` (marketplace), as outras 6 são site próprio e não são prioridade*
+*Latest changes (06/09/2026): Amazon migrada para um coletor **Amazon-only no GitHub Actions** (`collect_amazon_sellers.yml`, 3 turnos 8h/14h/20h) que abre o PDP de cada item para ler a buy box (modo `RAC_AMAZON_PDP_FRESH=1`, sem cache, alimenta o `seller_app`). Saiu da varredura do PC; posse migrou para `gh_amazon_*` no `pipeline_registry`. Novo override `RAC_TURNO` crava o turno de um run agendado (get_turno), imune ao atraso do cron do Actions.*
+*Anterior (04/09/2026): correção factual — Mais Vendidos NÃO foi descontinuado, coleta e grava todo dia (conferido no Supabase); o que falta é o job no `pipeline_registry.py`, e por isso 7 das 20 fontes estão mudas sem ninguém cobrar — a única que importa é `casasbahia` (marketplace), as outras 6 são site próprio e não são prioridade*
 *Anterior: PC coletor como dono ÚNICO de oferta/posição em 3 turnos (08:00 Abertura / 14:00 Tarde / 20:00 Fechamento) coletando TODAS as plataformas + dealers; `get_turno()` passou a 3 turnos; Mais Vendidos descontinuado da coleta agendada; cron do `collect.yml` e VM Oracle desligados como coletores; `pipeline_registry.py` reescrito para o coletor único*  
 *Anterior: Confiabilidade da pipeline — livro-razão de execução (`pipeline_heartbeat`), supervisor `pipeline_watch.py`, portão do briefing `briefing_gate.py`, contenção `pipeline_heal.py` e o mapa `docs/MAPA_COLETAS.md`; a ausência de execução virou evento*  
 *Maintained by: RAC Position Tracker Team*
