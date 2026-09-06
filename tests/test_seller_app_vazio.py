@@ -68,6 +68,11 @@ def _rodar(seller: str, fato: list[dict]) -> AppTest:
     """Executa o app com os carregadores dublados e o secret `SELLER` travado."""
     dubles = f"""
 import pandas as _pd
+# Os QUATRO carregadores entram por dublê — nada toca o Supabase. O
+# `intervalo_dados` foi somado quando a janela passou a ancorar no último dia
+# COM dado (fix da janela de dias); sem dublá-lo, `main()` bate na rede e no
+# CI (sem rede) a página estoura antes de renderizar, derrubando estes testes.
+intervalo_dados = lambda: (date(2026, 8, 28), date(2026, 9, 4))
 carregar_mercado = lambda desde: _tipar(_pd.DataFrame({MERCADO!r}))
 carregar = lambda s, d: (
     _tipar(_quadro({fato!r}, _SELECT_FATO)),
