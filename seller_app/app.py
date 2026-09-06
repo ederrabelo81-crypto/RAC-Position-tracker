@@ -167,6 +167,92 @@ def carregar(seller: str, desde: date) -> tuple[pd.DataFrame, pd.DataFrame, pd.D
 
 
 @st.cache_data(ttl=900)
+def intervalo_dados() -> tuple[date | None, date | None]:
+    """Menor e maior `data` já materializada no fato — o histórico REAL.
+
+    A janela do painel era ancorada em `date.today()`, mas a coleta atrasa
+    (roda em 3 turnos e o fato é reprocessado depois): o último dia com dado
+    fica um ou dois dias atrás de hoje. Sem saber onde o histórico começa e
+    termina, o slider de dias vira um controle cego — aumentar de 14 para 60
+    dias não muda nada na tela quando só há 8 dias de dado, e o operador
+    conclui (com razão) que "mudar os dias não muda o histórico".
+
+    Duas leituras mínimas (`limit(1)` em cada ponta), não um agregado: a chave
+    `anon` lê o fato pela policy da migração 016, mas não tem função de
+    agregação exposta pelo PostgREST sem uma RPC dedicada — e a borda ordenada
+    é barata (usa o índice de `data`).
+    """
+    cli = _client()
+
+    def _borda(desc: bool) -> date | None:
+        linha = (cli.table("seller_offer_daily").select("data")
+                 .order("data", desc=desc).limit(1).execute().data or [])
+        return date.fromisoformat(linha[0]["data"]) if linha else None
+
+    return _borda(False), _borda(True)
+
+
+def _dias_max(intervalo: tuple[date | None, date | None]) -> int:
+    """Teto do slider = dias de histórico que EXISTEM (limitado a [4, 60]).
+
+    Fixar o teto em 60 fazia a metade de cima do slider ser inerte quando o
+    histórico é curto — a origem do sintoma relatado. Amarrar o teto ao span
+    real deixa todo o curso do slider mexer no dado, e o teto cresce sozinho
+    conforme a coleta acumula dias. O piso 4 garante `min < max` para o
+    `st.slider` (o mínimo é 3) mesmo com um ou dois dias só de dado.
+    """
+    min_data, max_data = intervalo
+    if not min_data or not max_data:
+        return 60
+    span = (max_data - min_data).days + 1
+    return max(4, min(60, span))
+
+
+def _janela(dias: int, intervalo: tuple[date | None, date | None]) -> date:
+    """`desde` da janela, ancorado no último dia COM dado, não em hoje.
+
+    Ancorar em `max_data` remove a zona morta que o atraso da coleta abria no
+    fim baixo do slider: "3 dias" passa a valer 3 dias de dado real, não 3
+    dias contados a partir de um hoje que ainda não coletou. Sem histórico
+    nenhum, cai no comportamento antigo (âncora em hoje) para não quebrar.
+    """
+    _, max_data = intervalo
+    ancora = max_data or date.today()
+    return ancora - timedelta(days=dias)
+
+
+def _legenda_janela(dias: int, intervalo: tuple[date | None, date | None]) -> None:
+    """Diz na sidebar quanto histórico existe — o sinal que faltava.
+
+    O sintoma relatado ("mudar os dias não muda o histórico") não tinha, antes,
+    nenhuma explicação na tela: o painel não dizia quantos dias de dado
+    existem, nem que a janela já os cobria por inteiro. Estas três legendas
+    tornam o comportamento legível — cobertura, saturação da janela e atraso
+    da coleta.
+    """
+    min_data, max_data = intervalo
+    if not min_data or not max_data:
+        st.sidebar.warning(
+            "Sem dado materializado ainda — rode `build_seller_offer_daily.py`.")
+        return
+
+    span = (max_data - min_data).days + 1
+    st.sidebar.caption(
+        f"Dados disponíveis: {min_data:%d/%m} a {max_data:%d/%m} "
+        f"({span} dia{'s' if span != 1 else ''}).")
+    if dias >= span:
+        st.sidebar.info(
+            "A janela já cobre **todo** o histórico disponível — aumentar os "
+            "dias não traz nada novo até a coleta acumular mais dias.")
+
+    atraso = (date.today() - max_data).days
+    if atraso >= 1:
+        st.sidebar.caption(
+            f"⚠️ Última coleta há {atraso} dia{'s' if atraso != 1 else ''} "
+            f"(em {max_data:%d/%m}).")
+
+
+@st.cache_data(ttl=900)
 def carregar_perdidos(seller: str, desde: date) -> pd.DataFrame:
     """Produtos em que ESTE seller detinha a caixa e outro tomou.
 
@@ -235,8 +321,11 @@ def main() -> None:
     if not _porta():
         return
 
-    dias = st.sidebar.slider("Janela (dias)", 3, 60, 14)
-    desde = date.today() - timedelta(days=dias)
+    intervalo = intervalo_dados()
+    dias_max = _dias_max(intervalo)
+    dias = st.sidebar.slider("Janela (dias)", 3, dias_max, min(14, dias_max))
+    desde = _janela(dias, intervalo)
+    _legenda_janela(dias, intervalo)
 
     seller, mercado = _escolher_seller(desde)
     if not seller:
