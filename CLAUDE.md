@@ -237,6 +237,80 @@ EXECUTOU** (dead man's switch: o silêncio é que dispara o alarme).
 
 ---
 
+## Track Position Seller — painel do lojista (`seller_app/`) 🆕 (Set/2026)
+
+**O que é:** app **Streamlit separado**, publicado como Fase 1 do spin-off
+documentado em `docs/TRACK_POSITION_SELLER.md`. Inverte o sujeito da análise:
+o `app.py` da raiz responde "como a Midea está indo?" (indústria, chave que lê
+tudo); o `seller_app/` responde "como EU estou indo contra quem vende a mesma
+coisa que eu?" (o lojista/dealer, chave `anon` só-leitura). **A fronteira é a
+chave e a policy de RLS, não um `if` no código** — colocar uma página de
+tenant dentro do `app.py` transformaria isolamento em bug de filtro.
+
+**Camada de dados** (migrações `docs/migrations/016_seller_offer_daily.sql` +
+`017_seller_offer_daily_correcoes.sql`, ambas aplicadas em produção em
+04–05/09/2026):
+
+- `seller_offer_daily` — fato diário com sujeito seller, grão
+  `(data, turno, plataforma, offer_key, seller_canonical)`. Reprocessado de
+  `coletas` (nenhuma linha de `coletas` sai do banco) pela função
+  `refresh_seller_offer_daily(data)`, chamada por
+  `scripts/build_seller_offer_daily.py`. A 017 corrigiu 7 defeitos da 016 —
+  o mais grave era comparar turno como **texto** (`'Abertura' < 'Fechamento'
+  < 'Tarde'` alfabeticamente), o que fazia a busca por "detentor anterior"
+  casar Tarde com o Fechamento do mesmo dia (6h no futuro) e gravar viradas de
+  buy box na ordem errada. `turno_ordinal()` resolve.
+- `seller_coverage_daily` — turno observado vs. não observado. Existe para a
+  mesma razão do `pipeline_heartbeat`: **silêncio não é mudança de mercado**
+  (§2.9 do documento) — sem esta tabela, um bloqueio do Magalu às 14h faria o
+  painel do tenant ler "seus concorrentes sumiram e você ganhou 100% da BB".
+- `v_seller_buybox_share` — share de buy box por seller/plataforma/dia;
+  alimenta o seletor de sellers e o ranking por plataforma.
+
+```bash
+# Popular/atualizar o fato — requer SUPABASE_KEY service_role (escrita negada
+# por ausência de policy à chave anon, mesmo modo de falha da migração 012)
+python scripts/build_seller_offer_daily.py                  # ontem e hoje
+python scripts/build_seller_offer_daily.py --desde 2026-08-28
+python scripts/build_seller_offer_daily.py --so-sync        # só sincroniza referências
+
+# Sincronizado a cada execução: plataforma_superficie ← utils.seller_surface,
+# seller_depara ← utils.seller_names.SELLER_GROUPS — sem isso Web Continental
+# vira 5 sellers e o share mente sobre quem lidera.
+
+# Rodar o painel
+pip install -r seller_app/requirements.txt
+streamlit run seller_app/app.py
+```
+
+**`seller_app/app.py` — 5 abas:** 📈 Share de buy box · 🏆 Ganhos e perdas
+(evento, não foto — a SERP só mostra o detentor atual, nunca o perdedor) ·
+🏷️ Marcas e posição · 🥊 Ranking na plataforma · 🩺 Cobertura. Só
+`superficie == "marketplace"` e ofertas com `identidade_suspeita == False`
+entram nos KPIs — loja própria é campeonato que o lojista joga sozinho, e
+chave de oferta colapsada não pode virar numerador nem denominador.
+
+**Segurança:** `SUPABASE_ANON_KEY` (nunca `service_role`) + RLS com policy de
+leitura liberada só nestas 3 tabelas/views. Secret `SELLER` opcional trava a
+instância num lojista (uso: instância dedicada por tenant); ausente, abre
+seletor livre entre todos os sellers com dado na janela (uso: demo
+compartilhada). **Regra dura:** `SELLER` é comparado **literalmente** contra
+`seller_canonical`, e a canonização aposenta grafias (`Comprebel` → `Bel
+Micro`, `GoCompras` → `Denteck` em 05/09/2026) — secret na grafia velha faz o
+PostgREST devolver `[]` com HTTP 200 e o painel parece vazio sem erro nenhum;
+o próprio app detecta esse caso e avisa na tela.
+
+**Deploy:** Streamlit Community Cloud (gratuito, apontando para
+`seller_app/app.py`) — passo a passo e checklist de segurança em
+`seller_app/README.md`.
+
+⚠️ **Ainda não tem job no `pipeline_registry.py`** — o mesmo modo de falha já
+documentado para o `bestsellers`: sem job não há batida de ponto, e sem
+batida uma falha silenciosa do `build_seller_offer_daily.py` não dispara
+alarme nenhum. Pendência a resolver antes do primeiro piloto pago.
+
+---
+
 ## Table of Contents
 
 1. [Session Start Protocol](#session-start-protocol)
@@ -429,6 +503,11 @@ rac-position-tracker/
 │       ├── vtex_generic.py      # 🆕 coletor VTEX genérico (dealers, dirigido por COLETA)
 │       └── html_generic.py      # 🆕 coletor HTML/JSON-LD genérico (dealers não-VTEX)
 │
+├── seller_app/                  # 🆕 Track Position Seller — painel do lojista (app separado, só-leitura)
+│   ├── app.py                   # Streamlit: seletor de seller + 5 abas de insight
+│   ├── README.md                # Rodar local + publicar no Streamlit Community Cloud
+│   └── requirements.txt         # Subset mínimo (streamlit, supabase, pandas)
+│
 ├── scrapers/
 │   ├── __init__.py
 │   ├── base.py                  # BaseScraper ABC (Playwright lifecycle, stealth)
@@ -459,6 +538,7 @@ rac-position-tracker/
 │   ├── collect_manha_linux.sh   # Morning collection (10:00 BRT)
 │   ├── collect_noite_linux.sh   # Night collection (21:00 BRT)
 │   ├── admin_auto.py            # CLI da automação ADMIN (cron/debug)
+│   ├── build_seller_offer_daily.py  # 🆕 Materializa seller_offer_daily (Track Position Seller)
 │   ├── fix_turno.py             # Database cleanup utilities
 │   └── monitor.sh               # Log monitoring
 │
@@ -466,7 +546,8 @@ rac-position-tracker/
 │   └── rac_coleta_monitor.json  # N8N workflow (Webhook → Telegram)
 │
 ├── .github/workflows/
-│   └── collect.yml              # GitHub Actions (manual dispatch only)
+│   ├── collect.yml              # GitHub Actions (manual dispatch only)
+│   └── collect_amazon_sellers.yml  # 🆕 Amazon-only, 3 turnos, PDP → buy box → seller_app
 │
 ├── .claude/                     # AI assistant documentation
 │   ├── COMMON_MISTAKES.md
@@ -478,6 +559,7 @@ rac-position-tracker/
 │   ├── INDEX.md                 # Navigation by task
 │   ├── QUICK_REFERENCE.md
 │   ├── DASHBOARD_FILTERS.md
+│   ├── TRACK_POSITION_SELLER.md # 🆕 Arquitetura/estratégia do spin-off seller_app
 │   └── learnings/
 │       ├── scraping-patterns.md
 │       ├── anti-bot-strategies.md
@@ -974,8 +1056,13 @@ python scripts/collect_bestsellers.py --relatorio semanal  # Evolução da seman
 python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6  # Últimos 6 meses
 python scripts/collect_bestsellers.py --import arquivo.xlsx  # Backfill histórico
 
-# Dashboard
+# Dashboard (interno, indústria)
 streamlit run app.py
+
+# Track Position Seller — painel do lojista (app separado, seller_app/)
+python scripts/build_seller_offer_daily.py         # materializa seller_offer_daily (requer service_role)
+python scripts/build_seller_offer_daily.py --desde 2026-08-28
+streamlit run seller_app/app.py
 
 # Supervisão de EXECUÇÃO — quem prometeu rodar e não rodou (docs/MAPA_COLETAS.md)
 python scripts/pipeline_watch.py                  # varredura + alerta acionável
@@ -1228,8 +1315,9 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 
 ---
 
-*Last updated: September 1, 2026 (v5.2)*  
-*Latest changes (06/09/2026): Amazon migrada para um coletor **Amazon-only no GitHub Actions** (`collect_amazon_sellers.yml`, 3 turnos 8h/14h/20h) que abre o PDP de cada item para ler a buy box (modo `RAC_AMAZON_PDP_FRESH=1`, sem cache, alimenta o `seller_app`). Saiu da varredura do PC; posse migrou para `gh_amazon_*` no `pipeline_registry`. Novo override `RAC_TURNO` crava o turno de um run agendado (get_turno), imune ao atraso do cron do Actions.*
+*Last updated: September 6, 2026 (v5.2)*  
+*Latest changes (06/09/2026): documentado o **Track Position Seller** (`seller_app/`) — app novo, separado do dashboard interno, publicado em Fase 1 do spin-off (`docs/TRACK_POSITION_SELLER.md`). Fato com sujeito seller em `seller_offer_daily` (migrações 016/017), 5 abas de insight, chave `anon` só-leitura + RLS. Nova seção "Track Position Seller — painel do lojista" abaixo.*
+*Anterior (06/09/2026): Amazon migrada para um coletor **Amazon-only no GitHub Actions** (`collect_amazon_sellers.yml`, 3 turnos 8h/14h/20h) que abre o PDP de cada item para ler a buy box (modo `RAC_AMAZON_PDP_FRESH=1`, sem cache, alimenta o `seller_app`). Saiu da varredura do PC; posse migrou para `gh_amazon_*` no `pipeline_registry`. Novo override `RAC_TURNO` crava o turno de um run agendado (get_turno), imune ao atraso do cron do Actions.*
 *Anterior (04/09/2026): correção factual — Mais Vendidos NÃO foi descontinuado, coleta e grava todo dia (conferido no Supabase); o que falta é o job no `pipeline_registry.py`, e por isso 7 das 20 fontes estão mudas sem ninguém cobrar — a única que importa é `casasbahia` (marketplace), as outras 6 são site próprio e não são prioridade*
 *Anterior: PC coletor como dono ÚNICO de oferta/posição em 3 turnos (08:00 Abertura / 14:00 Tarde / 20:00 Fechamento) coletando TODAS as plataformas + dealers; `get_turno()` passou a 3 turnos; Mais Vendidos descontinuado da coleta agendada; cron do `collect.yml` e VM Oracle desligados como coletores; `pipeline_registry.py` reescrito para o coletor único*  
 *Anterior: Confiabilidade da pipeline — livro-razão de execução (`pipeline_heartbeat`), supervisor `pipeline_watch.py`, portão do briefing `briefing_gate.py`, contenção `pipeline_heal.py` e o mapa `docs/MAPA_COLETAS.md`; a ausência de execução virou evento*  

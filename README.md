@@ -2,18 +2,23 @@
 
 Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos marketplaces brasileiros, com preço diário consolidado via **PriceTrack** e inteligência competitiva via Claude API.
 
-**Status:** ✅ Produção — arquitetura híbrida Supabase + Drive | **Última atualização:** 03 de Setembro de 2026 (v5.2)
+**Status:** ✅ Produção — arquitetura híbrida Supabase + Drive | **Última atualização:** 06 de Setembro de 2026 (v5.2)
 
-> ### 🆕 Última Atualização — Coletor Único Local + 3 Turnos (Set/2026)
+> ### 🆕 Última Atualização (06/09/2026) — Amazon no Actions + Track Position Seller
 >
-> **Setembro/2026:** Fim da coleta distribuída entre 3 executores (Oracle VM, GitHub Actions, PC local). **Agora tudo roda no PC coletor (IP residencial), em 3 turnos por dia:**
+> - ✅ **Amazon migrou para coletor Amazon-only no GitHub Actions** (`.github/workflows/collect_amazon_sellers.yml`), nos mesmos 3 turnos (08/14/20h). Saiu da varredura do PC — ela roda de IP de datacenter e abre o **PDP de cada item** para ler a buy box (`RAC_AMAZON_PDP_FRESH=1`, sem cache), alimentando o novo `seller_app/`. Dona no `pipeline_registry.py`: jobs `gh_amazon_*`.
+> - 🆕 **Track Position Seller (`seller_app/`) — painel do lojista, app novo e separado do dashboard interno.** Fato com sujeito seller (`seller_offer_daily`, migrações 016/017), 5 abas de insight (Share de buy box, Ganhos e perdas, Marcas e posição, Ranking na plataforma, Cobertura), chave só-leitura (`anon` + RLS). Ver seção **"🏪 Track Position Seller"** abaixo.
+> - ✅ **Correção:** Mais Vendidos **não foi descontinuado** — a coleta roda e grava no Supabase todo dia; o que falta é o job no `pipeline_registry.py` (7 das 20 fontes ficam sem cobrança por isso).
+>
+> ### Coletor Único Local + 3 Turnos (Set/2026)
+>
+> **Setembro/2026:** Fim da coleta distribuída entre 3 executores (Oracle VM, GitHub Actions, PC local) para oferta/posição. **Agora roda no PC coletor (IP residencial), em 3 turnos por dia** — exceto Amazon, que é Actions-only (ver acima):
 >
 > 1. **08:00 BRT — Abertura** (alta + media, 2 páginas, todas plataformas + dealers)
 > 2. **14:00 BRT — Tarde** (alta + media, 2 páginas, todas plataformas + dealers)
 > 3. **20:00 BRT — Fechamento** (alta, 1 página, todas plataformas + dealers)
 >
 > **Mudanças estruturais (Set/2026):**
-> - ✅ **Mais Vendidos** — descontinuado da coleta agendada (módulo mantido para uso manual, documentação em `docs/BESTSELLS.md`)
 > - ✅ **Confiabilidade da pipeline** — livro-razão de execução (`pipeline_heartbeat`, migração 015), supervisor `pipeline_watch.py`, portão `briefing_gate.py`, healbox `pipeline_heal.py` e mapa em `docs/MAPA_COLETAS.md`
 > - ✅ **Identidade da oferta** — `offer_identity.py` com chave derivada versionada (`offer_key`) e ids de marketplace quando presentes (Mercado Livre, Shopee)
 > - ✅ **Nome canônico de seller** — `seller_names.py` com de-para e aplicação automática em 4 pontos (escrita, ranking, backfill, leitura)
@@ -26,6 +31,7 @@ Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos ma
 > - `.claude/QUICK_START.md` (comandos essenciais)
 > - `.claude/ARCHITECTURE_MAP.md` (mapa de código e fluxo de dados)
 > - `docs/MAPA_COLETAS.md` (quem roda, quando, por quê)
+> - `docs/TRACK_POSITION_SELLER.md` (arquitetura e estratégia do spin-off `seller_app/`)
 
 > ### 🗄️ As duas bases, e o que cada uma faz
 >
@@ -129,7 +135,7 @@ Diagnóstico: `python scripts/daily_status_check.py` (PASS/FAIL por plataforma +
 | Plataforma | Status | Canal | Observações |
 |------------|--------|-------|-------------|
 | Mercado Livre | ✅ | **PC local (08/14/20h)** | Buy box ✓; avaliação/patrocinado/Loja Oficial corrigidos em Jun/2026. Removido da VM (IP bloqueado pelo ML). Complemento: `--platforms ml_api` (API oficial OAuth) preenche `reputacao_seller` |
-| Amazon | ✅ | **PC local (08/14/20h)** | `Qtd Sellers` de "X ofertas"; 1P vs 3P. Buy box exige PDP (campo vazio por padrão). Resolução opcional: `RAC_AMAZON_PDP_BUYBOX=1` |
+| Amazon | ✅ | **GitHub Actions — Amazon-only (08/14/20h)** 🆕 | `Qtd Sellers` de "X ofertas"; 1P vs 3P. Saiu da varredura do PC (Set/2026): `collect_amazon_sellers.yml` abre o PDP de **cada item, todo run**, sem cache (`RAC_AMAZON_PDP_FRESH=1`), para ler a buy box e alimentar o `seller_app/`. Dona no `pipeline_registry`: jobs `gh_amazon_*` |
 | Leroy Merlin | ✅ | **PC local (08/14/20h)** | Algolia API; 1P vs 3P marketplace. Seller 3P resolvido via PDP + cache `data/leroy_sellers.json` |
 | Magalu | ✅ | **PC local (08/14/20h)** — primário | 🆕 **Automatizado (Ago/2026):** Chrome local + CDP (`rebrowser-playwright`) com auto-recuperação + fallback curl_cffi. Circuit breaker após 5 keywords 100% bloqueadas. Modo operação: browser persistente → `__NEXT_DATA__` → API JSON (`_next/data/`) → HTML fallback |
 | Casas Bahia | ✅ | **PC local (08/14/20h)** — primário | VTEX Intelligent Search (`sellers[]` → buy box). Session curl_cffi com warm-up Akamai. IP residencial mais estável que datacenter |
@@ -172,16 +178,27 @@ categoria AR CONDICIONADO → tabela `pricetrack_daily`.
 
 ---
 
-## 📊 Bestsellers (Mais Vendidos) — ⏸️ Descontinuado da Coleta Agendada (Set/2026)
+## 📊 Bestsellers (Mais Vendidos) — ✅ Coletando (correção de 04/09/2026)
 
-> **Em Set/2026**, o foco passou 100% para **oferta/posição em 3 turnos locais**. O módulo **`bestsellers/`** continua no repositório para uso manual, mas foi **removido do agendador automático** e não integra ao pipeline de produção.
+> **Correção:** este projeto chegou a documentar a coleta como descontinuada em
+> Set/2026. **Está errado — ela roda e grava no Supabase todo dia** (20 dos
+> últimos 21 dias conferidos em 04/09/2026). O que de fato saiu foi o
+> **agendamento** no `pipeline_registry.py`: sem job registrado não há batida
+> de ponto, e sem batida ninguém cobra as fontes que somem — e somem: **7 das
+> 20 fontes de `bestsellers/config.py` nunca gravaram uma linha**
+> (`casasbahia`, `frigelar`, `arcerto`, `dufrio`, `centralar`, `leveros`,
+> `ferreiracosta`). Só `casasbahia` é prioridade (é marketplace); as outras 6
+> são site próprio, onde o lojista joga sozinho.
 
-**Histórico:** até Ago/2026, ranking de **Mais Vendidos** em 6 plataformas era a única variável de **resultado** (volume de venda) no nível do SKU. Análise de ganho/perda de posição e share de topo 10.
+**Histórico:** ranking de **Mais Vendidos** em 6 fontes artesanais + 14 dealers
+genéricos (VTEX/HTML) é a única variável de **resultado** (volume de venda,
+por proxy ordinal) disponível no nível do SKU. Análise de ganho/perda de
+posição e share de topo 10 — **ranking é ordinal, nunca vira share de mercado**.
 
-**Plataformas (6):**
-- Amazon, Mercado Livre, Magalu, Casas Bahia, Shopee, Leroy Merlin
+**Plataformas (6 artesanais + 14 dealers genéricos):**
+- Amazon, Mercado Livre, Magalu, Casas Bahia, Shopee, Leroy Merlin + dealers via `bestsellers/config.py` (`COLETA`)
 
-**Coleta manual (se necessário):**
+**Coleta diária (09:30 BRT — Amazon recalcula ranking de hora em hora):**
 
 ```bash
 # Coleta do dia + relatório automático (Telegram)
@@ -200,7 +217,63 @@ python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6
 - Validação anti-spam: título vazio, duplicado, marca fora do escopo, etc.
 - Backfill via XLSX: `python scripts/collect_bestsellers.py --import arquivo.xlsx`
 
-📄 Documentação: `docs/BESTSELLS.md` (referência histórica)
+📄 Documentação: `docs/BESTSELLS.md`
+
+---
+
+## 🏪 Track Position Seller — painel do lojista (`seller_app/`) 🆕
+
+App **novo e separado** do `app.py` da raiz, publicado em Set/2026 (Fase 1 do
+spin-off documentado em `docs/TRACK_POSITION_SELLER.md`). O `app.py` da raiz é
+**interno** — visão da indústria, chave que lê tudo. O `seller_app/` **atende
+gente de fora** (o próprio lojista/dealer) e **não carrega chave de escrita**:
+a fronteira entre os dois planos é a chave (`anon` + RLS), não um `WHERE` no
+código.
+
+**O que ele responde:** *"como EU estou indo contra quem vende a mesma coisa
+que eu?"* — o sujeito passa a ser o **seller**, não a marca. Todo dado
+mostrado é observado-público (a mesma vitrine que qualquer visitante do
+marketplace vê), por isso o painel pode nomear e comparar concorrentes
+livremente sem violar isolamento de tenant nenhum.
+
+**Camada de dados (migrações `docs/migrations/016_seller_offer_daily.sql` +
+`017_seller_offer_daily_correcoes.sql`, aplicadas em produção):**
+- `seller_offer_daily` — fato diário com sujeito seller (grão
+  `data, turno, plataforma, offer_key, seller_canonical`), reprocessado de
+  `coletas` via `refresh_seller_offer_daily()` no servidor
+- `seller_coverage_daily` — turno observado vs. não observado (§2.9 do
+  documento: **silêncio nunca vira "concorrente saiu" nem zero**)
+- `v_seller_buybox_share` — share de buy box por seller/plataforma/dia, usada
+  no ranking e no seletor de sellers
+
+```bash
+# Popular/atualizar o fato (requer SUPABASE_KEY service_role)
+python scripts/build_seller_offer_daily.py                  # ontem e hoje
+python scripts/build_seller_offer_daily.py --desde 2026-08-28
+python scripts/build_seller_offer_daily.py --so-sync        # só sincroniza referências
+
+# Rodar o painel local
+pip install -r seller_app/requirements.txt
+streamlit run seller_app/app.py
+```
+
+**5 abas de insight:** 📈 Share de buy box · 🏆 Ganhos e perdas · 🏷️ Marcas e
+posição · 🥊 Ranking na plataforma · 🩺 Cobertura (a que separa "não houve
+oferta" de "não olhamos").
+
+**Segurança:** chave `SUPABASE_ANON_KEY` (nunca `service_role`), RLS com
+policy de leitura liberada só nas 3 views/tabelas acima. Secret `SELLER`
+opcional trava a instância num lojista só (uso: uma instância por tenant);
+ausente, o painel abre um seletor livre entre todos os sellers com dado na
+janela (uso: demo compartilhada). Deploy recomendado: Streamlit Community
+Cloud — passos completos em `seller_app/README.md`.
+
+⚠️ **Ainda não tem job no `pipeline_registry.py`** — mesmo modo de risco já
+documentado para o `bestsellers`: sem batida de ponto, uma falha silenciosa do
+`build_seller_offer_daily.py` não dispara alerta nenhum.
+
+📄 Arquitetura completa, guardrails jurídicos (antitruste/LGPD) e roadmap:
+`docs/TRACK_POSITION_SELLER.md` | Operação do app: `seller_app/README.md`
 
 ---
 
@@ -484,7 +557,8 @@ python scripts/pipeline_heal.py --dry-run
 
 | Workflow | Trigger | Função |
 |----------|---------|--------|
-| `collect.yml` | cron 13:00/00:00 UTC + manual | Coleta (sem ML — IP bloqueado); Magalu com `MAGALU_HEADLESS=false` + xvfb; inputs: platforms/pages/priority |
+| `collect.yml` | cron 13:00/00:00 UTC + manual | Coleta (sem ML — IP bloqueado); Magalu com `MAGALU_HEADLESS=false` + xvfb; inputs: platforms/pages/priority. Desligado como coletor de oferta/posição (PC local assumiu, Set/2026) |
+| `collect_amazon_sellers.yml` 🆕 | cron 11:00/17:00/23:00 UTC (3 turnos) + manual | **Amazon-only.** Abre o PDP de cada item para ler a buy box (`RAC_AMAZON_PDP_FRESH=1`, sem cache) — alimenta `seller_app/`. Turno cravado por `RAC_TURNO`, imune ao atraso do cron |
 | `pricetrack_daily.yml` | cron 09:00 UTC + manual | Import PriceTrack D-1 (agendado `--force`) + auto-heal `--gaps-only` (14 dias); inputs: start/end/force |
 
 ---
@@ -548,11 +622,17 @@ rac-position-tracker/
 │       ├── mercado_livre.py      # Mercado Livre bestseller (Poly)
 │       └── shopee.py             # Shopee bestseller (API v4)
 │
+├── seller_app/                    # 🆕 Track Position Seller — painel do lojista (app separado, só-leitura)
+│   ├── app.py                     #    Streamlit: seletor de seller + 5 abas (share, ganhos/perdas, marcas, ranking, cobertura)
+│   ├── README.md                  #    Como rodar local e publicar (Streamlit Community Cloud)
+│   └── requirements.txt           #    Subset mínimo (streamlit, supabase, pandas)
+│
 ├── pricetrack_api/               # Cliente tipado da API PriceTrack (client/collector/exports/store)
 ├── pricetrack_importer/          # Importador md/xlsx (parser/validator/seller_map)
 ├── scripts/
-│   ├── collect_bestsellers.py    # 🆕 Orquestrador de coleta + relatório diário/semanal/mensal
-│   ├── collect_bestsellers.bat   # 🆕 Agendador Windows (09:30 seg-sex)
+│   ├── build_seller_offer_daily.py  # 🆕 Materializa seller_offer_daily (fato do Track Position Seller)
+│   ├── collect_bestsellers.py    # Orquestrador de coleta + relatório diário/semanal/mensal
+│   ├── collect_bestsellers.bat   # Agendador Windows (09:30 seg-sex)
 │   ├── pricetrack_api_import.py  # Import diário via API PriceTrack
 │   ├── setup_local_profile.py    # Login 1x na Shopee (Chrome comum, perfil dedicado)
 │   ├── collect_local_authenticated.bat  # Magalu+Shopee+CB no PC (Chrome comum+CDP)
@@ -770,6 +850,8 @@ Utilitários: `cleanup_supabase.py`, `normalize_supabase.py`,
 | Documento | Finalidade |
 |-----------|------------|
 | `docs/INDEX.md` | Navegação por tarefa |
+| `docs/TRACK_POSITION_SELLER.md` 🆕 | Arquitetura e estratégia do spin-off Track Position Seller (`seller_app/`) — dois planos de dado, RLS, guardrails antitruste/LGPD, roadmap |
+| `seller_app/README.md` 🆕 | Como rodar o painel do lojista local e publicar no Streamlit Community Cloud |
 | `pricetrack_api/README.md` | Cliente tipado da API PriceTrack — arquitetura, uso, config, robustez 🆕 |
 | `docs/HISTORICO_DRIVE.md` | 🆕 Histórico frio em Parquet no Drive — setup, migração, relatórios |
 | `docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md` | Incidente de cota, agente no Chrome/n8n e onde guardar os dados — com as contas |
@@ -789,7 +871,9 @@ Utilitários: `cleanup_supabase.py`, `normalize_supabase.py`,
 `tenacity` · `supabase>=2.3` · `streamlit>=1.35` · `plotly` ·
 `anthropic>=0.40` · `openpyxl` (PriceTrack xlsx) · `Pillow` · `filelock`
 
-Dashboard usa o subset `requirements_app.txt`.
+Dashboard interno usa o subset `requirements_app.txt`; o Track Position Seller
+(`seller_app/`) usa seu próprio subset mínimo, `seller_app/requirements.txt`
+(streamlit, supabase, pandas — nada de Playwright/curl_cffi).
 
 ---
 
