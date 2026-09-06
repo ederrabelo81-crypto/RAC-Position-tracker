@@ -29,14 +29,16 @@ de sucesso** — o pior resultado possível, porque some do radar.
 **Agendar em:** Task Scheduler — `scripts\setup_local_scheduler.ps1`
 **Diagnóstico:** `PowerShell -ExecutionPolicy Bypass -File scripts\check_local_scheduler.ps1`
 
-Desde **Set/2026** o PC coletor é o **dono único** da coleta de oferta/posição:
-roda **todas as plataformas** em **três turnos** por dia (mais cobertura que os
-dois turnos antigos). Cada turno faz a mesma varredura — 2 páginas, todas as
-keywords — e difere só pelo turno gravado.
+Desde **Set/2026** o PC coletor roda a coleta de oferta/posição em **três
+turnos** por dia (mais cobertura que os dois turnos antigos). Cada turno faz a
+mesma varredura — 2 páginas, todas as keywords — e difere só pelo turno gravado.
+A **Amazon saiu daqui** em Set/2026 e virou um coletor dedicado no GitHub
+Actions (ver abaixo): roda de IP de datacenter e abre o PDP de cada item para ler
+a buy box, caro demais para a varredura do PC.
 
 | Tarefa | Horário | Turno | Coleta |
 |---|---|---|---|
-| `RAC_Local_Manha` | 08:00 + catch-up no logon | Abertura | **ML, Amazon, Magalu, Casas Bahia, Google Shopping, Leroy, Shopee, dealers** |
+| `RAC_Local_Manha` | 08:00 + catch-up no logon | Abertura | **ML, Magalu, Casas Bahia, Google Shopping, Leroy, Shopee, dealers** (Amazon → Actions) |
 | `RAC_Local_Tarde` | 14:00 + catch-up no logon | Tarde | as mesmas |
 | `RAC_Local_Noite` | 20:00 + catch-up no logon | Fechamento | as mesmas |
 
@@ -57,7 +59,8 @@ keywords — e difere só pelo turno gravado.
 | Workflow | Horário BRT | Faz | Por que aqui |
 |---|---|---|---|
 | `pricetrack_daily.yml` | **03:20, 04:20, 05:20** (escada) | Importa preços do PriceTrack (D-1) → `pricetrack_daily` | É chamada de API: não precisa de browser, IP nem sessão |
-| `collect.yml` | **só manual** (cron desligado em Set/2026) | Backup manual: Amazon, Leroy, Google Shopping | O PC virou coletor único; o cron sairia com dois donos do mesmo dado |
+| `collect_amazon_sellers.yml` | **08:00, 14:00, 20:00** (3 turnos) | Coleta **Amazon-only** com buy box via PDP de cada item → `coletas` (alimenta o seller_app) | Amazon roda de IP de datacenter e a leitura de buy box é cara; isolá-la aqui deixa a varredura do PC leve. `RAC_TURNO` crava o turno do cron (Actions atrasa) |
+| `collect.yml` | **só manual** (cron desligado em Set/2026) | Backup manual: Leroy, Google Shopping | O PC virou coletor das demais plataformas; o cron sairia com dois donos do mesmo dado |
 | `watchdog.yml` | 20:30 | Watchdog de **dado** (`daily_status_check.py`) — agora nos 3 turnos | — |
 | `pipeline_guard.yml` | **06:35, 12:35, 22:35** | Supervisor de **execução** + portão do briefing | — |
 
