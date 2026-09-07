@@ -70,7 +70,7 @@ a buy box, caro demais para a varredura do PC.
 | Workflow | Horário BRT | Faz | Por que aqui |
 |---|---|---|---|
 | `pricetrack_daily.yml` | **03:20, 04:20, 05:20** (escada) | Importa preços do PriceTrack (D-1) → `pricetrack_daily` | É chamada de API: não precisa de browser, IP nem sessão |
-| `collect_amazon_sellers.yml` | **08:00, 14:00, 20:00** (3 turnos) | Coleta **Amazon-only** com buy box via PDP de cada item → `coletas` (alimenta o seller_app) | Amazon roda de IP de datacenter e a leitura de buy box é cara; isolá-la aqui deixa a varredura do PC leve. `RAC_TURNO` crava o turno do cron (Actions atrasa) |
+| `collect_amazon_sellers.yml` | **08:00/14:00/20:00 + resgate :40** (3 turnos) | Coleta **Amazon-only** com buy box via PDP de cada item → `coletas` (alimenta o seller_app) | Amazon roda de IP de datacenter e a leitura de buy box é cara; isolá-la aqui deixa a varredura do PC leve. `RAC_TURNO` crava o turno do cron (Actions atrasa). Cada turno tem um **cron de resgate 40 min depois** para o caso de o primário ser PULADO; a guarda pula o resgate quando o primário já bateu SUCCESS (nunca coleta dobrado) |
 | `collect.yml` | **só manual** (cron desligado em Set/2026) | Backup manual: Leroy, Google Shopping | O PC virou coletor das demais plataformas; o cron sairia com dois donos do mesmo dado |
 | `watchdog.yml` | 20:30 | Watchdog de **dado** (`daily_status_check.py`) — agora nos 3 turnos | — |
 | `pipeline_guard.yml` | **06:35, 12:35, 22:35** | Supervisor de **execução** + portão do briefing | — |
