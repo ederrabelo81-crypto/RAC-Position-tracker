@@ -50,6 +50,17 @@ a buy box, caro demais para a varredura do PC.
 >
 > Mais Vendidos (`RAC_Bestsellers`) foi **descontinuado** em Set/2026; o setup
 > remove a tarefa antiga se ela ainda existir.
+>
+> **Estágio C — materialização do seller_app (Set/2026):** depois de cada coleta
+> bem-sucedida, o `local_scheduled_collect.bat` roda
+> `build_seller_offer_daily.py --heartbeat` (job `local_seller_fact` no
+> registro). Reprocessa `coletas` do dia em `seller_offer_daily` /
+> `seller_coverage_daily` / `v_seller_buybox_share` — a base do Track Position
+> Seller. É idempotente por data e materializa "ontem e hoje": a rodada da noite
+> fecha o dia inteiro (3 turnos locais + Amazon do Actions, que pode chegar
+> atrasada) e a da manhã seguinte recupera Amazon que caiu tarde. Best-effort —
+> falha aqui não derruba a coleta (o dado já está no Supabase), mas a ausência da
+> batida vira alarme no `pipeline_watch.py`. Requer `SUPABASE_KEY` service_role.
 
 ### ☁️ GitHub Actions (IP de datacenter, sem sessão)
 

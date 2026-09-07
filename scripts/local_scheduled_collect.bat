@@ -154,6 +154,26 @@ if not "%SLOT%"=="legado" (
     del /q "logs\coleta_%SLOT%_*.done" 2>nul
     echo ok> "logs\coleta_%SLOT%_%TODAY%.done"
 )
+
+:: Estagio C: materializa o fato do seller_app (seller_offer_daily). Reprocessa
+:: `coletas` do dia -> tabelas que o seller_app le. Idempotente por data e roda
+:: "ontem e hoje", entao a materializacao da NOITE fecha o dia inteiro (3 turnos
+:: locais + Amazon do Actions, que pode ter chegado atrasada) e a da manha
+:: seguinte ainda recupera Amazon que caiu tarde. Best-effort: falha aqui NAO
+:: derruba a coleta (o dado ja esta no Supabase), so vira aviso; a ausencia da
+:: batida de ponto (--heartbeat, job local_seller_fact) e que dispara o alarme
+:: no pipeline_watch. So nos turnos de verdade (nao no legado).
+::
+:: Fora de um bloco ( ) de proposito: este .bat roda com `setlocal` SEM
+:: enabledelayedexpansion, entao definir e usar %PYEXE% no mesmo bloco expandiria
+:: o valor antigo (vazio). No nivel de cima, cada linha reexpande e o valor vale.
+if "%SLOT%"=="legado" exit /b 0
+set "PYEXE=python"
+if exist "venv\Scripts\python.exe" set "PYEXE=venv\Scripts\python.exe"
+if exist ".venv\Scripts\python.exe" set "PYEXE=.venv\Scripts\python.exe"
+echo [%DATE% %TIME%] [%SLOT%] materializando seller_offer_daily [seller_app]
+call "%PYEXE%" scripts\build_seller_offer_daily.py --heartbeat
+if errorlevel 1 echo [%DATE% %TIME%] [%SLOT%] AVISO: build do seller_offer_daily falhou - veja pipeline_watch [SUPABASE_KEY service_role no .env?]
 exit /b 0
 
 :failed

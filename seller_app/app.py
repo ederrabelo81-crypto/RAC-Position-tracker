@@ -519,7 +519,9 @@ def main() -> None:
                 st.caption(
                     f"⚠️ {sem_buybox_exposta} ofertas ficaram fora deste gráfico: "
                     "estão em plataformas que não expõem vencedor de buy box na "
-                    "vitrine (Amazon, Casas Bahia)."
+                    "vitrine (ex.: Casas Bahia). A Amazon passou a expor via PDP "
+                    "(coletor Amazon-only no GitHub Actions, Set/2026), então já "
+                    "entra aqui."
                 )
 
         st.markdown("##### Posição mediana por plataforma")
