@@ -43,8 +43,26 @@ from utils.seller_surface import mapa_superficies, validar_registro  # noqa: E40
 from utils.text import now_brt  # noqa: E402
 
 
+#: Id do job no livro-razão (utils/pipeline_registry.py). É o mesmo nos três
+#: turnos: o supervisor cobra a última batida do dia.
+JOB_ID = "local_seller_fact"
+
+
 def _cliente():
-    """Client do Supabase, exigindo chave de escrita."""
+    """Client do Supabase, exigindo chave de escrita.
+
+    Carrega o `.env` da raiz antes de ler as variáveis: no PC coletor as
+    credenciais moram lá (não no ambiente do Task Scheduler), então sem isto o
+    build agendado morreria com "SUPABASE_KEY ausente" mesmo com o `.env` certo.
+    """
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), ".env"))
+    except ImportError:
+        pass  # python-dotenv opcional — as variáveis podem vir do ambiente
+
     from supabase import create_client
 
     url = os.getenv("SUPABASE_URL")
@@ -111,8 +129,8 @@ def _apagar_ausentes(client, tabela: str, chave: str, atuais: set) -> int:
     return len(obsoletas)
 
 
-def materializar(client, dia: date) -> None:
-    """Roda a transformação para um dia e loga o que ela devolveu."""
+def materializar(client, dia: date) -> int:
+    """Roda a transformação para um dia, loga o que ela devolveu e devolve as ofertas."""
     resp = client.rpc("refresh_seller_offer_daily", {"p_data": dia.isoformat()}).execute()
     linha = (resp.data or [{}])[0] if isinstance(resp.data, list) else (resp.data or {})
     ofertas = linha.get("ofertas", 0)
@@ -133,6 +151,7 @@ def materializar(client, dia: date) -> None:
             "fora de win rate e de share. Causa conhecida: canonical_url de "
             "rodapé no Google Shopping e em parte do Mercado Livre."
         )
+    return ofertas
 
 
 def _dias(args) -> List[date]:
@@ -151,20 +170,42 @@ def _dias(args) -> List[date]:
     return [hoje - timedelta(days=1), hoje]
 
 
+def _executar(client, args) -> int:
+    """Sincroniza referências, materializa os dias pedidos e devolve o total de ofertas."""
+    sincronizar_referencias(client)
+    if args.so_sync:
+        return 0
+    total = 0
+    for dia in _dias(args):
+        total += materializar(client, dia)
+    return total
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", help="Um dia (YYYY-MM-DD)")
     parser.add_argument("--desde", help="De um dia até hoje (YYYY-MM-DD)")
     parser.add_argument("--so-sync", action="store_true",
                         help="Só sincroniza as tabelas de referência")
+    parser.add_argument(
+        "--heartbeat", action="store_true",
+        help="Bate ponto no livro-razão (job local_seller_fact) — usar no "
+             "agendamento, para que a ausência do build vire alarme.")
     args = parser.parse_args()
 
     client = _cliente()
-    sincronizar_referencias(client)
-    if args.so_sync:
+
+    if not args.heartbeat:
+        _executar(client, args)
         return
-    for dia in _dias(args):
-        materializar(client, dia)
+
+    # Com batida de ponto: STARTED na entrada, SUCCESS/PARTIAL/FAILED na saída.
+    # PARTIAL (zero oferta) não é sucesso — é o modo de falha do §2.9, e o
+    # supervisor precisa distinguir "materializou" de "rodou e não achou nada".
+    from utils.heartbeat import batida
+
+    with batida(JOB_ID) as ctx:
+        ctx["rows"] = _executar(client, args)
 
 
 if __name__ == "__main__":

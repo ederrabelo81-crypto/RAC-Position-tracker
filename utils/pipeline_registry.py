@@ -449,6 +449,47 @@ JOBS: Tuple[JobSpec, ...] = (
         severidade=SEV_IMPORTANTE,
         remediacao="PowerShell -ExecutionPolicy Bypass -File scripts\\check_local_scheduler.ps1",
     ),
+    # ── PC local — materialização do fato com sujeito seller ───────────────
+    # Roda DEPOIS da coleta, em todo turno (estágio C do local_scheduled_collect
+    # .bat), reprocessando `coletas` do dia em `seller_offer_daily` /
+    # `seller_coverage_daily` / `v_seller_buybox_share` — a base que o
+    # seller_app (Track Position Seller) lê. É idempotente por data e roda
+    # "ontem e hoje", então a materialização da noite fecha o dia inteiro (os 3
+    # turnos locais + a Amazon do Actions, que pode ter chegado atrasada) e a
+    # da manhã seguinte ainda recupera linhas de Amazon que caíram tarde.
+    #
+    # Sem batida de ponto era o mesmo modo de falha já documentado do
+    # `bestsellers`: uma falha silenciosa do build congelava o painel (números
+    # que não mudam com o range) e a Amazon nunca chegava ao ranking, sem alarme
+    # nenhum. NÃO é dono de plataforma — não escreve em `coletas`, só a lê — por
+    # isso `turno=None` e `plataformas=()`.
+    JobSpec(
+        id="local_seller_fact",
+        nome="Materialização seller_offer_daily (Track Position Seller)",
+        executor=EXEC_LOCAL,
+        gatilho="scripts\\local_scheduled_collect.bat (estágio C, após cada turno)",
+        comando="python scripts/build_seller_offer_daily.py --heartbeat",
+        # Horário do checkpoint de cobrança: a materialização da NOITE, logo após
+        # a coleta de Fechamento (20:00). As dos turnos da manhã/tarde batem o
+        # mesmo job_id mais cedo (o supervisor usa a última batida do dia).
+        horario_brt=(20, 30),
+        dias=TODOS_OS_DIAS,
+        tolerancia_min=150,
+        deadline_min=300,
+        destino="seller_offer_daily / seller_coverage_daily / v_seller_buybox_share",
+        severidade=SEV_IMPORTANTE,
+        depende_de=("local_noite", "gh_amazon_fechamento"),
+        remediacao=(
+            "python scripts/build_seller_offer_daily.py --desde <YYYY-MM-DD> "
+            "(requer SUPABASE_KEY service_role; a chave anon grava nada em silêncio)"
+        ),
+        observacao=(
+            "Consome `coletas` dos coletores locais E da Amazon do Actions. Se "
+            "parar, o seller_app congela no último dia materializado: contagens "
+            "não mudam com o range e a buy box da Amazon não aparece no ranking, "
+            "sem erro na tela. Idempotente por data (RPC refresh_seller_offer_daily)."
+        ),
+    ),
     # ── Consumidor externo ─────────────────────────────────────────────────
     JobSpec(
         id="briefing_0700",

@@ -304,10 +304,17 @@ o próprio app detecta esse caso e avisa na tela.
 `seller_app/app.py`) — passo a passo e checklist de segurança em
 `seller_app/README.md`.
 
-⚠️ **Ainda não tem job no `pipeline_registry.py`** — o mesmo modo de falha já
-documentado para o `bestsellers`: sem job não há batida de ponto, e sem
-batida uma falha silenciosa do `build_seller_offer_daily.py` não dispara
-alarme nenhum. Pendência a resolver antes do primeiro piloto pago.
+✅ **Job no `pipeline_registry.py` (Set/2026):** `local_seller_fact` bate ponto
+no livro-razão. `build_seller_offer_daily.py` roda como **estágio C** do
+`local_scheduled_collect.bat` — após a coleta de cada turno, no PC coletor — com
+`--heartbeat`. É idempotente por data e materializa "ontem e hoje", então a
+rodada da **noite** fecha o dia inteiro (3 turnos locais + a Amazon do Actions,
+que pode chegar atrasada) e a da manhã seguinte recupera Amazon que caiu tarde.
+Sem essa batida, uma falha silenciosa do build congelava o painel (contagens que
+não mudam com o range, buy box da Amazon fora do ranking) sem alarme nenhum —
+exatamente o modo de falha do `bestsellers`. O supervisor (`pipeline_watch.py`)
+agora cobra a ausência. Requer `SUPABASE_KEY` service_role no `.env` do PC (a
+chave `anon` grava nada em silêncio).
 
 ---
 
