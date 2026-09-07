@@ -29,9 +29,17 @@ name: Coleta Amazon Sellers
 
 on:
   schedule:
-    - cron: '0 11 * * *'   # 08:00 BRT → turno Abertura
-    - cron: '0 17 * * *'   # 14:00 BRT → turno Tarde
-    - cron: '0 23 * * *'   # 20:00 BRT → turno Fechamento
+    # Cron primário de cada turno + uma tentativa de RESGATE 40 min depois. O
+    # cron do Actions é best effort e às vezes é PULADO por inteiro (não só
+    # atrasado): a 2ª batida cobre o turno que não disparou. Não é coleta dupla —
+    # a guarda (step "Turno já coletado?") pula o resgate quando o run primário
+    # já bateu SUCCESS no livro-razão, então quem coleta é sempre um só por turno.
+    - cron: '0 11 * * *'    # 08:00 BRT → Abertura (primário)
+    - cron: '40 11 * * *'   # 08:40 BRT → Abertura (resgate)
+    - cron: '0 17 * * *'    # 14:00 BRT → Tarde (primário)
+    - cron: '40 17 * * *'   # 14:40 BRT → Tarde (resgate)
+    - cron: '0 23 * * *'    # 20:00 BRT → Fechamento (primário)
+    - cron: '40 23 * * *'   # 20:40 BRT → Fechamento (resgate)
   workflow_dispatch:
     inputs:
       turno:
@@ -73,11 +81,13 @@ jobs:
           CRON: ${{ github.event.schedule }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
+            # Primário e resgate (:00 e :40) do mesmo turno mapeiam para o MESMO
+            # turno/job — a guarda adiante decide se o resgate coleta ou pula.
             case "$CRON" in
-              '0 11 * * *') TURNO="Abertura"   ; JOB_ID="gh_amazon_abertura"   ;;
-              '0 17 * * *') TURNO="Tarde"      ; JOB_ID="gh_amazon_tarde"      ;;
-              '0 23 * * *') TURNO="Fechamento" ; JOB_ID="gh_amazon_fechamento" ;;
-              *)            TURNO="Fechamento" ; JOB_ID="gh_amazon_fechamento" ;;
+              '0 11 * * *'|'40 11 * * *') TURNO="Abertura"   ; JOB_ID="gh_amazon_abertura"   ;;
+              '0 17 * * *'|'40 17 * * *') TURNO="Tarde"      ; JOB_ID="gh_amazon_tarde"      ;;
+              '0 23 * * *'|'40 23 * * *') TURNO="Fechamento" ; JOB_ID="gh_amazon_fechamento" ;;
+              *)                          TURNO="Fechamento" ; JOB_ID="gh_amazon_fechamento" ;;
             esac
             PAGES="2"
           else
@@ -111,7 +121,53 @@ jobs:
       - name: Install Python dependencies
         run: pip install --upgrade pip && pip install -r requirements.txt
 
+      # ── Guarda de idempotência do resgate ──────────────────────────────────
+      # O resgate (:40) e o primário (:00) apontam para o mesmo turno. Se o
+      # primário já bateu SUCCESS no livro-razão HOJE, coletar de novo seria
+      # coleta dupla (linhas duplicadas em `coletas`, dobro do custo de PDP) —
+      # então a guarda PULA. Só schedule: um dispatch manual sempre coleta (a
+      # intenção humana de re-rodar vence a guarda). PARTIAL/FAILED/ausente NÃO
+      # pulam — resgate serve exatamente para isso. Falha de leitura do livro
+      # (Supabase fora) também NÃO pula: melhor uma coleta a mais que um turno a
+      # menos. Antes do Playwright de propósito: pular economiza os minutos de
+      # `playwright install`.
+      - name: Turno já coletado com sucesso hoje?
+        id: guard
+        if: github.event_name == 'schedule' && steps.params.outputs.job_id != ''
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          JOB_ID: ${{ steps.params.outputs.job_id }}
+        run: |
+          python - <<'PY'
+          import os
+          skip = False
+          try:
+              from utils.heartbeat import ultimas_batidas, STATUS_SUCCESS, LivroRazaoIndisponivel
+              from utils.text import now_brt
+              job = os.environ["JOB_ID"]
+              hoje = now_brt().date()
+              try:
+                  ultimas = ultimas_batidas(hoje, [job])
+              except LivroRazaoIndisponivel as exc:
+                  print(f"Livro-razão indisponível ({exc}) — não pulo, coleto por segurança.")
+                  ultimas = {}
+              reg = ultimas.get(job)
+              status = reg.get("status") if reg else None
+              if status == STATUS_SUCCESS:
+                  skip = True
+                  print(f"Turno {job} já bateu SUCCESS hoje ({hoje}) — resgate PULA a coleta.")
+              else:
+                  print(f"Turno {job} ainda sem SUCCESS hoje (status={status!r}) — vai coletar.")
+          except Exception as exc:  # nunca derruba o job por causa da guarda
+              print(f"Guarda falhou ({type(exc).__name__}: {exc}) — não pulo, coleto por segurança.")
+              skip = False
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"skip={'true' if skip else 'false'}\n")
+          PY
+
       - name: Install Playwright browsers and system dependencies
+        if: steps.guard.outputs.skip != 'true'
         run: |
           playwright install-deps chromium
           playwright install chromium
@@ -119,11 +175,13 @@ jobs:
       # Display virtual: a Amazon barra menos um browser NÃO-headless, e o PDP é
       # o passo mais sensível a bot-check da rotina.
       - name: Install xvfb (virtual display)
+        if: steps.guard.outputs.skip != 'true'
         run: sudo apt-get install -y xvfb
 
       # ── Coleta ─────────────────────────────────────────────────────────────
       - name: Run Amazon collector (fresh PDP buy box)
         id: collect
+        if: steps.guard.outputs.skip != 'true'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
