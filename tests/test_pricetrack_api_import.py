@@ -478,3 +478,90 @@ class TestPrefetchDataDir:
         ptai.prefetch_exports("token-de-teste", ["2026-07-28"], 3)
 
         assert capturado["settings"].data_dir == tmp_path / "outro"
+
+
+class _FakeDelete:
+    """Encadeamento .delete().eq().or_().execute() do supabase-py, registrando
+    os filtros aplicados e devolvendo `rows` como o resultado do DELETE."""
+
+    def __init__(self, rows, calls):
+        self._rows = rows
+        self._calls = calls
+
+    def eq(self, col, val):
+        self._calls["eq"][col] = val
+        return self
+
+    def or_(self, expr):
+        self._calls["or_"] = expr
+        return self
+
+    def execute(self):
+        return type("Resp", (), {"data": self._rows})()
+
+
+class _FakeTable:
+    def __init__(self, rows, calls):
+        self._rows = rows
+        self._calls = calls
+
+    def delete(self):
+        self._calls["delete"] = True
+        return _FakeDelete(self._rows, self._calls)
+
+
+class _FakeClient:
+    def __init__(self, rows, calls):
+        self._rows = rows
+        self._calls = calls
+
+    def table(self, name):
+        self._calls["table"] = name
+        return _FakeTable(self._rows, self._calls)
+
+
+class TestPurgeStaleBasis:
+    """`purge_stale_basis` é a contrapartida que faltava ao upsert: um reimport
+    grava `best_cash` na chave nova, mas a linha `spot_legacy` de chave antiga
+    (vendedor/sku que o run atual não reproduziu) ficava órfã e misturava bases
+    na data para sempre. O purge remove só a base antiga da data reimportada."""
+
+    def _run(self, monkeypatch, rows):
+        calls = {"eq": {}}
+        monkeypatch.setattr(ptai, "_HAS_SUPABASE", True)
+        monkeypatch.setattr(
+            ptai, "_supabase_client", lambda: _FakeClient(rows, calls))
+        removed = ptai.purge_stale_basis("2026-08-31")
+        return removed, calls
+
+    def test_apaga_so_base_antiga_da_data(self, monkeypatch):
+        removed, calls = self._run(monkeypatch, rows=[{"id": 1}, {"id": 2}])
+        assert removed == 2
+        assert calls["table"] == ptai._TABLE
+        assert calls["delete"] is True
+        # Filtra pela data exata e SÓ pela base antiga (spot_legacy/NULL): uma
+        # linha best_cash nunca é alvo.
+        assert calls["eq"]["collection_date"] == "2026-08-31"
+        assert calls["or_"] == (
+            f"price_basis.is.null,price_basis.eq.{ptai.PRICE_BASIS_SPOT_LEGACY}")
+
+    def test_dry_run_nao_toca_no_banco(self, monkeypatch):
+        chamado = {"n": 0}
+
+        def _nao_deveria():
+            chamado["n"] += 1
+            raise AssertionError("dry_run não pode abrir cliente Supabase")
+
+        monkeypatch.setattr(ptai, "_HAS_SUPABASE", True)
+        monkeypatch.setattr(ptai, "_supabase_client", _nao_deveria)
+        assert ptai.purge_stale_basis("2026-08-31", dry_run=True) == 0
+        assert chamado["n"] == 0
+
+    def test_falha_do_delete_nao_derruba_import(self, monkeypatch):
+        def _explode():
+            raise RuntimeError("PostgREST fora do ar")
+
+        monkeypatch.setattr(ptai, "_HAS_SUPABASE", True)
+        monkeypatch.setattr(ptai, "_supabase_client", _explode)
+        # A linha best_cash já está gravada; o purge falhar é absorvido.
+        assert ptai.purge_stale_basis("2026-08-31") == 0

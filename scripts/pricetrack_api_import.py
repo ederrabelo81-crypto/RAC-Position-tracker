@@ -723,6 +723,60 @@ def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
     return inserted
 
 
+def purge_stale_basis(collection_date: str, dry_run: bool = False) -> int:
+    """Remove as linhas de base ANTIGA (`spot_legacy`/sem carimbo) de uma data
+    que acabou de ser reimportada em ``best_cash``. Retorna quantas removeu.
+
+    O upsert de :func:`insert_rows` casa a UNIQUE em
+    ``(collection_date, turno, brand, sku, marketplace, seller)``: ele ATUALIZA
+    a linha de mesma chave, mas nunca APAGA uma linha que o run atual não
+    reproduziu. Quando o vendedor/brand/sku de uma listagem difere entre o
+    import antigo (às vezes um snapshot intra-dia parcial) e o reimport do
+    NDJSON completo — buy box girou de dono, normalização de seller mudou — a
+    linha nova entra numa chave nova e a antiga `spot_legacy` fica ÓRFÃ: nunca
+    é sobrescrita e mistura duas bases na mesma data para sempre.
+
+    Uma data misturada é **não-agregável** no dashboard (`render_price_basis_
+    notice` devolve False e bloqueia a análise): piso, moda e média sairiam de
+    duas réguas diferentes. Como o reimport já gravou o `best_cash` correto
+    para a data, qualquer linha `spot_legacy` remanescente é refugo por
+    definição — este purge é a contrapartida que faltava ao upsert para que um
+    reimport deixe a data numa base só.
+
+    **Regra dura:** só chame DEPOIS de um insert bem-sucedido da data (todos os
+    lotes gravados). Purgar uma data cujo write falhou apagaria o histórico e
+    deixaria o dia vazio. Alvo restrito a `spot_legacy`/NULL: uma base futura
+    intencional (carimbo desconhecido) nunca é apagada por engano.
+    """
+    if dry_run or not _HAS_SUPABASE:
+        return 0
+    try:
+        client = _supabase_client()
+        resp = (
+            client.table(_TABLE)
+            .delete()
+            .eq("collection_date", collection_date)
+            .or_(f"price_basis.is.null,price_basis.eq.{PRICE_BASIS_SPOT_LEGACY}")
+            .execute()
+        )
+        removed = len(getattr(resp, "data", None) or [])
+        if removed:
+            logger.info(
+                f"{collection_date} — {removed:,} linha(s) de base antiga "
+                f"(`spot_legacy`) removida(s): órfãs do reimport (chave de "
+                "vendedor/sku divergente do NDJSON completo)."
+            )
+        return removed
+    except Exception as e:  # noqa: BLE001
+        # Nunca derruba o import: a linha corrigida `best_cash` já está gravada;
+        # na pior das hipóteses o órfão sobrevive e o dashboard segue avisando.
+        logger.warning(
+            f"{collection_date} — não foi possível remover linhas de base "
+            f"antiga: {e}"
+        )
+        return 0
+
+
 def _is_unknown_column_error(exc: Exception) -> bool:
     """True se o erro do PostgREST é 'coluna X não existe' (PGRST204/42703)."""
     text = str(exc).lower()
@@ -971,6 +1025,13 @@ def _process_date(
     write_history(records, collection_date, dry_run=dry_run)
 
     inserted = insert_rows(records, dry_run=dry_run)
+    # Só purga quando TODOS os lotes gravaram (inserted == linhas enviadas):
+    # remover base antiga de uma data cujo write falhou apagaria o histórico e
+    # deixaria o dia vazio. Com o write completo, qualquer `spot_legacy` que
+    # sobre na data é órfão do upsert (chave de vendedor/sku que o run atual não
+    # reproduziu) e mistura bases — ver `purge_stale_basis`.
+    if inserted >= len(records):
+        purge_stale_basis(collection_date, dry_run=dry_run)
     log_import(
         source_file=f"api-{collection_date}",
         rows_total=rows_raw,
