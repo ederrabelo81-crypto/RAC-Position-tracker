@@ -154,12 +154,28 @@ def materializar(client, dia: date) -> int:
     return ofertas
 
 
+#: Dias para trás que a janela padrão re-materializa, além de hoje. Precisa
+#: cobrir o ATRASO da coleta Amazon-only do Actions (buy box via PDP), que
+#: chega horas depois dos turnos locais e às vezes só no dia seguinte: se a
+#: janela fecha um dia antes de a Amazon daquele dia aterrissar, esse dia nunca
+#: mais é reprocessado e a Amazon some do fato (e do KPI/ranking do seller_app).
+#: Reprocessar os últimos 2 dias dá à Amazon tardia uma segunda e terceira
+#: chance de ser dobrada — barato porque a materialização é idempotente por data.
+_LOOKBACK_DIAS = 2
+
+
 def _dias(args) -> List[date]:
     """Dias a materializar, sempre no fuso da COLETA (BRT), nunca no do host.
 
     O turno de Fechamento roda às 20:00 BRT, que é 23:00 UTC. Num host UTC,
     `date.today()` já virou o dia seguinte às 21:00 BRT — a janela padrão
     materializaria amanhã e pularia a data brasileira recém-fechada.
+
+    A janela padrão cobre HOJE e os `_LOOKBACK_DIAS` dias anteriores: a coleta
+    Amazon do Actions chega atrasada e um único par `[ontem, hoje]` fechava o
+    dia antes de ela aterrissar, deixando a Amazon daquele dia fora do fato
+    para sempre. Como a materialização é idempotente por data, reprocessar
+    alguns dias a mais só custa tempo e recupera a Amazon tardia.
     """
     hoje = now_brt().date()
     if args.data:
@@ -167,7 +183,7 @@ def _dias(args) -> List[date]:
     if args.desde:
         inicio = date.fromisoformat(args.desde)
         return [inicio + timedelta(days=i) for i in range((hoje - inicio).days + 1)]
-    return [hoje - timedelta(days=1), hoje]
+    return [hoje - timedelta(days=i) for i in range(_LOOKBACK_DIAS, -1, -1)]
 
 
 def _executar(client, args) -> int:
