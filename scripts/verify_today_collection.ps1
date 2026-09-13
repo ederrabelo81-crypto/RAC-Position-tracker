@@ -243,8 +243,15 @@ if (Test-Path $logFile) {
         foreach ($tok in $falhaTokens) {
             if ($linha -like "*$tok*") { $ehFalha = $true; break }
         }
-        # [Heartbeat] ⚠ so local = a batida nao chegou ao banco (DB fora)
-        if (-not $ehFalha -and $linha -match 'Heartbeat' -and $linha.Contains($marcaAlerta)) {
+        # Heartbeat que denuncia falha - robusto a codepage. O marcador local-only
+        # e "⚠ só local" (Loguru/UTF-8, PYTHONUTF8=1), mas se o scheduler.log for
+        # gravado em cp1252/OEM o ⚠ vira mojibake e o Contains falha. Por isso
+        # casamos TAMBEM o token ASCII estavel FAILED na mesma linha do Heartbeat,
+        # que sobrevive a qualquer codepage - a linha so-local sempre traz o status
+        # (ex.: "[Heartbeat] ⚠ só local local_tarde FAILED"). Um SUCCESS so-local
+        # (dado subiu, so a batida nao) fica de fora de proposito: nao e falha de dado.
+        if (-not $ehFalha -and $linha -match 'Heartbeat' -and
+            ($linha -match '\bFAILED\b' -or $linha.Contains($marcaAlerta))) {
             $ehFalha = $true
         }
         if ($ehFalha) {
