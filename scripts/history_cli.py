@@ -295,7 +295,45 @@ def cmd_tier(args: argparse.Namespace) -> int:
     Com ``--dataset all`` roda o mesmo fluxo para `coletas` e
     `pricetrack_daily`. Uma falha num dataset não impede o outro de migrar —
     o código de saída agrega os dois.
+
+    Com ``--heartbeat`` a execução bate ponto no livro-razão (job
+    ``local_tier_migration``): STARTED na entrada, SUCCESS ao fim limpo,
+    FAILED quando algum dia falha (rc=1) ou o banco está restrito por cota
+    (rc=2). É o que faz a AUSÊNCIA da poda virar alarme no `pipeline_watch`
+    — sem isso o Supabase volta a crescer sem teto e ninguém é cobrado, o
+    mesmo modo de falha que estourou a cota em Jul e Set/2026.
     """
+    if not getattr(args, "heartbeat", False):
+        return _cmd_tier_run(args)
+
+    # "Nada a migrar" (banco já em 15 dias) é o estado SAUDÁVEL — não pode
+    # virar PARTIAL. Por isso o contexto não recebe `rows`: `batida` só marca
+    # PARTIAL quando rows==0, e rows=None cai em SUCCESS. Um rc!=0 é sinalizado
+    # levantando dentro do bloco, para a batida terminal ser FAILED; o rc real
+    # é preservado e devolvido ao chamador.
+    from utils.heartbeat import batida
+
+    class _TierIncompleto(RuntimeError):
+        def __init__(self, rc: int):
+            self.rc = rc
+            super().__init__(f"tier terminou com rc={rc}")
+
+    try:
+        with batida("local_tier_migration") as ctx:
+            rc = _cmd_tier_run(args)
+            if rc == 2:
+                ctx["detail"] = "Supabase restrito por cota (402) — tier não rodou"
+            elif rc == 1:
+                ctx["detail"] = "Migração parcial: dia(s) com falha ficaram no Supabase"
+            if rc != 0:
+                raise _TierIncompleto(rc)
+    except _TierIncompleto as falha:
+        return falha.rc
+    return 0
+
+
+def _cmd_tier_run(args: argparse.Namespace) -> int:
+    """Corpo do `tier`: resolve os datasets e migra cada um. Ver `cmd_tier`."""
     from utils.supabase_client import _get_client
 
     client = _get_client()
@@ -519,6 +557,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apaga do Supabase os dias já verificados no histórico.",
     )
     p_tier.add_argument("--dry-run", action="store_true", help="Só relata; não grava nem apaga.")
+    p_tier.add_argument(
+        "--heartbeat", action="store_true",
+        help="Bate ponto no livro-razão (job local_tier_migration) — usar no "
+             "agendamento, para que a ausência da poda vire alarme.",
+    )
     p_tier.set_defaults(func=cmd_tier)
 
     p_exp = sub.add_parser("export", help="Exporta um período para CSV.")

@@ -3,6 +3,24 @@
 > **Status:** ✅ Ativa desde 2026-07-14 · Projeto `RAC` (org Mydea) · região sa-east-1
 > **Script:** [`scripts/retention_cleanup.sql`](../scripts/retention_cleanup.sql)
 
+> ⚠️ **Leia primeiro (Set/2026): este SQL é o DESBLOQUEIO DE EMERGÊNCIA, não o
+> regime permanente.** A retenção do dia a dia agora é a **poda automática
+> `tier`** (job `local_tier_migration`, estágio D da coleta noturna — ver
+> [`HISTORICO_DRIVE.md`](HISTORICO_DRIVE.md)), que mantém no Supabase só a janela
+> quente de **15 dias** e move o resto para o Drive. Use este SQL **só** quando o
+> banco já estourou a cota e está **restrito** (HTTP 402): nesse estado a REST
+> recusa até leitura, então o `tier` não consegue rodar e o espaço precisa ser
+> liberado direto pelo SQL Editor. Depois de desbloquear (DELETE + `VACUUM
+> FULL`), a poda noturna assume e mantém os 15 dias sozinha.
+>
+> **Por que a cota voltou a estourar (Set/2026).** A limpeza de 14/07 foi um
+> *one-off* manual que ninguém agendou, e a própria meta "Equilibrada" (~1,4 GB)
+> já era acima da cota de 1,1 GB. Pior: o motor de crescimento mudou — a coleta
+> passou a 3 turnos/dia × todas as plataformas + dealers + Amazon (Set/2026), e a
+> `coletas` sozinha chegou a **1,1 GB em 40 dias**. A janela de 90 dias desta
+> política ficou inútil (nada em `coletas` tinha mais de 90 dias). A correção
+> durável não é rodar este SQL de novo — é o **tier automático de 15 dias**.
+
 ## Por quê
 
 Em 2026-07-14 o banco chegou a **3,09 GB** e a Supabase avisou uso acima da
