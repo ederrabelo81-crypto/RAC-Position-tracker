@@ -23,7 +23,7 @@
 #
 # Com isso separa os tres estados que o painel colapsa em um:
 #   - COLETOU e SUBIU          -> tudo certo
-#   - COLETOU, NAO SUBIU       -> dado seguro no disco/Drive; o banco e o problema
+#   - COLETOU, NAO SUBIU       -> dado seguro no disco (output\); o banco e o problema
 #   - SEM EVIDENCIA de coleta  -> a tarefa realmente nao rodou
 #
 # Uso (nao precisa de Admin):
@@ -145,20 +145,26 @@ if (Test-Path $hbFile) {
         if ($reg.data_ref -eq $iso) { $hbToday += $reg }
     }
     if ($hbToday.Count -gt 0) {
+        # So os jobs de COLETA provam que um coletor rodou. local_seller_fact e
+        # local_tier_migration sao manutencao downstream (reprocessam/podam o que
+        # ja existe) e podem bater SUCCESS num dia sem coleta nova - nao podem
+        # ligar o HasData sozinhos.
+        $jobsColeta = @("local_manha", "local_tarde", "local_noite")
         # Ultima batida por job (a ultima linha do arquivo vence).
         $porJob = [ordered]@{}
         foreach ($reg in $hbToday) { $porJob[$reg.job_id] = $reg }
         foreach ($job in $porJob.Keys) {
             $reg = $porJob[$job]
+            $ehColeta = $jobsColeta -contains $job
             $rows = if ($null -ne $reg.rows_written) { "$($reg.rows_written) linha(s)" } else { "sem contagem" }
             $line = "batida: $job = $($reg.status) ($rows)"
             switch ($reg.status) {
-                "SUCCESS" { Write-Ok  $line; $script:HasData = $true }
+                "SUCCESS" { Write-Ok  $line; if ($ehColeta) { $script:HasData = $true } }
                 "PARTIAL" { Write-Warn "$line - concluiu sem gravar linha"; }
                 "FAILED"  {
-                    # FAILED com linhas > 0 = coletou, mas alguma etapa de
-                    # persistencia caiu (tipicamente o upload ao Supabase).
-                    if ($reg.rows_written -gt 0) {
+                    # FAILED com linhas > 0 num job de COLETA = coletou, mas
+                    # alguma etapa de persistencia caiu (tipicamente o upload).
+                    if ($ehColeta -and $reg.rows_written -gt 0) {
                         Write-Warn "$line - coletou, mas o job terminou em erro (persistencia?)"
                         $script:HasData = $true
                     } else {
@@ -291,7 +297,8 @@ if (Test-Path $logFile) {
     if ($quotaNoDia) {
         Write-Info ""
         Write-Info "Causa raiz: BANCO cheio (cota de armazenamento). O dado NAO se perdeu"
-        Write-Info "- esta em output\ e no Drive (Parquet). Para religar o Supabase:"
+        Write-Info "- esta em output\ (e no Drive/Parquet, se o espelho estiver configurado;"
+        Write-Info "  confira com: python scripts\history_cli.py stats). Para religar o Supabase:"
         Write-Info "  1) libere espaco: SQL Editor + scripts\retention_cleanup.sql (+ VACUUM FULL)"
         Write-Info "     ou rode a poda: python scripts\history_cli.py tier --dataset all --confirm"
         Write-Info "  2) quando o banco voltar, reenvie o(s) CSV(s) do dia:"
@@ -319,10 +326,10 @@ if (-not $script:HasData) {
         }
         "FAILED" {
             Write-Host " VEREDITO: COLETOU, mas o dado NAO chegou ao Supabase." -ForegroundColor Yellow
-            Write-Host " A coleta rodou e gravou os arquivos (output\ + Drive); o Supabase" -ForegroundColor Yellow
+            Write-Host " A coleta rodou e gravou o arquivo local (output\); o Supabase" -ForegroundColor Yellow
             Write-Host " recusou a escrita. E por isso que o painel mostra 'NAO EXECUTOU'" -ForegroundColor Yellow
-            Write-Host " (ele so le o banco). O dado esta seguro - falta reenviar quando o" -ForegroundColor Yellow
-            Write-Host " banco voltar (ver os passos acima)." -ForegroundColor Yellow
+            Write-Host " (ele so le o banco). O dado local esta seguro - falta reenviar quando" -ForegroundColor Yellow
+            Write-Host " o banco voltar (ver os passos acima)." -ForegroundColor Yellow
         }
         "MIXED" {
             Write-Host " VEREDITO: COLETOU; parte do dia NAO chegou ao Supabase." -ForegroundColor Yellow
@@ -331,7 +338,7 @@ if (-not $script:HasData) {
         }
         "SKIPPED" {
             Write-Host " VEREDITO: COLETOU, mas o upload foi PULADO (sem credencial)." -ForegroundColor Yellow
-            Write-Host " O dado ficou so no disco (output\ + Drive). Configure SUPABASE_URL" -ForegroundColor Yellow
+            Write-Host " O dado ficou so no arquivo local (output\). Configure SUPABASE_URL" -ForegroundColor Yellow
             Write-Host " e SUPABASE_KEY (service_role) no .env e reenvie o(s) CSV(s):" -ForegroundColor Yellow
             Write-Host "   python scripts\history_cli.py import-csv output\rac_monitoramento_*.csv --mirror" -ForegroundColor Gray
         }
