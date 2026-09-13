@@ -15,8 +15,11 @@
 #   2. logs\coleta_<slot>_<data>.done              -> marcador de SUCESSO (exit 0)
 #   3. logs\heartbeat.jsonl                        -> espelho local da batida
 #
-# ...e le logs\scheduler.log atras da assinatura de falha do Supabase
-# (402 / exceed_db_size_quota / "so local" / "upload Supabase").
+# ...e le logs\scheduler.log (SO os blocos de run do dia alvo, delimitados pelo
+# banner "=== inicio ===") decidindo se o dado chegou ao Supabase por EVIDENCIA
+# POSITIVA - "registros inseridos com sucesso" / "ja existiam no banco" -, nunca
+# por ausencia de falha: um dia sem credencial (upload PULADO) tambem nao imprime
+# falha, e inferir "subiu" do silencio marcaria como enviado um dado preso no disco.
 #
 # Com isso separa os tres estados que o painel colapsa em um:
 #   - COLETOU e SUBIU          -> tudo certo
@@ -42,8 +45,11 @@ param(
 $ErrorActionPreference = "SilentlyContinue"
 
 $BaseDir = Split-Path -Parent $PSScriptRoot
-$script:HasData   = $false   # ha alguma prova de coleta (CSV ou batida com linhas)
-$script:Supabase  = $true    # o dado chegou ao Supabase (ate prova em contrario)
+$script:HasData = $false      # ha alguma prova de coleta (CSV ou batida com linhas)
+# O dado chegou ao Supabase? Decidido por EVIDENCIA POSITIVA no log, nunca por
+# ausencia de falha (ver o cabecalho). Comeca UNKNOWN e so vira UP com prova.
+#   UNKNOWN | UP | FAILED | MIXED | SKIPPED
+$script:SbState = "UNKNOWN"
 
 function Write-Ok   ([string]$msg) { Write-Host "  [OK]    $msg" -ForegroundColor Green }
 function Write-Warn ([string]$msg) { Write-Host "  [AVISO] $msg" -ForegroundColor Yellow }
@@ -170,53 +176,127 @@ if (Test-Path $hbFile) {
     Write-Warn "logs\heartbeat.jsonl nao existe - a coleta instrumentada nunca bateu ponto nesta maquina"
 }
 
-# --- 4. Assinatura de falha do Supabase no log da coleta ----------------------
-Write-Sect "O dado chegou ao Supabase? (logs\scheduler.log)"
+# --- 4. O dado chegou ao Supabase? (evidencia positiva, escopada ao dia) ------
+Write-Sect "O dado chegou ao Supabase? (logs\scheduler.log, so o dia $iso)"
 
+# Decidimos por EVIDENCIA POSITIVA, nunca por ausencia de falha. E escopamos ao
+# DIA: scheduler.log e append-only (run_local_scheduled.bat redireciona toda
+# execucao para ca), entao uma falha de ontem nao pode condenar a coleta de hoje.
+# Cada run comeca com o banner "=== inicio ===" carimbado com %DATE% - usamos
+# esse banner para so olhar as linhas dos runs do dia alvo.
 $logFile = Join-Path $BaseDir "logs\scheduler.log"
+$quotaNoDia = $false
 if (Test-Path $logFile) {
-    $texto = Get-Content $logFile -Encoding UTF8
+    $cultura   = [System.Globalization.CultureInfo]::CurrentCulture
+    $noDia     = $false   # a linha atual pertence a um run do dia alvo?
+    $vistoBanner = $false # o log tem banners de run (formato atual)?
+    $sinaisUp   = @()     # "inseridos com sucesso" / "ja existiam no banco"
+    $sinaisFail = @()     # cota/402/erro de upload/heartbeat so-local
+    $sinaisSkip = @()     # "upload IGNORADO" (sem credencial)
+    # ⚠ do Loguru: [Heartbeat] so gravou local. String (nao char): o overload
+    # String.Contains(char) so existe no .NET Core - no PS 5.1 (Framework) da erro.
+    $marcaAlerta = ([char]0x26A0).ToString()
 
-    # Padroes que provam que a coleta rodou mas o Supabase recusou. Sao
-    # comparados sem depender de acento (o -match e por substring simples).
-    $padroesFalha = @(
-        "exceed_db_size_quota",              # cota de armazenamento estourada
-        "RESTRITO por cota",                 # mensagem do AdminAuto
-        "restricted due to the following",   # texto cru da API Supabase
-        "\bso local\b",                      # [Heartbeat] "so local" (sem acento no regex)
-        "upload Supabase",                   # "Etapa(s) ... com falha: upload Supabase"
-        "Supabase upload retornou falha"
+    $falhaTokens = @(
+        "exceed_db_size_quota",            # cota de armazenamento estourada
+        "RESTRITO por cota",               # mensagem do AdminAuto
+        "restricted due to the following", # texto cru da API Supabase
+        "com falha: upload Supabase",      # "Etapa(s) ... com falha: upload Supabase"
+        "Upload falhou para todos",        # nenhum registro entrou
+        "Upload parcial",                  # alguns registros com erro
+        "Falha de REDE",                   # queda de rede/DNS no meio do upload
+        "retornou falha"                   # "Supabase upload retornou falha"
     )
-    $achou = @()
-    foreach ($p in $padroesFalha) {
-        $m = $texto | Select-String -Pattern $p -SimpleMatch:($p -notmatch '\\') -ErrorAction SilentlyContinue
-        if ($m) { $achou += $m }
-    }
 
-    if ($achou.Count -gt 0) {
-        $script:Supabase = $false
-        Write-Bad "O log tem sinais de que o Supabase recusou a escrita:"
-        # Mostra ate 6 linhas relevantes, as mais recentes, sem repetir.
-        $vistos = @{}
-        foreach ($m in ($achou | Select-Object -Last 30)) {
-            $l = $m.Line.Trim()
-            if (-not $vistos.ContainsKey($l)) {
-                $vistos[$l] = $true
-                Write-Info $l
+    foreach ($linha in (Get-Content $logFile -Encoding UTF8)) {
+        if ($linha -match '===\s*inicio') {
+            $vistoBanner = $true
+            $noDia = $false
+            # Data do banner: primeiro token dd/mm/aaaa. Parse com a cultura da
+            # maquina (foi ela que formatou %DATE%). Regex sem ancora no '[' para
+            # tolerar locales que prefixam o dia da semana (ex.: "qua 13/09/2026");
+            # o %TIME% (17:52:05) usa ':' e nao casa com estes separadores. Se nao
+            # parsear, o bloco fica FORA do dia - preferimos perder um match a
+            # atribuir a linha ao dia errado (exatamente o bug que corrigimos).
+            $m = [regex]::Match($linha, '(\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4})')
+            if ($m.Success) {
+                try {
+                    $d = [datetime]::Parse($m.Groups[1].Value, $cultura)
+                    if ($d.Date -eq $targetDate) { $noDia = $true }
+                } catch { $noDia = $false }
+            }
+            continue
+        }
+        if (-not $noDia) { continue }
+
+        if ($linha -match 'inseridos com sucesso' -or $linha -match 'existiam no banco') {
+            $sinaisUp += $linha.Trim()
+        }
+        if ($linha -match 'upload IGNORADO') { $sinaisSkip += $linha.Trim() }
+        $ehFalha = $false
+        foreach ($tok in $falhaTokens) {
+            if ($linha -like "*$tok*") { $ehFalha = $true; break }
+        }
+        # [Heartbeat] ⚠ so local = a batida nao chegou ao banco (DB fora)
+        if (-not $ehFalha -and $linha -match 'Heartbeat' -and $linha.Contains($marcaAlerta)) {
+            $ehFalha = $true
+        }
+        if ($ehFalha) {
+            $sinaisFail += $linha.Trim()
+            if ($linha -like "*exceed_db_size_quota*" -or $linha -like "*RESTRITO por cota*") {
+                $quotaNoDia = $true
             }
         }
-        if ($texto -match "exceed_db_size_quota" -or ($texto -match "RESTRITO por cota")) {
-            Write-Info ""
-            Write-Info "Causa raiz: BANCO cheio (cota de armazenamento). O dado NAO se perdeu"
-            Write-Info "- esta em output\ e no Drive (Parquet). Para religar o Supabase:"
-            Write-Info "  1) libere espaco: SQL Editor + scripts\retention_cleanup.sql (+ VACUUM FULL)"
-            Write-Info "     ou rode a poda: python scripts\history_cli.py tier --dataset all --confirm"
-            Write-Info "  2) quando o banco voltar, reenvie o(s) CSV(s) do dia:"
-            Write-Info "     python scripts\history_cli.py import-csv output\rac_monitoramento_*.csv --mirror"
-            Write-Info "  (se persistir, o dono do projeto precisa subir o plano / remover spend cap)"
+    }
+
+    $hasUp   = $sinaisUp.Count   -gt 0
+    $hasFail = $sinaisFail.Count -gt 0
+    $hasSkip = $sinaisSkip.Count -gt 0
+
+    if     ($hasFail -and $hasUp) { $script:SbState = "MIXED" }
+    elseif ($hasFail)             { $script:SbState = "FAILED" }
+    elseif ($hasUp)               { $script:SbState = "UP" }
+    elseif ($hasSkip)             { $script:SbState = "SKIPPED" }
+    else                          { $script:SbState = "UNKNOWN" }
+
+    # Mostra as linhas de prova (deduplicadas), as mais recentes.
+    function Show-Linhas ([string]$rotulo, [string[]]$linhas) {
+        if ($linhas.Count -eq 0) { return }
+        Write-Info "${rotulo}:"
+        $vistos = @{}
+        foreach ($l in ($linhas | Select-Object -Last 20)) {
+            if (-not $vistos.ContainsKey($l)) { $vistos[$l] = $true; Write-Info "  $l" }
         }
-    } else {
-        Write-Ok "Sem sinais de recusa do Supabase no log (a escrita provavelmente subiu)"
+    }
+
+    switch ($script:SbState) {
+        "UP"     { Write-Ok "Upload CONFIRMADO por evidencia positiva no log do dia."
+                   Show-Linhas "Prova" $sinaisUp }
+        "FAILED" { Write-Bad "O log do dia mostra que o Supabase recusou a escrita:"
+                   Show-Linhas "Sinais" $sinaisFail }
+        "MIXED"  { Write-Warn "Sinais MISTOS no dia: parte subiu, parte falhou (turnos diferentes?)."
+                   Show-Linhas "Subiu"  $sinaisUp
+                   Show-Linhas "Falhou" $sinaisFail }
+        "SKIPPED"{ Write-Bad "Upload PULADO no dia (SUPABASE_URL/KEY ausentes) - o dado ficou so no disco:"
+                   Show-Linhas "Sinais" $sinaisSkip }
+        default  {
+            if ($vistoBanner) {
+                Write-Warn "Sem sinal de upload (nem sucesso, nem falha) para $iso - envio NAO confirmado."
+            } else {
+                Write-Warn "scheduler.log nao tem banner de run por dia - nao da para escopar ao dia; envio NAO confirmado."
+            }
+        }
+    }
+
+    if ($quotaNoDia) {
+        Write-Info ""
+        Write-Info "Causa raiz: BANCO cheio (cota de armazenamento). O dado NAO se perdeu"
+        Write-Info "- esta em output\ e no Drive (Parquet). Para religar o Supabase:"
+        Write-Info "  1) libere espaco: SQL Editor + scripts\retention_cleanup.sql (+ VACUUM FULL)"
+        Write-Info "     ou rode a poda: python scripts\history_cli.py tier --dataset all --confirm"
+        Write-Info "  2) quando o banco voltar, reenvie o(s) CSV(s) do dia:"
+        Write-Info "     python scripts\history_cli.py import-csv output\rac_monitoramento_*.csv --mirror"
+        Write-Info "  (se persistir, o dono do projeto precisa subir o plano / remover spend cap)"
     }
 } else {
     Write-Warn "logs\scheduler.log nao existe - sem log da coleta agendada nesta maquina"
@@ -225,23 +305,48 @@ if (Test-Path $logFile) {
 # --- Veredito -----------------------------------------------------------------
 Write-Host ""
 Write-Host "==========================================================="
-if ($script:HasData -and $script:Supabase) {
-    Write-Host " VEREDITO: COLETOU e SUBIU." -ForegroundColor Green
-    Write-Host " Ha dado local do dia e nenhum sinal de recusa do Supabase." -ForegroundColor Green
-    $exit = 0
-} elseif ($script:HasData -and -not $script:Supabase) {
-    Write-Host " VEREDITO: COLETOU, mas o dado NAO chegou ao Supabase." -ForegroundColor Yellow
-    Write-Host " A coleta rodou e gravou os arquivos (output\ + Drive); o Supabase" -ForegroundColor Yellow
-    Write-Host " recusou a escrita. E por isso que o painel mostra 'NAO EXECUTOU'" -ForegroundColor Yellow
-    Write-Host " (ele so le o banco). O dado esta seguro - falta reenviar quando o" -ForegroundColor Yellow
-    Write-Host " banco voltar (ver os passos acima)." -ForegroundColor Yellow
-    $exit = 0
-} else {
+if (-not $script:HasData) {
     Write-Host " VEREDITO: SEM EVIDENCIA de coleta em $iso." -ForegroundColor Red
     Write-Host " Nao ha CSV nem batida de ponto do dia - a tarefa provavelmente nao" -ForegroundColor Red
     Write-Host " rodou. Diagnostique o agendador:" -ForegroundColor Red
     Write-Host "   PowerShell -ExecutionPolicy Bypass -File scripts\check_local_scheduler.ps1" -ForegroundColor Gray
     $exit = 1
+} else {
+    switch ($script:SbState) {
+        "UP" {
+            Write-Host " VEREDITO: COLETOU e SUBIU." -ForegroundColor Green
+            Write-Host " Ha dado local do dia e o log confirma o upload ao Supabase." -ForegroundColor Green
+        }
+        "FAILED" {
+            Write-Host " VEREDITO: COLETOU, mas o dado NAO chegou ao Supabase." -ForegroundColor Yellow
+            Write-Host " A coleta rodou e gravou os arquivos (output\ + Drive); o Supabase" -ForegroundColor Yellow
+            Write-Host " recusou a escrita. E por isso que o painel mostra 'NAO EXECUTOU'" -ForegroundColor Yellow
+            Write-Host " (ele so le o banco). O dado esta seguro - falta reenviar quando o" -ForegroundColor Yellow
+            Write-Host " banco voltar (ver os passos acima)." -ForegroundColor Yellow
+        }
+        "MIXED" {
+            Write-Host " VEREDITO: COLETOU; parte do dia NAO chegou ao Supabase." -ForegroundColor Yellow
+            Write-Host " Ha upload confirmado E falha no mesmo dia (turnos diferentes)." -ForegroundColor Yellow
+            Write-Host " Reenvie os CSVs dos turnos que falharam (ver os passos acima)." -ForegroundColor Yellow
+        }
+        "SKIPPED" {
+            Write-Host " VEREDITO: COLETOU, mas o upload foi PULADO (sem credencial)." -ForegroundColor Yellow
+            Write-Host " O dado ficou so no disco (output\ + Drive). Configure SUPABASE_URL" -ForegroundColor Yellow
+            Write-Host " e SUPABASE_KEY (service_role) no .env e reenvie o(s) CSV(s):" -ForegroundColor Yellow
+            Write-Host "   python scripts\history_cli.py import-csv output\rac_monitoramento_*.csv --mirror" -ForegroundColor Gray
+        }
+        default {
+            # UNKNOWN: ha dado local, mas o log nao prova nem nega o upload.
+            # NUNCA afirmamos 'SUBIU' aqui - seria inferir do silencio.
+            Write-Host " VEREDITO: COLETOU; envio ao Supabase NAO CONFIRMADO." -ForegroundColor Yellow
+            Write-Host " Ha dado local do dia, mas o log nao traz prova de upload nem de" -ForegroundColor Yellow
+            Write-Host " falha para $iso. Confirme no banco ou reenvie por seguranca:" -ForegroundColor Yellow
+            Write-Host "   python scripts\history_cli.py import-csv output\rac_monitoramento_*.csv --mirror" -ForegroundColor Gray
+        }
+    }
+    # Dado local existe nos cinco casos acima: a coleta rodou, o dado nao se
+    # perdeu. Exit 0 reserva o 1 para 'nao rodou'.
+    $exit = 0
 }
 Write-Host "==========================================================="
 
