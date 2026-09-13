@@ -61,6 +61,18 @@ a buy box, caro demais para a varredura do PC.
 > atrasada) e a da manhã seguinte recupera Amazon que caiu tarde. Best-effort —
 > falha aqui não derruba a coleta (o dado já está no Supabase), mas a ausência da
 > batida vira alarme no `pipeline_watch.py`. Requer `SUPABASE_KEY` service_role.
+>
+> **Estágio D — poda da janela quente (Set/2026):** só no turno da **noite**, o
+> `local_scheduled_collect.bat` roda `history_cli.py tier --dataset all --confirm
+> --heartbeat` (job `local_tier_migration`). É o passo que faltava da arquitetura
+> híbrida: a escrita ao Drive roda a cada coleta, mas **apagar** do Supabase o que
+> saiu dos 15 dias era manual e nunca foi agendado — o banco acumulou ~40 dias e
+> estourou a cota (Jul e Set/2026). `tier` lê → grava Parquet → reverifica → só
+> então apaga (nunca apaga sem cópia fria confirmada); é idempotente e cobre todos
+> os dias fora da janela, então 1x/dia basta. Requer `SUPABASE_KEY` service_role.
+> **Não roda com o banco já restrito por cota** (a REST recusa até leitura): o
+> primeiro desbloqueio é manual pelo SQL Editor (`scripts/retention_cleanup.sql` +
+> `VACUUM FULL`); daí em diante a poda noturna mantém os 15 dias.
 
 ### ☁️ GitHub Actions (IP de datacenter, sem sessão)
 

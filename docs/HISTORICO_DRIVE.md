@@ -258,17 +258,42 @@ python scripts/recover_from_artifacts.py --start 2026-07-16 --supabase # e repõ
 Move para o histórico tudo que saiu da janela quente (default: 15 dias).
 
 ```bash
-python scripts/history_cli.py tier              # grava no histórico, NÃO apaga
-python scripts/history_cli.py tier --confirm    # apaga do Supabase o já verificado
-python scripts/history_cli.py tier --dry-run    # só relata
+python scripts/history_cli.py tier                          # grava no histórico, NÃO apaga
+python scripts/history_cli.py tier --confirm                # apaga do Supabase o já verificado
+python scripts/history_cli.py tier --dataset all --confirm  # coletas + pricetrack_daily
+python scripts/history_cli.py tier --dry-run                # só relata
 ```
 
 Ordem de segurança por dia: **lê do banco → grava a partição → relê o Parquet
 para conferir a contagem → só então apaga**. Se a releitura vier com menos
 linhas que a origem, o dia **não** é apagado e o erro aparece no log.
 
-> Rodar mensalmente (ou quando a cota apertar) mantém o Supabase dentro do
-> plano free indefinidamente.
+🔒 **Trava contra perda de dado:** com `--confirm`, o `tier` só apaga do Supabase
+se o backend efetivo for o **Drive**. Sem `GDRIVE_FOLDER_ID` o store cai em disco
+local (que "some com o host"), então o tier **migra para o disco mas NÃO apaga** e
+termina em falha — a batida vira alarme no `pipeline_watch` até o Drive ser
+configurado, em vez de apagar verificando só a máquina.
+
+> ✅ **Automático desde Set/2026 (job `local_tier_migration`).** A migração é o
+> **estágio D** do `scripts/local_scheduled_collect.bat`, no turno da **noite**:
+> `tier --dataset all --confirm --heartbeat`. Roda 1x/dia porque é idempotente e
+> cobre **todos** os dias fora da janela de 15 dias (não só o do dia), então um
+> pulo é recuperado na noite seguinte. Requer `SUPABASE_KEY` service_role (a
+> chave `anon` não apaga). O `--heartbeat` bate ponto no livro-razão, e
+> `pipeline_watch.py` cobra a ausência — sem isso, o Supabase voltava a crescer
+> sem teto e ninguém era cobrado da poda que não roda.
+>
+> **Por que faltava.** A arquitetura híbrida tem duas metades: (1) a escrita ao
+> Drive, que roda a cada coleta e sempre rodou; (2) a poda do Supabase, que era
+> este `tier --confirm` **manual** e nunca foi agendada. Sem a metade (2) o banco
+> acumulou ~40 dias em vez de 15 e estourou a cota de 1,1 GB duas vezes (Jul e
+> Set/2026) — o mesmo modo de falha do `bestsellers` (dado gravado, mas sem job
+> no registro ninguém cobra o passo que não roda).
+>
+> ⚠️ **`tier` não roda com o banco já restrito por cota** (a REST recusa até
+> leitura, HTTP 402): o primeiro desbloqueio é sempre manual pelo SQL Editor
+> (`scripts/retention_cleanup.sql` + `VACUUM FULL`, ver `docs/DB_RETENTION.md`);
+> daí em diante a poda noturna mantém os 15 dias indefinidamente.
 
 ### Relatórios direto do histórico
 

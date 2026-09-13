@@ -490,6 +490,58 @@ JOBS: Tuple[JobSpec, ...] = (
             "sem erro na tela. Idempotente por data (RPC refresh_seller_offer_daily)."
         ),
     ),
+    # ── PC local — poda da janela quente do Supabase (tier → Drive) ────────
+    # O passo que FALTAVA até Set/2026. A arquitetura híbrida (docs/HISTORICO_
+    # DRIVE.md) tem DUAS metades: (1) a escrita ao Drive, que roda a cada coleta
+    # e sempre rodou; (2) a PODA do Supabase — apagar do banco o que já saiu da
+    # janela quente de 15 dias e está verificado no frio. A metade (2) era um
+    # `history_cli.py tier --confirm` MANUAL, "mensal ou quando a cota apertar",
+    # e nunca foi agendada. Resultado: o Supabase acumulou ~40 dias em vez de 15
+    # e estourou a cota de 1,1 GB duas vezes (Jul e Set/2026) — o MESMO modo de
+    # falha do bestsellers (dado gravado, mas sem job no registro ninguém cobra
+    # a poda que não roda). Agora roda como estágio D do turno da NOITE.
+    #
+    # tier é seguro por construção: por dia lê do banco → grava a partição no
+    # Drive → RELÊ o Parquet para conferir a contagem → só então apaga. Nunca
+    # apaga um dia sem cópia fria confirmada. É idempotente e migra TODOS os
+    # dias fora da janela (não só o do dia), então um pulo à noite é recuperado
+    # na noite seguinte. NÃO é dono de plataforma (não escreve em `coletas`, só
+    # poda) — por isso turno=None e plataformas=().
+    JobSpec(
+        id="local_tier_migration",
+        nome="Poda Supabase → Drive (tier, janela quente de 15d)",
+        executor=EXEC_LOCAL,
+        gatilho="scripts\\local_scheduled_collect.bat (estágio D, após o turno da noite)",
+        comando="python scripts/history_cli.py tier --dataset all --confirm --heartbeat",
+        # Depois da coleta de Fechamento (20:00) e da materialização do seller
+        # (20:30). Roda 1x/dia: a poda não precisa dos três turnos.
+        horario_brt=(20, 45),
+        dias=TODOS_OS_DIAS,
+        tolerancia_min=180,
+        deadline_min=360,
+        # `destino` NÃO pode começar com "coletas"/"pricetrack_daily"/"bestsellers":
+        # `pipeline_watch._linhas_do_job` sondaria a contagem dessas tabelas como
+        # se este fosse um job PRODUTOR de dado, e uma noite sem nada a migrar
+        # (tier bate SUCCESS sem `rows_written`) cairia em SEM_DADO falso. Job de
+        # MANUTENÇÃO: a batida SUCCESS/FAILED já diz tudo, sem sondar destino.
+        destino="poda >15d: coletas + pricetrack_daily → histórico frio (Drive)",
+        severidade=SEV_IMPORTANTE,
+        depende_de=("local_noite",),
+        remediacao=(
+            "python scripts/history_cli.py tier --dataset all --confirm "
+            "(requer SUPABASE_KEY service_role; se o banco já está RESTRITO por "
+            "cota, libere espaço primeiro no SQL Editor com scripts/retention_"
+            "cleanup.sql + VACUUM FULL e rode o tier depois)"
+        ),
+        observacao=(
+            "Se parar, o Supabase volta a crescer sem teto e reestora a cota — "
+            "o dado NÃO se perde (a escrita ao Drive é independente e segue "
+            "rodando), mas a REST inteira cai em 402 e a coleta para de gravar a "
+            "janela quente. tier não roda com o banco restrito (a REST recusa "
+            "até leitura): o primeiro desbloqueio é sempre manual pelo SQL "
+            "Editor; daí em diante esta batida noturna mantém os 15 dias."
+        ),
+    ),
     # ── Consumidor externo ─────────────────────────────────────────────────
     JobSpec(
         id="briefing_0700",

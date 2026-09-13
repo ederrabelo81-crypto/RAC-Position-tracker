@@ -51,6 +51,7 @@ from utils.history import (  # noqa: E402
     DATASET_PRICETRACK,
     HistoryBackendError,
     HistoryStoreError,
+    LocalBackend,
     get_store,
     history_dir,
     hot_window_days,
@@ -295,7 +296,49 @@ def cmd_tier(args: argparse.Namespace) -> int:
     Com ``--dataset all`` roda o mesmo fluxo para `coletas` e
     `pricetrack_daily`. Uma falha num dataset não impede o outro de migrar —
     o código de saída agrega os dois.
+
+    Com ``--heartbeat`` a execução bate ponto no livro-razão (job
+    ``local_tier_migration``): STARTED na entrada, SUCCESS ao fim limpo,
+    FAILED quando algum dia falha (rc=1) ou o banco está restrito por cota
+    (rc=2). É o que faz a AUSÊNCIA da poda virar alarme no `pipeline_watch`
+    — sem isso o Supabase volta a crescer sem teto e ninguém é cobrado, o
+    mesmo modo de falha que estourou a cota em Jul e Set/2026.
     """
+    if not getattr(args, "heartbeat", False):
+        return _cmd_tier_run(args)
+
+    # "Nada a migrar" (banco já em 15 dias) é o estado SAUDÁVEL — não pode
+    # virar PARTIAL. Por isso o contexto não recebe `rows`: `batida` só marca
+    # PARTIAL quando rows==0, e rows=None cai em SUCCESS. Um rc!=0 é sinalizado
+    # levantando dentro do bloco, para a batida terminal ser FAILED; o rc real
+    # é preservado e devolvido ao chamador.
+    from utils.heartbeat import batida
+
+    class _TierIncompleto(RuntimeError):
+        def __init__(self, rc: int):
+            self.rc = rc
+            super().__init__(f"tier terminou com rc={rc}")
+
+    try:
+        with batida("local_tier_migration") as ctx:
+            rc = _cmd_tier_run(args)
+            if rc == 2:
+                ctx["detail"] = "Supabase restrito por cota (402) — tier não rodou"
+            elif rc == 1:
+                # rc=1 cobre vários caminhos (falha ao listar dias antes de
+                # migrar, backend local sem Drive, ou dia(s) com falha). Detalhe
+                # genérico para o pipeline_watch não diagnosticar "parcial" quando
+                # nada chegou a migrar.
+                ctx["detail"] = "Tier falhou (rc=1) — dias não confirmados permanecem no Supabase"
+            if rc != 0:
+                raise _TierIncompleto(rc)
+    except _TierIncompleto as falha:
+        return falha.rc
+    return 0
+
+
+def _cmd_tier_run(args: argparse.Namespace) -> int:
+    """Corpo do `tier`: resolve os datasets e migra cada um. Ver `cmd_tier`."""
     from utils.supabase_client import _get_client
 
     client = _get_client()
@@ -352,6 +395,26 @@ def _tier_one(
 
     logger.info(f"[{spec.dataset}] {len(days)} dia(s) a migrar: {days[0]} → {days[-1]}")
     store = get_store()
+
+    # Guarda P1 — só apaga do Supabase se a cópia fria for o DRIVE. Sem
+    # GDRIVE_FOLDER_ID o store cai em LocalBackend, e a verificação
+    # (write_day → read) aconteceria só no disco DESTA máquina, que "some com o
+    # host" (docs/HISTORICO_DRIVE.md). Nesse estado, apagar troca perda de cota
+    # por perda de dado — o próprio risco que a coleta noturna --confirm poderia
+    # automatizar. Então migramos para o disco (a cópia local é preservada) mas
+    # NÃO apagamos, e o run termina em falha para o pipeline_watch cobrar até o
+    # Drive ser configurado.
+    confirmar = args.confirm
+    backend_local_inseguro = confirmar and isinstance(store.backend, LocalBackend)
+    if backend_local_inseguro:
+        confirmar = False
+        logger.error(
+            f"[{spec.dataset}] Histórico em backend LOCAL (sem GDRIVE_FOLDER_ID): "
+            "a verificação seria só no disco desta máquina. NÃO vou apagar do "
+            "Supabase — configure o Drive (python scripts/gdrive_setup.py --check) "
+            "ou rode sem --confirm. Migro para o disco e PRESERVO as linhas no banco."
+        )
+
     migrados = 0
     apagados = 0
     falhas: List[str] = []
@@ -419,7 +482,7 @@ def _tier_one(
         migrados += 1
         logger.success(f"{day}: {len(rows):,} linhas no histórico ✓")
 
-        if not args.confirm:
+        if not confirmar:
             continue
         try:
             client.table(spec.table).delete().eq(spec.date_col, day.isoformat()).execute()
@@ -432,11 +495,20 @@ def _tier_one(
     logger.success(
         f"[{spec.dataset}] Migrados: {migrados} dia(s) · Apagados do banco: {apagados}"
     )
-    if migrados and not args.confirm and not args.dry_run:
+    if migrados and not confirmar and not args.dry_run and not backend_local_inseguro:
         logger.warning(
             "Rode de novo com --confirm para apagar do Supabase os dias já "
             "verificados no histórico (é o que libera cota)."
         )
+    if backend_local_inseguro and not args.dry_run:
+        # Migrou para o disco mas não apagou: o banco não encolheu e a intenção
+        # (--confirm) não foi cumprida. Falha para o agendador/pipeline_watch
+        # cobrar o Drive ausente em vez de deixar a cota estourar em silêncio.
+        logger.error(
+            f"[{spec.dataset}] --confirm pedido mas o histórico não é Drive: "
+            "nada foi apagado do Supabase (proteção contra perda de dado)."
+        )
+        return 1
     if falhas:
         # Sai com código != 0 para que um cron/agendador não trate migração
         # parcial como sucesso.
@@ -519,6 +591,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apaga do Supabase os dias já verificados no histórico.",
     )
     p_tier.add_argument("--dry-run", action="store_true", help="Só relata; não grava nem apaga.")
+    p_tier.add_argument(
+        "--heartbeat", action="store_true",
+        help="Bate ponto no livro-razão (job local_tier_migration) — usar no "
+             "agendamento, para que a ausência da poda vire alarme.",
+    )
     p_tier.set_defaults(func=cmd_tier)
 
     p_exp = sub.add_parser("export", help="Exporta um período para CSV.")

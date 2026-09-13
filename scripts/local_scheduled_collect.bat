@@ -174,6 +174,26 @@ if exist ".venv\Scripts\python.exe" set "PYEXE=.venv\Scripts\python.exe"
 echo [%DATE% %TIME%] [%SLOT%] materializando seller_offer_daily [seller_app]
 call "%PYEXE%" scripts\build_seller_offer_daily.py --heartbeat
 if errorlevel 1 echo [%DATE% %TIME%] [%SLOT%] AVISO: build do seller_offer_daily falhou - veja pipeline_watch [SUPABASE_KEY service_role no .env?]
+
+:: Estagio D: poda a janela quente do Supabase (tier -> Drive). Este e o passo
+:: que FALTAVA: a escrita ao Drive roda a cada coleta (main.py), mas apagar do
+:: Supabase o que saiu dos 15 dias era um comando MANUAL nunca agendado - o
+:: banco acumulou ~40 dias em vez de 15 e estourou a cota (Jul e Set/2026). tier
+:: le -> grava Parquet -> reverifica -> so entao apaga, entao nunca apaga um dia
+:: sem copia fria confirmada. Idempotente e cobre TODOS os dias fora da janela,
+:: entao roda so UMA vez ao dia (turno da NOITE): um pulo e recuperado na noite
+:: seguinte. Best-effort: falha aqui NAO derruba a coleta (o dado ja esta no
+:: Supabase e no Drive); a ausencia da batida (--heartbeat, job
+:: local_tier_migration) e que dispara o alarme no pipeline_watch. Requer
+:: SUPABASE_KEY service_role (a chave anon nao apaga). Se o banco JA estiver
+:: restrito por cota, tier nao roda (a REST recusa ate leitura): o primeiro
+:: desbloqueio e manual pelo SQL Editor (scripts\retention_cleanup.sql + VACUUM
+:: FULL), e dai em diante esta poda noturna mantem os 15 dias.
+if /i "%SLOT%"=="noite" (
+    echo [%DATE% %TIME%] [%SLOT%] podando janela quente do Supabase [tier -^> Drive]
+    call "%PYEXE%" scripts\history_cli.py tier --dataset all --confirm --heartbeat
+    if errorlevel 1 echo [%DATE% %TIME%] [%SLOT%] AVISO: tier falhou/parcial - veja pipeline_watch [SUPABASE_KEY service_role? banco restrito por cota?]
+)
 exit /b 0
 
 :failed

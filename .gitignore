@@ -19,6 +19,7 @@ coverage/
 
 # Logs
 *.log
+logs/heartbeat.jsonl
 
 # Temp files
 *.tmp
