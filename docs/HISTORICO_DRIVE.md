@@ -268,6 +268,12 @@ Ordem de segurança por dia: **lê do banco → grava a partição → relê o P
 para conferir a contagem → só então apaga**. Se a releitura vier com menos
 linhas que a origem, o dia **não** é apagado e o erro aparece no log.
 
+🔒 **Trava contra perda de dado:** com `--confirm`, o `tier` só apaga do Supabase
+se o backend efetivo for o **Drive**. Sem `GDRIVE_FOLDER_ID` o store cai em disco
+local (que "some com o host"), então o tier **migra para o disco mas NÃO apaga** e
+termina em falha — a batida vira alarme no `pipeline_watch` até o Drive ser
+configurado, em vez de apagar verificando só a máquina.
+
 > ✅ **Automático desde Set/2026 (job `local_tier_migration`).** A migração é o
 > **estágio D** do `scripts/local_scheduled_collect.bat`, no turno da **noite**:
 > `tier --dataset all --confirm --heartbeat`. Roda 1x/dia porque é idempotente e

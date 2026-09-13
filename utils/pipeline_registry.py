@@ -519,7 +519,12 @@ JOBS: Tuple[JobSpec, ...] = (
         dias=TODOS_OS_DIAS,
         tolerancia_min=180,
         deadline_min=360,
-        destino="coletas / pricetrack_daily (poda >15d) → histórico frio no Drive",
+        # `destino` NÃO pode começar com "coletas"/"pricetrack_daily"/"bestsellers":
+        # `pipeline_watch._linhas_do_job` sondaria a contagem dessas tabelas como
+        # se este fosse um job PRODUTOR de dado, e uma noite sem nada a migrar
+        # (tier bate SUCCESS sem `rows_written`) cairia em SEM_DADO falso. Job de
+        # MANUTENÇÃO: a batida SUCCESS/FAILED já diz tudo, sem sondar destino.
+        destino="poda >15d: coletas + pricetrack_daily → histórico frio (Drive)",
         severidade=SEV_IMPORTANTE,
         depende_de=("local_noite",),
         remediacao=(
