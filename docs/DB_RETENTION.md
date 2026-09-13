@@ -13,6 +13,16 @@
 > liberado direto pelo SQL Editor. Depois de desbloquear (DELETE + `VACUUM
 > FULL`), a poda noturna assume e mantém os 15 dias sozinha.
 >
+> 🔒 **Pré-condição antes de apagar `coletas`.** Como a REST está fora, esta
+> limpeza de emergência apaga **sem** a verificação de Drive que o `tier` faz —
+> então confirme você a cópia fria ANTES: `python scripts/history_cli.py stats`
+> deve mostrar `backend: drive` e os dias que você vai remover presentes, sem
+> buracos. Se disser `local` ou faltar dia, conserte o Drive primeiro
+> (`gdrive_setup.py --check`) — apagar aí é perda irreversível. **Exceção:** o
+> intra-dia (`Manhã`/`Tarde`) antigo do `pricetrack_daily` é descartável por esta
+> política (o `Diário` é a fonte de verdade e fica), então a poda dele não exige
+> essa confirmação.
+>
 > **Por que a cota voltou a estourar (Set/2026).** A limpeza de 14/07 foi um
 > *one-off* manual que ninguém agendou, e a própria meta "Equilibrada" (~1,4 GB)
 > já era acima da cota de 1,1 GB. Pior: o motor de crescimento mudou — a coleta
@@ -58,13 +68,18 @@ coletas >90d: 21.947). Histórico `Diário` intacto desde `2026-01-01`; coletas
 desde `2026-04-15`. Sem quebra — não há FK de entrada nessas tabelas e a
 materialized view `mv_filter_options_90d` se recompõe no refresh.
 
-## Como re-executar
+## Como re-executar (só emergência)
 
-Cadência sugerida: **mensal** (ou quando o uso voltar a subir). O script usa
-`CURRENT_DATE - N`, então é re-executável sem editar.
+⚠️ **Não é mais rotina.** A retenção do dia a dia é a poda automática `tier`
+(15 dias) — ver o aviso no topo. Rode este SQL **apenas** quando o banco já
+estourou a cota e está restrito (HTTP 402), justamente porque nesse estado o
+`tier` não consegue rodar. Fora disso, rodá-lo de novo à mão é repetir o
+*one-off* que causou o estouro. O script usa `CURRENT_DATE - N`, então é
+re-executável sem editar; respeite a **pré-condição de Drive** do aviso do topo
+antes de apagar `coletas`.
 
 ```bash
-# via psql / SQL editor do Supabase
+# via psql / SQL editor do Supabase (só com a cota estourada)
 \i scripts/retention_cleanup.sql
 ```
 

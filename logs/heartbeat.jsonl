@@ -1,6 +1,0 @@
-{"job_id": "local_tier_migration", "executor": "pc_local", "data_ref": "2026-09-12", "status": "STARTED", "started_at": "2026-09-12T21:04:00.268301-03:00", "host": "vm"}
-{"job_id": "local_tier_migration", "executor": "pc_local", "data_ref": "2026-09-12", "status": "SUCCESS", "started_at": "2026-09-12T21:04:00.268301-03:00", "host": "vm", "finished_at": "2026-09-12T21:04:00.270003-03:00", "duration_seconds": 0.0}
-{"job_id": "local_tier_migration", "executor": "pc_local", "data_ref": "2026-09-12", "status": "STARTED", "started_at": "2026-09-12T21:04:00.270594-03:00", "host": "vm"}
-{"job_id": "local_tier_migration", "executor": "pc_local", "data_ref": "2026-09-12", "status": "FAILED", "started_at": "2026-09-12T21:04:00.270594-03:00", "host": "vm", "finished_at": "2026-09-12T21:04:00.270923-03:00", "duration_seconds": 0.0, "detail": "Supabase restrito por cota (402) — tier não rodou"}
-{"job_id": "local_tier_migration", "executor": "pc_local", "data_ref": "2026-09-12", "status": "STARTED", "started_at": "2026-09-12T21:04:00.271457-03:00", "host": "vm"}
-{"job_id": "local_tier_migration", "executor": "pc_local", "data_ref": "2026-09-12", "status": "FAILED", "started_at": "2026-09-12T21:04:00.271457-03:00", "host": "vm", "finished_at": "2026-09-12T21:04:00.271785-03:00", "duration_seconds": 0.0, "detail": "Migração parcial: dia(s) com falha ficaram no Supabase"}

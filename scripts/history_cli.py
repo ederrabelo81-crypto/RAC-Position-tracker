@@ -325,7 +325,11 @@ def cmd_tier(args: argparse.Namespace) -> int:
             if rc == 2:
                 ctx["detail"] = "Supabase restrito por cota (402) — tier não rodou"
             elif rc == 1:
-                ctx["detail"] = "Migração parcial: dia(s) com falha ficaram no Supabase"
+                # rc=1 cobre vários caminhos (falha ao listar dias antes de
+                # migrar, backend local sem Drive, ou dia(s) com falha). Detalhe
+                # genérico para o pipeline_watch não diagnosticar "parcial" quando
+                # nada chegou a migrar.
+                ctx["detail"] = "Tier falhou (rc=1) — dias não confirmados permanecem no Supabase"
             if rc != 0:
                 raise _TierIncompleto(rc)
     except _TierIncompleto as falha:
