@@ -377,7 +377,20 @@ errado, o modo de falha que este projeto mais teme.
    `produtos_depara_nome`. Num banco novo essa tabela começa vazia e
    `SELECT ... INTO` sem resultado devolve NULO — carregar com o gatilho ligado
    **zeraria a resolução de todas as linhas**, em silêncio.
-4. **Evacuar é exporta → confere → apaga.** `scripts/evacuate_pricetrack.py`
+4. **`.not_` é uma PROPERTY, não um método.** No `postgrest-py`,
+   `.not_.is_("produto", "null")` nega o filtro seguinte. Um `grep` por
+   `.not_(` não acha nenhum dos 9 call sites — e sem a property cada um
+   levanta `AttributeError`, engolido pelo `except` do chamador, deixando o
+   seletor de produtos do dashboard **vazio sem erro nenhum**. Ao estender o
+   adaptador, confira a superfície da API contra o uso real, não contra o que
+   parece um método.
+5. **Escrita não se repete sozinha.** A conexão é autocommit: se a rede cair
+   depois que o Postgres aplicou o INSERT mas antes de a resposta voltar,
+   repetir grava DUAS vezes — e `pipeline_heartbeat` não tem chave única que
+   segure isso. O livro-razão que existe para denunciar execução ausente
+   passaria a inventar execução repetida. Falha ao CONECTAR é sempre repetível
+   (o comando nunca saiu); falha ao EXECUTAR só em leitura.
+6. **Evacuar é exporta → confere → apaga.** `scripts/evacuate_pricetrack.py`
    relê o Parquet gravado e compara a contagem dia a dia; um dia que não bate
    aborta sem apagar nada. Usa `TRUNCATE`, não `DELETE`: `DELETE` marca linha
    morta e **não devolve o disco**, então a restrição continuaria de pé.

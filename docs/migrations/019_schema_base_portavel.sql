@@ -44,10 +44,17 @@ BEGIN
     CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS;
   END IF;
 EXCEPTION WHEN insufficient_privilege THEN
-  -- Provedor gerenciado que não deixa criar papel: segue sem eles. As
-  -- migrações com GRANT vão falhar e precisarão do --pular-grants do
-  -- bootstrap. Avisar é melhor que abortar a base inteira.
-  RAISE NOTICE 'sem permissão para criar papéis; rode o bootstrap com --pular-grants';
+  -- Falha ALTO, de propósito. Seguir sem os papéis deixaria um schema pela
+  -- metade: a 007 faz `ALTER ROLE service_role SET statement_timeout`, e a 015
+  -- e a 016 criam POLICY ... TO anon — e essas duas criam, no mesmo arquivo,
+  -- tabelas essenciais (`pipeline_heartbeat`, `seller_offer_daily`), então
+  -- "pular a migração" não é uma saída. Abortar aqui, com o motivo na tela, é
+  -- melhor que descobrir o buraco três migrações adiante.
+  RAISE EXCEPTION
+    'Sem permissão para criar os papéis anon/authenticated/service_role. '
+    'O schema do RAC depende deles (007 faz ALTER ROLE; 015 e 016 criam '
+    'POLICY ... TO anon). Use um usuário com permissão de CREATE ROLE — na '
+    'Aiven é o avnadmin — ou um provedor que permita criar papéis.';
 END
 $$;
 

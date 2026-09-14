@@ -598,3 +598,110 @@ class TestUpsertIgnoreDuplicates:
             .execute()
         )
         assert len(r.data) == 1
+
+
+@_precisa_pg
+class TestNegacao:
+    """`.not_` é uma *property* no postgrest-py, não um método.
+
+    Foi por isso que escapou da primeira varredura da API (feita com grep por
+    `.not_(`). São 9 call sites reais; sem a property cada um levantaria
+    AttributeError, engolido pelo `except` do chamador — o seletor de produtos
+    do dashboard ficaria VAZIO sem erro nenhum.
+    """
+
+    def test_not_is_null_vira_is_not_null(self, client):
+        r = client.table("t_coletas").select("*").not_.is_("preco", "null").execute()
+        assert len(r.data) == 3
+        assert all(x["preco"] is not None for x in r.data)
+
+    def test_not_in_exclui(self, client):
+        r = (
+            client.table("t_coletas")
+            .select("*")
+            .not_.in_("plataforma", ["Amazon", "Magalu"])
+            .execute()
+        )
+        assert {x["plataforma"] for x in r.data} == {"Shopee"}
+
+    def test_not_eq(self, client):
+        r = client.table("t_coletas").select("*").not_.eq("plataforma", "Amazon").execute()
+        assert "Amazon" not in {x["plataforma"] for x in r.data}
+
+    def test_negacao_nao_vaza_para_o_filtro_seguinte(self, client):
+        # A flag tem que ser consumida pelo filtro que a armou. Se vazasse, o
+        # `eq` abaixo viraria `<>` e o recorte sairia errado sem erro nenhum.
+        r = (
+            client.table("t_coletas")
+            .select("*")
+            .not_.is_("preco", "null")
+            .eq("plataforma", "Amazon")
+            .execute()
+        )
+        assert len(r.data) == 2
+        assert all(x["plataforma"] == "Amazon" for x in r.data)
+
+    def test_negacao_combina_com_count(self, client):
+        r = (
+            client.table("t_coletas")
+            .select("id", count="exact", head=True)
+            .not_.is_("preco", "null")
+            .execute()
+        )
+        assert r.count == 3
+
+
+@_precisa_pg
+class TestRetryNaoDuplicaEscrita:
+    """Repetir uma escrita depois da conexão cair pode gravar duas vezes.
+
+    A conexão é autocommit: se a rede cair depois que o Postgres aplicou o
+    INSERT mas antes de a resposta voltar, repetir duplica. `pipeline_heartbeat`
+    e `pricetrack_import_log` não têm chave única que segure isso — o
+    livro-razão que existe para denunciar execução AUSENTE passaria a inventar
+    execução REPETIDA.
+    """
+
+    def test_escrita_nao_repete_apos_falha_na_execucao(self, client):
+        import psycopg2
+
+        from utils.db import DBError
+
+        chamadas = []
+
+        def _falha(cur):
+            chamadas.append(1)
+            raise psycopg2.OperationalError("server closed the connection")
+
+        client._connection()  # conexão viva: a falha é na execução, não no connect
+        with pytest.raises(DBError, match="ESCRITA"):
+            client._run(_falha, escrita=True)
+        assert len(chamadas) == 1, "a escrita foi repetida — pode duplicar linha"
+
+    def test_leitura_repete_uma_vez(self, client):
+        import psycopg2
+
+        from utils.db import DBError
+
+        chamadas = []
+
+        def _falha(cur):
+            chamadas.append(1)
+            raise psycopg2.OperationalError("server closed the connection")
+
+        client._connection()
+        with pytest.raises(DBError):
+            client._run(_falha, escrita=False)
+        assert len(chamadas) == 2, "leitura deveria ter sido repetida uma vez"
+
+    def test_reconexao_antes_do_envio_segue_valendo_para_escrita(self, client):
+        # Conexão morta ANTES do comando sair: nada chegou ao servidor, então
+        # reconectar e gravar é seguro — e precisa continuar funcionando.
+        client.table("t_coletas").select("id").limit(1).execute()
+        client._conn.close()
+        r = (
+            client.table("t_coletas")
+            .insert([{"data": "2026-09-22", "turno": "Noite", "plataforma": "Z"}])
+            .execute()
+        )
+        assert len(r.data) == 1

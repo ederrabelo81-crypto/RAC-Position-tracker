@@ -214,7 +214,15 @@ def reenviar(csv_path: str):
             f"fulfillment={s.get('fulfillment')} preco={s.get('preco')}"
         )
 
-    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    # Com RAC_DB_DSN definido o reenvio vai para o banco NOVO; sem ele,
+    # segue para o Supabase como sempre.
+    from utils.db import get_client, resolve_backend_name
+
+    sb = (
+        get_client("postgres")
+        if resolve_backend_name() == "postgres"
+        else create_client(SUPABASE_URL, SUPABASE_KEY)
+    )
     logger.info("[Supabase] Conectado.")
 
     ins_t, ign_t, err_t = 0, 0, 0

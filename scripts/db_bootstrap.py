@@ -23,9 +23,12 @@ USO::
     python scripts/db_bootstrap.py --dry-run     # mostra o que falta
     python scripts/db_bootstrap.py               # aplica
 
-Se o provedor não deixar criar papéis (``anon``/``service_role``), rode com
-``--pular-grants``: as migrações que só fazem GRANT são saltadas e o resto
-aplica normalmente.
+O provedor PRECISA permitir ``CREATE ROLE``: o schema depende de
+``anon``/``authenticated``/``service_role`` em mais de um ponto — a 007 faz
+``ALTER ROLE service_role``, e a 015 e a 016 criam ``POLICY ... TO anon`` no
+mesmo arquivo em que criam tabelas essenciais. Não existe, portanto, "pular as
+migrações de permissão": a 019 aborta com o motivo na tela se não conseguir
+criar os papéis. Na Aiven o usuário ``avnadmin`` tem essa permissão.
 """
 
 from __future__ import annotations
@@ -50,11 +53,6 @@ RAIZ = Path(__file__).resolve().parent.parent
 BASE_PORTAVEL = RAIZ / "docs" / "migrations" / "019_schema_base_portavel.sql"
 DIR_PRINCIPAL = RAIZ / "docs" / "migrations"
 DIR_PRICETRACK = RAIZ / "migrations"
-
-# Migrações cujo conteúdo é só concessão de permissão a papéis do Supabase.
-# Num provedor que não deixa criar papel, elas são o único ponto que quebra.
-_SO_GRANTS = {"012_bestsellers_rls_leitura.sql"}
-
 
 def dividir_statements(sql: str) -> List[str]:
     """Quebra um arquivo .sql em instruções, respeitando o que não é código.
@@ -166,7 +164,7 @@ def _ordem(caminho: Path) -> Tuple[int, str]:
     return (int(m.group(1)), m.group(2))
 
 
-def migracoes(sem_pricetrack: bool, pular_grants: bool) -> List[Path]:
+def migracoes(sem_pricetrack: bool) -> List[Path]:
     """Lista os arquivos .sql a aplicar, na ordem de aplicação.
 
     A ordem NÃO é a numérica ingênua:
@@ -191,8 +189,6 @@ def migracoes(sem_pricetrack: bool, pular_grants: bool) -> List[Path]:
         for p in sorted(DIR_PRINCIPAL.glob("[0-9]*.sql"), key=_ordem)
         if p != BASE_PORTAVEL
     ]
-    if pular_grants:
-        demais = [p for p in demais if p.name not in _SO_GRANTS]
     lista.extend(demais)
 
     return lista
@@ -308,11 +304,6 @@ def main() -> None:
             "referencia pricetrack_daily e vai falhar sem elas."
         ),
     )
-    parser.add_argument(
-        "--pular-grants",
-        action="store_true",
-        help="Salta migrações que só fazem GRANT a papéis do Supabase.",
-    )
     parser.add_argument("--dry-run", action="store_true", help="Só mostra o plano.")
     args = parser.parse_args()
 
@@ -323,7 +314,7 @@ def main() -> None:
             "(mantenha o ?sslmode=require)."
         )
 
-    arquivos = migracoes(args.sem_pricetrack, args.pular_grants)
+    arquivos = migracoes(args.sem_pricetrack)
     logger.info(f"[bootstrap] {len(arquivos)} migrações candidatas")
 
     n = aplicar(args.dsn, arquivos, args.dry_run)

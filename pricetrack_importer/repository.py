@@ -99,7 +99,14 @@ def Repository(dsn: Optional[str] = None, batch_size: int = 1000):
       `SupabasePyRepository` (REST, reusa credenciais do projeto).
     - Senão → RuntimeError com mensagem clara.
     """
-    dsn = dsn or os.getenv("SUPABASE_DSN", "").strip() or None
+    # RAC_DB_DSN (banco novo, Set/2026) tem precedência sobre SUPABASE_DSN
+    # (banco velho): depois da virada os dois apontam para lugares diferentes.
+    dsn = (
+        dsn
+        or os.getenv("RAC_DB_DSN", "").strip()
+        or os.getenv("SUPABASE_DSN", "").strip()
+        or None
+    )
     if dsn:
         return PsycopgRepository(dsn=dsn, batch_size=batch_size)
 

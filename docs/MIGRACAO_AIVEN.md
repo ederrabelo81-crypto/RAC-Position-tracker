@@ -104,8 +104,21 @@ SUPABASE_URL=https://ailbsczkrympslpjwwko.supabase.co
 SUPABASE_KEY=<service_role>
 ```
 
-Com `RAC_DB_DSN` preenchido, **o projeto inteiro passa a escrever e ler no
-banco novo**. Sem ele, tudo segue no Supabase — a variável é a chave de virada.
+Com `RAC_DB_DSN` preenchido, a coleta, o dashboard, o livro-razão, a automação
+ADMIN, os resolvedores de de-para e o PriceTrack (importador e painel) passam a
+falar com o banco novo. Sem a variável, tudo segue no Supabase — ela é a chave
+de virada.
+
+**A exceção deliberada é o `seller_app/`**, que roda no Streamlit Cloud com
+credencial própria (`SUPABASE_ANON_KEY`) e continua no Supabase até você
+publicar o DSN só-leitura da Aiven (ver §5). Isso não é esquecimento: o
+isolamento do painel do lojista é a **credencial**, não um `if` no código — é a
+regra dura do `docs/TRACK_POSITION_SELLER.md`.
+
+> Por que isso importa para o PriceTrack em particular: se o importador
+> continuasse escrevendo no Supabase depois da virada, o Passo 8 esvaziaria
+> `pricetrack_daily` lá para liberar a cota e o próximo import **reconstruiria
+> exatamente a tabela de 451 MB que acabou de sair**.
 
 ---
 
@@ -120,6 +133,15 @@ Esperado: `[bootstrap] pronto — 26 migração(ões) aplicada(s)`.
 
 O script registra o que aplicou em `schema_migrations`; rodar de novo é seguro
 e só aplica o que falta.
+
+> **O usuário do banco precisa poder criar papéis.** O schema depende de
+> `anon`/`authenticated`/`service_role` em mais de um ponto: a migração 007 faz
+> `ALTER ROLE service_role SET statement_timeout`, e a 015 e a 016 criam
+> `POLICY ... TO anon` **no mesmo arquivo em que criam tabelas essenciais**
+> (`pipeline_heartbeat`, `seller_offer_daily`). Não existe, portanto, "pular as
+> migrações de permissão" — por isso a 019 aborta com o motivo na tela se não
+> conseguir criar os papéis, em vez de deixar um schema pela metade. Na Aiven, o
+> usuário `avnadmin` do Service URI tem essa permissão.
 
 ---
 

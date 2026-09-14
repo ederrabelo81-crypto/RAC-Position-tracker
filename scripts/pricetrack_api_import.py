@@ -647,6 +647,20 @@ def _supabase_client():
     global _CLIENT
     if _CLIENT is not None:
         return _CLIENT
+    # Segue a mesma chave de virada do resto do projeto (`utils/db.py`). Sem
+    # isto, o importador continuaria escrevendo no Supabase depois da migração
+    # — e como `scripts/evacuate_pricetrack.py` esvazia `pricetrack_daily` lá
+    # para liberar a cota, o próximo import reconstruiria justamente a tabela
+    # de 451 MB que acabou de sair.
+    from utils.db import DBError, get_client, resolve_backend_name
+
+    if resolve_backend_name() == "postgres":
+        try:
+            _CLIENT = get_client("postgres")
+            return _CLIENT
+        except DBError as exc:
+            raise EnvironmentError(f"RAC_DB_DSN definido mas inválido: {exc}")
+
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
     if not url or not key:

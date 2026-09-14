@@ -160,13 +160,23 @@ def main():
         logger.error("Falta `supabase`. Instale com: pip install supabase python-dotenv")
         sys.exit(1)
 
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        logger.error("SUPABASE_URL/SUPABASE_KEY não configurados no .env")
-        sys.exit(1)
+    # Chave de virada do projeto (`utils/db.py`): com RAC_DB_DSN definido este
+    # script fala com o banco novo, não com a API REST restrita por cota.
+    from utils.db import DBError, get_client, resolve_backend_name
 
-    client = create_client(url, key)
+    if resolve_backend_name() == "postgres":
+        try:
+            client = get_client("postgres")
+        except DBError as exc:
+            logger.error(f"RAC_DB_DSN inválido: {exc}")
+            sys.exit(1)
+    else:
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+        if not url or not key:
+            logger.error("SUPABASE_URL/SUPABASE_KEY não configurados no .env")
+            sys.exit(1)
+        client = create_client(url, key)
 
     logger.info("Carregando catálogo (famílias + capacidades)…")
     catalog_familias = load_catalog_familias(client)

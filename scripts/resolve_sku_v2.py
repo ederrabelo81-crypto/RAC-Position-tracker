@@ -134,6 +134,17 @@ def _client():
         from supabase import create_client
     except ImportError:
         sys.exit("Falta `supabase`. pip install supabase python-dotenv")
+    # Segue a chave de virada do projeto (`utils/db.py`): com RAC_DB_DSN
+    # definido, este script fala com o banco novo. Sem isso ele continuaria
+    # batendo na API REST do Supabase, restrita por cota desde 12/09/2026.
+    from utils.db import DBError, get_client, resolve_backend_name
+
+    if resolve_backend_name() == "postgres":
+        try:
+            return get_client("postgres")
+        except DBError as exc:
+            sys.exit(f"RAC_DB_DSN inválido: {exc}")
+
     url, key = os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY")
     if not url or not key:
         sys.exit("SUPABASE_URL/SUPABASE_KEY não configurados no .env")

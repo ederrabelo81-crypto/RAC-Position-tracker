@@ -204,6 +204,19 @@ def _supabase_client():
     A ponte st.secrets→env é feita na camada Streamlit (app.py), então aqui só
     lemos o ambiente. Retorna None se pacote/credencial ausentes.
     """
+    # Mesma chave de virada do resto do projeto (`utils/db.py`): com
+    # RAC_DB_DSN definido, o painel do PriceTrack lê do banco novo. Sem isso
+    # ele continuaria batendo na API REST restrita por cota e mostrando vazio.
+    try:
+        from utils.db import PostgresClient, dsn_from_env, resolve_backend_name
+
+        if resolve_backend_name() == "postgres":
+            dsn = dsn_from_env()
+            if dsn:
+                return PostgresClient(dsn)
+    except Exception:  # noqa: BLE001 — utils.db ausente/driver não instalado
+        pass
+
     url = os.getenv("SUPABASE_URL", "").strip()
     key = os.getenv("SUPABASE_KEY", "").strip()
     if not url or not key:

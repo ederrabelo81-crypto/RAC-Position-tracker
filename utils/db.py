@@ -287,6 +287,7 @@ class _Query:
         self._order: List[Tuple[str, bool]] = []
         self._limit: Optional[int] = None
         self._offset: Optional[int] = None
+        self._negar_proxima: bool = False
         self._count_mode: Optional[str] = None
         self._head: bool = False
         self._single: bool = False
@@ -350,6 +351,9 @@ class _Query:
     # ---- filtros ---------------------------------------------------------- #
 
     def _add(self, frag: Any, params: Sequence[Any]) -> "_Query":
+        if self._negar_proxima:
+            frag = _sql.SQL("NOT ({})").format(frag)
+            self._negar_proxima = False
         self._where.append(frag)
         self._params.extend(params)
         return self
@@ -414,6 +418,20 @@ class _Query:
         for coluna, valor in criteria.items():
             self.eq(coluna, valor)
         return self
+
+    @property
+    def not_(self) -> "_Not":
+        """Nega o PRÓXIMO filtro: ``.not_.is_("produto", "null")``.
+
+        No `postgrest-py` isto é uma *property*, não um método — e é por isso
+        que passou despercebido na primeira varredura da superfície da API,
+        feita com `grep` por `.not_(`. São 9 call sites reais
+        (`app.py::get_sku_options`, `pipeline_watch`, `montar_depara`,
+        `admin_automation`, `supabase_maintenance`), e sem a property cada um
+        levantaria `AttributeError` — engolido pelo `except` do chamador, o que
+        deixaria o seletor de produtos do dashboard **vazio sem erro nenhum**.
+        """
+        return _Not(self)
 
     def or_(self, expression: str) -> "_Query":
         partes = _split_top_level(expression)
@@ -599,11 +617,47 @@ class _Query:
         if self._verb in ("insert", "upsert"):
             linhas = self._client._execute_values(query, params)
         else:
-            linhas = self._client._fetch(query, params)
+            # UPDATE e DELETE chegam aqui por causa do RETURNING: são escrita,
+            # e repetir um DELETE que já passou apagaria linha nova.
+            linhas = self._client._fetch(
+                query, params, escrita=self._verb in ("update", "delete")
+            )
 
         if self._single:
             return DBResponse(data=(linhas[0] if linhas else None), count=total)
         return DBResponse(data=linhas, count=total)
+
+
+class _Not:
+    """Proxy de ``query.not_`` — arma a negação e devolve a query.
+
+    ``.not_.is_("produto", "null")`` vira ``NOT (produto IS NULL)``, que em
+    lógica de três valores é exatamente ``produto IS NOT NULL``. O mesmo vale
+    para ``.not_.in_(...)``: a semântica de NULL do ``NOT (col = ANY(...))``
+    acompanha a do ``NOT IN`` que o PostgREST geraria.
+    """
+
+    def __init__(self, query: "_Query") -> None:
+        self._q = query
+
+    def _armar(self) -> "_Query":
+        self._q._negar_proxima = True
+        return self._q
+
+    def is_(self, column: str, value: Any) -> "_Query":
+        return self._armar().is_(column, value)
+
+    def in_(self, column: str, values: Iterable[Any]) -> "_Query":
+        return self._armar().in_(column, values)
+
+    def eq(self, column: str, value: Any) -> "_Query":
+        return self._armar().eq(column, value)
+
+    def like(self, column: str, pattern: str) -> "_Query":
+        return self._armar().like(column, pattern)
+
+    def ilike(self, column: str, pattern: str) -> "_Query":
+        return self._armar().ilike(column, pattern)
 
 
 # --------------------------------------------------------------------------- #
@@ -648,37 +702,65 @@ class PostgresClient:
                 self._conn.close()
             self._conn = None
 
-    def _run(self, fn):
-        """Roda ``fn(cursor)`` reconectando uma vez se a conexão tiver caído."""
+    def _run(self, fn, *, escrita: bool = False):
+        """Roda ``fn(cursor)``, reconectando uma vez quando é seguro repetir.
+
+        A distinção entre falha ao CONECTAR e falha ao EXECUTAR não é
+        preciosismo. A conexão é autocommit: se a rede cair depois que o
+        Postgres já aplicou o INSERT mas antes de a resposta chegar, repetir
+        grava a linha DUAS vezes. `pipeline_heartbeat` e `pricetrack_import_log`
+        não têm chave única que segure isso — o livro-razão que existe para
+        denunciar execução ausente passaria a inventar execução repetida.
+
+        Então: falha ao conectar é sempre repetível (o comando nunca saiu);
+        falha ao executar só é repetível em LEITURA.
+        """
         with self._lock:
             for tentativa in (1, 2):
                 try:
                     conn = self._connection()
+                except (psycopg2.InterfaceError, psycopg2.OperationalError) as exc:
+                    self.close()
+                    if tentativa == 2:
+                        raise DBError(f"não foi possível conectar: {exc}") from exc
+                    logger.warning(f"[DB] falha ao conectar ({exc}); tentando de novo")
+                    continue
+
+                try:
                     with conn.cursor(cursor_factory=RealDictCursor) as cur:
                         return fn(cur)
                 except (psycopg2.InterfaceError, psycopg2.OperationalError) as exc:
                     self.close()
+                    if escrita:
+                        raise DBError(
+                            f"conexão caiu durante uma ESCRITA: {exc}. "
+                            "Não repetimos automaticamente — o comando pode ter "
+                            "sido aplicado antes da queda, e repetir duplicaria "
+                            "a linha. Confira o estado e reenvie se necessário."
+                        ) from exc
                     if tentativa == 2:
                         raise DBError(f"conexão com o Postgres falhou: {exc}") from exc
                     logger.warning(
-                        f"[DB] conexão caiu ({exc}); reconectando e repetindo"
+                        f"[DB] conexão caiu ({exc}); reconectando e repetindo a leitura"
                     )
 
-    def _fetch(self, query: Any, params: Sequence[Any]) -> List[Dict[str, Any]]:
+    def _fetch(
+        self, query: Any, params: Sequence[Any], escrita: bool = False
+    ) -> List[Dict[str, Any]]:
         def _go(cur):
             cur.execute(query, params)
             if cur.description is None:
                 return []
             return [dict(r) for r in cur.fetchall()]
 
-        return self._run(_go)
+        return self._run(_go, escrita=escrita)
 
     def _execute_values(self, query: Any, valores: Sequence[Any]) -> List[Dict[str, Any]]:
         def _go(cur):
             resultado = execute_values(cur, query, valores, fetch=True)
             return [dict(r) for r in resultado] if resultado else []
 
-        return self._run(_go)
+        return self._run(_go, escrita=True)
 
     def _scalar(self, query: Any, params: Sequence[Any]) -> Optional[int]:
         linhas = self._fetch(query, params)
@@ -722,7 +804,13 @@ class _RPC:
             query = _sql.SQL("SELECT * FROM {}()").format(_sql.Identifier(self._fn))
             valores = []
 
-        linhas = self._client._fetch(query, valores)
+        # Conservador de propósito: as funções deste projeto MUTAM com mais
+        # frequência do que não (refresh_seller_offer_daily,
+        # resolver_coletas_pendentes, admin_normalizar_nome,
+        # admin_automation_try_lock). Não repetir uma função de leitura custa
+        # uma reconexão manual; repetir uma que escreve aplica o efeito duas
+        # vezes — e `admin_automation_try_lock` repetido rouba o próprio lock.
+        linhas = self._client._fetch(query, valores, escrita=True)
 
         # Função ESCALAR: o Postgres nomeia a única coluna com o nome da
         # função, e o PostgREST entrega o valor cru — inclusive quando o
@@ -766,11 +854,16 @@ def resolve_backend_name() -> str:
 
 
 def dsn_from_env() -> str:
-    """DSN do Postgres novo. ``SUPABASE_DSN`` segue aceito por retrocompat."""
-    return (
-        os.getenv("RAC_DB_DSN", "").strip()
-        or os.getenv("SUPABASE_DSN", "").strip()
-    )
+    """DSN do Postgres novo — só ``RAC_DB_DSN``.
+
+    ``SUPABASE_DSN`` NÃO serve de reserva aqui, e isso é deliberado: depois da
+    virada as duas variáveis apontam para bancos DIFERENTES. ``SUPABASE_DSN``
+    é o banco VELHO (é dele que saem as tabelas de referência e o
+    `pricetrack_daily` evacuado); ``RAC_DB_DSN`` é o novo. Aceitar o primeiro
+    como reserva faria quem já o tinha configurado para o importador do
+    PriceTrack virar o projeto inteiro sem ter pedido.
+    """
+    return os.getenv("RAC_DB_DSN", "").strip()
 
 
 def get_client(backend: Optional[str] = None):

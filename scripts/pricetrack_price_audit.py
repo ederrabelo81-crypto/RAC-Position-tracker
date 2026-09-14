@@ -361,7 +361,15 @@ def compare_db(rows: List[Dict[str, Any]], collection_date: str, turno: str) -> 
             slot["last_hour"] = hour
 
     # ── O que o banco guardou (paginado: um dia passa de 1.000 linhas) ──────
-    client = create_client(url, key)
+    # Com RAC_DB_DSN definido a auditoria compara contra o banco NOVO —
+    # comparar contra o velho depois da virada daria um diagnóstico errado.
+    from utils.db import get_client, resolve_backend_name
+
+    client = (
+        get_client("postgres")
+        if resolve_backend_name() == "postgres"
+        else create_client(url, key)
+    )
     banco: Dict[tuple, Dict[str, Any]] = {}
     offset, page_size = 0, 1000
     while True:
@@ -451,7 +459,15 @@ def backfill_status() -> int:
         print("SUPABASE_URL/SUPABASE_KEY ausentes no ambiente/.env.")
         return 1
 
-    client = create_client(url, key)
+    # Com RAC_DB_DSN definido a auditoria compara contra o banco NOVO —
+    # comparar contra o velho depois da virada daria um diagnóstico errado.
+    from utils.db import get_client, resolve_backend_name
+
+    client = (
+        get_client("postgres")
+        if resolve_backend_name() == "postgres"
+        else create_client(url, key)
+    )
     # Uma linha por (data, base): o agregado é pequeno, mas o PostgREST não faz
     # GROUP BY — então contamos por data com `count='exact'` e head (sem corpo).
     resp = (
