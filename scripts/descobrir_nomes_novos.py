@@ -18,6 +18,12 @@ import os
 import sys
 from pathlib import Path
 
+# `from utils.db import ...` abaixo precisa da RAIZ do projeto no path: rodando
+# `python scripts/descobrir_nomes_novos.py`, o interpretador põe `scripts/` no
+# sys.path, não o diretório acima dele.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pathlib import Path
+
 from loguru import logger
 
 try:
@@ -45,13 +51,24 @@ def main():
     ap.add_argument("--out", default="nomes_novos_para_classificar.csv")
     args = ap.parse_args()
 
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        logger.error("SUPABASE_URL/SUPABASE_KEY não configurados no .env")
-        sys.exit(1)
+    # Chave de virada do projeto (`utils/db.py`): com RAC_DB_DSN definido este
+    # script fala com o banco novo, não com a API REST restrita por cota.
+    from utils.db import DBError, get_client, resolve_backend_name
 
-    client: Client = create_client(url, key)
+    if resolve_backend_name() == "postgres":
+        try:
+            client = get_client("postgres")
+        except DBError as exc:
+            logger.error(f"RAC_DB_DSN inválido: {exc}")
+            sys.exit(1)
+    else:
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+        if not url or not key:
+            logger.error("SUPABASE_URL/SUPABASE_KEY não configurados no .env")
+            sys.exit(1)
+        client = create_client(url, key)
+
     tabelas = ["rac_monitoramento", "coletas"] if args.tabela == "ambas" else [args.tabela]
 
     novos: dict[str, dict] = {}

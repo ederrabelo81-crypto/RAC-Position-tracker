@@ -56,6 +56,18 @@ _SKIP_ESTADOS = {"NAO_AC"}
 
 
 def _client():
+    # Segue a chave de virada do projeto (`utils/db.py`): com RAC_DB_DSN
+    # definido, este script fala com o banco novo. Sem isso ele continuaria
+    # batendo na API REST do Supabase, restrita por cota desde 12/09/2026.
+    from utils.db import DBError, get_client, resolve_backend_name
+
+    if resolve_backend_name() == "postgres":
+        try:
+            return get_client("postgres")
+        except DBError as exc:
+            logger.error(f"RAC_DB_DSN inválido: {exc}")
+            sys.exit(1)
+
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
     if not url or not key:

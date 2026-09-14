@@ -199,11 +199,31 @@ def fetch_live(
 # ── Fonte Supabase (pricetrack_daily) — rápida, padrão ───────────────────────
 
 def _supabase_client():
-    """Cria o client Supabase a partir de SUPABASE_URL/SUPABASE_KEY (env).
+    """Cria o client do banco ativo (Postgres novo ou Supabase).
 
     A ponte st.secrets→env é feita na camada Streamlit (app.py), então aqui só
     lemos o ambiente. Retorna None se pacote/credencial ausentes.
+
+    Com `RAC_DB_DSN` definido o painel lê do banco novo. **A falha do lado
+    Postgres NÃO cai para o Supabase**: se o operador configurou o banco novo e
+    o driver não está instalado (o caso real do deploy com
+    `requirements_app.txt`), cair de volta em silêncio mostraria números do
+    banco ERRADO — e depois da virada o Supabase está restrito por cota, então
+    o painel ficaria vazio sem explicar por quê. Melhor levantar.
     """
+    from utils.db import DBError, PostgresClient, dsn_from_env, resolve_backend_name
+
+    if resolve_backend_name() == "postgres":
+        dsn = dsn_from_env()
+        try:
+            return PostgresClient(dsn)
+        except DBError as exc:
+            raise DBError(
+                f"RAC_DB_DSN está definido mas o backend Postgres não subiu: {exc}. "
+                "No deploy do painel, confira se psycopg2-binary está em "
+                "requirements_app.txt."
+            ) from exc
+
     url = os.getenv("SUPABASE_URL", "").strip()
     key = os.getenv("SUPABASE_KEY", "").strip()
     if not url or not key:
@@ -216,6 +236,20 @@ def _supabase_client():
 
 
 def supabase_configured() -> bool:
+    """Há banco configurado? Conta o Postgres novo, não só o Supabase.
+
+    Sem isto, um host migrado (só `RAC_DB_DSN`) seria lido como "não
+    configurado" e o painel mandaria definir SUPABASE_URL/SUPABASE_KEY — uma
+    instrução errada, que levaria o operador de volta ao banco restrito.
+    """
+    try:
+        from utils.db import dsn_from_env, resolve_backend_name
+
+        if resolve_backend_name() == "postgres" and dsn_from_env():
+            return True
+    except Exception:  # noqa: BLE001 — utils.db ausente
+        pass
+
     return bool(os.getenv("SUPABASE_URL", "").strip()
                 and os.getenv("SUPABASE_KEY", "").strip())
 

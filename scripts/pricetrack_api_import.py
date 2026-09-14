@@ -642,11 +642,44 @@ def inspect_file(path: Path) -> None:
 _CLIENT = None
 
 
+def _banco_disponivel() -> bool:
+    """Há algum backend para gravar?
+
+    Existe porque os guards antigos perguntavam só por `_HAS_SUPABASE`. Depois
+    da virada isso ficou errado e PERIGOSO: num host com RAC_DB_DSN mas sem o
+    pacote `supabase` instalado, o importador pulava a verificação de data e a
+    inserção **em silêncio**, terminando verde sem ter gravado nada — o modo de
+    falha que o `pipeline_registry` existe para denunciar.
+    """
+    try:
+        from utils.db import resolve_backend_name
+
+        if resolve_backend_name() == "postgres":
+            return True
+    except Exception:  # noqa: BLE001 — utils.db ausente
+        pass
+    return _HAS_SUPABASE
+
+
 def _supabase_client():
     """Cria (e memoiza) o cliente Supabase reutilizado em todo o script."""
     global _CLIENT
     if _CLIENT is not None:
         return _CLIENT
+    # Segue a mesma chave de virada do resto do projeto (`utils/db.py`). Sem
+    # isto, o importador continuaria escrevendo no Supabase depois da migração
+    # — e como `scripts/evacuate_pricetrack.py` esvazia `pricetrack_daily` lá
+    # para liberar a cota, o próximo import reconstruiria justamente a tabela
+    # de 451 MB que acabou de sair.
+    from utils.db import DBError, get_client, resolve_backend_name
+
+    if resolve_backend_name() == "postgres":
+        try:
+            _CLIENT = get_client("postgres")
+            return _CLIENT
+        except DBError as exc:
+            raise EnvironmentError(f"RAC_DB_DSN definido mas inválido: {exc}")
+
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
     if not url or not key:
@@ -663,7 +696,7 @@ def date_exists(collection_date: str, dry_run: bool = False) -> bool:
     bug do `select` global (PostgREST devolve no máx. 1000 linhas por padrão,
     o que fazia a contagem de datas existentes ficar incorreta).
     """
-    if dry_run or not _HAS_SUPABASE:
+    if dry_run or not _banco_disponivel():
         return False
     try:
         client = _supabase_client()
@@ -684,8 +717,11 @@ def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
     """Insere registros em lotes de _BATCH_SIZE. Retorna total inserido."""
     if dry_run:
         return len(records)
-    if not _HAS_SUPABASE:
-        logger.warning("supabase-py não disponível — pulando upload")
+    if not _banco_disponivel():
+        logger.warning(
+            "Nenhum backend de banco disponível (sem RAC_DB_DSN e sem "
+            "supabase-py) — pulando upload"
+        )
         return 0
 
     client = _supabase_client()

@@ -686,7 +686,12 @@ def render_peer_evolution(
 
 
 # ── Segredos (env ou st.secrets do Streamlit Cloud) ──────────────────────────
-_SECRET_KEYS = ("PRICETRACK_API_KEY", "SUPABASE_URL", "SUPABASE_KEY")
+# RAC_DB_DSN entra aqui porque `utils/db.py` resolve tudo por os.environ e não
+# conhece st.secrets: sem a ponte, publicar o DSN como secret no Streamlit
+# Cloud não viraria o painel — ele seguiria no Supabase sem dizer nada.
+_SECRET_KEYS = (
+    "PRICETRACK_API_KEY", "SUPABASE_URL", "SUPABASE_KEY", "RAC_DB_DSN",
+)
 
 
 def _bridge_secrets_to_env() -> None:

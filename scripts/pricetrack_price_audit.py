@@ -308,16 +308,26 @@ def print_summary(rows: List[Dict[str, Any]]) -> None:
 
 def compare_db(rows: List[Dict[str, Any]], collection_date: str, turno: str) -> None:
     """Confronta o bruto com o que ``pricetrack_daily`` guardou."""
-    try:
-        from supabase import create_client
-    except ImportError:
-        print("\n[--comparar] supabase-py não instalado — pulei o confronto.")
-        return
     import os
-    url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
-    if not url or not key:
-        print("\n[--comparar] SUPABASE_URL/SUPABASE_KEY ausentes — pulei o confronto.")
-        return
+
+    # A decisão de backend vem ANTES dos guards de Supabase. Se ficasse depois,
+    # um host migrado (só RAC_DB_DSN, sem credencial de Supabase) cairia no
+    # "pulei o confronto" sem nunca alcançar o banco novo — a auditoria ficaria
+    # muda justamente depois da migração, que é quando ela mais importa.
+    from utils.db import resolve_backend_name
+
+    usando_postgres = resolve_backend_name() == "postgres"
+
+    if not usando_postgres:
+        try:
+            from supabase import create_client
+        except ImportError:
+            print("\n[--comparar] supabase-py não instalado — pulei o confronto.")
+            return
+        url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+        if not url or not key:
+            print("\n[--comparar] SUPABASE_URL/SUPABASE_KEY ausentes — pulei o confronto.")
+            return
 
     # ── O que a API entregou, recortado pela MESMA janela do banco ──────────
     # Sem `_in_turno` o bruto varria o dia inteiro enquanto o banco vinha
@@ -361,7 +371,9 @@ def compare_db(rows: List[Dict[str, Any]], collection_date: str, turno: str) -> 
             slot["last_hour"] = hour
 
     # ── O que o banco guardou (paginado: um dia passa de 1.000 linhas) ──────
-    client = create_client(url, key)
+    from utils.db import get_client
+
+    client = get_client("postgres") if usando_postgres else create_client(url, key)
     banco: Dict[tuple, Dict[str, Any]] = {}
     offset, page_size = 0, 1000
     while True:
@@ -440,18 +452,27 @@ def backfill_status() -> int:
     É o painel do backfill — responde "quanto ainda está errado?" e "o reimport
     vai reaproveitar o cache ou re-baixar da API?" numa tela só.
     """
-    try:
-        from supabase import create_client
-    except ImportError:
-        print("supabase-py não instalado — `pip install supabase`.")
-        return 1
     import os
-    url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
-    if not url or not key:
-        print("SUPABASE_URL/SUPABASE_KEY ausentes no ambiente/.env.")
-        return 1
 
-    client = create_client(url, key)
+    # Backend PRIMEIRO, guards de Supabase depois: num host já migrado (só
+    # RAC_DB_DSN) os guards abaixo devolveriam erro de credencial ausente sem
+    # nunca tentar o banco novo — o painel do backfill morreria exatamente
+    # depois da migração, que é quando ele serve para alguma coisa.
+    from utils.db import get_client, resolve_backend_name
+
+    if resolve_backend_name() == "postgres":
+        client = get_client("postgres")
+    else:
+        try:
+            from supabase import create_client
+        except ImportError:
+            print("supabase-py não instalado — `pip install supabase`.")
+            return 1
+        url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+        if not url or not key:
+            print("SUPABASE_URL/SUPABASE_KEY ausentes no ambiente/.env.")
+            return 1
+        client = create_client(url, key)
     # Uma linha por (data, base): o agregado é pequeno, mas o PostgREST não faz
     # GROUP BY — então contamos por data com `count='exact'` e head (sem corpo).
     resp = (

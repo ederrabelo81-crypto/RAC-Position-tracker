@@ -150,8 +150,14 @@ class TestFetchSupabase:
         assert len(res.offers) == 2
 
     def test_requires_client(self, monkeypatch):
+        # Limpa TAMBÉM as variáveis do banco novo (Set/2026). O teste afirma
+        # "sem banco configurado"; sem esta limpeza ele só afirmava "sem
+        # Supabase" e passava a falhar na máquina de quem tem RAC_DB_DSN no
+        # ambiente — um falso vermelho que não diz nada sobre o código.
         monkeypatch.delenv("SUPABASE_URL", raising=False)
         monkeypatch.delenv("SUPABASE_KEY", raising=False)
+        monkeypatch.delenv("RAC_DB_DSN", raising=False)
+        monkeypatch.delenv("RAC_DB_BACKEND", raising=False)
         import pytest
         with pytest.raises(RuntimeError):
             ds.fetch_supabase(collection_date="2026-08-31")
@@ -195,8 +201,14 @@ class TestFetchSupabaseRange:
         assert by_date == {}
 
     def test_requires_client(self, monkeypatch):
+        # Limpa TAMBÉM as variáveis do banco novo (Set/2026). O teste afirma
+        # "sem banco configurado"; sem esta limpeza ele só afirmava "sem
+        # Supabase" e passava a falhar na máquina de quem tem RAC_DB_DSN no
+        # ambiente — um falso vermelho que não diz nada sobre o código.
         monkeypatch.delenv("SUPABASE_URL", raising=False)
         monkeypatch.delenv("SUPABASE_KEY", raising=False)
+        monkeypatch.delenv("RAC_DB_DSN", raising=False)
+        monkeypatch.delenv("RAC_DB_BACKEND", raising=False)
         import pytest
         with pytest.raises(RuntimeError):
             ds.fetch_supabase_range("2026-08-25", "2026-08-26")
