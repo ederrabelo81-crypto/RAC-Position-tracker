@@ -642,6 +642,25 @@ def inspect_file(path: Path) -> None:
 _CLIENT = None
 
 
+def _banco_disponivel() -> bool:
+    """Há algum backend para gravar?
+
+    Existe porque os guards antigos perguntavam só por `_HAS_SUPABASE`. Depois
+    da virada isso ficou errado e PERIGOSO: num host com RAC_DB_DSN mas sem o
+    pacote `supabase` instalado, o importador pulava a verificação de data e a
+    inserção **em silêncio**, terminando verde sem ter gravado nada — o modo de
+    falha que o `pipeline_registry` existe para denunciar.
+    """
+    try:
+        from utils.db import resolve_backend_name
+
+        if resolve_backend_name() == "postgres":
+            return True
+    except Exception:  # noqa: BLE001 — utils.db ausente
+        pass
+    return _HAS_SUPABASE
+
+
 def _supabase_client():
     """Cria (e memoiza) o cliente Supabase reutilizado em todo o script."""
     global _CLIENT
@@ -677,7 +696,7 @@ def date_exists(collection_date: str, dry_run: bool = False) -> bool:
     bug do `select` global (PostgREST devolve no máx. 1000 linhas por padrão,
     o que fazia a contagem de datas existentes ficar incorreta).
     """
-    if dry_run or not _HAS_SUPABASE:
+    if dry_run or not _banco_disponivel():
         return False
     try:
         client = _supabase_client()
@@ -698,8 +717,11 @@ def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
     """Insere registros em lotes de _BATCH_SIZE. Retorna total inserido."""
     if dry_run:
         return len(records)
-    if not _HAS_SUPABASE:
-        logger.warning("supabase-py não disponível — pulando upload")
+    if not _banco_disponivel():
+        logger.warning(
+            "Nenhum backend de banco disponível (sem RAC_DB_DSN e sem "
+            "supabase-py) — pulando upload"
+        )
         return 0
 
     client = _supabase_client()

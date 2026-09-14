@@ -18,6 +18,12 @@ import os
 import sys
 from pathlib import Path
 
+# `from utils.db import ...` abaixo precisa da RAIZ do projeto no path: rodando
+# `python scripts/descobrir_nomes_novos.py`, o interpretador põe `scripts/` no
+# sys.path, não o diretório acima dele.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pathlib import Path
+
 from loguru import logger
 
 try:

@@ -629,7 +629,7 @@ class _Query:
 
 
 class _Not:
-    """Proxy de ``query.not_`` — arma a negação e devolve a query.
+    """Proxy de ``query.not_`` — nega o filtro seguinte e devolve a query.
 
     ``.not_.is_("produto", "null")`` vira ``NOT (produto IS NULL)``, que em
     lógica de três valores é exatamente ``produto IS NOT NULL``. O mesmo vale
@@ -637,27 +637,74 @@ class _Not:
     acompanha a do ``NOT IN`` que o PostgREST geraria.
     """
 
+    #: Filtros que sabemos negar. Bate com o conjunto de `_OPS` mais os dois
+    #: que têm forma própria (`is_`, `in_`).
+    _SUPORTADOS = (
+        "eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "is_", "in_",
+    )
+
     def __init__(self, query: "_Query") -> None:
         self._q = query
 
-    def _armar(self) -> "_Query":
+    def _aplicar(self, metodo: str, *args):
+        """Arma a negação, aplica o filtro e GARANTE o desarme em caso de erro.
+
+        O desarme no caminho de exceção não é zelo excessivo: `_add` só limpa a
+        flag quando o filtro chega a ser montado. Se `is_` recebesse um valor
+        inválido e levantasse `UnsupportedFilterError`, a flag ficaria ligada —
+        e como os chamadores deste projeto absorvem exceção e reaproveitam a
+        mesma query, o PRÓXIMO filtro legítimo sairia negado: um `eq` viraria
+        `<>` sem ninguém ver.
+        """
         self._q._negar_proxima = True
-        return self._q
-
-    def is_(self, column: str, value: Any) -> "_Query":
-        return self._armar().is_(column, value)
-
-    def in_(self, column: str, values: Iterable[Any]) -> "_Query":
-        return self._armar().in_(column, values)
+        try:
+            return getattr(self._q, metodo)(*args)
+        except Exception:
+            self._q._negar_proxima = False
+            raise
 
     def eq(self, column: str, value: Any) -> "_Query":
-        return self._armar().eq(column, value)
+        return self._aplicar("eq", column, value)
+
+    def neq(self, column: str, value: Any) -> "_Query":
+        return self._aplicar("neq", column, value)
+
+    def gt(self, column: str, value: Any) -> "_Query":
+        return self._aplicar("gt", column, value)
+
+    def gte(self, column: str, value: Any) -> "_Query":
+        return self._aplicar("gte", column, value)
+
+    def lt(self, column: str, value: Any) -> "_Query":
+        return self._aplicar("lt", column, value)
+
+    def lte(self, column: str, value: Any) -> "_Query":
+        return self._aplicar("lte", column, value)
 
     def like(self, column: str, pattern: str) -> "_Query":
-        return self._armar().like(column, pattern)
+        return self._aplicar("like", column, pattern)
 
     def ilike(self, column: str, pattern: str) -> "_Query":
-        return self._armar().ilike(column, pattern)
+        return self._aplicar("ilike", column, pattern)
+
+    def is_(self, column: str, value: Any) -> "_Query":
+        return self._aplicar("is_", column, value)
+
+    def in_(self, column: str, values: Iterable[Any]) -> "_Query":
+        return self._aplicar("in_", column, values)
+
+    def __getattr__(self, nome: str):
+        """Filtro negado desconhecido falha ALTO, como manda a regra do módulo.
+
+        Sem isto, `.not_.match(...)` — válido no postgrest-py — levantaria
+        `AttributeError`, que os chamadores deste projeto absorvem no `except`
+        genérico: o recorte voltaria errado em silêncio, exatamente o modo de
+        falha que a property `not_` veio corrigir.
+        """
+        raise UnsupportedFilterError(
+            f"not_.{nome}() não é suportado por este adaptador "
+            f"(suportados: {', '.join(_Not._SUPORTADOS)})"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -695,6 +742,32 @@ class PostgresClient:
             self._conn.autocommit = True
             _registrar_tipos_postgrest(self._conn)
         return self._conn
+
+    def verificar_conexao(self) -> None:
+        """Conecta AGORA e roda um `SELECT 1`.
+
+        `__init__` só guarda o DSN — o psycopg2 conecta no primeiro comando.
+        Isso fazia o `try/except DBError` em volta de `get_client("postgres")`
+        parecer proteção sem ser: um DSN malformado ou um host inalcançável
+        passavam batidos ali e estouravam muitas linhas depois, na primeira
+        consulta, longe do lugar que sabia explicar o erro. Com a verificação
+        aqui, "credencial errada" falha onde o chamador está preparado para
+        dizer o que fazer.
+
+        Raises:
+            DBError: se não conectar ou se o `SELECT 1` falhar.
+        """
+        try:
+            with self._lock:
+                conn = self._connection()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+        except DBError:
+            raise
+        except Exception as exc:
+            self.close()
+            raise DBError(f"não foi possível usar o DSN informado: {exc}") from exc
 
     def close(self) -> None:
         with self._lock:
@@ -889,7 +962,12 @@ def get_client(backend: Optional[str] = None):
                 "backend 'postgres' pedido mas RAC_DB_DSN está vazio. "
                 "Pegue o DSN no painel do provedor e mantenha o ?sslmode=require."
             )
-        return PostgresClient(dsn)
+        cliente = PostgresClient(dsn)
+        # Falha de credencial/rede tem que aparecer AQUI, dentro do try/except
+        # de quem chamou — e não na primeira consulta, onde vira "função SQL
+        # ausente" ou erro de driver solto, longe da causa.
+        cliente.verificar_conexao()
+        return cliente
 
     url = os.getenv("SUPABASE_URL", "").strip()
     key = os.getenv("SUPABASE_KEY", "").strip()

@@ -93,8 +93,10 @@ def Repository(dsn: Optional[str] = None, batch_size: int = 1000):
     """
     Factory que devolve o backend apropriado:
 
-    - Se `dsn` ou `SUPABASE_DSN` definido → `PsycopgRepository` (rápido,
-      preciso, recomendado).
+    - Se `dsn`, `RAC_DB_DSN` ou `SUPABASE_DSN` definido → `PsycopgRepository`
+      (rápido, preciso, recomendado). `RAC_DB_DSN` (banco novo, Set/2026) tem
+      precedência sobre `SUPABASE_DSN` (banco velho): depois da virada os dois
+      apontam para lugares diferentes.
     - Senão, se `SUPABASE_URL` + `SUPABASE_KEY` definidos →
       `SupabasePyRepository` (REST, reusa credenciais do projeto).
     - Senão → RuntimeError com mensagem clara.
@@ -116,8 +118,10 @@ def Repository(dsn: Optional[str] = None, batch_size: int = 1000):
         return SupabasePyRepository(url=url, key=key, batch_size=batch_size)
 
     raise RuntimeError(
-        "Nenhuma credencial Supabase configurada. Defina ao menos um:\n"
-        "  - SUPABASE_DSN  (psycopg2 direto, mais performático)\n"
+        "Nenhuma credencial de banco configurada. Defina ao menos um:\n"
+        "  - RAC_DB_DSN    (Postgres novo — tem precedência; ver "
+        "docs/MIGRACAO_AIVEN.md)\n"
+        "  - SUPABASE_DSN  (Postgres do Supabase, psycopg2 direto)\n"
         "  - SUPABASE_URL + SUPABASE_KEY  (REST via supabase-py, reusa o "
         "mesmo .env do restante do projeto)"
     )

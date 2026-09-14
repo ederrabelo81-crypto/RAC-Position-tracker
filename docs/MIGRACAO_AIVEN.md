@@ -104,16 +104,19 @@ SUPABASE_URL=https://ailbsczkrympslpjwwko.supabase.co
 SUPABASE_KEY=<service_role>
 ```
 
-Com `RAC_DB_DSN` preenchido, a coleta, o dashboard, o livro-razão, a automação
-ADMIN, os resolvedores de de-para e o PriceTrack (importador e painel) passam a
-falar com o banco novo. Sem a variável, tudo segue no Supabase — ela é a chave
-de virada.
+Com `RAC_DB_DSN` preenchido passam a falar com o banco novo: a coleta
+(`main.py`), o dashboard interno (`app.py`), o livro-razão
+(`pipeline_heartbeat`), a automação ADMIN, a manutenção, os resolvedores de
+de-para, a auditoria de preço, o reenvio de CSV e o PriceTrack (importador e
+painel). Sem a variável, tudo segue no Supabase — ela é a chave de virada.
 
-**A exceção deliberada é o `seller_app/`**, que roda no Streamlit Cloud com
-credencial própria (`SUPABASE_ANON_KEY`) e continua no Supabase até você
-publicar o DSN só-leitura da Aiven (ver §5). Isso não é esquecimento: o
-isolamento do painel do lojista é a **credencial**, não um `if` no código — é a
-regra dura do `docs/TRACK_POSITION_SELLER.md`.
+**A exceção é o `seller_app/`**, que roda no Streamlit Cloud com credencial
+própria (`SUPABASE_ANON_KEY`) e **continua no Supabase**. Atenção: publicar
+`RAC_DB_DSN` como secret NÃO o vira — o `seller_app` não lê essa variável.
+Migrá-lo exige **mudança de código** (ver §5), e ficou fora desta PR de
+propósito: o isolamento do painel do lojista é a **credencial**, não um `if` no
+código (regra dura do `docs/TRACK_POSITION_SELLER.md`), então essa virada
+merece a própria revisão em vez de pegar carona aqui.
 
 > Por que isso importa para o PriceTrack em particular: se o importador
 > continuasse escrevendo no Supabase depois da virada, o Passo 8 esvaziaria
@@ -251,8 +254,12 @@ histórico em Parquet é o mesmo para os dois lados.
   saírem, a Aiven vira o mesmo muro em ~30 dias. `RAC_HOT_WINDOW_DAYS` controla
   a janela.
 - **O `seller_app` no Streamlit Cloud** aponta para o Supabase via
-  `SUPABASE_ANON_KEY`. Para virá-lo também, use um usuário só-leitura na Aiven
-  e publique o DSN dele como secret `RAC_DB_DSN`:
+  `SUPABASE_ANON_KEY` e **ainda não foi migrado**. Só publicar um secret não
+  resolve: `seller_app/app.py` chama `create_client(...)` direto e nunca
+  consulta `RAC_DB_DSN`, então a virada dele precisa de uma alteração de código
+  (rotear por `utils.db`, como os demais pontos desta PR). O SQL abaixo prepara
+  o lado do banco para quando isso for feito — crie o usuário só-leitura na
+  Aiven:
 
   ```sql
   CREATE ROLE seller_ro LOGIN PASSWORD 'troque-isto';

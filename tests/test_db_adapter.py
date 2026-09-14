@@ -705,3 +705,62 @@ class TestRetryNaoDuplicaEscrita:
             .execute()
         )
         assert len(r.data) == 1
+
+
+@_precisa_pg
+class TestConexaoValidadaCedo:
+    """`get_client("postgres")` tem que falhar na hora, não na 1ª consulta.
+
+    `PostgresClient.__init__` só guarda o DSN — o psycopg2 conecta preguiçoso.
+    Isso fazia o `try/except DBError` em volta de `get_client` parecer proteção
+    sem ser: DSN malformado passava batido ali e estourava muitas linhas
+    depois, onde o chamador já não sabia explicar o erro.
+    """
+
+    def test_dsn_invalido_falha_no_get_client(self, monkeypatch):
+        from utils.db import DBError, get_client
+
+        monkeypatch.setenv("RAC_DB_DSN", "postgresql://ninguem@127.0.0.1:1/naoexiste")
+        with pytest.raises(DBError):
+            get_client("postgres")
+
+    def test_dsn_bom_passa(self, client, monkeypatch):
+        from utils.db import get_client
+
+        monkeypatch.setenv("RAC_DB_DSN", _DSN)
+        c = get_client("postgres")  # a validação roda aqui, sem levantar
+        try:
+            assert len(c.table("t_coletas").select("id").limit(1).execute().data) == 1
+        finally:
+            c.close()
+
+    def test_verificar_conexao_e_idempotente(self, client):
+        client.verificar_conexao()
+        client.verificar_conexao()
+        assert client.table("t_coletas").select("id", count="exact", head=True).execute().count == 4
+
+
+@_precisa_pg
+class TestNotProxyCompleto:
+    def test_cobre_todos_os_operadores_de_ops(self, client):
+        r = client.table("t_coletas").select("*").not_.gte("preco", 2000).execute()
+        # NULL em preco não satisfaz NOT (preco >= 2000) — mesma semântica do
+        # PostgREST, que também exclui a linha nula aqui.
+        assert {x["plataforma"] for x in r.data} == {"Amazon", "Shopee"}
+
+    def test_filtro_negado_desconhecido_falha_alto(self, client):
+        from utils.db import UnsupportedFilterError
+
+        with pytest.raises(UnsupportedFilterError, match="not_.match"):
+            client.table("t_coletas").select("*").not_.match({"a": 1})
+
+    def test_flag_desarma_quando_o_filtro_levanta(self, client):
+        from utils.db import UnsupportedFilterError
+
+        q = client.table("t_coletas").select("*")
+        with pytest.raises(UnsupportedFilterError):
+            q.not_.is_("preco", "talvez")  # valor inválido para IS
+        # A query é reaproveitada — o filtro seguinte NÃO pode sair negado.
+        r = q.eq("plataforma", "Amazon").execute()
+        assert len(r.data) == 2
+        assert all(x["plataforma"] == "Amazon" for x in r.data)

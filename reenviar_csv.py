@@ -215,15 +215,17 @@ def reenviar(csv_path: str):
         )
 
     # Com RAC_DB_DSN definido o reenvio vai para o banco NOVO; sem ele,
-    # segue para o Supabase como sempre.
+    # segue para o Supabase como sempre. O log nomeia QUAL: um reenvio manual
+    # que diz "Supabase" mas gravou noutro banco é o tipo de rastro que faz
+    # perder meia hora depois.
     from utils.db import get_client, resolve_backend_name
 
-    sb = (
-        get_client("postgres")
-        if resolve_backend_name() == "postgres"
-        else create_client(SUPABASE_URL, SUPABASE_KEY)
-    )
-    logger.info("[Supabase] Conectado.")
+    if resolve_backend_name() == "postgres":
+        sb = get_client("postgres")
+        logger.info("[DB] Conectado ao Postgres direto (RAC_DB_DSN).")
+    else:
+        sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("[Supabase] Conectado.")
 
     ins_t, ign_t, err_t = 0, 0, 0
     n_lotes = (total + CHUNK_SIZE - 1) // CHUNK_SIZE
