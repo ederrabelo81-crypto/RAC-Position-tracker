@@ -55,6 +55,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from loguru import logger  # noqa: E402
 
+from utils.text import now_brt  # noqa: E402
+
 try:
     import psycopg2
     from psycopg2.extras import execute_values
@@ -371,7 +373,11 @@ def main() -> None:
         copiar_referencias(args.dsn_origem, args.dsn, args.dry_run)
         return
 
-    fim = date.fromisoformat(args.ate) if args.ate else date.today()
+    # `now_brt()`, não `date.today()`: a convenção do projeto é BRT em todo
+    # lugar (utils/text.py). Num host em UTC rodando depois das 21:00 BRT,
+    # `date.today()` já é o dia seguinte e a janela de 15 dias escorregaria um
+    # dia — pegando um dia a menos de histórico sem ninguém notar.
+    fim = date.fromisoformat(args.ate) if args.ate else now_brt().date()
     if args.desde:
         inicio = date.fromisoformat(args.desde)
     else:
