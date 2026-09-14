@@ -318,6 +318,83 @@ chave `anon` grava nada em silêncio).
 
 ---
 
+---
+
+## Banco intercambiável — a cota do Supabase estourou (Set/2026) 🆕
+
+**O que aconteceu:** em 12/09/2026 o banco passou de **1 GB** contra os 500 MB
+do free tier. O Postgres seguiu saudável e gravável (`read_only=off`), mas o
+**PostgREST** — a API que o `supabase-py` consome — passou a devolver **402
+`exceed_db_size_quota` em tudo**, leitura e escrita. A coleta parou de gravar na
+janela quente; o histórico frio em Parquet no Drive **não parou**, porque a
+gravação sempre foi dupla e independente (`main.py` grava o histórico ANTES do
+banco). Foi essa independência que deixou a migração ser feita sem o Supabase.
+
+**A restrição não expira com o tempo** — ela sai quando o banco encolhe abaixo
+da cota.
+
+**Por que migrar mesmo assim:** a janela quente custa **~34 MB/dia**. Quinze
+dias são **~510 MB**, e `coletas` sozinha já ocupava 482 MB com só 14 dias. Não
+cabe no free tier do Supabase (0,5 GB), nem no do Neon (0,5 GB) nem no do
+Prisma (0,5 GB). Cabe no da **Aiven** (1 GB), que é Postgres de verdade: as
+migrações, as funções PL/pgSQL e as views valem sem edição.
+
+**A fronteira é a credencial, não um `if`:** `RAC_DB_DSN` preenchido manda tudo
+para o Postgres novo; vazio, tudo segue no Supabase. Voltar atrás é apagar a
+variável.
+
+```bash
+python scripts/db_bootstrap.py --dry-run     # 26 migrações, na ordem certa
+python scripts/db_bootstrap.py               # levanta o schema na base nova
+python scripts/db_migrate_hot.py --dias 15   # carrega a janela quente DO PARQUET
+python scripts/db_migrate_hot.py --referencias --dsn-origem "<DSN do Supabase>"
+python scripts/evacuate_pricetrack.py --confirmar-delete  # destrava a cota
+```
+
+Passo a passo completo: **`docs/MIGRACAO_AIVEN.md`**.
+
+**`utils/db.py` — o adaptador.** Expõe a MESMA API fluente do `supabase-py`
+(`.table().select().eq().execute()`, `.rpc()`) sobre psycopg2, então as **112
+chamadas** espalhadas pelo projeto não mudaram. Ele **imita** o PostgREST, não o
+substitui: filtro que ele não conhece levanta `UnsupportedFilterError` na
+montagem, alto e claro — traduzir errado devolveria um recorte plausível e
+errado, o modo de falha que este projeto mais teme.
+
+**Regras duras do adaptador:**
+1. **Fidelidade de tipo é obrigatória.** O PostgREST serializa em JSON:
+   `numeric` vira **string** (precisão de dinheiro) e `date`/`timestamp` viram
+   texto ISO. O psycopg2 devolveria `Decimal` e `datetime.date`. O `seller_app`
+   depende explicitamente da string. Os casters de `utils/db.py` registram isso
+   **por conexão**, nunca global — o `pricetrack_importer` usa psycopg2 direto e
+   espera os tipos nativos.
+2. **Função escalar devolve valor cru; função TABLE devolve lista.** Como o
+   PostgREST. `get_cobertura_resolucao()` retorna jsonb: embrulhado numa lista,
+   o consumidor em `app.py` estoura no `int()`, o `except` engole e o banner
+   some sem erro nenhum.
+3. **Carga de histórico roda com o gatilho DESLIGADO.** `coletas` tem um
+   `BEFORE INSERT` (`trg_resolve_familia_coletas`) que recalcula
+   `familia_resolvida`/`sku_resolvido`/`estado_match` a partir de
+   `produtos_depara_nome`. Num banco novo essa tabela começa vazia e
+   `SELECT ... INTO` sem resultado devolve NULO — carregar com o gatilho ligado
+   **zeraria a resolução de todas as linhas**, em silêncio.
+4. **Evacuar é exporta → confere → apaga.** `scripts/evacuate_pricetrack.py`
+   relê o Parquet gravado e compara a contagem dia a dia; um dia que não bate
+   aborta sem apagar nada. Usa `TRUNCATE`, não `DELETE`: `DELETE` marca linha
+   morta e **não devolve o disco**, então a restrição continuaria de pé.
+
+**`docs/migrations/019_schema_base_portavel.sql` — o DDL que nunca existiu.**
+`coletas`, `produtos_catalogo`, `produtos_aliases`, `produtos_depara_nome`,
+`rac_monitoramento` e `rac_products_magalu_shopee` foram criadas **à mão no
+painel do Supabase** e nunca tiveram arquivo; as migrações 001–018 sempre
+partiram do pressuposto invisível de que elas já existiam. Junto com elas
+faltavam 7 funções, 3 views, a matview e os 3 gatilhos. Tudo foi extraído da
+produção (`pg_get_functiondef`, `pg_get_triggerdef`, `pg_get_viewdef`) em
+14/09/2026 — é a forma real, não a imaginada. O arquivo também cria os papéis
+`anon`/`authenticated`/`service_role`, que são do Supabase e não do Postgres,
+para que as migrações com GRANT rodem **verbatim** em qualquer fornecedor.
+
+---
+
 ## Table of Contents
 
 1. [Session Start Protocol](#session-start-protocol)

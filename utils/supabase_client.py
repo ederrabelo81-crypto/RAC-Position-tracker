@@ -335,7 +335,29 @@ def _validate_credentials(url: str, key: str) -> bool:
 
 
 def _get_client() -> Optional["Client"]:
-    """Cria e retorna o client Supabase, ou None se não configurado."""
+    """Cria e retorna o client do banco ativo, ou None se não configurado.
+
+    Desde a migração de Set/2026 (ver `utils/db.py`) o destino da janela quente
+    é escolhido por ambiente: com `RAC_DB_DSN` definido, a gravação vai para o
+    Postgres novo por psycopg2; sem ele, segue no Supabase via REST. As
+    validações abaixo (chave de exemplo, papel da chave) são específicas do
+    Supabase e só fazem sentido nesse caminho.
+    """
+    try:
+        from utils.db import DBError, get_client as _get_db_client
+        from utils.db import resolve_backend_name as _resolve_backend
+
+        if _resolve_backend() == "postgres":
+            try:
+                client = _get_db_client("postgres")
+                logger.info("[DB] ✓ Postgres direto (janela quente fora do Supabase).")
+                return client
+            except DBError as exc:
+                logger.error(f"[DB] ❌ Falha ao conectar no Postgres: {exc}")
+                return None
+    except ImportError:  # utils.db é novo — ausência não pode derrubar a coleta
+        pass
+
     if not _HAS_SUPABASE:
         logger.error(
             "[Supabase] ❌ Pacote 'supabase' NÃO instalado. "

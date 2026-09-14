@@ -63,12 +63,26 @@ def _cliente():
     except ImportError:
         pass  # python-dotenv opcional — as variáveis podem vir do ambiente
 
+    # Janela quente fora do Supabase (Set/2026): com RAC_DB_DSN definido, o
+    # fato é materializado no Postgres novo. A função SQL
+    # `refresh_seller_offer_daily` é chamada por .rpc() nos dois caminhos.
+    from utils.db import DBError, get_client, resolve_backend_name
+
+    if resolve_backend_name() == "postgres":
+        try:
+            return get_client("postgres")
+        except DBError as exc:
+            raise SystemExit(f"Falha ao conectar no Postgres: {exc}")
+
     from supabase import create_client
 
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
     if not url or not key:
-        raise SystemExit("SUPABASE_URL/SUPABASE_KEY ausentes no ambiente.")
+        raise SystemExit(
+            "Nenhuma credencial de banco. Defina RAC_DB_DSN (Postgres novo) "
+            "ou SUPABASE_URL/SUPABASE_KEY."
+        )
     return create_client(url, key)
 
 
