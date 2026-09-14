@@ -16,15 +16,21 @@ são copiadas direto do Postgres do Supabase com ``--referencias``, o que exige
 a senha do banco (Supabase → Project Settings → Database → Connection string).
 A restrição de cota derruba a API REST, não a conexão Postgres.
 
-O gatilho que apagaria o dado
------------------------------
-``coletas`` tem um ``BEFORE INSERT`` (``trg_resolve_familia_coletas``) que
-reescreve ``familia_resolvida``/``sku_resolvido``/``estado_match`` consultando
-``produtos_depara_nome``. Num banco novo essa tabela começa VAZIA, e
-``SELECT ... INTO`` sem resultado devolve NULO — ou seja, carregar o histórico
-com o gatilho ligado ZERARIA a resolução de todas as linhas, silenciosamente.
-Por isso a carga desliga o gatilho e o religa no fim: o que estava no Parquet
-entra como estava.
+A ORDEM IMPORTA: referências ANTES das coletas
+----------------------------------------------
+O Parquet **não carrega** ``familia_resolvida``/``sku_resolvido``/
+``estado_match``: o mapeamento da coleta (``utils.supabase_client.map_record``)
+não inclui essas colunas, porque quem as preenche é o gatilho
+``trg_resolve_familia_coletas`` no banco, consultando ``produtos_depara_nome``.
+
+Daí a ordem obrigatória: **copiar as referências primeiro** e carregar as
+coletas com o gatilho **LIGADO**. Ao contrário — coletas primeiro — as linhas
+entram com os três campos NULOS e copiar as referências depois não volta atrás:
+`UPDATE` nenhum acontece sobre linha já gravada, e o painel passaria a mostrar
+"não mapeado" para produto que está mapeado.
+
+Por isso o script se recusa a carregar coletas com ``produtos_depara_nome``
+vazia (use ``--sem-referencias`` para forçar, se souber o que está fazendo).
 
 USO::
 
@@ -118,11 +124,18 @@ def inserir(
         return cur.rowcount
 
 
+def _depara_populado(conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM produtos_depara_nome")
+        return int(cur.fetchone()[0])
+
+
 def carregar_coletas(
     dsn_destino: str,
     inicio: date,
     fim: date,
     dry_run: bool,
+    sem_referencias: bool = False,
 ) -> None:
     """Copia `coletas` do histórico frio para a base nova, dia a dia."""
     from utils.history import DATASET_COLETAS, get_store
@@ -132,11 +145,13 @@ def carregar_coletas(
 
     dias_disponiveis = [d for d in store.days(DATASET_COLETAS) if inicio <= d <= fim]
     if not dias_disponiveis:
-        logger.error(
-            f"[carga] nenhum dia entre {inicio} e {fim} no histórico frio. "
+        # Sair com 0 aqui deixaria o operador seguir para a virada com a base
+        # VAZIA achando que a carga correu bem. O código de saída é o que o
+        # agendador e o `pipeline_watch` leem.
+        raise SystemExit(
+            f"[carga] ❌ nenhum dia entre {inicio} e {fim} no histórico frio. "
             "Confira GDRIVE_FOLDER_ID/RAC_HISTORY_DIR no .env."
         )
-        return
 
     logger.info(
         f"[carga] {len(dias_disponiveis)} dia(s) no frio: "
@@ -146,77 +161,131 @@ def carregar_coletas(
     if dry_run:
         for dia in dias_disponiveis:
             df = store.read(DATASET_COLETAS, start=dia, end=dia)
+            if store.last_read_errors:
+                logger.error(f"[carga] (dry-run) {dia}: partição ILEGÍVEL")
             logger.info(f"[carga] (dry-run) {dia}: {len(df)} linha(s)")
         return
 
     conn = _conectar(dsn_destino)
     try:
+        # O Parquet não traz familia/sku/estado — quem resolve é o gatilho,
+        # lendo `produtos_depara_nome`. Com ela vazia, tudo entraria NULO e
+        # copiar as referências depois NÃO corrigiria as linhas já gravadas.
+        n_depara = _depara_populado(conn)
+        if n_depara == 0 and not sem_referencias:
+            raise SystemExit(
+                "[carga] ❌ `produtos_depara_nome` está VAZIA no destino.\n"
+                "O Parquet não carrega familia_resolvida/sku_resolvido/"
+                "estado_match — quem preenche é o gatilho, a partir dessa "
+                "tabela. Carregar agora gravaria tudo NULO e copiar as "
+                "referências depois não volta atrás.\n"
+                "Rode primeiro:\n"
+                "  python scripts/db_migrate_hot.py --referencias "
+                '--dsn-origem "<DSN do Supabase>"\n'
+                "(ou --sem-referencias para forçar, se souber o que faz)."
+            )
+        logger.info(f"[carga] de-para com {n_depara} linha(s) — gatilho resolverá")
+
         colunas = colunas_da_tabela(conn, "coletas")
         # `id` sai fora: o histórico carrega o id do Supabase e reaproveitá-lo
         # amarraria a base nova à sequência da velha — na primeira coleta o
         # nextval colidiria com um id já ocupado.
         colunas = [c for c in colunas if c != "id"]
 
-        with conn.cursor() as cur:
-            cur.execute(f"ALTER TABLE coletas DISABLE TRIGGER {GATILHO_COLETAS}")
-        conn.commit()
-        logger.info(f"[carga] gatilho {GATILHO_COLETAS} desligado para a carga")
-
         total = 0
-        try:
-            for dia in dias_disponiveis:
-                df = store.read(DATASET_COLETAS, start=dia, end=dia)
-                if df.empty:
-                    logger.warning(f"[carga] {dia}: nada no frio — pulado")
-                    continue
-
-                # NaN do pandas não é NULL do Postgres: sem esta troca, um
-                # preço ausente entraria como o texto 'nan' numa coluna
-                # numérica e a linha inteira seria rejeitada.
-                df = df.astype(object).where(df.notna(), None)
-                linhas = df.to_dict("records")
-
-                entraram = inserir(conn, "coletas", linhas, colunas)
-                conn.commit()
-                total += entraram
-                logger.success(
-                    f"[carga] {dia}: {entraram} inserida(s) de {len(linhas)} lida(s)"
+        for dia in dias_disponiveis:
+            df = store.read(DATASET_COLETAS, start=dia, end=dia)
+            if store.last_read_errors:
+                # `store.read` NÃO levanta em partição ilegível: devolve o que
+                # conseguiu ler. Seguir daqui gravaria um recorte parcial com
+                # cara de dia completo — e ninguém saberia que faltou linha.
+                raise SystemExit(
+                    f"[carga] ❌ {dia}: partição ilegível no histórico "
+                    f"({store.last_read_errors}). Nada mais foi carregado."
                 )
-        finally:
-            with conn.cursor() as cur:
-                cur.execute(f"ALTER TABLE coletas ENABLE TRIGGER {GATILHO_COLETAS}")
+            if df.empty:
+                logger.warning(f"[carga] {dia}: nada no frio — pulado")
+                continue
+
+            # NaN do pandas não é NULL do Postgres: sem esta troca, um
+            # preço ausente entraria como o texto 'nan' numa coluna
+            # numérica e a linha inteira seria rejeitada.
+            df = df.astype(object).where(df.notna(), None)
+            linhas = df.to_dict("records")
+
+            entraram = inserir(conn, "coletas", linhas, colunas)
             conn.commit()
-            logger.info(f"[carga] gatilho {GATILHO_COLETAS} religado")
+            total += entraram
+            logger.success(
+                f"[carga] {dia}: {entraram} inserida(s) de {len(linhas)} lida(s)"
+            )
 
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT count(*), min(data)::text, max(data)::text FROM coletas"
+                "SELECT count(*), min(data)::text, max(data)::text, "
+                "count(*) FILTER (WHERE estado_match IS NULL) FROM coletas"
             )
-            n, dmin, dmax = cur.fetchone()
+            n, dmin, dmax, sem_estado = cur.fetchone()
         logger.success(
             f"[carga] destino agora com {n} linha(s), de {dmin} a {dmax} "
             f"({total} inserida(s) nesta execução)"
         )
+        if sem_estado:
+            logger.warning(
+                f"[carga] ⚠️ {sem_estado} linha(s) sem estado_match — são "
+                "produtos que o de-para ainda não conhece. Rode "
+                "`python scripts/resolver_diario.py` depois de completar o "
+                "de-para."
+            )
     finally:
         conn.close()
+
+
+def _ajustar_sequencias(conn, tabela: str) -> None:
+    """Empurra a sequência da PK para além do maior id copiado.
+
+    A cópia preserva os `id`s do Supabase, mas a sequência do banco NOVO
+    continua em 1. Sem este acerto, o primeiro INSERT automático tentaria um id
+    já ocupado e morreria com violação de chave primária — dias depois da
+    migração, longe de qualquer pista de que a causa foi a carga.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT pg_get_serial_sequence(%s, a.attname), a.attname
+            FROM pg_attribute a
+            WHERE a.attrelid = %s::regclass AND a.attname = 'id'
+            """,
+            (tabela, tabela),
+        )
+        linha = cur.fetchone()
+        if not linha or not linha[0]:
+            return  # tabela sem `id` serial (ex.: produtos_catalogo, PK=sku)
+        seq = linha[0]
+        cur.execute(f"SELECT setval(%s, COALESCE((SELECT MAX(id) FROM {tabela}), 0) + 1, false)", (seq,))
+        cur.execute(f"SELECT last_value FROM {seq}")
+        logger.info(f"[ref] {tabela}: sequência ajustada para {cur.fetchone()[0]}")
 
 
 def copiar_referencias(dsn_origem: str, dsn_destino: str, dry_run: bool) -> None:
     """Copia as tabelas curadas do Supabase para a base nova.
 
-    Sem elas o gatilho de `coletas` não resolve nada e toda coleta NOVA entra
-    com `estado_match` nulo — o painel passaria a mostrar "não mapeado" para
-    produto que está mapeado.
+    Sem elas o gatilho de `coletas` não resolve nada e TODA linha carregada
+    entra com `estado_match` nulo — o painel passaria a mostrar "não mapeado"
+    para produto que está mapeado. Por isso qualquer falha aqui é FATAL: um
+    aviso no meio do log seria lido como sucesso e a carga seguiria em cima de
+    um de-para incompleto.
     """
     origem = _conectar(dsn_origem)
     destino = _conectar(dsn_destino)
+    falhas: List[str] = []
     try:
         for tabela in TABELAS_REFERENCIA:
             try:
                 colunas = colunas_da_tabela(destino, tabela)
-            except psycopg2.Error:
+            except psycopg2.Error as exc:
                 destino.rollback()
-                logger.warning(f"[ref] {tabela} não existe no destino — pulada")
+                falhas.append(f"{tabela}: não existe no destino ({exc})")
                 continue
 
             with origem.cursor() as cur:
@@ -226,21 +295,37 @@ def copiar_referencias(dsn_origem: str, dsn_destino: str, dry_run: bool) -> None
                     linhas = [dict(zip(colunas, r)) for r in cur.fetchall()]
                 except psycopg2.Error as exc:
                     origem.rollback()
-                    logger.warning(f"[ref] {tabela}: leitura falhou ({exc}) — pulada")
+                    falhas.append(f"{tabela}: leitura falhou ({exc})")
                     continue
 
             if dry_run:
                 logger.info(f"[ref] (dry-run) {tabela}: {len(linhas)} linha(s)")
                 continue
 
-            entraram = inserir(destino, tabela, linhas, colunas)
-            destino.commit()
+            try:
+                entraram = inserir(destino, tabela, linhas, colunas)
+                _ajustar_sequencias(destino, tabela)
+                destino.commit()
+            except psycopg2.Error as exc:
+                destino.rollback()
+                falhas.append(f"{tabela}: gravação falhou ({exc})")
+                continue
+
             logger.success(
                 f"[ref] {tabela}: {entraram} inserida(s) de {len(linhas)} lida(s)"
             )
     finally:
         origem.close()
         destino.close()
+
+    if falhas:
+        raise SystemExit(
+            "[ref] ❌ as referências NÃO foram copiadas por completo:\n  - "
+            + "\n  - ".join(falhas)
+            + "\nNÃO carregue as coletas antes de resolver isto: elas "
+            "entrariam sem resolução e não há como corrigir depois sem "
+            "reprocessar."
+        )
 
 
 def main() -> None:
@@ -263,6 +348,14 @@ def main() -> None:
     parser.add_argument(
         "--dsn-origem", help="DSN do Postgres do Supabase (só com --referencias)."
     )
+    parser.add_argument(
+        "--sem-referencias",
+        action="store_true",
+        help=(
+            "Carrega coletas mesmo com produtos_depara_nome vazia. As linhas "
+            "entram SEM resolução e não há como corrigir sem reprocessar."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Não grava nada.")
     args = parser.parse_args()
 
@@ -284,7 +377,7 @@ def main() -> None:
     else:
         inicio = fim - timedelta(days=args.dias - 1)
 
-    carregar_coletas(args.dsn, inicio, fim, args.dry_run)
+    carregar_coletas(args.dsn, inicio, fim, args.dry_run, args.sem_referencias)
 
 
 if __name__ == "__main__":

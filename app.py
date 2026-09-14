@@ -587,7 +587,12 @@ def _get_supabase():
     # Janela quente fora do Supabase (Set/2026): com um DSN configurado, o
     # dashboard lê do Postgres novo pelo adaptador de `utils/db.py`, que expõe
     # a mesma API fluente. Sem DSN, nada muda — segue no Supabase via REST.
-    dsn = _resolve_secret("RAC_DB_DSN") or _resolve_secret("SUPABASE_DSN")
+    #
+    # `RAC_DB_BACKEND=supabase` tem a última palavra: é o botão de rollback
+    # documentado, e ele precisa funcionar SEM apagar o DSN do secrets — senão
+    # não serve para diagnosticar "o problema é o banco novo ou não?".
+    backend = (_resolve_secret("RAC_DB_BACKEND") or "auto").strip().lower()
+    dsn = "" if backend == "supabase" else _resolve_secret("RAC_DB_DSN")
     if dsn:
         try:
             from utils.db import PostgresClient

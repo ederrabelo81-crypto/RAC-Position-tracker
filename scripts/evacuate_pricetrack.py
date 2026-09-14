@@ -19,7 +19,9 @@ O dado que sai daqui já ia ser reescrito de qualquer jeito.
 
 A ORDEM IMPORTA
 ---------------
-Exporta → CONFERE → só então apaga. A conferência relê o Parquet gravado e
+Exporta → CONFERE → só então apaga. E o apagamento exige o histórico no
+**Drive**: com o backend local, a "cópia de segurança" ficaria só no disco
+desta máquina enquanto o TRUNCATE é definitivo. A conferência relê o Parquet gravado e
 compara a contagem por dia com a do banco. Se um único dia não bater, nada é
 apagado. `--confirmar-delete` é obrigatório para a etapa destrutiva: sem ele o
 script só exporta.
@@ -92,11 +94,23 @@ def tamanho(conn) -> str:
     return f"{TABELA}={tab} · banco={banco}"
 
 
-def exportar(conn, dias: List[date]) -> Dict[date, int]:
-    """Grava um Parquet por dia no histórico frio. Devolve o que gravou."""
+#: Run id fixo da evacuação. Com um id estável, reexecutar sobrescreve a MESMA
+#: partição em vez de acumular uma nova a cada tentativa.
+RUN_ID_EVACUACAO = "evacuacao"
+
+
+def exportar(conn, dias: List[date]) -> Dict[date, List[str]]:
+    """Grava um Parquet por dia no histórico frio.
+
+    Returns:
+        Mapa dia → chaves das partições gravadas. São essas chaves, e só elas,
+        que a conferência relê: contar "tudo o que existe no frio naquele dia"
+        misturaria partições antigas de outras importações e a conferência
+        passaria (ou falharia) por motivo errado.
+    """
     from utils.history import DATASET_PRICETRACK, write_records
 
-    gravados: Dict[date, int] = {}
+    gravados: Dict[date, List[str]] = {}
     for dia in dias:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(f"SELECT * FROM {TABELA} WHERE {COLUNA_DATA} = %s", (dia,))
@@ -109,6 +123,7 @@ def exportar(conn, dias: List[date]) -> Dict[date, int]:
             linhas,
             dataset=DATASET_PRICETRACK,
             date_column=COLUNA_DATA,
+            run_id=RUN_ID_EVACUACAO,
             already_mapped=True,
         )
         if not chaves:
@@ -118,33 +133,50 @@ def exportar(conn, dias: List[date]) -> Dict[date, int]:
                 f"[evacuar] ❌ {dia}: o histórico não confirmou a gravação. "
                 "NADA foi apagado. Confira GDRIVE_* no .env."
             )
-        gravados[dia] = len(linhas)
+        gravados[dia] = chaves
         logger.success(f"[evacuar] {dia}: {len(linhas)} linha(s) → Parquet")
 
     return gravados
 
 
-def conferir(no_banco: Dict[date, int]) -> bool:
-    """Relê o Parquet e compara com o banco, dia a dia.
+def _linhas_na_particao(store, chave: str) -> int:
+    """Conta as linhas relendo os BYTES da partição gravada."""
+    import io
 
-    Esta é a trava de segurança do script: sem ela, um backend do Drive que
-    falha em silêncio viraria perda de dado definitiva no TRUNCATE.
+    import pyarrow.parquet as pq
+
+    dados = store.backend.get(chave)
+    return pq.read_table(io.BytesIO(dados)).num_rows
+
+
+def conferir(no_banco: Dict[date, int], gravados: Dict[date, List[str]]) -> bool:
+    """Relê as partições gravadas e compara com o banco, dia a dia.
+
+    Esta é a trava de segurança do script. Ela relê as CHAVES que `exportar`
+    acabou de escrever — não o intervalo de datas — porque um dia pode já ter
+    partição antiga no frio, vinda de outra importação: contar o intervalo
+    somaria as duas e a conferência viraria ruído.
     """
-    from utils.history import DATASET_PRICETRACK, get_store
+    from utils.history import get_store
 
     store = get_store()
     ok = True
     for dia, esperado in sorted(no_banco.items()):
+        chaves = gravados.get(dia, [])
+        if not chaves:
+            logger.error(f"[conferir] {dia}: nenhuma partição gravada")
+            ok = False
+            continue
         try:
-            df = store.read(DATASET_PRICETRACK, start=dia, end=dia)
+            lidas = sum(_linhas_na_particao(store, c) for c in chaves)
         except Exception as exc:
             logger.error(f"[conferir] {dia}: releitura do Parquet falhou — {exc}")
             ok = False
             continue
 
-        if len(df) != esperado:
+        if lidas != esperado:
             logger.error(
-                f"[conferir] {dia}: banco tem {esperado}, Parquet tem {len(df)}"
+                f"[conferir] {dia}: banco tem {esperado}, Parquet tem {lidas}"
             )
             ok = False
         else:
@@ -152,11 +184,41 @@ def conferir(no_banco: Dict[date, int]) -> bool:
     return ok
 
 
-def apagar(conn) -> None:
-    """TRUNCATE — libera o disco na hora (DELETE não liberaria)."""
-    with conn.cursor() as cur:
-        cur.execute(f"TRUNCATE TABLE {TABELA}")
-    logger.success(f"[evacuar] {TABELA} truncada — disco liberado")
+def apagar(conn, esperado_por_dia: Dict[date, int]) -> None:
+    """TRUNCATE sob trava, reconferindo a contagem imediatamente antes.
+
+    Duas razões para não truncar direto:
+
+    * `DELETE` não devolve o disco — e devolver o disco é o objetivo aqui;
+    * entre a exportação e o apagamento, um import do PriceTrack pode ter
+      inserido linhas novas. Elas não estão no Parquet e sumiriam para sempre.
+      A trava `ACCESS EXCLUSIVE` impede escrita concorrente enquanto
+      reconferimos e truncamos na MESMA transação.
+    """
+    conn.autocommit = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"LOCK TABLE {TABELA} IN ACCESS EXCLUSIVE MODE")
+            cur.execute(
+                f"SELECT {COLUNA_DATA}, count(*) FROM {TABELA} GROUP BY 1"
+            )
+            agora = {linha[0]: linha[1] for linha in cur.fetchall()}
+
+            if agora != esperado_por_dia:
+                conn.rollback()
+                novos = sum(agora.values()) - sum(esperado_por_dia.values())
+                raise SystemExit(
+                    f"[evacuar] ❌ a tabela MUDOU desde a exportação "
+                    f"({novos:+d} linha(s)). NADA foi apagado — essas linhas "
+                    "não estão no Parquet. Rode o script de novo para exportar "
+                    "o que chegou."
+                )
+
+            cur.execute(f"TRUNCATE TABLE {TABELA}")
+        conn.commit()
+        logger.success(f"[evacuar] {TABELA} truncada — disco liberado")
+    finally:
+        conn.autocommit = True
 
 
 def main() -> None:
@@ -199,8 +261,25 @@ def main() -> None:
             logger.info("[evacuar] tabela já vazia — nada a fazer")
             return
 
+        # TRAVA DE SEGURANÇA: se o histórico estiver no disco local (sem
+        # GDRIVE_*), a "cópia de segurança" fica só nesta máquina — e o
+        # TRUNCATE é definitivo. Mesmo critério que `scripts/history_cli.py`
+        # já aplica antes de apagar do Supabase.
+        if args.confirmar_delete:
+            from utils.history import get_store
+            from utils.history.backends import LocalBackend
+
+            if isinstance(get_store().backend, LocalBackend):
+                raise SystemExit(
+                    "[evacuar] ❌ o histórico está em backend LOCAL (sem "
+                    "GDRIVE_FOLDER_ID): a cópia ficaria só no disco desta "
+                    "máquina e o TRUNCATE é definitivo. NÃO vou apagar.\n"
+                    "Configure o Drive (python scripts/gdrive_setup.py --check) "
+                    "ou rode sem --confirmar-delete para só exportar."
+                )
+
         gravados = exportar(conn, sorted(no_banco))
-        if not conferir(gravados):
+        if not conferir(no_banco, gravados):
             raise SystemExit(
                 "[evacuar] ❌ conferência FALHOU — nada foi apagado. "
                 "Corrija o histórico e rode de novo."
@@ -215,7 +294,7 @@ def main() -> None:
             )
             return
 
-        apagar(conn)
+        apagar(conn, no_banco)
         logger.info(f"[evacuar] depois: {tamanho(conn)}")
         logger.info(
             "[evacuar] a restrição do Supabase sai sozinha quando a plataforma "

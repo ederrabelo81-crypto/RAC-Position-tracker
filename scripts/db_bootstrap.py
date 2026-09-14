@@ -220,9 +220,15 @@ def aplicar(dsn: str, arquivos: List[Path], dry_run: bool) -> int:
     aplicados = 0
     try:
         with conn.cursor() as cur:
-            _garantir_registro(cur)
-            conn.commit()
-            feitas = _ja_aplicadas(cur)
+            if dry_run:
+                # Dry-run não escreve NADA, nem a tabela de registro: "só me
+                # mostre o plano" que cria DDL não é dry-run.
+                cur.execute("SELECT to_regclass('public.schema_migrations')")
+                feitas = _ja_aplicadas(cur) if cur.fetchone()[0] else set()
+            else:
+                _garantir_registro(cur)
+                conn.commit()
+                feitas = _ja_aplicadas(cur)
 
         for arquivo in arquivos:
             if arquivo.name in feitas:

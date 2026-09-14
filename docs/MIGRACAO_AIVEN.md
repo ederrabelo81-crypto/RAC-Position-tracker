@@ -148,26 +148,7 @@ e só aplica o que falta.
 
 ---
 
-### Passo 4 — Carregar os últimos 15 dias (do Parquet)
-
-```powershell
-python scripts\db_migrate_hot.py --dry-run     # quantas linhas existem no frio
-python scripts\db_migrate_hot.py --dias 15     # carrega
-```
-
-Esta carga **não depende do Supabase**. Ela lê do histórico em Parquet do
-Drive, que nunca parou de receber: desde Jul/2026 a coleta grava primeiro no
-histórico e só depois no banco.
-
-> **Detalhe que importa:** `coletas` tem um gatilho `BEFORE INSERT` que
-> recalcula `familia_resolvida`/`sku_resolvido`/`estado_match` consultando
-> `produtos_depara_nome`. Como essa tabela nasce vazia, o gatilho **zeraria a
-> resolução de todas as linhas carregadas**. O script desliga o gatilho durante
-> a carga e o religa no fim — o que estava no Parquet entra como estava.
-
----
-
-### Passo 5 — Copiar as tabelas de referência
+### Passo 4 — Copiar as tabelas de referência (antes das coletas!)
 
 O catálogo e o de-para são **curados**, não coletados: não estão no Parquet.
 Eles vêm direto do Postgres do Supabase (a restrição derruba a API REST, não a
@@ -181,10 +162,39 @@ python scripts\db_migrate_hot.py --referencias --dsn-origem "postgresql://postgr
 ```
 
 Copia `produtos_catalogo`, `produtos_depara_nome`, `produtos_aliases`,
-`plataforma_superficie` e `seller_depara`.
+`plataforma_superficie` e `seller_depara`, e acerta as sequências de id.
 
-> Sem este passo, toda coleta **nova** entra com `estado_match` nulo e o painel
-> mostra "não mapeado" para produto que está mapeado.
+> **Este passo vem ANTES da carga das coletas, e a ordem não é preferência.**
+> O Parquet **não carrega** `familia_resolvida`/`sku_resolvido`/`estado_match`:
+> o mapeamento da coleta não inclui essas colunas porque quem as preenche é o
+> gatilho `trg_resolve_familia_coletas`, no banco, lendo `produtos_depara_nome`.
+> Com essa tabela vazia, as coletas entrariam com os três campos **nulos** — e
+> copiar as referências depois **não corrige linha já gravada**. O painel
+> passaria a mostrar "não mapeado" para produto que está mapeado.
+>
+> O script se recusa a carregar coletas com o de-para vazio, justamente para
+> que essa ordem não dependa de alguém lembrar dela.
+
+---
+
+### Passo 5 — Carregar os últimos 15 dias (do Parquet)
+
+```powershell
+python scripts\db_migrate_hot.py --dry-run     # quantas linhas existem no frio
+python scripts\db_migrate_hot.py --dias 15     # carrega
+```
+
+Esta carga **não depende do Supabase**. Ela lê do histórico em Parquet do
+Drive, que nunca parou de receber: desde Jul/2026 a coleta grava primeiro no
+histórico e só depois no banco.
+
+O gatilho fica **ligado** durante a carga — é ele que resolve família/SKU/estado
+a partir do de-para que você acabou de copiar. No fim, o script informa quantas
+linhas ficaram sem `estado_match`: são produtos que o de-para ainda não conhece,
+e o caminho para eles é `python scripts\resolver_diario.py`.
+
+Se alguma partição do Parquet estiver ilegível, a carga **para** em vez de
+gravar um recorte parcial com cara de dia completo.
 
 ---
 
