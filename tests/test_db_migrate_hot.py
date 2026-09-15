@@ -239,6 +239,82 @@ class TestCopiarReferenciasOrdemDeterministica:
         assert len(linhas) == 1
         assert linhas[0] == ("MAPEADO", "família_revisada")
 
+    def test_avaliacao_fora_do_dominio_vira_null_em_vez_de_abortar(self, tmp_path, monkeypatch):
+        """Achado em campo (Set/2026, Passo 5 da migração Aiven): dado VELHO
+        no frio (Parquet) tinha `avaliacao` = 123.456 — sobra de um bug já
+        corrigido em `parse_rating` (utils/text.py) que só validava o teto
+        0-5 numa das duas bifurcações. `coletas.avaliacao numeric(3,2)`
+        (destino) rejeita qualquer coisa >= 10 com overflow, e a carga
+        inteira é UMA transação — sem sanitizar, um valor de anos atrás
+        derruba os 15 dias todos. `carregar_coletas` deve nular a avaliação
+        fora do domínio (0-5) e seguir a carga, não abortar."""
+        import pandas as pd
+
+        from utils import history as history_mod
+
+        dsn_destino = _dsn_schema("t_dmh_destino")
+        conn = psycopg2.connect(dsn_destino)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS t_dmh_destino CASCADE")
+            cur.execute("CREATE SCHEMA t_dmh_destino")
+            cur.execute(
+                "CREATE TABLE t_dmh_destino.coletas ("
+                "id bigserial PRIMARY KEY, data date NOT NULL, "
+                "plataforma text NOT NULL, produto text, "
+                "avaliacao numeric(3,2), estado_match text)"
+            )
+            cur.execute(
+                "CREATE TABLE t_dmh_destino.produtos_depara_nome "
+                "(id bigserial PRIMARY KEY, nome_coletado text)"
+            )
+            cur.execute(
+                "INSERT INTO t_dmh_destino.produtos_depara_nome (nome_coletado) "
+                "VALUES ('x')"
+            )
+        conn.close()
+
+        dia = _AGORA.date()
+        df = pd.DataFrame([
+            {"data": dia, "plataforma": "Amazon", "produto": "Bom",
+             "avaliacao": 4.8},
+            {"data": dia, "plataforma": "Amazon", "produto": "Lixo Legado",
+             "avaliacao": 123.456},
+        ])
+
+        class _BackendFalso:
+            describe = "teste (fake)"
+
+        class _StoreFalso:
+            backend = _BackendFalso()
+
+            def days(self, _dataset):
+                return [dia]
+
+            def read(self, _dataset, start, end):
+                return df
+
+            last_read_errors = None
+
+        monkeypatch.setattr(
+            dmh, "colunas_da_tabela",
+            lambda conn, tabela: ["data", "plataforma", "produto", "avaliacao"],
+        )
+        monkeypatch.setattr(history_mod, "get_store", lambda: _StoreFalso())
+
+        dmh.carregar_coletas(dsn_destino, dia, dia, dry_run=False)
+
+        conn = psycopg2.connect(dsn_destino)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT produto, avaliacao FROM coletas ORDER BY produto"
+            )
+            linhas = dict(cur.fetchall())
+        conn.close()
+
+        assert float(linhas["Bom"]) == 4.8
+        assert linhas["Lixo Legado"] is None
+
     def test_dry_run_nao_grava_nada(self, schemas):
         origem, destino = schemas
         conn = psycopg2.connect(_dsn_schema(origem))

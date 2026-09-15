@@ -293,7 +293,15 @@ def parse_rating(raw: Optional[str]) -> Optional[float]:
         return None
     match = re.search(r"(\d+)[,.](\d+)", raw)
     if match:
-        return float(f"{match.group(1)}.{match.group(2)}")
+        val = float(f"{match.group(1)}.{match.group(2)}")
+        # Achado em campo (Set/2026): esta bifurcação não tinha o teto de
+        # sanidade da outra — um texto tipo "123.456" (separador de milhar
+        # confundido com decimal) virava avaliação 123.456, que nem
+        # `coletas.avaliacao numeric(3,2)` (Aiven) nem a Supabase real
+        # aceitam. A linha ainda entrava no Parquet (histórico grava ANTES
+        # do banco) e o upload pro Supabase falhava em silêncio — só apareceu
+        # ao carregar o frio de volta num INSERT que não perdoa overflow.
+        return val if val <= 5 else None
     match = re.search(r"(\d+)", raw)
     if match:
         val = float(match.group(1))

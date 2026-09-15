@@ -285,6 +285,25 @@ def carregar_coletas(
             df = df.astype(object).where(df.notna(), None)
             linhas = df.to_dict("records")
 
+            # Achado em campo (Set/2026): `parse_rating()` tinha um teto de
+            # sanidade só numa das duas bifurcações (utils/text.py) — um texto
+            # mal formado virava avaliação tipo 123.456, que nunca coube em
+            # `avaliacao numeric(3,2)`. A linha ainda foi gravada no Parquet
+            # (histórico grava ANTES do banco) e o upload pro Supabase daquele
+            # dia deve ter falhado em silêncio. `parse_rating` já foi
+            # corrigido para novas coletas, mas isto aqui é dado VELHO,
+            # já no frio — nular em vez de abortar a carga inteira por uma
+            # avaliação de qualquer forma inválida (0–5 é o domínio real).
+            for linha in linhas:
+                avaliacao = linha.get("avaliacao")
+                if avaliacao is not None and not (-5 <= avaliacao <= 5):
+                    logger.warning(
+                        f"[carga] {dia}: avaliacao={avaliacao!r} fora do "
+                        f"domínio (0–5) em {linha.get('plataforma')}/"
+                        f"{linha.get('produto')!r} — gravando NULL"
+                    )
+                    linha["avaliacao"] = None
+
             # SEM commit por dia: o commit único vem no fim, depois que todos
             # os dias entraram sem erro. Qualquer falha no meio faz o `except`
             # abaixo dar rollback em tudo.
