@@ -48,8 +48,12 @@ a buy box, caro demais para a varredura do PC.
 > 12h a 17h e Fechamento das 18h em diante — exatamente os cortes entre os
 > horários agendados, para que um catch-up no logon caia no turno certo.
 >
-> Mais Vendidos (`RAC_Bestsellers`) foi **descontinuado** em Set/2026; o setup
-> remove a tarefa antiga se ela ainda existir.
+> Mais Vendidos (`RAC_Bestsellers`) **não está no Task Scheduler** — o setup
+> remove a tarefa antiga se ela ainda existir — mas a coleta **não foi
+> descontinuada**: ela roda ad-hoc no PC coletor (`scripts\collect_bestsellers.bat`)
+> na maioria dos dias úteis. Job `local_bestsellers` no registro (destino
+> `bestsellers`, ~09:30 BRT) só torna essa ausência visível quando ninguém
+> roda — ele não substitui a tarefa fixa que falta recriar.
 >
 > **Estágio C — materialização do seller_app (Set/2026):** depois de cada coleta
 > bem-sucedida, o `local_scheduled_collect.bat` roda
