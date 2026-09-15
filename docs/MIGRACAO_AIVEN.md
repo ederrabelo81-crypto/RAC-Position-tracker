@@ -289,6 +289,20 @@ histórico em Parquet é o mesmo para os dois lados.
 
 ## 5. Limites que continuam de pé
 
+- **GitHub Actions precisa do PRÓPRIO secret `RAC_DB_DSN`.** O `.env` do PC
+  coletor e os *secrets* do repositório (Settings → Secrets and variables →
+  Actions) são dois lugares diferentes — preencher um não preenche o outro.
+  Os workflows (`collect_amazon_sellers.yml`, `collect.yml`,
+  `pricetrack_daily.yml`, `watchdog.yml`, `pipeline_guard.yml`) já foram
+  atualizados para LER `secrets.RAC_DB_DSN` quando ele existir, mas sem o
+  secret cadastrado eles continuam gravando no Supabase — e travados por
+  `exceed_db_size_quota` enquanto o Supabase não for evacuado (Passo 8) ou o
+  secret não for criado. **Confirmado em produção (15/09/2026):** os 6 runs
+  de `collect_amazon_sellers.yml` desde a PR #366 (14/09) falharam 100% com
+  `[Supabase] 🚫 Projeto RESTRITO por cota de armazenamento` — o CSV/Parquet
+  da coleta ficou salvo (artifact do run + Drive), mas **nada foi gravado em
+  banco nenhum** nesse período. Crie o secret com o mesmo valor do
+  `RAC_DB_DSN` do `.env` para os jobs do Actions voltarem a persistir.
 - **1 GB não é infinito.** A 34 MB/dia, a janela de 15 dias ocupa ~510 MB.
   `scripts/pipeline_watch.py` já cobra ausência de execução; convém somar um
   alarme de tamanho antes de chegar em 800 MB.

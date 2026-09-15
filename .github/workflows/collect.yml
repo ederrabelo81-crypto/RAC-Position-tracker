@@ -195,6 +195,7 @@ jobs:
       - name: Run Python collector (xvfb + MAGALU_HEADLESS=false)
         id: collect
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           # Histórico frio no Drive. O runner é efêmero: sem estas credenciais o
@@ -283,6 +284,7 @@ jobs:
           && steps.collect.outcome != 'failure'
         continue-on-error: true
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |

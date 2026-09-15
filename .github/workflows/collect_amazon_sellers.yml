@@ -25,6 +25,11 @@ name: Coleta Amazon Sellers
 #   SUPABASE_URL / SUPABASE_KEY  —  projeto + chave service_role (escrita)
 #   GDRIVE_*                     —  histórico frio no Drive (ver docs/HISTORICO_DRIVE.md)
 #   TELEGRAM_BOT_TOKEN / N8N_TELEGRAM_CHAT_ID  —  alerta de falha (opcional)
+#   RAC_DB_DSN  —  opcional (Postgres novo, ver docs/MIGRACAO_AIVEN.md). Vazio =
+#                  segue no Supabase, mesmo comportamento de hoje. Sem este
+#                  secret aqui, este job continua gravando no Supabase mesmo
+#                  depois de migrar o PC coletor — os dois lados não são o
+#                  mesmo `.env`.
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -135,6 +140,7 @@ jobs:
         id: guard
         if: github.event_name == 'schedule' && steps.params.outputs.job_id != ''
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           JOB_ID: ${{ steps.params.outputs.job_id }}
@@ -183,6 +189,7 @@ jobs:
         id: collect
         if: steps.guard.outputs.skip != 'true'
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
@@ -247,6 +254,7 @@ jobs:
           && steps.collect.outcome != 'failure'
         continue-on-error: true
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |

@@ -31,7 +31,6 @@ from loguru import logger
 
 from bestsellers.base import BestSellerSource, PlainBrowser
 from bestsellers.models import BestSellerItem
-from config import PAGE_TIMEOUT
 from utils.text import parse_price, parse_rating, parse_review_count
 from utils.amazon_sellers import extract_seller_from_pdp
 from utils.seller_names import normalize_seller_name
@@ -74,6 +73,20 @@ _ENV_PDP_BUDGET = "RAC_BESTSELLERS_AMAZON_PDP_BUDGET"
 # ou bloqueio) em vez de produto fora do ar. Abortar aqui evita varrer a lista
 # inteira abrindo página que não vai revelar nada.
 _MAX_FALHAS_SEGUIDAS = 5
+
+# Timeout do `goto` de CADA PDP — deliberadamente menor que `PAGE_TIMEOUT`
+# (45s, pensado para a página do ranking, que é o que importa de verdade).
+# Esta resolução é enriquecimento best-effort rodando até ~60x em sequência:
+# herdar os 45s inteiros faz um ambiente bloqueado (rede sem o Chrome local
+# aquecido, IP que a Amazon não aceita) parecer travado por até
+# `_MAX_FALHAS_SEGUIDAS × 45s` (~4min) sem uma linha de log — foi o que gerou
+# o Ctrl+C do relato de 15/09/2026 rodando fora do PC coletor.
+_PDP_GOTO_TIMEOUT_MS = 20_000
+
+# A cada quantos PDPs abertos emitir uma linha de progresso — sem isso a
+# resolução inteira (até ~60 PDPs) fica muda entre o log de início e o
+# resumo final, e uma execução lenta é indistinguível de uma travada.
+_PROGRESSO_A_CADA = 10
 
 # Desafio de bot da Amazon — os mesmos marcadores que `scrapers/amazon.py` usa.
 _SELECTORS_CAPTCHA = (
@@ -362,6 +375,13 @@ class AmazonBestSellers(BestSellerSource):
                 "os excedentes ficam sem seller."
             )
 
+        logger.info(
+            f"[{self.nome}] Resolvendo buy box de {orcamento} item(ns) via "
+            f"PDP (timeout {_PDP_GOTO_TIMEOUT_MS // 1000}s cada) — pode levar "
+            "alguns minutos em ambiente sem CAPTCHA/bloqueio; mais que isso em "
+            "IP/browser que a Amazon barra."
+        )
+
         # Cache POR EXECUÇÃO. Guarda também o insucesso (None) para não reabrir
         # o mesmo PDP morto quando o ASIN se repete entre páginas.
         lidos: Dict[str, Optional[str]] = {}
@@ -382,6 +402,12 @@ class AmazonBestSellers(BestSellerSource):
             nome = self._fetch_pdp_seller(asin)
             lidos[asin] = nome
             item.seller = nome
+
+            if abertos % _PROGRESSO_A_CADA == 0:
+                logger.info(
+                    f"[{self.nome}] PDP {abertos}/{orcamento} resolvidos "
+                    f"({sum(1 for v in lidos.values() if v)} com seller)."
+                )
 
             if nome:
                 falhas_seguidas = 0
@@ -427,7 +453,7 @@ class AmazonBestSellers(BestSellerSource):
         try:
             self._browser._page.goto(
                 f"https://www.amazon.com.br/dp/{asin}",
-                timeout=PAGE_TIMEOUT,
+                timeout=_PDP_GOTO_TIMEOUT_MS,
                 wait_until="domcontentloaded",
             )
             self._browser._random_delay(min_s=2.0, max_s=5.0)

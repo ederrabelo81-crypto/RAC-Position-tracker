@@ -105,6 +105,7 @@ jobs:
       - name: Heartbeat — started
         continue-on-error: true
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python -m utils.heartbeat --job gh_watchdog --status STARTED
@@ -112,6 +113,7 @@ jobs:
       - name: Run daily status check
         id: check
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -142,6 +144,7 @@ jobs:
         if: always()
         continue-on-error: true
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
