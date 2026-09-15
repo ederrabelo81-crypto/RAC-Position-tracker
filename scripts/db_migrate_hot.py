@@ -51,7 +51,18 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_RAIZ = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_RAIZ))
+
+# `docs/MIGRACAO_AIVEN.md` (Passo 2) manda guardar RAC_DB_DSN no `.env` — sem
+# carregá-lo aqui, `os.getenv("RAC_DB_DSN")` só enxerga o `.env` se o operador
+# tiver exportado a variável manualmente no shell, e o script sai com "DSN de
+# destino ausente" mesmo com o `.env` preenchido corretamente.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_RAIZ / ".env")
+except ImportError:  # pragma: no cover
+    pass
 
 from loguru import logger  # noqa: E402
 
