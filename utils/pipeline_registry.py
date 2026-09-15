@@ -542,6 +542,51 @@ JOBS: Tuple[JobSpec, ...] = (
             "Editor; daí em diante esta batida noturna mantém os 15 dias."
         ),
     ),
+    # ── PC local — Mais Vendidos (bestsellers) ──────────────────────────────
+    # O MESMO modo de falha já documentado em CLAUDE.md: a coleta de Mais
+    # Vendidos grava na tabela `bestsellers` na maioria dos dias, mas a tarefa
+    # `RAC_Bestsellers` foi removida do Task Scheduler (scripts/setup_local_
+    # scheduler.ps1 trata o nome como legado e a apaga se encontrar) e o job
+    # nunca entrou neste registro — logo nenhuma batida de ponto e nenhuma
+    # fonte é cobrada quando some. Foi assim que 7 das 20 fontes (dealers de
+    # site próprio + Casas Bahia) ficaram mudas por meses sem alarme. Este job
+    # não distingue QUAL fonte falhou dentro de `bestsellers` (a contagem é do
+    # dia inteiro, não por plataforma) — só torna visível quando a coleta
+    # INTEIRA não roda. É o primeiro degrau: sem ele, "Mercado Livre não está
+    # coletando" só é descoberto quando alguém abre o painel na mão.
+    JobSpec(
+        id="local_bestsellers",
+        nome="Coleta Mais Vendidos (bestsellers)",
+        executor=EXEC_LOCAL,
+        gatilho=(
+            "execução manual/ad-hoc no PC coletor — RAC_Bestsellers NÃO está "
+            "no Task Scheduler (ver CLAUDE.md, seção 'Mais Vendidos')"
+        ),
+        comando="scripts\\collect_bestsellers.bat",
+        # Cadência pretendida (CLAUDE.md): todo dia útil às 09:30 BRT, antes do
+        # Amazon recalcular o ranking de hora em hora. Tolerância e deadline
+        # generosos de propósito: sem tarefa fixa no agendador, cobrar minutos
+        # de atraso produziria o mesmo "alerta que virou paisagem" do Google
+        # Shopping — o que importa aqui é pegar o dia em que NINGUÉM rodou.
+        horario_brt=(9, 30),
+        dias=DIAS_UTEIS,
+        tolerancia_min=210,
+        deadline_min=570,
+        destino="bestsellers",
+        severidade=SEV_IMPORTANTE,
+        remediacao=(
+            "scripts\\collect_bestsellers.bat no PC coletor (ou "
+            "python scripts/collect_bestsellers.py). Sessão do Mercado Livre "
+            "vencida? python scripts/setup_local_profile.py --site mercadolivre "
+            "— o gate fica registrado em logs/ml_gate_*.html"
+        ),
+        observacao=(
+            "Sem tarefa fixa no Task Scheduler: o horário é o pretendido, não "
+            "um contrato cumprido por agendamento. Recadastrar `RAC_Bestsellers` "
+            "em scripts/setup_local_scheduler.ps1 é o passo que falta para este "
+            "job deixar de depender de alguém lembrar de rodar na mão."
+        ),
+    ),
     # ── Consumidor externo ─────────────────────────────────────────────────
     JobSpec(
         id="briefing_0700",

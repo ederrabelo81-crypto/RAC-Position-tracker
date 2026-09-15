@@ -79,7 +79,23 @@ concurrency:
 
 permissions:
   contents: read
-  issues: write        # degradação crônica vira issue rastreada, não alerta repetido
+# NÃO peça `issues: write` aqui. Este workflow nunca gerou um único run desde
+# que foi criado (28/08/2026): zero disparos de schedule, e todo push mostra
+# `startup_failure` com zero jobs — porque este repositório roda com o
+# "Workflow permissions" padrão do GitHub em somente-leitura, e um workflow
+# que declara uma permissão de escrita além do que o repo concede não chega
+# nem a ser agendado. Todo outro workflow do repo (`watchdog.yml`,
+# `pricetrack_daily.yml`, `collect_amazon_sellers.yml`) não declara
+# `permissions:` (herda o padrão read-only) e por isso roda — e `tests.yml`,
+# o único outro com bloco `permissions:`, só pede `contents: read`. É esse o
+# motivo real de "o artefato de Saúde Pipeline RAC não está mais sendo
+# atualizado": o workflow nunca chegou a rodar, migração para o Aiven à parte.
+# O passo "Open/refresh chronic degradation issue" já tem
+# `continue-on-error: true` — sem `issues: write` ele só vai falhar (403) em
+# vez de criar/fechar issues, e o resto do guardião (varredura, artefato,
+# alerta no Telegram) segue rodando. Para reativar a automação de issues,
+# mude o "Workflow permissions" do repositório para leitura+escrita em
+# Settings → Actions → General, aí sim declare `issues: write` aqui.
 
 jobs:
   guard:
