@@ -107,7 +107,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install supabase python-dotenv loguru requests pandas tenacity \
-                      pyarrow google-api-python-client google-auth
+                      pyarrow google-api-python-client google-auth psycopg2-binary
 
       # ── Que pergunta este run está fazendo? ───────────────────────────────
       - name: Resolve run mode
