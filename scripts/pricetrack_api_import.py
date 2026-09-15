@@ -663,6 +663,15 @@ def _banco_disponivel() -> bool:
     return _HAS_SUPABASE
 
 
+def _backend_postgres_explicito() -> bool:
+    """`RAC_DB_BACKEND` fixado em Postgres (não o modo 'auto').
+
+    A distinção decide o comportamento em falha de DSN: forçado, levanta; em
+    'auto', cai para o Supabase — a mesma regra de `app.py::_get_supabase`.
+    """
+    return os.getenv("RAC_DB_BACKEND", "").strip().lower() in ("postgres", "pg", "aiven")
+
+
 def _supabase_client():
     """Cria (e memoiza) o cliente Supabase reutilizado em todo o script."""
     global _CLIENT
@@ -680,7 +689,18 @@ def _supabase_client():
             _CLIENT = get_client("postgres")
             return _CLIENT
         except DBError as exc:
-            raise EnvironmentError(f"RAC_DB_DSN definido mas inválido: {exc}")
+            # postgres FORÇADO (RAC_DB_BACKEND=postgres): quem fixou o backend
+            # novo quer saber que ele não subiu — jamais escrever no banco velho
+            # por baixo dos panos. No modo 'auto' (DSN presente por
+            # conveniência) vale a MESMA regra do `app.py::_get_supabase`: um
+            # DSN vencido/inalcançável cai para o Supabase, em vez de derrubar
+            # o import inteiro.
+            if _backend_postgres_explicito():
+                raise EnvironmentError(f"RAC_DB_DSN definido mas inválido: {exc}")
+            logger.warning(
+                f"RAC_DB_DSN indisponível ({exc}); caindo para o Supabase "
+                "(modo auto)."
+            )
 
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
@@ -1315,10 +1335,16 @@ def main() -> None:
         # ele tem credencial. postgres FORÇADO (RAC_DB_BACKEND=postgres) sem
         # RAC_DB_DSN, ou supabase-py instalado sem SUPABASE_URL/KEY, passariam
         # na checagem acima e só falhariam na 1ª gravação — depois de baixar
-        # tudo. Construir o cliente agora valida credencial (e conexão, no
-        # Postgres) ANTES de qualquer download.
+        # tudo. Construir o cliente e bater um SELECT barato agora valida
+        # credencial E conexão ANTES de qualquer download. No modo 'auto', um
+        # DSN vencido faz `_supabase_client()` cair para o Supabase (não aborta);
+        # só o backend Postgres FORÇADO falha duro aqui.
         try:
-            _supabase_client()
+            client = _supabase_client()
+            # `create_client` do Supabase é preguiçoso: só construir não pega
+            # chave inválida nem API fora do ar. O SELECT exercita a conexão de
+            # verdade (no Postgres, é a 2ª confirmação após verificar_conexao).
+            client.table(_TABLE).select("id").limit(1).execute()
         except Exception as exc:  # noqa: BLE001
             raise SystemExit(
                 f"❌ backend pedido mas indisponível para gravar: {exc}\n"
