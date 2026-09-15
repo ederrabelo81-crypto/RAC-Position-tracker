@@ -931,16 +931,20 @@ def _load_window(
                 from utils.db import dsn_from_env, resolve_backend_name
                 _pg = resolve_backend_name() == "postgres"
                 _dsn = dsn_from_env()
-            except Exception:  # noqa: BLE001
-                _pg, _dsn = False, ""
-            if _pg and not _dsn:
-                _dica = ("backend Postgres FORÇADO (RAC_DB_BACKEND=postgres) mas "
-                         "`RAC_DB_DSN` está VAZIO — defina o DSN.")
-            elif _pg:
-                _dica = ("Confira `RAC_DB_DSN` e se psycopg2-binary está em "
-                         "requirements_app.txt.")
+            except Exception as config_exc:  # noqa: BLE001
+                # `resolve_backend_name()` levanta quando RAC_DB_BACKEND tem um
+                # valor inválido. Mandar o operador conferir SUPABASE_* aqui
+                # esconderia a causa real — o que falta é corrigir a variável.
+                _dica = f"Confira `RAC_DB_BACKEND`: {config_exc}"
             else:
-                _dica = "Confira `SUPABASE_URL`/`SUPABASE_KEY`."
+                if _pg and not _dsn:
+                    _dica = ("backend Postgres FORÇADO (RAC_DB_BACKEND=postgres) "
+                             "mas `RAC_DB_DSN` está VAZIO — defina o DSN.")
+                elif _pg:
+                    _dica = ("Confira `RAC_DB_DSN` e se psycopg2-binary está em "
+                             "requirements_app.txt.")
+                else:
+                    _dica = "Confira `SUPABASE_URL`/`SUPABASE_KEY`."
             st.error(f"Falha lendo o banco: {type(exc).__name__}: {exc}\n\n"
                      f"{_dica} Caindo para Demo.")
             rows_by_date = _demo_window(window_start, end_iso)

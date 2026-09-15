@@ -161,13 +161,24 @@ def carregar_coletas(
         f"{dias_disponiveis[0]} → {dias_disponiveis[-1]}"
     )
 
+    # Dias pedidos no intervalo — para saber quais FALTAM. Vale para o dry-run
+    # e para a carga real: um dia sem partição não aparece em `dias_disponiveis`
+    # e um dia com partição vazia é pulado; qualquer dos dois deixaria a janela
+    # parcial passar como sucesso.
+    esperados = {
+        inicio + timedelta(days=i) for i in range((fim - inicio).days + 1)
+    }
+
     if dry_run:
         ilegiveis = []
+        com_dado_dry: set = set()
         for dia in dias_disponiveis:
             df = store.read(DATASET_COLETAS, start=dia, end=dia)
             if store.last_read_errors:
                 logger.error(f"[carga] (dry-run) {dia}: partição ILEGÍVEL")
                 ilegiveis.append(dia)
+            elif not df.empty:
+                com_dado_dry.add(dia)
             logger.info(f"[carga] (dry-run) {dia}: {len(df)} linha(s)")
         if ilegiveis:
             # Sair 0 aqui faria um preflight automatizado aprovar uma carga que
@@ -176,6 +187,21 @@ def carregar_coletas(
             raise SystemExit(
                 f"[carga] ❌ (dry-run) {len(ilegiveis)} partição(ões) ilegível(is): "
                 f"{ilegiveis}. A carga real abortaria aqui."
+            )
+        # Mesma checagem de lacunas da carga real: o dry-run tem que reprovar
+        # exatamente o que a carga abortaria, incluindo dia pedido sem dado.
+        lacunas_dry = sorted(esperados - com_dado_dry)
+        if lacunas_dry and not permitir_lacunas:
+            raise SystemExit(
+                f"[carga] ❌ (dry-run) {len(lacunas_dry)} dia(s) do intervalo SEM "
+                f"dado no histórico: {[d.isoformat() for d in lacunas_dry]}.\n"
+                "A carga real abortaria aqui. Se as lacunas são esperadas "
+                "(fim de semana sem coleta, p.ex.), rode com --permitir-lacunas."
+            )
+        if lacunas_dry:
+            logger.warning(
+                f"[carga] (dry-run) ⚠️ {len(lacunas_dry)} dia(s) sem dado "
+                f"(permitido): {[d.isoformat() for d in lacunas_dry]}"
             )
         return
 
@@ -211,13 +237,8 @@ def carregar_coletas(
         # nextval colidiria com um id já ocupado.
         colunas = [c for c in colunas if c != "id"]
 
-        # Todos os dias do intervalo pedido — para saber quais FALTAM. Um dia
-        # sem partição não aparece em `dias_disponiveis`, e um dia vazio é
-        # pulado: qualquer dos dois deixaria a janela parcial passar como
-        # sucesso. Rastreamos as lacunas e decidimos antes do commit.
-        esperados = {
-            inicio + timedelta(days=i) for i in range((fim - inicio).days + 1)
-        }
+        # `esperados` (dias do intervalo) foi calculado acima, antes do dry-run,
+        # e é reusado aqui: rastreamos as lacunas e decidimos antes do commit.
         total = 0
         com_dado: set = set()
         for dia in dias_disponiveis:

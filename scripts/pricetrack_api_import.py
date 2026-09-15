@@ -1297,16 +1297,34 @@ def main() -> None:
     logger.info(f"  Arquivos: {_DOWNLOAD_DIR}")
     logger.info(f"  Seller map: {'sim' if _HAS_SELLER_MAP else 'fallback'}")
     logger.info(f"  Categorias: {categories}")
-    # Upload pedido mas NENHUM backend disponível é ERRO, não aviso: seguir
-    # daqui terminaria "concluído" com zero linha gravada e sem re-tentar a
-    # data — o modo de falha silenciosa que o `pipeline_registry` existe para
-    # denunciar. `--no-upload` continua sendo o jeito de rodar só o download.
-    if not args.no_upload and not _banco_disponivel():
-        raise SystemExit(
-            "❌ upload pedido mas nenhum backend disponível: defina RAC_DB_DSN "
-            "(banco novo) ou SUPABASE_URL/SUPABASE_KEY (com supabase-py "
-            "instalado), ou rode com --no-upload para só baixar."
-        )
+    # Dry-run NÃO grava (insert_rows/date_exists saem cedo), então não exige
+    # backend nenhum — pedir credencial aqui reprovaria um dry-run legítimo num
+    # host sem .env de banco. A checagem vale só para a carga real.
+    if not args.dry_run and not args.no_upload:
+        # Upload pedido mas NENHUM backend disponível é ERRO, não aviso: seguir
+        # daqui terminaria "concluído" com zero linha gravada e sem re-tentar a
+        # data — o modo de falha silenciosa que o `pipeline_registry` existe
+        # para denunciar. `--no-upload` continua sendo o jeito de só baixar.
+        if not _banco_disponivel():
+            raise SystemExit(
+                "❌ upload pedido mas nenhum backend disponível: defina "
+                "RAC_DB_DSN (banco novo) ou SUPABASE_URL/SUPABASE_KEY (com "
+                "supabase-py instalado), ou rode com --no-upload para só baixar."
+            )
+        # `_banco_disponivel()` só diz que HÁ um backend resolvível — não que
+        # ele tem credencial. postgres FORÇADO (RAC_DB_BACKEND=postgres) sem
+        # RAC_DB_DSN, ou supabase-py instalado sem SUPABASE_URL/KEY, passariam
+        # na checagem acima e só falhariam na 1ª gravação — depois de baixar
+        # tudo. Construir o cliente agora valida credencial (e conexão, no
+        # Postgres) ANTES de qualquer download.
+        try:
+            _supabase_client()
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(
+                f"❌ backend pedido mas indisponível para gravar: {exc}\n"
+                "Corrija a credencial (RAC_DB_DSN ou SUPABASE_URL/KEY) ou "
+                "rode com --no-upload para só baixar."
+            )
 
     run(
         token=token,
