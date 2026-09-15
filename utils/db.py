@@ -757,15 +757,22 @@ class PostgresClient:
         Raises:
             DBError: se não conectar ou se o `SELECT 1` falhar.
         """
+        def _ping(cur):
+            cur.execute("SELECT 1")
+            return cur.fetchone()
+
         try:
-            with self._lock:
-                conn = self._connection()
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                    cur.fetchone()
-        except DBError:
-            raise
+            # Pelo `_run` (leitura), não com um connect+execute próprio: uma
+            # queda transitória bem no momento do ping ganha a mesma
+            # reconexão-e-repetição de qualquer leitura, em vez de abortar a
+            # abertura do cliente por um piscar de rede.
+            self._run(_ping, escrita=False)
         except Exception as exc:
+            # QUALQUER exceção vira DBError — não só as que o `_run` já embrulha.
+            # Um DSN sintaticamente inválido (`not-a-dsn`) levanta ProgrammingError
+            # no connect, que o `_run` NÃO converte; capturar só DBError deixaria
+            # essa vazar crua e quebrar o contrato documentado, do qual os
+            # chamadores (ex.: painel do PriceTrack) dependem para o diagnóstico.
             self.close()
             raise DBError(f"não foi possível usar o DSN informado: {exc}") from exc
 

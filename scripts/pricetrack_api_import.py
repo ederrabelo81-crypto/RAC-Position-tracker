@@ -653,12 +653,23 @@ def _banco_disponivel() -> bool:
     """
     try:
         from utils.db import resolve_backend_name
-
-        if resolve_backend_name() == "postgres":
-            return True
-    except Exception:  # noqa: BLE001 — utils.db ausente
-        pass
+    except ImportError:
+        return _HAS_SUPABASE
+    # DBError de resolve_backend_name (RAC_DB_BACKEND inválido) NÃO é engolido:
+    # propaga para o import falhar alto, em vez de cair para _HAS_SUPABASE e
+    # terminar "concluído" sem gravar.
+    if resolve_backend_name() == "postgres":
+        return True
     return _HAS_SUPABASE
+
+
+def _backend_postgres_explicito() -> bool:
+    """`RAC_DB_BACKEND` fixado em Postgres (não o modo 'auto').
+
+    A distinção decide o comportamento em falha de DSN: forçado, levanta; em
+    'auto', cai para o Supabase — a mesma regra de `app.py::_get_supabase`.
+    """
+    return os.getenv("RAC_DB_BACKEND", "").strip().lower() in ("postgres", "pg", "aiven")
 
 
 def _supabase_client():
@@ -678,7 +689,18 @@ def _supabase_client():
             _CLIENT = get_client("postgres")
             return _CLIENT
         except DBError as exc:
-            raise EnvironmentError(f"RAC_DB_DSN definido mas inválido: {exc}")
+            # postgres FORÇADO (RAC_DB_BACKEND=postgres): quem fixou o backend
+            # novo quer saber que ele não subiu — jamais escrever no banco velho
+            # por baixo dos panos. No modo 'auto' (DSN presente por
+            # conveniência) vale a MESMA regra do `app.py::_get_supabase`: um
+            # DSN vencido/inalcançável cai para o Supabase, em vez de derrubar
+            # o import inteiro.
+            if _backend_postgres_explicito():
+                raise EnvironmentError(f"RAC_DB_DSN definido mas inválido: {exc}")
+            logger.warning(
+                f"RAC_DB_DSN indisponível ({exc}); caindo para o Supabase "
+                "(modo auto)."
+            )
 
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
@@ -784,7 +806,7 @@ def purge_stale_basis(collection_date: str, dry_run: bool = False) -> int:
     deixaria o dia vazio. Alvo restrito a `spot_legacy`/NULL: uma base futura
     intencional (carimbo desconhecido) nunca é apagada por engano.
     """
-    if dry_run or not _HAS_SUPABASE:
+    if dry_run or not _banco_disponivel():
         return 0
     try:
         client = _supabase_client()
@@ -831,7 +853,7 @@ def log_import(
     rejection_log: Optional[List] = None,
     dry_run: bool = False,
 ) -> None:
-    if dry_run or not _HAS_SUPABASE:
+    if dry_run or not _banco_disponivel():
         return
     try:
         client = _supabase_client()
@@ -1295,8 +1317,40 @@ def main() -> None:
     logger.info(f"  Arquivos: {_DOWNLOAD_DIR}")
     logger.info(f"  Seller map: {'sim' if _HAS_SELLER_MAP else 'fallback'}")
     logger.info(f"  Categorias: {categories}")
-    if not _HAS_SUPABASE and not args.no_upload:
-        logger.warning("supabase-py não instalado — use --no-upload ou instale: pip install supabase")
+    # Dry-run NÃO grava (insert_rows/date_exists saem cedo), então não exige
+    # backend nenhum — pedir credencial aqui reprovaria um dry-run legítimo num
+    # host sem .env de banco. A checagem vale só para a carga real.
+    if not args.dry_run and not args.no_upload:
+        # Upload pedido mas NENHUM backend disponível é ERRO, não aviso: seguir
+        # daqui terminaria "concluído" com zero linha gravada e sem re-tentar a
+        # data — o modo de falha silenciosa que o `pipeline_registry` existe
+        # para denunciar. `--no-upload` continua sendo o jeito de só baixar.
+        if not _banco_disponivel():
+            raise SystemExit(
+                "❌ upload pedido mas nenhum backend disponível: defina "
+                "RAC_DB_DSN (banco novo) ou SUPABASE_URL/SUPABASE_KEY (com "
+                "supabase-py instalado), ou rode com --no-upload para só baixar."
+            )
+        # `_banco_disponivel()` só diz que HÁ um backend resolvível — não que
+        # ele tem credencial. postgres FORÇADO (RAC_DB_BACKEND=postgres) sem
+        # RAC_DB_DSN, ou supabase-py instalado sem SUPABASE_URL/KEY, passariam
+        # na checagem acima e só falhariam na 1ª gravação — depois de baixar
+        # tudo. Construir o cliente e bater um SELECT barato agora valida
+        # credencial E conexão ANTES de qualquer download. No modo 'auto', um
+        # DSN vencido faz `_supabase_client()` cair para o Supabase (não aborta);
+        # só o backend Postgres FORÇADO falha duro aqui.
+        try:
+            client = _supabase_client()
+            # `create_client` do Supabase é preguiçoso: só construir não pega
+            # chave inválida nem API fora do ar. O SELECT exercita a conexão de
+            # verdade (no Postgres, é a 2ª confirmação após verificar_conexao).
+            client.table(_TABLE).select("id").limit(1).execute()
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(
+                f"❌ backend pedido mas indisponível para gravar: {exc}\n"
+                "Corrija a credencial (RAC_DB_DSN ou SUPABASE_URL/KEY) ou "
+                "rode com --no-upload para só baixar."
+            )
 
     run(
         token=token,

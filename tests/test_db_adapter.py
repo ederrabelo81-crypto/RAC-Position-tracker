@@ -108,6 +108,17 @@ class TestResolveBackend:
         monkeypatch.setenv("RAC_DB_DSN", "postgresql://x/y")
         assert resolve_backend_name() == "postgres"
 
+    def test_dsn_invalido_falha_no_get_client(self, monkeypatch):
+        # HERMÉTICO de propósito: o DSN aponta para uma porta morta (127.0.0.1:1),
+        # recusado JÁ no connect — não precisa de Postgres de teste. Este é o
+        # exato caminho fail-fast que `verificar_conexao()` protege, e ele tem
+        # que rodar no CI (sem RAC_TEST_PG_DSN), não só quando há banco.
+        from utils.db import DBError, get_client
+
+        monkeypatch.setenv("RAC_DB_DSN", "postgresql://ninguem@127.0.0.1:1/naoexiste")
+        with pytest.raises(DBError):
+            get_client("postgres")
+
     def test_postgres_sem_dsn_falha_com_mensagem_util(self, monkeypatch):
         from utils.db import get_client
 
@@ -716,13 +727,6 @@ class TestConexaoValidadaCedo:
     sem ser: DSN malformado passava batido ali e estourava muitas linhas
     depois, onde o chamador já não sabia explicar o erro.
     """
-
-    def test_dsn_invalido_falha_no_get_client(self, monkeypatch):
-        from utils.db import DBError, get_client
-
-        monkeypatch.setenv("RAC_DB_DSN", "postgresql://ninguem@127.0.0.1:1/naoexiste")
-        with pytest.raises(DBError):
-            get_client("postgres")
 
     def test_dsn_bom_passa(self, client, monkeypatch):
         from utils.db import get_client

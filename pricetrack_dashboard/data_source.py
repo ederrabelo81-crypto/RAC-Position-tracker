@@ -216,7 +216,13 @@ def _supabase_client():
     if resolve_backend_name() == "postgres":
         dsn = dsn_from_env()
         try:
-            return PostgresClient(dsn)
+            cliente = PostgresClient(dsn)
+            # Valida a conexão AGORA: o construtor só guarda o DSN, então sem
+            # este ping a falha só apareceria dentro de `_load_window`, que a
+            # reporta como "falha lendo o Supabase" e cai para Demo — mensagem
+            # errada, backend errado.
+            cliente.verificar_conexao()
+            return cliente
         except DBError as exc:
             raise DBError(
                 f"RAC_DB_DSN está definido mas o backend Postgres não subiu: {exc}. "

@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 _SPEC = importlib.util.spec_from_file_location(
     "pricetrack_api_import",
@@ -565,3 +566,53 @@ class TestPurgeStaleBasis:
         monkeypatch.setattr(ptai, "_supabase_client", _explode)
         # A linha best_cash já está gravada; o purge falhar é absorvido.
         assert ptai.purge_stale_basis("2026-08-31") == 0
+
+
+class TestSupabaseClientResolucao:
+    """`_supabase_client` decide o backend pela mesma chave do resto do projeto
+    (`utils/db.py`). A regra dura da falha de DSN espelha `app.py::_get_supabase`:
+    Postgres FORÇADO levanta (não escreve no banco velho por baixo); no modo
+    'auto' (DSN por conveniência) um DSN vencido cai para o Supabase."""
+
+    def _patch_utils_db(self, monkeypatch, *, get_client_raise=None):
+        import utils.db as udb
+
+        monkeypatch.setattr(udb, "resolve_backend_name", lambda: "postgres")
+
+        def _fake_get_client(backend=None):
+            if get_client_raise is not None:
+                raise get_client_raise
+            return object()
+
+        monkeypatch.setattr(udb, "get_client", _fake_get_client)
+        monkeypatch.setattr(ptai, "_CLIENT", None)
+
+    def test_auto_cai_para_supabase_quando_dsn_falha(self, monkeypatch):
+        import utils.db as udb
+
+        monkeypatch.delenv("RAC_DB_BACKEND", raising=False)  # modo 'auto'
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "chave")
+        self._patch_utils_db(
+            monkeypatch, get_client_raise=udb.DBError("conexão recusada"))
+
+        marca = object()
+        monkeypatch.setattr(ptai, "create_client", lambda url, key: marca, raising=False)
+        # DSN indisponível no auto → não derruba o import, usa o Supabase.
+        assert ptai._supabase_client() is marca
+
+    def test_postgres_forcado_sem_dsn_valido_levanta(self, monkeypatch):
+        import utils.db as udb
+
+        monkeypatch.setenv("RAC_DB_BACKEND", "postgres")  # FORÇADO
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "chave")
+        self._patch_utils_db(
+            monkeypatch, get_client_raise=udb.DBError("RAC_DB_DSN vazio"))
+
+        def _nao_deveria(url, key):
+            raise AssertionError("backend forçado não pode cair para o Supabase")
+
+        monkeypatch.setattr(ptai, "create_client", _nao_deveria, raising=False)
+        with pytest.raises(EnvironmentError):
+            ptai._supabase_client()

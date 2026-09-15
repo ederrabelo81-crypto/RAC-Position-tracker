@@ -591,14 +591,43 @@ def _get_supabase():
     # `RAC_DB_BACKEND=supabase` tem a última palavra: é o botão de rollback
     # documentado, e ele precisa funcionar SEM apagar o DSN do secrets — senão
     # não serve para diagnosticar "o problema é o banco novo ou não?".
+    #
+    # NOTA: `st.cache_resource` guarda o cliente após a 1ª chamada. Mudar
+    # RAC_DB_BACKEND depois disso só vale após reiniciar o app (o Cloud
+    # reinicia ao salvar secrets) — comportamento padrão do Streamlit, não um
+    # bug silencioso: a leitura acontece de novo a cada boot.
     backend = (_resolve_secret("RAC_DB_BACKEND") or "auto").strip().lower()
+    if backend not in ("auto", "postgres", "pg", "aiven", "supabase"):
+        raise ValueError(
+            f"RAC_DB_BACKEND={backend!r} não reconhecido "
+            "(use auto, postgres ou supabase)."
+        )
+    postgres_explicito = backend in ("postgres", "pg", "aiven")
     dsn = "" if backend == "supabase" else _resolve_secret("RAC_DB_DSN")
+
+    # Postgres pedido EXPLICITAMENTE sem DSN é erro, não motivo para cair no
+    # Supabase caladamente — quem forçou o backend novo quer saber que faltou o
+    # DSN, não olhar dado do banco velho achando que é o novo.
+    if postgres_explicito and not dsn:
+        raise RuntimeError(
+            "RAC_DB_BACKEND=postgres pedido mas RAC_DB_DSN está vazio."
+        )
+
     if dsn:
         try:
             from utils.db import PostgresClient
-            return PostgresClient(dsn)
+            cliente = PostgresClient(dsn)
+            cliente.verificar_conexao()
+            return cliente
         except Exception:
-            return None
+            # No modo explícito, o erro sobe (quem forçou o Postgres quer saber
+            # que ele não subiu). No modo 'auto' — DSN presente por
+            # conveniência — cai para o Supabase: NÃO dar `return None` aqui,
+            # senão o fallback prometido pelo comentário nunca aconteceria e o
+            # painel viria vazio com um DSN só temporariamente indisponível.
+            if postgres_explicito:
+                raise
+            # cai para o bloco Supabase abaixo
 
     url = _resolve_secret("SUPABASE_URL")
     key = _resolve_secret("SUPABASE_KEY")
