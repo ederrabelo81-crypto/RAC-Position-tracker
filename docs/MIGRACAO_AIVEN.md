@@ -161,6 +161,35 @@ Pegue a senha em **Supabase → Project Settings → Database → Connection str
 python scripts\db_migrate_hot.py --referencias --dsn-origem "postgresql://postgres:SENHA@db.ailbsczkrympslpjwwko.supabase.co:5432/postgres"
 ```
 
+> **`db.<projeto>.supabase.co:5432` é IPv6-only** (sem o add-on pago de IPv4).
+> Muita rede residencial/Windows no Brasil não alcança esse host — a conexão
+> falha com `Connection timed out`, sem nada a ver com a senha. Confirmado em
+> campo (PC coletor, Set/2026): senha certa, timeout mesmo assim.
+>
+> **Antídoto: use o Session Pooler**, que é IPv4-compatível. Em **Supabase →
+> Project Settings → Database → Connection string**, troque a aba de **Direct
+> connection** para **Session pooler** — o host muda para
+> `aws-0-<região>.pooler.supabase.com:5432` e o usuário vira
+> `postgres.<project-ref>` (não só `postgres`). Copie a URI exatamente como a
+> Supabase mostra:
+>
+> ```powershell
+> python scripts\db_migrate_hot.py --referencias --dsn-origem "postgresql://postgres.ailbsczkrympslpjwwko:SENHA@aws-0-<regiao>.pooler.supabase.com:5432/postgres"
+> ```
+>
+> **Prefira o Session pooler (porta 5432) ao Transaction pooler (porta 6543).**
+> A cópia de referências deste passo usa duas conexões (origem e destino) e
+> confirma tabela por tabela — não é uma transação única. A evacuação do
+> Passo 8 é diferente: uma conexão só, com `ACCESS EXCLUSIVE`, numa transação
+> que fica aberta do snapshot até o `TRUNCATE`. Nenhum dos dois fluxos usa
+> `SET` de sessão fora de transação, prepared statement ou tabela temporária
+> entre transações, então o Transaction pooler não quebra por estado em
+> nenhum dos dois. O motivo de preferir o Session pooler é a **conexão
+> dedicada ao cliente**: o Transaction pooler multiplexa conexões entre
+> clientes por transação, o que é ótimo para muitas transações curtas, mas
+> menos previsível para a transação longa da evacuação, que fica segurando
+> um lock sobre uma conexão do pool por tempo indeterminado.
+
 Copia `produtos_catalogo`, `produtos_depara_nome`, `produtos_aliases`,
 `plataforma_superficie` e `seller_depara`, e acerta as sequências de id.
 
@@ -231,6 +260,9 @@ Com a coleta já salva na base nova, dá para recuperar o Supabase. Evacuar
 
 ```powershell
 $env:SUPABASE_DSN="postgresql://postgres:SENHA@db.ailbsczkrympslpjwwko.supabase.co:5432/postgres"
+# Timeout de conexão aqui? Mesmo antídoto do Passo 4 — troque para o Session
+# pooler (Supabase → Project Settings → Database → Connection string →
+# Session pooler): postgresql://postgres.<project-ref>:SENHA@aws-0-<região>.pooler.supabase.com:5432/postgres
 
 python scripts\evacuate_pricetrack.py --dry-run          # o que sairia
 python scripts\evacuate_pricetrack.py                    # exporta e CONFERE (não apaga)
