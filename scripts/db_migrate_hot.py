@@ -84,6 +84,19 @@ TABELAS_REFERENCIA = (
     "seller_depara",
 )
 
+# `produtos_depara_nome`/`produtos_aliases` têm UNIQUE em (nome_coletado)/
+# (titulo_norm) — achado em campo (Set/2026): a Supabase real acumulou linha
+# duplicada na mesma chave ao longo do tempo (~76%/94% de duplicidade
+# observada), então `inserir()` (ON CONFLICT DO NOTHING) descarta o excesso.
+# SEM ordenação, quem "ganha" é arbitrário — se duas linhas duplicadas
+# discordam (nome reclassificado depois), a versão VELHA podia vencer. As
+# colunas abaixo ordenam a leitura para a mais recente entrar primeiro (e
+# vencer o conflito), nunca uma arbitrária.
+ORDEM_REFERENCIA = {
+    "produtos_depara_nome": "revisado_em DESC NULLS LAST, created_at DESC",
+    "produtos_aliases": "created_at DESC",
+}
+
 LOTE = 1000
 GATILHO_COLETAS = "trg_resolve_familia_coletas"
 
@@ -387,7 +400,16 @@ def copiar_referencias(dsn_origem: str, dsn_destino: str, dry_run: bool) -> None
             with origem.cursor() as cur:
                 try:
                     lista = ", ".join(f'"{c}"' for c in colunas)
-                    cur.execute(f"SELECT {lista} FROM {tabela}")
+                    # ORDER BY quando a tabela tem UNIQUE que pode colidir: a
+                    # mais recente entra primeiro no lote, então é ela quem
+                    # "vence" o ON CONFLICT DO NOTHING de `inserir()` — sem
+                    # isso, a ordem de leitura do Postgres é arbitrária e uma
+                    # versão velha do de-para podia vencer uma mais nova.
+                    ordem = ORDEM_REFERENCIA.get(tabela)
+                    sql_leitura = f"SELECT {lista} FROM {tabela}"
+                    if ordem:
+                        sql_leitura += f" ORDER BY {ordem}"
+                    cur.execute(sql_leitura)
                     linhas = [dict(zip(colunas, r)) for r in cur.fetchall()]
                 except psycopg2.Error as exc:
                     origem.rollback()
