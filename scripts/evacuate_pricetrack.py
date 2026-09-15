@@ -52,7 +52,18 @@ from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_RAIZ = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_RAIZ))
+
+# `docs/MIGRACAO_AIVEN.md` (Passo 2) manda guardar as credenciais no `.env` —
+# sem carregá-lo aqui, `os.getenv(...)` só enxerga o `.env` se o operador
+# tiver exportado as variáveis manualmente no shell, e o script sai com "DSN
+# ausente" mesmo com o `.env` preenchido corretamente.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_RAIZ / ".env")
+except ImportError:  # pragma: no cover
+    pass
 
 from loguru import logger  # noqa: E402
 

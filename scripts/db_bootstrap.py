@@ -40,7 +40,18 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+RAIZ = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(RAIZ))
+
+# `docs/MIGRACAO_AIVEN.md` (Passo 2) manda guardar RAC_DB_DSN no `.env` — sem
+# carregá-lo aqui, `os.getenv("RAC_DB_DSN")` só enxerga o `.env` se o operador
+# tiver exportado a variável manualmente no shell, e o script sai com "DSN
+# ausente" mesmo com o `.env` preenchido corretamente.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(RAIZ / ".env")
+except ImportError:  # pragma: no cover
+    pass
 
 from loguru import logger  # noqa: E402
 
@@ -48,8 +59,6 @@ try:
     import psycopg2
 except ImportError:  # pragma: no cover
     psycopg2 = None
-
-RAIZ = Path(__file__).resolve().parent.parent
 BASE_PORTAVEL = RAIZ / "docs" / "migrations" / "019_schema_base_portavel.sql"
 DIR_PRINCIPAL = RAIZ / "docs" / "migrations"
 DIR_PRICETRACK = RAIZ / "migrations"
