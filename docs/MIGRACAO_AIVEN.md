@@ -178,15 +178,17 @@ python scripts\db_migrate_hot.py --referencias --dsn-origem "postgresql://postgr
 > ```
 >
 > **Prefira o Session pooler (porta 5432) ao Transaction pooler (porta 6543).**
-> Os dois scripts rodam tudo dentro de transações explícitas numa conexão só
-> (sem `SET` de sessão fora de transação, prepared statement ou tabela
-> temporária entre transações), então o Transaction pooler não quebra por
-> estado. O que pesa é a **duração**: a evacuação do Passo 8 mantém uma
-> transação só, com `ACCESS EXCLUSIVE`, do snapshot até o `TRUNCATE` — e o
-> Transaction pooler da Supabase (Supavisor) é otimizado para transações
-> curtas e de alto volume, com timeouts mais agressivos que o Session pooler.
-> Para uma transação longa como essa, o Session pooler é a escolha mais
-> previsível.
+> A cópia de referências deste passo usa duas conexões (origem e destino) e
+> confirma tabela por tabela — não é uma transação única. A evacuação do
+> Passo 8 é diferente: uma conexão só, com `ACCESS EXCLUSIVE`, numa transação
+> que fica aberta do snapshot até o `TRUNCATE`. Nenhum dos dois fluxos usa
+> `SET` de sessão fora de transação, prepared statement ou tabela temporária
+> entre transações, então o Transaction pooler não quebra por estado em
+> nenhum dos dois. O motivo de preferir o Session pooler é a **conexão
+> dedicada ao cliente**: o Transaction pooler multiplexa conexões entre
+> clientes por transação, o que é ótimo para muitas transações curtas, mas
+> menos previsível para a transação longa da evacuação, que fica segurando
+> um lock sobre uma conexão do pool por tempo indeterminado.
 
 Copia `produtos_catalogo`, `produtos_depara_nome`, `produtos_aliases`,
 `plataforma_superficie` e `seller_depara`, e acerta as sequências de id.
