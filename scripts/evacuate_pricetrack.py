@@ -99,8 +99,13 @@ def tamanho(conn) -> str:
 RUN_ID_EVACUACAO = "evacuacao"
 
 
-def exportar(conn, dias: List[date]) -> Dict[date, List[str]]:
+def exportar(conn, dias: List[date], store) -> Dict[date, List[str]]:
     """Grava um Parquet por dia no histórico frio.
+
+    Recebe o `store` já resolvido (o MESMO que a conferência vai reler e que a
+    trava de segurança já confirmou ser o Drive). Resolver um store novo aqui
+    dentro poderia, num Drive intermitente, escrever num backend e conferir
+    noutro.
 
     Returns:
         Mapa dia → chaves das partições gravadas. São essas chaves, e só elas,
@@ -108,7 +113,11 @@ def exportar(conn, dias: List[date]) -> Dict[date, List[str]]:
         misturaria partições antigas de outras importações e a conferência
         passaria (ou falharia) por motivo errado.
     """
-    from utils.history import DATASET_PRICETRACK, write_records
+    from utils.history import DATASET_PRICETRACK
+    from utils.history import write_records as _wr
+
+    def write_records(linhas, **kw):
+        return _wr(linhas, store=store, **kw)
 
     gravados: Dict[date, List[str]] = {}
     for dia in dias:
@@ -149,17 +158,15 @@ def _linhas_na_particao(store, chave: str) -> int:
     return pq.read_table(io.BytesIO(dados)).num_rows
 
 
-def conferir(no_banco: Dict[date, int], gravados: Dict[date, List[str]]) -> bool:
+def conferir(no_banco: Dict[date, int], gravados: Dict[date, List[str]], store) -> bool:
     """Relê as partições gravadas e compara com o banco, dia a dia.
 
-    Esta é a trava de segurança do script. Ela relê as CHAVES que `exportar`
+    Usa o MESMO `store` da exportação (passado por parâmetro) — não um resolvido
+    aqui. Esta é a trava de segurança do script: relê as CHAVES que `exportar`
     acabou de escrever — não o intervalo de datas — porque um dia pode já ter
     partição antiga no frio, vinda de outra importação: contar o intervalo
     somaria as duas e a conferência viraria ruído.
     """
-    from utils.history import get_store
-
-    store = get_store()
     ok = True
     for dia, esperado in sorted(no_banco.items()):
         chaves = gravados.get(dia, [])
@@ -184,39 +191,54 @@ def conferir(no_banco: Dict[date, int], gravados: Dict[date, List[str]]) -> bool
     return ok
 
 
-def apagar(conn, esperado_por_dia: Dict[date, int]) -> None:
-    """TRUNCATE sob trava, reconferindo a contagem imediatamente antes.
+def evacuar_e_truncar(conn, store) -> int:
+    """Exporta e trunca DENTRO de UMA transação que segura a trava o tempo todo.
 
-    Duas razões para não truncar direto:
+    A trava `ACCESS EXCLUSIVE` é tomada ANTES do snapshot e só sai no commit,
+    depois do `TRUNCATE`. Esse é o ponto: comparar contagem antes/depois não
+    bastava — um import pode ATUALIZAR uma linha (mesma contagem, valor novo) no
+    intervalo entre exportar e apagar, e o TRUNCATE levaria o valor novo que não
+    está no Parquet. Segurando a trava desde o snapshot, nada muda no meio: o
+    que a exportação leu é exatamente o que o TRUNCATE apaga.
 
-    * `DELETE` não devolve o disco — e devolver o disco é o objetivo aqui;
-    * entre a exportação e o apagamento, um import do PriceTrack pode ter
-      inserido linhas novas. Elas não estão no Parquet e sumiriam para sempre.
-      A trava `ACCESS EXCLUSIVE` impede escrita concorrente enquanto
-      reconferimos e truncamos na MESMA transação.
+    Usa `DELETE`? Não — `TRUNCATE`, porque `DELETE` não devolve o disco, e
+    devolver o disco é o objetivo.
+
+    Returns:
+        Número de linhas evacuadas.
     """
     conn.autocommit = False
     try:
         with conn.cursor() as cur:
             cur.execute(f"LOCK TABLE {TABELA} IN ACCESS EXCLUSIVE MODE")
-            cur.execute(
-                f"SELECT {COLUNA_DATA}, count(*) FROM {TABELA} GROUP BY 1"
+            cur.execute(f"SELECT {COLUNA_DATA}, count(*) FROM {TABELA} GROUP BY 1")
+            sob_trava = {linha[0]: linha[1] for linha in cur.fetchall()}
+
+        if not sob_trava:
+            conn.rollback()
+            logger.info("[evacuar] tabela já vazia sob a trava — nada a fazer")
+            return 0
+
+        # A exportação lê pela MESMA conexão, sob a mesma trava: o Parquet é
+        # byte a byte o que será truncado.
+        gravados = exportar(conn, sorted(sob_trava), store)
+        if not conferir(sob_trava, gravados, store):
+            conn.rollback()
+            raise SystemExit(
+                "[evacuar] ❌ conferência FALHOU sob a trava — nada foi apagado."
             )
-            agora = {linha[0]: linha[1] for linha in cur.fetchall()}
 
-            if agora != esperado_por_dia:
-                conn.rollback()
-                novos = sum(agora.values()) - sum(esperado_por_dia.values())
-                raise SystemExit(
-                    f"[evacuar] ❌ a tabela MUDOU desde a exportação "
-                    f"({novos:+d} linha(s)). NADA foi apagado — essas linhas "
-                    "não estão no Parquet. Rode o script de novo para exportar "
-                    "o que chegou."
-                )
-
+        with conn.cursor() as cur:
             cur.execute(f"TRUNCATE TABLE {TABELA}")
         conn.commit()
-        logger.success(f"[evacuar] {TABELA} truncada — disco liberado")
+        total = sum(sob_trava.values())
+        logger.success(
+            f"[evacuar] {TABELA} truncada ({total} linha(s)) — disco liberado"
+        )
+        return total
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         conn.autocommit = True
 
@@ -261,40 +283,41 @@ def main() -> None:
             logger.info("[evacuar] tabela já vazia — nada a fazer")
             return
 
-        # TRAVA DE SEGURANÇA: se o histórico estiver no disco local (sem
-        # GDRIVE_*), a "cópia de segurança" fica só nesta máquina — e o
-        # TRUNCATE é definitivo. Mesmo critério que `scripts/history_cli.py`
-        # já aplica antes de apagar do Supabase.
-        if args.confirmar_delete:
-            from utils.history import get_store
-            from utils.history.backends import LocalBackend
+        from utils.history import get_store
+        from utils.history.backends import GoogleDriveBackend
 
-            if isinstance(get_store().backend, LocalBackend):
-                raise SystemExit(
-                    "[evacuar] ❌ o histórico está em backend LOCAL (sem "
-                    "GDRIVE_FOLDER_ID): a cópia ficaria só no disco desta "
-                    "máquina e o TRUNCATE é definitivo. NÃO vou apagar.\n"
-                    "Configure o Drive (python scripts/gdrive_setup.py --check) "
-                    "ou rode sem --confirmar-delete para só exportar."
-                )
-
-        gravados = exportar(conn, sorted(no_banco))
-        if not conferir(no_banco, gravados):
-            raise SystemExit(
-                "[evacuar] ❌ conferência FALHOU — nada foi apagado. "
-                "Corrija o histórico e rode de novo."
-            )
-
-        logger.success(f"[evacuar] ✓ {total} linha(s) conferidas no Parquet")
+        # Um único store para exportar E conferir — resolver dois poderia, num
+        # Drive intermitente, escrever num backend e conferir noutro.
+        store = get_store()
 
         if not args.confirmar_delete:
+            # Modo exportação-só: sem trava, sem apagar nada.
+            gravados = exportar(conn, sorted(no_banco), store)
+            if not conferir(no_banco, gravados, store):
+                raise SystemExit(
+                    "[evacuar] ❌ conferência FALHOU — nada foi apagado. "
+                    "Corrija o histórico e rode de novo."
+                )
+            logger.success(f"[evacuar] ✓ {total} linha(s) conferidas no Parquet")
             logger.warning(
                 "[evacuar] exportação pronta e conferida, mas NADA foi apagado. "
                 "Para liberar o disco rode de novo com --confirmar-delete."
             )
             return
 
-        apagar(conn, no_banco)
+        # TRAVA DE SEGURANÇA (destrutivo): a cópia PRECISA estar no Drive.
+        # Checagem POSITIVA — `not LocalBackend` deixaria passar qualquer
+        # backend degradado; exigir `GoogleDriveBackend` fecha esse buraco.
+        if not isinstance(store.backend, GoogleDriveBackend):
+            raise SystemExit(
+                "[evacuar] ❌ o histórico NÃO está no Google Drive "
+                f"({store.backend.describe}): a cópia ficaria só nesta máquina "
+                "e o TRUNCATE é definitivo. NÃO vou apagar.\n"
+                "Configure o Drive (python scripts/gdrive_setup.py --check) "
+                "ou rode sem --confirmar-delete para só exportar."
+            )
+
+        evacuar_e_truncar(conn, store)
         logger.info(f"[evacuar] depois: {tamanho(conn)}")
         logger.info(
             "[evacuar] a restrição do Supabase sai sozinha quando a plataforma "

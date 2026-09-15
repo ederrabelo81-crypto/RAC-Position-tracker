@@ -653,11 +653,13 @@ def _banco_disponivel() -> bool:
     """
     try:
         from utils.db import resolve_backend_name
-
-        if resolve_backend_name() == "postgres":
-            return True
-    except Exception:  # noqa: BLE001 — utils.db ausente
-        pass
+    except ImportError:
+        return _HAS_SUPABASE
+    # DBError de resolve_backend_name (RAC_DB_BACKEND inválido) NÃO é engolido:
+    # propaga para o import falhar alto, em vez de cair para _HAS_SUPABASE e
+    # terminar "concluído" sem gravar.
+    if resolve_backend_name() == "postgres":
+        return True
     return _HAS_SUPABASE
 
 
@@ -784,7 +786,7 @@ def purge_stale_basis(collection_date: str, dry_run: bool = False) -> int:
     deixaria o dia vazio. Alvo restrito a `spot_legacy`/NULL: uma base futura
     intencional (carimbo desconhecido) nunca é apagada por engano.
     """
-    if dry_run or not _HAS_SUPABASE:
+    if dry_run or not _banco_disponivel():
         return 0
     try:
         client = _supabase_client()
@@ -831,7 +833,7 @@ def log_import(
     rejection_log: Optional[List] = None,
     dry_run: bool = False,
 ) -> None:
-    if dry_run or not _HAS_SUPABASE:
+    if dry_run or not _banco_disponivel():
         return
     try:
         client = _supabase_client()

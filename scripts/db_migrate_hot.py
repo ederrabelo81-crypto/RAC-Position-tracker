@@ -161,15 +161,31 @@ def carregar_coletas(
     )
 
     if dry_run:
+        ilegiveis = []
         for dia in dias_disponiveis:
             df = store.read(DATASET_COLETAS, start=dia, end=dia)
             if store.last_read_errors:
                 logger.error(f"[carga] (dry-run) {dia}: partição ILEGÍVEL")
+                ilegiveis.append(dia)
             logger.info(f"[carga] (dry-run) {dia}: {len(df)} linha(s)")
+        if ilegiveis:
+            # Sair 0 aqui faria um preflight automatizado aprovar uma carga que
+            # entraria incompleta. O dry-run tem que reprovar o que a carga real
+            # reprovaria.
+            raise SystemExit(
+                f"[carga] ❌ (dry-run) {len(ilegiveis)} partição(ões) ilegível(is): "
+                f"{ilegiveis}. A carga real abortaria aqui."
+            )
         return
 
     conn = _conectar(dsn_destino)
     try:
+        # A carga inteira é UMA transação: ou entram os 15 dias, ou nenhum. Sem
+        # isso, uma partição ilegível no 12º dia deixava os 11 primeiros
+        # commitados e a base num meio-termo — o comando falhava, mas o
+        # operador seguia para a virada com uma janela parcial.
+        conn.autocommit = False
+
         # O Parquet não traz familia/sku/estado — quem resolve é o gatilho,
         # lendo `produtos_depara_nome`. Com ela vazia, tudo entraria NULO e
         # copiar as referências depois NÃO corrigiria as linhas já gravadas.
@@ -215,12 +231,16 @@ def carregar_coletas(
             df = df.astype(object).where(df.notna(), None)
             linhas = df.to_dict("records")
 
+            # SEM commit por dia: o commit único vem no fim, depois que todos
+            # os dias entraram sem erro. Qualquer falha no meio faz o `except`
+            # abaixo dar rollback em tudo.
             entraram = inserir(conn, "coletas", linhas, colunas)
-            conn.commit()
             total += entraram
             logger.success(
                 f"[carga] {dia}: {entraram} inserida(s) de {len(linhas)} lida(s)"
             )
+
+        conn.commit()
 
         with conn.cursor() as cur:
             cur.execute(
@@ -239,6 +259,10 @@ def carregar_coletas(
                 "`python scripts/resolver_diario.py` depois de completar o "
                 "de-para."
             )
+    except BaseException:
+        # SystemExit inclusive: nada de janela parcial commitada.
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

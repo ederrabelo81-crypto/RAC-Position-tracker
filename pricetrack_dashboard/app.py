@@ -690,7 +690,10 @@ def render_peer_evolution(
 # conhece st.secrets: sem a ponte, publicar o DSN como secret no Streamlit
 # Cloud não viraria o painel — ele seguiria no Supabase sem dizer nada.
 _SECRET_KEYS = (
-    "PRICETRACK_API_KEY", "SUPABASE_URL", "SUPABASE_KEY", "RAC_DB_DSN",
+    "PRICETRACK_API_KEY", "SUPABASE_URL", "SUPABASE_KEY",
+    # RAC_DB_BACKEND junto do DSN: sem ele, o rollback `RAC_DB_BACKEND=supabase`
+    # publicado como secret não chegaria ao os.environ que utils/db.py lê.
+    "RAC_DB_DSN", "RAC_DB_BACKEND",
 )
 
 

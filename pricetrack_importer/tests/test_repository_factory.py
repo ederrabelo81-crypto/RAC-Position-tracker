@@ -39,6 +39,12 @@ class TestRepositoryFactory:
         # RAC_DB_DSN é o novo, SUPABASE_DSN é o velho (de onde saem as
         # referências e o pricetrack evacuado). Escolher o errado aqui faria o
         # importador reconstruir a tabela que a migração acabou de esvaziar.
+        # Sem psycopg2, `Repository()` levanta o MESMO RuntimeError
+        # ("psycopg2 não instalado") qualquer que seja o DSN escolhido — então
+        # um try/except que aceitasse esse erro passaria mesmo com a precedência
+        # QUEBRADA. Pular explícito garante que a asserção de precedência só
+        # conta quando de fato roda.
+        pytest.importorskip("psycopg2")
         with patch.dict(
             "os.environ",
             {
@@ -47,13 +53,10 @@ class TestRepositoryFactory:
             },
             clear=True,
         ):
-            try:
-                repo = Repository()
-                assert isinstance(repo, PsycopgRepository)
-                assert "aiven" in repo.dsn
-                assert "supabase" not in repo.dsn
-            except RuntimeError as e:
-                assert "psycopg2" in str(e).lower()
+            repo = Repository()
+            assert isinstance(repo, PsycopgRepository)
+            assert "aiven" in repo.dsn
+            assert "supabase" not in repo.dsn
 
     def test_dsn_explicito_devolve_psycopg(self):
         with patch.dict("os.environ", {}, clear=True):

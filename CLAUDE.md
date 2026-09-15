@@ -371,12 +371,16 @@ errado, o modo de falha que este projeto mais teme.
    PostgREST. `get_cobertura_resolucao()` retorna jsonb: embrulhado numa lista,
    o consumidor em `app.py` estoura no `int()`, o `except` engole e o banner
    some sem erro nenhum.
-3. **Carga de histórico roda com o gatilho DESLIGADO.** `coletas` tem um
-   `BEFORE INSERT` (`trg_resolve_familia_coletas`) que recalcula
-   `familia_resolvida`/`sku_resolvido`/`estado_match` a partir de
-   `produtos_depara_nome`. Num banco novo essa tabela começa vazia e
-   `SELECT ... INTO` sem resultado devolve NULO — carregar com o gatilho ligado
-   **zeraria a resolução de todas as linhas**, em silêncio.
+3. **Referências ANTES das coletas; o gatilho fica LIGADO.** O Parquet NÃO
+   carrega `familia_resolvida`/`sku_resolvido`/`estado_match` —
+   `utils.supabase_client.map_record` não inclui essas colunas, porque quem as
+   preenche é o `BEFORE INSERT` `trg_resolve_familia_coletas`, consultando
+   `produtos_depara_nome`. Logo: copiar as referências primeiro
+   (`db_migrate_hot.py --referencias`) e carregar as coletas com o gatilho
+   ligado. Ao contrário — coletas primeiro, ou gatilho desligado — as linhas
+   entram com os três campos NULOS e copiar as referências depois NÃO corrige
+   linha já gravada. `db_migrate_hot.py` se recusa a carregar com o de-para
+   vazio, e a carga inteira é UMA transação (ou entram os 15 dias, ou nenhum).
 4. **`.not_` é uma PROPERTY, não um método.** No `postgrest-py`,
    `.not_.is_("produto", "null")` nega o filtro seguinte. Um `grep` por
    `.not_(` não acha nenhum dos 9 call sites — e sem a property cada um
