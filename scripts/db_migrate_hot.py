@@ -138,6 +138,7 @@ def carregar_coletas(
     fim: date,
     dry_run: bool,
     sem_referencias: bool = False,
+    permitir_lacunas: bool = False,
 ) -> None:
     """Copia `coletas` do histórico frio para a base nova, dia a dia."""
     from utils.history import DATASET_COLETAS, get_store
@@ -210,7 +211,15 @@ def carregar_coletas(
         # nextval colidiria com um id já ocupado.
         colunas = [c for c in colunas if c != "id"]
 
+        # Todos os dias do intervalo pedido — para saber quais FALTAM. Um dia
+        # sem partição não aparece em `dias_disponiveis`, e um dia vazio é
+        # pulado: qualquer dos dois deixaria a janela parcial passar como
+        # sucesso. Rastreamos as lacunas e decidimos antes do commit.
+        esperados = {
+            inicio + timedelta(days=i) for i in range((fim - inicio).days + 1)
+        }
         total = 0
+        com_dado: set = set()
         for dia in dias_disponiveis:
             df = store.read(DATASET_COLETAS, start=dia, end=dia)
             if store.last_read_errors:
@@ -236,12 +245,43 @@ def carregar_coletas(
             # abaixo dar rollback em tudo.
             entraram = inserir(conn, "coletas", linhas, colunas)
             total += entraram
+            com_dado.add(dia)
             logger.success(
                 f"[carga] {dia}: {entraram} inserida(s) de {len(linhas)} lida(s)"
             )
 
-        conn.commit()
+        # Lacunas = dias pedidos sem NENHUMA linha carregada. Abortam ANTES do
+        # commit por padrão: dado que muda com o range e janela incompleta são
+        # bugs difíceis de ver depois. Gaps legítimos existem (fim de semana sem
+        # coleta — ver CLAUDE.md), então `--permitir-lacunas` é a saída
+        # consciente, e o rollback do `except` desfaz tudo se abortarmos aqui.
+        lacunas = sorted(esperados - com_dado)
+        if lacunas and not permitir_lacunas:
+            raise SystemExit(
+                f"[carga] ❌ {len(lacunas)} dia(s) do intervalo SEM dado no "
+                f"histórico: {[d.isoformat() for d in lacunas]}.\n"
+                "A janela ficaria incompleta. Se as lacunas são esperadas "
+                "(fim de semana sem coleta, p.ex.), rode com --permitir-lacunas."
+            )
+        if lacunas:
+            logger.warning(
+                f"[carga] ⚠️ {len(lacunas)} dia(s) sem dado (permitido): "
+                f"{[d.isoformat() for d in lacunas]}"
+            )
 
+        conn.commit()
+    except BaseException:
+        # SystemExit inclusive: nada de janela parcial commitada. Fecha a
+        # conexão aqui porque o `finally` abaixo pertence ao try do resumo, que
+        # não chega a ser executado neste caminho de erro.
+        conn.rollback()
+        conn.close()
+        raise
+
+    # Resumo pós-commit: FORA do bloco protegido por rollback — o dado já está
+    # gravado, então uma falha nesta leitura informativa não pode disparar um
+    # rollback (que não desfaria nada e ainda confundiria o diagnóstico).
+    try:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT count(*), min(data)::text, max(data)::text, "
@@ -259,10 +299,8 @@ def carregar_coletas(
                 "`python scripts/resolver_diario.py` depois de completar o "
                 "de-para."
             )
-    except BaseException:
-        # SystemExit inclusive: nada de janela parcial commitada.
-        conn.rollback()
-        raise
+    except Exception as exc:  # noqa: BLE001 — resumo é log-only; dado já commitado
+        logger.warning(f"[carga] resumo pós-carga falhou (dado JÁ gravado): {exc}")
     finally:
         conn.close()
 
@@ -382,6 +420,15 @@ def main() -> None:
             "entram SEM resolução e não há como corrigir sem reprocessar."
         ),
     )
+    parser.add_argument(
+        "--permitir-lacunas",
+        action="store_true",
+        help=(
+            "Aceita dias do intervalo sem dado no histórico (gaps legítimos, "
+            "ex.: fim de semana sem coleta). Sem esta flag, uma lacuna aborta "
+            "antes do commit para não gravar janela parcial em silêncio."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Não grava nada.")
     args = parser.parse_args()
 
@@ -407,7 +454,10 @@ def main() -> None:
     else:
         inicio = fim - timedelta(days=args.dias - 1)
 
-    carregar_coletas(args.dsn, inicio, fim, args.dry_run, args.sem_referencias)
+    carregar_coletas(
+        args.dsn, inicio, fim, args.dry_run,
+        args.sem_referencias, args.permitir_lacunas,
+    )
 
 
 if __name__ == "__main__":

@@ -1297,8 +1297,16 @@ def main() -> None:
     logger.info(f"  Arquivos: {_DOWNLOAD_DIR}")
     logger.info(f"  Seller map: {'sim' if _HAS_SELLER_MAP else 'fallback'}")
     logger.info(f"  Categorias: {categories}")
-    if not _HAS_SUPABASE and not args.no_upload:
-        logger.warning("supabase-py não instalado — use --no-upload ou instale: pip install supabase")
+    # Upload pedido mas NENHUM backend disponível é ERRO, não aviso: seguir
+    # daqui terminaria "concluído" com zero linha gravada e sem re-tentar a
+    # data — o modo de falha silenciosa que o `pipeline_registry` existe para
+    # denunciar. `--no-upload` continua sendo o jeito de rodar só o download.
+    if not args.no_upload and not _banco_disponivel():
+        raise SystemExit(
+            "❌ upload pedido mas nenhum backend disponível: defina RAC_DB_DSN "
+            "(banco novo) ou SUPABASE_URL/SUPABASE_KEY (com supabase-py "
+            "instalado), ou rode com --no-upload para só baixar."
+        )
 
     run(
         token=token,

@@ -923,8 +923,26 @@ def _load_window(
                     "selecionado."
                 )
         except Exception as exc:  # noqa: BLE001
-            st.error(f"Falha lendo o Supabase: {type(exc).__name__}: {exc}\n\n"
-                     "Confira `SUPABASE_URL`/`SUPABASE_KEY`. Caindo para Demo.")
+            # Mensagem CONSCIENTE do backend: com RAC_DB_DSN ativo, "confira
+            # SUPABASE_URL/SUPABASE_KEY" manda o operador para o lugar errado —
+            # e RAC_DB_BACKEND=postgres sem DSN cairia aqui em Demo sem dizer que
+            # o que falta é o DSN. Cada caso aponta o que de fato conferir.
+            try:
+                from utils.db import dsn_from_env, resolve_backend_name
+                _pg = resolve_backend_name() == "postgres"
+                _dsn = dsn_from_env()
+            except Exception:  # noqa: BLE001
+                _pg, _dsn = False, ""
+            if _pg and not _dsn:
+                _dica = ("backend Postgres FORÇADO (RAC_DB_BACKEND=postgres) mas "
+                         "`RAC_DB_DSN` está VAZIO — defina o DSN.")
+            elif _pg:
+                _dica = ("Confira `RAC_DB_DSN` e se psycopg2-binary está em "
+                         "requirements_app.txt.")
+            else:
+                _dica = "Confira `SUPABASE_URL`/`SUPABASE_KEY`."
+            st.error(f"Falha lendo o banco: {type(exc).__name__}: {exc}\n\n"
+                     f"{_dica} Caindo para Demo.")
             rows_by_date = _demo_window(window_start, end_iso)
             demo = True
     else:  # SRC_LIVE — sem intervalo nem fallback (a API ao vivo é lenta demais)

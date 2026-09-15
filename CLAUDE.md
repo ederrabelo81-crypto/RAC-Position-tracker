@@ -346,8 +346,8 @@ variável.
 ```bash
 python scripts/db_bootstrap.py --dry-run     # 26 migrações, na ordem certa
 python scripts/db_bootstrap.py               # levanta o schema na base nova
-python scripts/db_migrate_hot.py --dias 15   # carrega a janela quente DO PARQUET
-python scripts/db_migrate_hot.py --referencias --dsn-origem "<DSN do Supabase>"
+python scripts/db_migrate_hot.py --referencias --dsn-origem "<DSN do Supabase>"  # PRIMEIRO
+python scripts/db_migrate_hot.py --dias 15   # DEPOIS: carrega a janela quente DO PARQUET
 python scripts/evacuate_pricetrack.py --confirmar-delete  # destrava a cota
 ```
 

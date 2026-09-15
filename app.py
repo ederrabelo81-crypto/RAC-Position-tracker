@@ -620,11 +620,14 @@ def _get_supabase():
             cliente.verificar_conexao()
             return cliente
         except Exception:
-            # No modo 'auto' (DSN presente por conveniência) cair para o
-            # Supabase é aceitável; no modo explícito o erro acima já barrou.
+            # No modo explícito, o erro sobe (quem forçou o Postgres quer saber
+            # que ele não subiu). No modo 'auto' — DSN presente por
+            # conveniência — cai para o Supabase: NÃO dar `return None` aqui,
+            # senão o fallback prometido pelo comentário nunca aconteceria e o
+            # painel viria vazio com um DSN só temporariamente indisponível.
             if postgres_explicito:
                 raise
-            return None
+            # cai para o bloco Supabase abaixo
 
     url = _resolve_secret("SUPABASE_URL")
     key = _resolve_secret("SUPABASE_KEY")
