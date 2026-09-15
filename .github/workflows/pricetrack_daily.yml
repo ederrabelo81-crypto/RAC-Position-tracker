@@ -203,6 +203,7 @@ jobs:
       - name: Heartbeat — started
         continue-on-error: true
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
@@ -216,6 +217,7 @@ jobs:
         timeout-minutes: 50
         env:
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           # Alerta quando TODOS os 3 slots ficam presos por exports que não são
@@ -273,6 +275,7 @@ jobs:
           # 50min de orçamento dentro de um teto de parede de 60min.
           PRICETRACK_RUN_BUDGET_SECONDS: "3000"
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -377,6 +380,7 @@ jobs:
         if: always()
         continue-on-error: true
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           JOB_STATUS: ${{ job.status }}

@@ -159,6 +159,7 @@ jobs:
         if: steps.modo.outputs.modo == 'gate'
         continue-on-error: true   # o alerta é o entregável; o vermelho vem no passo final
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
@@ -195,6 +196,7 @@ jobs:
         id: watch
         continue-on-error: true
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -230,6 +232,7 @@ jobs:
         if: steps.modo.outputs.modo != 'gate'
         continue-on-error: true
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
@@ -406,6 +409,7 @@ jobs:
         if: steps.modo.outputs.modo != 'gate' && github.event_name == 'schedule'
         continue-on-error: true
         env:
+          RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
