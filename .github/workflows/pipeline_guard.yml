@@ -190,11 +190,19 @@ jobs:
         run: |
           set +e
           mkdir -p logs
-          # Inputs NUNCA interpolados no script: `${{ }}` é substituído como
-          # texto antes de o shell existir, então um `data` com aspas e `;`
-          # executaria comandos no runner com os secrets deste job no ambiente.
-          # Via `env` eles chegam como valor, e a validação abaixo recusa
-          # qualquer coisa que não seja uma data.
+          # Inputs NUNCA interpolados no script: a sintaxe de template do
+          # Actions vira texto antes de o shell existir, então um `data` com
+          # aspas e `;` executaria comandos no runner com os secrets deste job
+          # no ambiente. Via `env` eles chegam como valor, e a validação
+          # abaixo recusa qualquer coisa que não seja uma data.
+          # (Nota: nunca escreva um par de chaves duplas vazio dentro de um
+          # bloco `run:` — o Actions faz a substituição de expressões ANTES
+          # de o shell ver o script, mesmo dentro de comentários bash, e uma
+          # expressão vazia quebra o parse do workflow inteiro: o arquivo passa
+          # a "existir" mas nunca gera job, `on.schedule`/`workflow_dispatch`
+          # nunca disparam e todo push mostra "failure" com 0 jobs. Foi
+          # exatamente esse bug, autoinfligido por um comentário citando essa
+          # sintaxe, que manteve o `pipeline_guard.yml` sem rodar por semanas.)
           ARGS=()
           if [ -n "$IN_DATA" ]; then
             case "$IN_DATA" in
