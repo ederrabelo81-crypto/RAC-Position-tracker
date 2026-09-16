@@ -889,11 +889,15 @@ def upload_to_supabase(
             "(exceed_db_size_quota): a API respondeu HTTP 402 e o upload foi "
             f"abortado — {sent} de {total} registros gravados.\n"
             "   • O CSV local JÁ está salvo — nada foi perdido.\n"
+            "   • Defina RAC_DB_DSN no `.env` desta máquina para gravar no "
+            "Postgres novo (Aiven) em vez do Supabase (docs/MIGRACAO_AIVEN.md) "
+            "— com RAC_DB_DSN presente, `_get_client()` já sai do Supabase "
+            "sozinho, sem mudar código.\n"
             "   • Reenvie quando o banco voltar: "
             "python scripts/upload_csv.py <arquivo.csv> (idempotente).\n"
-            "   • Para RESTAURAR o serviço: libere espaço no banco (as maiores "
-            "tabelas são pricetrack_daily e coletas) ou faça upgrade do plano "
-            "Supabase / remova o spend cap."
+            "   • Sem RAC_DB_DSN, a única saída no Supabase é liberar espaço "
+            "(as maiores tabelas são pricetrack_daily e coletas) ou fazer "
+            "upgrade do plano / remover o spend cap."
         )
         return False
 
