@@ -48,7 +48,10 @@ import pandas as pd
 from loguru import logger
 
 from pricetrack_api_import import (
+    _TABLE,
     DEFAULT_CATEGORIES,
+    _banco_disponivel,
+    _supabase_client,
     aggregate_offers,
     date_exists,
     insert_rows,
@@ -91,7 +94,13 @@ def process_csv(
     """Importa um CSV manual: um bloco por `collection_date` presente nele
     (normalmente um só, mas um export que junte vários dias é suportado)."""
     logger.info(f"Lendo {path} ...")
-    df_raw = pd.read_csv(path)
+    # dtype=str: SKU/ID puramente numérico ("001234") não pode virar int e
+    # perder o zero à esquerda — isso quebraria a reconciliação com o
+    # catálogo em silêncio. Preços continuam saindo corretos: aggregate_offers
+    # já faz pd.to_numeric() explícito em cada campo de preço, não importa o
+    # dtype de entrada. Célula vazia continua virando NaN normalmente (o
+    # dtype=str não muda a detecção de ausência do pandas).
+    df_raw = pd.read_csv(path, dtype=str)
     if df_raw.empty:
         logger.warning(f"{path} — arquivo vazio, nada a importar")
         return
@@ -159,7 +168,7 @@ def process_csv(
             rows_total=rows_raw,
             rows_inserted=inserted,
             rows_rejected=rows_rejected,
-            status="SUCCESS" if inserted > 0 else "PARTIAL",
+            status="SUCCESS" if inserted == len(records) else "PARTIAL",
             rejection_log=rejection_log,
             dry_run=dry_run,
         )
@@ -197,6 +206,29 @@ def main() -> None:
     if not files:
         logger.error(f"Nenhum CSV encontrado em {args.dir}")
         sys.exit(1)
+
+    # Mesma checagem de `pricetrack_api_import.py::main()`: sem isto, um host
+    # sem RAC_DB_DSN/SUPABASE_URL+KEY (ou com credencial errada) processava o
+    # CSV inteiro, `insert_rows()` devolvia 0 em silêncio, e o script saía com
+    # exit 0 como se tivesse gravado — o modo de falha silenciosa que o
+    # `pipeline_registry` existe para denunciar. `--dry-run` continua sendo o
+    # jeito de rodar sem nenhum backend configurado.
+    if not args.dry_run:
+        if not _banco_disponivel():
+            raise SystemExit(
+                "❌ nenhum backend de banco disponível: defina RAC_DB_DSN "
+                "(banco novo) ou SUPABASE_URL/SUPABASE_KEY, ou rode com --dry-run "
+                "para só validar o arquivo."
+            )
+        try:
+            client = _supabase_client()
+            client.table(_TABLE).select("id").limit(1).execute()
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(
+                f"❌ backend indisponível para gravar: {exc}\n"
+                "Corrija a credencial (RAC_DB_DSN ou SUPABASE_URL/KEY) ou "
+                "rode com --dry-run."
+            )
 
     for f in files:
         process_csv(f, dry_run=args.dry_run, force=args.force, categories=categories)

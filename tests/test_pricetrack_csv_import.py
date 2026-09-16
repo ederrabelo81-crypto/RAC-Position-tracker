@@ -11,6 +11,7 @@ Vista / Preço Pix separados), diferente do NDJSON da API.
 Rode: pytest tests/test_pricetrack_csv_import.py
 """
 import importlib.util
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -109,10 +110,15 @@ class TestColunasPortuguesasNoAggregateOffers:
 
 
 class TestProcessCsvDryRun:
-    """Smoke test do fluxo completo (leitura → agregação) sem tocar banco."""
+    """Smoke test do fluxo completo (leitura → agregação) sem tocar banco.
 
-    def test_roda_sem_erro_em_dry_run(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ptai, "_banco_disponivel", lambda: False)
+    `dry_run=True` já faz `date_exists`/`insert_rows` retornarem antes de
+    consultar `_banco_disponivel()` (ver seus próprios guards em
+    `pricetrack_api_import.py`), então nenhum monkeypatch de backend é
+    necessário aqui — só valida que o fluxo não levanta exceção.
+    """
+
+    def test_roda_sem_erro_em_dry_run(self, tmp_path):
         csv_path = tmp_path / "collects.csv"
         pd.DataFrame([
             {**_oferta_manual(sku="SKU1"), "Data de Coleta": "2026-09-16",
@@ -127,3 +133,94 @@ class TestProcessCsvDryRun:
         csv_path = tmp_path / "invalido.csv"
         pd.DataFrame([{"Produto": "x"}]).to_csv(csv_path, index=False)
         ptci.process_csv(csv_path, dry_run=True)  # loga erro, não levanta
+
+
+def _stub_persistence(monkeypatch, insert_return=None, write_history_return=None):
+    """Substitui as chamadas de persistência de `process_csv` — SEMPRE no
+    módulo `ptci` (o que `process_csv` de fato usa), nunca em `ptai`: as duas
+    variáveis apontam para instâncias de módulo DIFERENTES (`ptai` é carregado
+    à parte aqui no teste; `ptci` importa a sua própria cópia de
+    `pricetrack_api_import` via `from ... import ...`), então um patch em
+    `ptai` não é visto por `process_csv`. Retorna um dict que acumula as
+    chamadas para inspeção.
+    """
+    calls = {"insert_rows": [], "log_import": [], "purge_stale_basis": []}
+
+    def _insert_rows(records, dry_run=False):
+        calls["insert_rows"].append(records)
+        return len(records) if insert_return is None else insert_return
+
+    monkeypatch.setattr(ptci, "insert_rows", _insert_rows)
+    monkeypatch.setattr(ptci, "write_history", lambda *a, **k: write_history_return or [])
+    monkeypatch.setattr(ptci, "date_exists", lambda *a, **k: False)
+    monkeypatch.setattr(
+        ptci, "log_import",
+        lambda **kwargs: calls["log_import"].append(kwargs),
+    )
+    monkeypatch.setattr(
+        ptci, "purge_stale_basis",
+        lambda *a, **k: calls["purge_stale_basis"].append((a, k)) or 0,
+    )
+    return calls
+
+
+class TestSkuNumericoPreservaZeroAEsquerda:
+    def test_sku_puramente_numerico_nao_vira_int(self, tmp_path, monkeypatch):
+        calls = _stub_persistence(monkeypatch)
+        csv_path = tmp_path / "collects.csv"
+        pd.DataFrame([
+            {**_oferta_manual(sku="001234"), "Data de Coleta": "2026-09-16",
+             "Hora de Execução": "05:22"},
+        ]).to_csv(csv_path, index=False)
+
+        ptci.process_csv(csv_path, dry_run=False)
+
+        assert calls["insert_rows"], "insert_rows não foi chamado"
+        assert calls["insert_rows"][0][0]["sku"] == "001234"
+
+
+class TestStatusRefleteInsercaoParcial:
+    def _csv(self, tmp_path) -> Path:
+        csv_path = tmp_path / "collects.csv"
+        pd.DataFrame([
+            {**_oferta_manual(sku="SKU1"), "Data de Coleta": "2026-09-16",
+             "Hora de Execução": "05:22"},
+        ]).to_csv(csv_path, index=False)
+        return csv_path
+
+    def test_insercao_completa_e_success(self, tmp_path, monkeypatch):
+        calls = _stub_persistence(monkeypatch)  # insert_return=None -> len(records)
+        ptci.process_csv(self._csv(tmp_path), dry_run=False)
+        assert calls["log_import"][0]["status"] == "SUCCESS"
+
+    def test_insercao_parcial_e_partial_nao_success(self, tmp_path, monkeypatch):
+        calls = _stub_persistence(monkeypatch, insert_return=0)  # lote "falhou"
+        ptci.process_csv(self._csv(tmp_path), dry_run=False)
+        assert calls["log_import"][0]["status"] == "PARTIAL"
+        assert not calls["purge_stale_basis"]  # não purga com escrita incompleta
+
+
+class TestMainAbortaSemBackend:
+    """Mesma regra de `pricetrack_api_import.py::main()`: pedir gravação sem
+    nenhum backend configurado é ERRO, não um "concluído" silencioso com zero
+    linha gravada."""
+
+    def test_aborta_fora_de_dry_run_sem_backend(self, tmp_path, monkeypatch):
+        csv_path = tmp_path / "collects.csv"
+        pd.DataFrame([_oferta_manual()]).to_csv(csv_path, index=False)
+        monkeypatch.setattr(ptci, "_banco_disponivel", lambda: False)
+        monkeypatch.setattr(sys, "argv", ["pricetrack_csv_import.py", "--file", str(csv_path)])
+
+        with pytest.raises(SystemExit):
+            ptci.main()
+
+    def test_dry_run_nao_exige_backend(self, tmp_path, monkeypatch):
+        csv_path = tmp_path / "collects.csv"
+        pd.DataFrame([_oferta_manual()]).to_csv(csv_path, index=False)
+        monkeypatch.setattr(ptci, "_banco_disponivel", lambda: False)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["pricetrack_csv_import.py", "--file", str(csv_path), "--dry-run"],
+        )
+
+        ptci.main()  # não deve levantar
