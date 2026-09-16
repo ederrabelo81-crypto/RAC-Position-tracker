@@ -197,9 +197,15 @@ def parse_ndjson_gz(path: Path) -> pd.DataFrame:
 # `pricetrack_api.normalize`). `forward` é lido só para diagnóstico e NUNCA
 # entra no preço. Ao mexer aqui, mexa também em `normalize.best_cash` — as duas
 # pontas têm de contar a mesma história.
-_SPOT_FIELDS = ("spot_price", "spotprice", "preco_avista")
-_PIX_FIELDS = ("pix_price", "pixprice")
-_FORWARD_FIELDS = ("forward_price", "forwardprice")
+#
+# As grafias "preço à vista"/"preço pix"/"preço a prazo" (com acento) cobrem o
+# export MANUAL do painel do PriceTrack (`pricetrack_csv_import.py`), que usa
+# cabeçalho em português em vez do NDJSON da API — sem elas o CSV manual cairia
+# no fallback `_GENERIC_PRICE_FIELDS` e perderia justamente a distinção
+# spot/PIX que esta correção existe para preservar.
+_SPOT_FIELDS = ("spot_price", "spotprice", "preco_avista", "preço à vista")
+_PIX_FIELDS = ("pix_price", "pixprice", "preço pix")
+_FORWARD_FIELDS = ("forward_price", "forwardprice", "preço a prazo")
 # Último recurso, só se o export deixar de trazer spot E pix (mudança de
 # schema). Nunca inclui campo a prazo.
 _GENERIC_PRICE_FIELDS = ("price", "sale_price", "saleprice", "preco", "valor")
