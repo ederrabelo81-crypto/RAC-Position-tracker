@@ -84,7 +84,11 @@ def delete_invalid_from_supabase(
             scanned += 1
             produto = row.get("produto") or ""
             preco   = row.get("preco")
-            if produto and not is_valid_product(produto, preco):
+            try:
+                preco_f = float(preco) if preco is not None else None
+            except (ValueError, TypeError):
+                preco_f = None
+            if produto and not is_valid_product(produto, preco_f):
                 invalid_ids.append(row["id"])
 
         if len(batch) < _FETCH_BATCH:
