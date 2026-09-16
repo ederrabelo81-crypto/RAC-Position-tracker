@@ -248,8 +248,19 @@ def upload_supabase(df: pd.DataFrame) -> bool:
         except Exception as exc:
             if is_quota_restricted_error(exc):
                 logger.error(
-                    "[Bestsellers] Projeto Supabase restrito por cota de disco "
-                    "— nenhum lote passará. Libere espaço ou faça upgrade."
+                    "[Bestsellers] 🚫 Projeto Supabase restrito por cota de "
+                    "armazenamento (exceed_db_size_quota) — nenhum lote "
+                    "passará.\n"
+                    "   • O CSV do dia e o histórico master JÁ estão "
+                    "gravados — nada foi perdido.\n"
+                    "   • Defina RAC_DB_DSN no `.env` desta máquina para "
+                    "gravar no Postgres novo (Aiven) em vez do Supabase — "
+                    "mesma credencial da migração da coleta principal "
+                    "(docs/MIGRACAO_AIVEN.md). Com RAC_DB_DSN presente, "
+                    "`_get_client()` já sai do Supabase sozinho, sem mudar "
+                    "código.\n"
+                    "   • Sem RAC_DB_DSN, a única saída no Supabase é "
+                    "liberar espaço ou fazer upgrade do plano."
                 )
                 return False
             if "does not exist" in str(exc).lower() or "PGRST205" in str(exc):
