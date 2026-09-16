@@ -84,7 +84,15 @@ def test_preco_string_dry_run_identifica_invalidos(monkeypatch):
 
 
 def test_preco_nao_numerico_nao_derruba_a_varredura(monkeypatch):
-    """Lixo no campo (nunca deveria acontecer, mas não pode ser fatal)."""
+    """
+    Lixo no campo (nunca deveria acontecer, mas não pode ser fatal).
+
+    Achado do cubic na revisão desta PR: `preco` presente mas ilegível não é a
+    mesma coisa que `preco` ausente — cair para `None` deixaria o item passar
+    pela checagem de faixa (o `is_valid_product` só valida preço quando ele
+    não é `None`) e sobreviver à limpeza só pelo nome. Tratado como inválido
+    (`0.0`, que reprova em `price <= 0`), a linha é reportada e removida.
+    """
     import utils.supabase_maintenance as maint
 
     rows = [
@@ -96,3 +104,39 @@ def test_preco_nao_numerico_nao_derruba_a_varredura(monkeypatch):
 
     assert resultado["errors"] == 0
     assert resultado["scanned"] == 1
+    assert resultado["invalid"] == 1
+
+
+def test_preco_nan_e_tratado_como_invalido(monkeypatch):
+    """
+    `numeric` do Postgres aceita o literal `NaN` — `float("nan")` NÃO levanta
+    exceção, então sem o guard de `math.isfinite` a linha escapava da checagem
+    de faixa (NaN nunca é `<= 0`) e sobrevivia pelo nome, mesmo com preço
+    corrompido.
+    """
+    import utils.supabase_maintenance as maint
+
+    rows = [
+        {"id": 1, "produto": "Ar Condicionado Split Inverter 12000 BTU", "preco": "NaN"},
+    ]
+    monkeypatch.setattr(maint, "_get_client", lambda: _Client(rows))
+
+    resultado = delete_invalid_from_supabase(dry_run=True)
+
+    assert resultado["errors"] == 0
+    assert resultado["invalid"] == 1
+
+
+def test_preco_ausente_continua_avaliado_so_pelo_nome(monkeypatch):
+    """`preco is None` é ausência legítima — não pode virar `0.0` (inválido)."""
+    import utils.supabase_maintenance as maint
+
+    rows = [
+        {"id": 1, "produto": "Ar Condicionado Split Inverter 12000 BTU", "preco": None},
+    ]
+    monkeypatch.setattr(maint, "_get_client", lambda: _Client(rows))
+
+    resultado = delete_invalid_from_supabase(dry_run=True)
+
+    assert resultado["errors"] == 0
+    assert resultado["invalid"] == 0
