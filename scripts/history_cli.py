@@ -371,7 +371,7 @@ def _tier_one(
     cutoff: date,
 ) -> int:
     """Executa a migração de um único dataset. Ver `cmd_tier`."""
-    from utils.supabase_client import is_quota_restricted_error
+    from utils.supabase_client import is_aiven_read_only_error, is_quota_restricted_error
 
     try:
         days = _distinct_days_before(client, cutoff, spec)
@@ -489,6 +489,24 @@ def _tier_one(
             apagados += 1
             logger.success(f"{day}: removido do Supabase (espaço liberado).")
         except Exception as exc:
+            if is_aiven_read_only_error(exc):
+                # O banco recusa QUALQUER escrita nesse estado — repetir para
+                # os próximos dias só empilharia a mesma mensagem genérica
+                # `len(days)` vezes. O histórico já está seguro (write_day +
+                # verificação já aconteceram antes deste DELETE); pára aqui e
+                # aponta a causa real, igual a `bestsellers/storage.py` e
+                # `scripts/db_vacuum.py` já fazem para este mesmo erro.
+                logger.error(
+                    f"{day}: 🚫 banco em modo somente-leitura (proteção de "
+                    "disco cheio do Aiven) — nenhum DELETE vai passar agora. "
+                    f"{migrados} dia(s) já estão seguros no histórico frio "
+                    "(só não saíram do banco ainda). Libere espaço no painel "
+                    "do Aiven (upgrade de plano, ou contate o suporte) e rode "
+                    "`tier --confirm` de novo depois — os dias já migrados "
+                    "são pulados na próxima passada."
+                )
+                falhas.append(f"{day} (remoção — banco somente-leitura)")
+                break
             logger.error(f"{day}: falha apagando do Supabase: {exc}")
             falhas.append(f"{day} (remoção)")
 
