@@ -146,7 +146,13 @@ def _relatorio(conn) -> List[dict]:
         return linhas
     logger.info(f"[db_vacuum] {len(linhas)} tabela(s), maior primeiro:")
     for linha in linhas:
-        ultimo = linha["last_autovacuum"] or linha["last_vacuum"] or "nunca"
+        # O mais recente dos dois, não `last_autovacuum` por padrão: um
+        # VACUUM manual mais novo que o último autovacuum ficaria escondido
+        # atrás do timestamp desatualizado.
+        ultimo = max(
+            (ts for ts in (linha["last_autovacuum"], linha["last_vacuum"]) if ts),
+            default="nunca",
+        )
         # `n_live_tup`/`n_dead_tup` não deveriam vir nulos (o coletor de
         # estatísticas inicializa em zero), mas uma tabela recém-criada antes
         # do primeiro ANALYZE é o caso onde isso já foi visto — `or 0` evita
@@ -163,9 +169,14 @@ def _relatorio(conn) -> List[dict]:
     return linhas
 
 
-def _vacuum_tabela(conn, tabela: str, schema: str, full: bool) -> bool:
-    """Roda VACUUM (ou VACUUM FULL) numa tabela. Retorna False se bateu no
-    modo somente-leitura — sinal para o chamador parar de tentar as outras."""
+def _vacuum_tabela(conn, tabela: str, schema: str, full: bool) -> Optional[bool]:
+    """Roda VACUUM (ou VACUUM FULL) numa tabela.
+
+    Returns:
+        True: sucesso. False: falhou (lock, permissão, ...) mas as outras
+        tabelas ainda podem seguir. None: bateu no modo somente-leitura —
+        sinal para o chamador PARAR, insistir nas próximas não vai ajudar.
+    """
     modo = "VACUUM FULL" if full else "VACUUM"
     logger.info(f"[db_vacuum] {modo} (VERBOSE, ANALYZE) {schema}.{tabela} ...")
     try:
@@ -175,9 +186,9 @@ def _vacuum_tabela(conn, tabela: str, schema: str, full: bool) -> bool:
     except Exception as exc:
         if is_aiven_read_only_error(exc):
             logger.error(f"[db_vacuum] {_MENSAGEM_READ_ONLY}")
-            return False
+            return None
         logger.error(f"[db_vacuum] {schema}.{tabela}: falhou — {exc}")
-        return True  # erro pontual (lock, permissão) — outras tabelas podem seguir
+        return False
     logger.success(f"[db_vacuum] {schema}.{tabela}: concluído.")
     return True
 
@@ -203,7 +214,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--tabela", default=None,
-        help="Limita a uma tabela (padrão: todas, maior primeiro).",
+        help=(
+            "Limita a uma tabela (padrão: todas, maior primeiro). Aceita "
+            "'tabela' ou 'schema.tabela' — nome ambíguo entre schemas exige "
+            "a forma qualificada, para --full nunca travar mais de uma sem "
+            "querer."
+        ),
     )
     parser.add_argument(
         "--confirmar", action="store_true",
@@ -235,17 +251,47 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             return 0
 
-        alvo = [l for l in linhas if not args.tabela or l["tabela"] == args.tabela]
-        if args.tabela and not alvo:
-            logger.error(f"[db_vacuum] tabela não encontrada: {args.tabela}")
-            return 2
+        if args.tabela:
+            if "." in args.tabela:
+                schema_alvo, tabela_alvo = args.tabela.split(".", 1)
+                alvo = [
+                    l for l in linhas
+                    if l["schema"] == schema_alvo and l["tabela"] == tabela_alvo
+                ]
+            else:
+                alvo = [l for l in linhas if l["tabela"] == args.tabela]
+                # Nome sozinho casando mais de um schema é ambíguo — com
+                # --full isso travaria e reescreveria tabelas que ninguém
+                # pediu. Recusar é mais seguro que adivinhar qual schema.
+                if len(alvo) > 1:
+                    schemas = ", ".join(f'{l["schema"]}.{l["tabela"]}' for l in alvo)
+                    logger.error(
+                        f"[db_vacuum] '{args.tabela}' existe em mais de um "
+                        f"schema ({schemas}) — use a forma qualificada "
+                        "'schema.tabela'."
+                    )
+                    return 2
+            if not alvo:
+                logger.error(f"[db_vacuum] tabela não encontrada: {args.tabela}")
+                return 2
+        else:
+            alvo = linhas
 
+        falharam: List[str] = []
         for linha in alvo:
-            continuar = _vacuum_tabela(conn, linha["tabela"], linha["schema"], args.full)
-            if not continuar:
+            resultado = _vacuum_tabela(conn, linha["tabela"], linha["schema"], args.full)
+            if resultado is None:
                 return 1
+            if not resultado:
+                falharam.append(f'{linha["schema"]}.{linha["tabela"]}')
 
         logger.info(f"[db_vacuum] tamanho do banco depois: {tamanho_banco(conn)}")
+        if falharam:
+            logger.error(
+                f"[db_vacuum] {len(falharam)}/{len(alvo)} tabela(s) falharam: "
+                f"{', '.join(falharam)}"
+            )
+            return 1
         return 0
     finally:
         conn.close()
