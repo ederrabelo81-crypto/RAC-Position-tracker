@@ -427,6 +427,31 @@ def is_quota_restricted_error(exc: Exception) -> bool:
     return "exceed_db_size_quota" in str(exc).lower()
 
 
+def is_aiven_read_only_error(exc: Exception) -> bool:
+    """
+    Detecta o Postgres novo (Aiven) recusando ESCRITA por estar em modo
+    somente-leitura — sintoma clássico da proteção automática de disco cheio
+    do provedor: quando o uso passa do limiar de segurança do plano, o serviço
+    muda `default_transaction_read_only` para `on` para TODA sessão nova, sem
+    derrubar a conexão nem negar leitura. `PostgresClient` nunca pede isso —
+    a conexão é `autocommit=True` sem nenhum `SET TRANSACTION READ ONLY` — então
+    o erro sempre vem do servidor, não do cliente.
+
+    NÃO confundir com a restrição de cota do Supabase (`is_quota_restricted_
+    error`): lá o PostgREST devolve 402 em leitura E escrita; aqui é o
+    psycopg2 batendo direto no Postgres, a leitura segue funcionando (foi
+    assim que a conexão passou por `verificar_conexao()`) e só o INSERT/UPDATE/
+    DELETE falha — com a frase literal do Postgres, não um código HTTP.
+
+    Args:
+        exc: exceção capturada de uma chamada de escrita ao Postgres direto.
+
+    Returns:
+        True se o erro é "cannot execute ... in a read-only transaction".
+    """
+    return "read-only transaction" in str(exc).lower()
+
+
 # Assinaturas de erro de RESOLUÇÃO DE DNS / conectividade — vêm do resolvedor
 # do próprio SO (socket), não da API do Supabase. Windows, Linux e macOS têm
 # mensagens diferentes para "sem DNS/sem rede"; cobre os três.

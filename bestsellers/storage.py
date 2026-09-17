@@ -225,7 +225,11 @@ def upload_supabase(df: pd.DataFrame) -> bool:
         return True
 
     try:
-        from utils.supabase_client import _get_client, is_quota_restricted_error
+        from utils.supabase_client import (
+            _get_client,
+            is_aiven_read_only_error,
+            is_quota_restricted_error,
+        )
     except Exception as exc:
         logger.error(f"[Bestsellers] Client Supabase indisponível: {exc}")
         return False
@@ -261,6 +265,29 @@ def upload_supabase(df: pd.DataFrame) -> bool:
                     "código.\n"
                     "   • Sem RAC_DB_DSN, a única saída no Supabase é "
                     "liberar espaço ou fazer upgrade do plano."
+                )
+                return False
+            if is_aiven_read_only_error(exc):
+                logger.error(
+                    "[Bestsellers] 🚫 Postgres (Aiven) recusou a ESCRITA — "
+                    "sessão em modo somente-leitura. A conexão e a leitura "
+                    "funcionam (senão nem chegaria aqui); só INSERT/UPDATE/"
+                    "DELETE falham.\n"
+                    "   • O CSV do dia e o histórico master JÁ estão "
+                    "gravados — nada foi perdido.\n"
+                    "   • Causa mais provável: a proteção automática de disco "
+                    "cheio do Aiven — quando o uso do serviço passa do "
+                    "limiar do plano, ele vira somente-leitura sozinho para "
+                    "toda sessão nova. Confira no painel do Aiven "
+                    "(Service → Overview/Metrics) o uso de disco e o aviso "
+                    "de read-only.\n"
+                    "   • Libere espaço (VACUUM, apagar histórico que não "
+                    "precisa mais ficar quente) ou faça upgrade do plano — "
+                    "o Aiven volta para leitura-escrita sozinho quando o uso "
+                    "cai abaixo do limiar, não precisa reiniciar nada aqui.\n"
+                    "   • Depois de liberar espaço, rode "
+                    "`python scripts/upload_bestsellers_csv.py` para reenviar "
+                    "o que ficou só no CSV enquanto o banco estava travado."
                 )
                 return False
             if "does not exist" in str(exc).lower() or "PGRST205" in str(exc):
