@@ -354,13 +354,23 @@ def _cmd_tier_run(args: argparse.Namespace) -> int:
 
     specs = _tier_datasets(args)
     piores = 0
-    for spec in specs:
+    for indice, spec in enumerate(specs):
         if len(specs) > 1:
             logger.info(f"── Dataset '{spec.dataset}' ({spec.table}) ──")
         rc = _tier_one(client, spec, args, cutoff)
         # Cota restrita (2) é o diagnóstico mais acionável — preserva-o sobre
         # o genérico (1) quando os dois aparecem.
         piores = 2 if 2 in (piores, rc) else max(piores, rc)
+        if rc == 2 and indice < len(specs) - 1:
+            # 2 é "banco bloqueado por fora" (cota do Supabase OU somente-
+            # leitura do Aiven) — o PRÓXIMO dataset bateria na mesma parede.
+            # Prosseguir só refaria write_day+verificação à toa antes de
+            # descobrir isso de novo.
+            logger.warning(
+                f"Banco bloqueado — pulando o(s) {len(specs) - indice - 1} "
+                "dataset(s) restante(s) desta passada."
+            )
+            break
     return piores
 
 
@@ -418,6 +428,7 @@ def _tier_one(
     migrados = 0
     apagados = 0
     falhas: List[str] = []
+    banco_somente_leitura = False
 
     for day in days:
         try:
@@ -506,6 +517,7 @@ def _tier_one(
                     "são pulados na próxima passada."
                 )
                 falhas.append(f"{day} (remoção — banco somente-leitura)")
+                banco_somente_leitura = True
                 break
             logger.error(f"{day}: falha apagando do Supabase: {exc}")
             falhas.append(f"{day} (remoção)")
@@ -527,6 +539,14 @@ def _tier_one(
             "nada foi apagado do Supabase (proteção contra perda de dado)."
         )
         return 1
+    if banco_somente_leitura:
+        # Mesmo código de saída da cota restrita (2): "banco bloqueado por
+        # fora, não adianta insistir" — é o sinal que `_cmd_tier_run` usa
+        # para parar de tentar o PRÓXIMO dataset também (`--dataset all`
+        # chamaria pricetrack_daily em seguida e bateria na mesma parede,
+        # repetindo write_day+verificação à toa antes de descobrir isso de
+        # novo).
+        return 2
     if falhas:
         # Sai com código != 0 para que um cron/agendador não trate migração
         # parcial como sucesso.
