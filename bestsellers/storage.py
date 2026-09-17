@@ -225,7 +225,11 @@ def upload_supabase(df: pd.DataFrame) -> bool:
         return True
 
     try:
-        from utils.supabase_client import _get_client, is_quota_restricted_error
+        from utils.supabase_client import (
+            _get_client,
+            is_aiven_read_only_error,
+            is_quota_restricted_error,
+        )
     except Exception as exc:
         logger.error(f"[Bestsellers] Client Supabase indisponível: {exc}")
         return False
@@ -233,6 +237,13 @@ def upload_supabase(df: pd.DataFrame) -> bool:
     cliente = _get_client()
     if cliente is None:
         return False
+
+    try:
+        from utils.db import resolve_backend_name
+
+        no_postgres_direto = resolve_backend_name() == "postgres"
+    except Exception:
+        no_postgres_direto = False
 
     linhas = [_linha_supabase(r) for r in df.to_dict(orient="records")]
     total_lotes = math.ceil(len(linhas) / _TAMANHO_LOTE)
@@ -262,6 +273,52 @@ def upload_supabase(df: pd.DataFrame) -> bool:
                     "   • Sem RAC_DB_DSN, a única saída no Supabase é "
                     "liberar espaço ou fazer upgrade do plano."
                 )
+                return False
+            if is_aiven_read_only_error(exc):
+                if no_postgres_direto:
+                    logger.error(
+                        "[Bestsellers] 🚫 Postgres (Aiven) recusou a ESCRITA — "
+                        "sessão em modo somente-leitura. A conexão e a leitura "
+                        "funcionam (senão nem chegaria aqui); só INSERT/UPDATE/"
+                        "DELETE falham.\n"
+                        "   • O CSV do dia e o histórico master JÁ estão "
+                        "gravados — nada foi perdido.\n"
+                        "   • Causa mais provável: a proteção automática de disco "
+                        "cheio do Aiven — quando o uso do serviço passa do "
+                        "limiar do plano, ele vira somente-leitura sozinho para "
+                        "toda sessão nova. Confira no painel do Aiven "
+                        "(Service → Overview/Metrics) o uso de disco e o aviso "
+                        "de read-only.\n"
+                        "   • Libere espaço (VACUUM, apagar histórico que não "
+                        "precisa mais ficar quente) ou faça upgrade do plano — "
+                        "o Aiven volta para leitura-escrita sozinho quando o uso "
+                        "cai abaixo do limiar, não precisa reiniciar nada aqui.\n"
+                        "   • Depois de liberar espaço, rode "
+                        "`python scripts/upload_bestsellers_csv.py` para reenviar "
+                        "o que ficou só no CSV enquanto o banco estava travado."
+                    )
+                else:
+                    # `RAC_DB_DSN` vazio → estamos no supabase-py, não no
+                    # adaptador Postgres. A MESMA frase pode vir do Postgres por
+                    # trás do PostgREST (ex.: o projeto Supabase caiu para uma
+                    # réplica de leitura, ou está em manutenção) — mas a
+                    # remediação do Aiven (painel, VACUUM, upgrade de plano lá)
+                    # não se aplica e confundiria quem está no Supabase.
+                    logger.error(
+                        "[Bestsellers] 🚫 Banco recusou a ESCRITA — sessão em "
+                        "modo somente-leitura (o erro veio do Postgres por "
+                        "trás do Supabase, não é a restrição de cota "
+                        "`exceed_db_size_quota` — essa tem tratamento "
+                        "próprio acima).\n"
+                        "   • O CSV do dia e o histórico master JÁ estão "
+                        "gravados — nada foi perdido.\n"
+                        "   • Confira o painel do Supabase (Project Settings → "
+                        "Infrastructure/Status) por manutenção ou failover em "
+                        "andamento — esse modo costuma ser temporário.\n"
+                        "   • Depois que o projeto voltar a aceitar escrita, "
+                        "rode `python scripts/upload_bestsellers_csv.py` para "
+                        "reenviar o que ficou só no CSV."
+                    )
                 return False
             if "does not exist" in str(exc).lower() or "PGRST205" in str(exc):
                 logger.error(
