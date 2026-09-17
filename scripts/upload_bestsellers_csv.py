@@ -129,6 +129,14 @@ def _anunciar_destino() -> bool:
         else:
             host = "(DSN em formato não-URI — host omitido do log por segurança)"
         logger.info(f"[Upload] destino: Postgres direto (RAC_DB_DSN → {host})")
+    elif dsn_from_env():
+        # RAC_DB_BACKEND=supabase força este caminho mesmo com RAC_DB_DSN
+        # preenchido — dizer "DSN vazio" aqui seria falso e mandaria o
+        # operador procurar uma credencial que já está lá.
+        logger.info(
+            "[Upload] destino: Supabase (RAC_DB_BACKEND=supabase força esse "
+            "caminho mesmo com RAC_DB_DSN preenchido)"
+        )
     else:
         logger.info(
             "[Upload] destino: Supabase (RAC_DB_DSN vazio nesta máquina — "
@@ -183,6 +191,9 @@ def _coletar_arquivos(
     return resultado
 
 
+_CAMPOS_OBRIGATORIOS = ("data", "plataforma", "rank")
+
+
 def _carregar_csv(caminho: Path) -> Optional[pd.DataFrame]:
     """
     Lê o CSV, distinguindo "arquivo vazio/sem linhas na janela" de "falha ao
@@ -192,15 +203,31 @@ def _carregar_csv(caminho: Path) -> Optional[pd.DataFrame]:
     saindo como sucesso silencioso, então o canário abaixo lê o arquivo cru
     primeiro só para detectar a falha.
 
+    Também recusa um CSV sintaticamente válido mas de SCHEMA errado: sem
+    `data`/`plataforma`/`rank` (chave da série), `_ler_csv` preenche as
+    colunas ausentes com `None` em vez de falhar, e uma linha com `data` nula
+    escaparia de `_validar_e_quarentenar` — `DataFrame.groupby("data")`
+    descarta grupo com chave nula por padrão, silenciosamente.
+
     Returns:
-        O DataFrame no formato canônico, ou None se a leitura falhou.
+        O DataFrame no formato canônico, ou None se a leitura falhou ou o
+        schema não tem o mínimo para identificar a linha.
     """
     try:
         pd.read_csv(caminho, sep=";", encoding="utf-8-sig", dtype=str)
     except Exception as exc:
         logger.error(f"[Upload] {caminho}: falha ao ler o CSV — {exc}")
         return None
-    return storage.carregar_historico(caminho=str(caminho))
+
+    df = storage.carregar_historico(caminho=str(caminho))
+    if len(df) and df[list(_CAMPOS_OBRIGATORIOS)].isna().any().any():
+        logger.error(
+            f"[Upload] {caminho}: CSV com schema inválido — linha(s) sem "
+            f"{'/'.join(_CAMPOS_OBRIGATORIOS)} (colunas ausentes ou "
+            "renomeadas no arquivo?)."
+        )
+        return None
+    return df
 
 
 def _validar_e_quarentenar(df: pd.DataFrame, origem: str) -> pd.DataFrame:
