@@ -329,3 +329,41 @@ histórico em Parquet é o mesmo para os dois lados.
 - **Índices podados de propósito:** `idx_coletas_data` (duplicata exata de
   `coletas_data_idx`) e `idx_coletas_seller_id` (zero varreduras desde que foi
   criado). Estão comentados na migração 019, com o motivo.
+
+---
+
+## 6. Consulta ad-hoc via Claude Code (MCP Postgres)
+
+Para rodar queries exploratórias direto na Aiven a partir do Claude Code (fora
+do fluxo de coleta/gravação em produção), configure o servidor MCP
+`@modelcontextprotocol/server-postgres` apontando pro Service URI da Aiven.
+
+**Driver diferente, comportamento de TLS diferente:** o `psycopg2` (usado por
+todos os scripts de produção) segue a semântica do `libpq`, onde
+`sslmode=require` só exige criptografia — não valida a cadeia do certificado.
+Já o driver Node.js (`pg`/`pg-connection-string`, por trás do MCP server)
+interpreta `sslmode=require` como validação completa da cadeia, e como o
+certificado da Aiven não está no armazém de CAs padrão do Node, a conexão
+falha com `self-signed certificate in certificate chain`. **Os scripts de
+produção não precisam de nada disto** — só quem for configurar o MCP para
+consulta via chat.
+
+Duas formas de contornar, em `certs/aiven-ca.pem` (baixado do console da
+Aiven → serviço → Connection information → CA Certificate — é um certificado
+público, sem problema manter no repo):
+
+```
+# Rápido — ainda criptografado, só não valida a cadeia
+postgres://avnadmin:SENHA@HOST:PORTA/defaultdb?sslmode=no-verify
+
+# Rigoroso — valida contra o CA da Aiven
+postgres://avnadmin:SENHA@HOST:PORTA/defaultdb?sslmode=verify-full&sslrootcert=/caminho/para/certs/aiven-ca.pem
+```
+
+`claude mcp add-json postgres '{"command":"npx","args":["-y","@modelcontextprotocol/server-postgres","<DSN acima>"]}'`
+— no PowerShell/Windows, evite `claude mcp add ... -- npx ...` (o `--` não
+repassa `-y` corretamente em algumas versões do CLI) e prefira escrever o
+`.mcp.json` do projeto diretamente. **Se usar escopo de projeto, adicione
+`.mcp.json` ao `.gitignore`** — ele carrega a connection string com a senha em
+texto puro; `certs/aiven-ca.pem` (só o certificado público) pode ficar
+versionado normalmente.
