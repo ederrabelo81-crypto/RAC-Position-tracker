@@ -466,6 +466,21 @@ diário ou "resumo de tudo que foi coletado":**
    fabricado por não conseguir consultar a fonte certa é pior que admitir
    que não deu para checar.
 
+**Onde a rotina roda agora (18/09/2026):** o Cowork/claude.ai não tem, e hoje
+não pode ter, um conector MCP Postgres genérico — só serviços com conector
+OAuth publicado no diretório (Supabase, Neon, etc.), e o Aiven não é um
+deles. Por isso o briefing diário foi movido para rodar **localmente**, no
+PC coletor, via Claude Code CLI headless (`claude -p`), que já tem o
+conector `postgres`/Aiven configurado. Setup completo (conectores, GitHub
+Pages do painel, tarefa do Task Scheduler) em
+`docs/BRIEFING_LOCAL_SETUP.md`; o prompt versionado é
+`docs/briefing_diario_prompt.md`; o disparo agendado é
+`scripts/run_briefing_diario.bat` + `scripts/setup_briefing_scheduler.ps1`
+(tarefa `RAC_Briefing_0700`, 07:00 BRT). O painel deixou de ser um Artifact
+da claude.ai (essa ferramenta não existe no Claude Code CLI) e passou a ser
+uma página estática em `docs/painel/index.html`, publicada via GitHub Pages
+a cada push do próprio briefing.
+
 ---
 
 ## Table of Contents
@@ -1228,6 +1243,10 @@ python scripts/briefing_gate.py                   # portão de frescor do briefi
 python scripts/briefing_gate.py --json --curar    # verifica e reimporta o que faltar
 python scripts/pipeline_heal.py --dry-run         # contenção: o que seria curado
 
+# Briefing diário completo v2 (Aiven + Notion + painel) — roda LOCAL, ver docs/BRIEFING_LOCAL_SETUP.md
+scripts\run_briefing_diario.bat                            # dispara na mão (mesmo comando da tarefa agendada)
+PowerShell -ExecutionPolicy Bypass -File scripts\setup_briefing_scheduler.ps1   # agenda RAC_Briefing_0700 (07:00 BRT)
+
 # Validação diária de DADO — relatório PASS/FAIL por plataforma no Telegram
 python scripts/daily_status_check.py              # Hoje, ambos turnos
 python scripts/daily_status_check.py --turno Abertura
@@ -1473,7 +1492,8 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 ---
 
 *Last updated: September 18, 2026 (v5.3)*  
-*Latest changes (18/09/2026): nova seção "Briefing/resumo diário — nunca consultar o banco de memória" — documenta o incidente de 12–17/09/2026 (tarefa agendada `painel-trade-rac-7h` publicou "outage total" no Notion 3 dias seguidos porque consultava um schema de `pricetrack_daily` inventado contra o projeto Supabase antigo, já descontinuado pela migração Aiven) e fixa a regra dura: nunca escrever SQL de schema de memória, sempre passar por `utils/db.py`/`briefing_gate.py`/`pricetrack_capacity_audit.py`, `pipeline_heartbeat` usa `job_id` (não `job_name`), e sem conector Postgres/Aiven configurado o resultado é reportar o bloqueio, nunca fabricar diagnóstico.*
+*Latest changes (18/09/2026, 2): o briefing diário v2 completo foi movido para rodar **localmente** (Claude Code CLI headless no PC coletor) porque o Cowork/claude.ai não tem conector MCP Postgres genérico para o Aiven (só serviços com OAuth publicado no diretório, tipo Supabase/Neon). Novo `docs/briefing_diario_prompt.md` (prompt versionado, com as correções de schema já aplicadas), `scripts/run_briefing_diario.bat` + `scripts/setup_briefing_scheduler.ps1` (tarefa `RAC_Briefing_0700`, 07:00 BRT), `docs/BRIEFING_LOCAL_SETUP.md` (setup único: conector Postgres/Aiven read-only, conector Notion via OAuth, GitHub Pages). O painel deixou de ser Artifact da claude.ai (ferramenta ausente no Claude Code CLI) e virou página estática em `docs/painel/index.html`, publicada via GitHub Pages a cada push do próprio briefing.*
+*Anterior (18/09/2026): nova seção "Briefing/resumo diário — nunca consultar o banco de memória" — documenta o incidente de 12–17/09/2026 (tarefa agendada `painel-trade-rac-7h` publicou "outage total" no Notion 3 dias seguidos porque consultava um schema de `pricetrack_daily` inventado contra o projeto Supabase antigo, já descontinuado pela migração Aiven) e fixa a regra dura: nunca escrever SQL de schema de memória, sempre passar por `utils/db.py`/`briefing_gate.py`/`pricetrack_capacity_audit.py`, `pipeline_heartbeat` usa `job_id` (não `job_name`), e sem conector Postgres/Aiven configurado o resultado é reportar o bloqueio, nunca fabricar diagnóstico.*
 *Anterior (06/09/2026): documentado o **Track Position Seller** (`seller_app/`) — app novo, separado do dashboard interno, publicado em Fase 1 do spin-off (`docs/TRACK_POSITION_SELLER.md`). Fato com sujeito seller em `seller_offer_daily` (migrações 016/017), 5 abas de insight, chave `anon` só-leitura + RLS. Nova seção "Track Position Seller — painel do lojista" abaixo.*
 *Anterior (06/09/2026): Amazon migrada para um coletor **Amazon-only no GitHub Actions** (`collect_amazon_sellers.yml`, 3 turnos 8h/14h/20h) que abre o PDP de cada item para ler a buy box (modo `RAC_AMAZON_PDP_FRESH=1`, sem cache, alimenta o `seller_app`). Saiu da varredura do PC; posse migrou para `gh_amazon_*` no `pipeline_registry`. Novo override `RAC_TURNO` crava o turno de um run agendado (get_turno), imune ao atraso do cron do Actions.*
 *Anterior (04/09/2026): correção factual — Mais Vendidos NÃO foi descontinuado, coleta e grava todo dia (conferido no Supabase); o que falta é o job no `pipeline_registry.py`, e por isso 7 das 20 fontes estão mudas sem ninguém cobrar — a única que importa é `casasbahia` (marketplace), as outras 6 são site próprio e não são prioridade*
