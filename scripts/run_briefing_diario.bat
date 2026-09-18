@@ -63,13 +63,19 @@ if not exist logs mkdir logs
 set "GIT_TERMINAL_PROMPT=0"
 
 :: Hora/data via PowerShell (nao bash): o Task Scheduler roda esta sessao com
-:: PATH reduzido, e o Git for Windows nao garante "bash" nesse contexto. A
-:: hora local do PC coletor ja e BRT.
+:: PATH reduzido, e o Git for Windows nao garante "bash" nesse contexto. Pelo
+:: MESMO motivo, "powershell" pelo nome tambem nao e garantido no PATH dessa
+:: sessao - resolvido pelo caminho fixo do PowerShell 5.1 (sempre presente em
+:: qualquer Windows suportado), nunca pelo nome nu (achado do cubic: se
+:: "powershell" falhar, TODAS as guardas - janela, marcador e a checagem de
+:: frescor do painel mais abaixo - colapsam ao mesmo tempo, porque as tres
+:: dependem do mesmo comando). A hora local do PC coletor ja e BRT.
+set "PWSH=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "HOUR="
 set "TODAY="
 set "DATE_KNOWN=0"
-for /f %%H in ('powershell -NoProfile -Command "(Get-Date).Hour" 2^>nul') do set "HOUR=%%H"
-for /f %%D in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd" 2^>nul') do set "TODAY=%%D"
+for /f %%H in ('"%PWSH%" -NoProfile -Command "(Get-Date).Hour" 2^>nul') do set "HOUR=%%H"
+for /f %%D in ('"%PWSH%" -NoProfile -Command "Get-Date -Format yyyyMMdd" 2^>nul') do set "TODAY=%%D"
 if defined TODAY set "DATE_KNOWN=1"
 
 set "WIN_MIN=7"
@@ -104,6 +110,7 @@ if %HOUR% GTR %WIN_MAX% (
 :run
 setlocal EnableDelayedExpansion
 (
+    set "FINAL_RC=0"
     echo [%DATE% %TIME%] [briefing] === inicio ===
     if "%RAC_NO_SELFUPDATE%"=="1" (
         echo [%DATE% %TIME%] [briefing] self-update pulado [RAC_NO_SELFUPDATE=1]
@@ -114,6 +121,7 @@ setlocal EnableDelayedExpansion
     )
     if not exist "%BASE_DIR%\docs\briefing_diario_prompt.md" (
         echo [%DATE% %TIME%] [briefing] ERRO: docs\briefing_diario_prompt.md nao encontrado
+        set "FINAL_RC=1"
     ) else (
         echo [%DATE% %TIME%] [briefing] chamando claude -p (nao-interativo^)
         rem Execucao nao-interativa: o modo de permissao para rodar sem prompt
@@ -131,6 +139,7 @@ setlocal EnableDelayedExpansion
         set "RC=!ERRORLEVEL!"
         if not "!RC!"=="0" (
             echo [%DATE% %TIME%] [briefing] ERRO: claude terminou com falha [exit=!RC!]
+            set "FINAL_RC=!RC!"
         ) else (
             echo [%DATE% %TIME%] [briefing] claude concluido [exit=0]
             if "%DATE_KNOWN%"=="0" (
@@ -142,7 +151,7 @@ setlocal EnableDelayedExpansion
                 rem docs\painel\index.html foi REESCRITO HOJE - evidencia de
                 rem que ao menos o PASSO 8 rodou.
                 set "PANEL_FRESH=nao"
-                for /f %%P in ('powershell -NoProfile -Command "if (Test-Path 'docs\painel\index.html') { if ((Get-Item 'docs\painel\index.html').LastWriteTime.Date -eq (Get-Date).Date) { 'sim' } else { 'nao' } } else { 'nao' }" 2^>nul') do set "PANEL_FRESH=%%P"
+                for /f %%P in ('"%PWSH%" -NoProfile -Command "if (Test-Path 'docs\painel\index.html') { if ((Get-Item 'docs\painel\index.html').LastWriteTime.Date -eq (Get-Date).Date) { 'sim' } else { 'nao' } } else { 'nao' }" 2^>nul') do set "PANEL_FRESH=%%P"
                 if /i "!PANEL_FRESH!"=="sim" (
                     echo [%DATE% %TIME%] [briefing] painel atualizado hoje - marcador gravado
                     del /q "logs\briefing_*.done" 2>nul
@@ -153,6 +162,6 @@ setlocal EnableDelayedExpansion
             )
         )
     )
-    echo [%DATE% %TIME%] [briefing] === fim ===
-    exit /b
+    echo [%DATE% %TIME%] [briefing] === fim === [exit=!FINAL_RC!]
+    exit /b !FINAL_RC!
 ) >> "%BASE_DIR%\logs\briefing_scheduler.log" 2>&1

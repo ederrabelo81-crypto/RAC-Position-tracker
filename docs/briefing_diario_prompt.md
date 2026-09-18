@@ -375,8 +375,11 @@ repositório (RAC-Position-tracker).
    resultados dos PASSOS 2-4 e 3B. Salve em `logs/saida_painel_{DATA}.json`
    (nunca na raiz do repo — `logs/saida_painel_*.json` já está no
    `.gitignore`, não precisa se preocupar em deixar isso rastreado por
-   acidente; ainda assim, se o disco acumular muitos, apague os antigos —
-   `del logs\saida_painel_*.json` mantendo só o do dia, se quiser).
+   acidente; ainda assim, se o disco acumular muitos, apague só os
+   ANTERIORES ao dia alvo — `del logs\saida_painel_*.json` sozinho apaga
+   também o de hoje, que o PASSO F step 3 pode precisar reler num fallback
+   na mesma execução; nunca rode esse `del` sem excluir o arquivo do dia da
+   varredura).
 2. Gere o HTML: `python scripts/render_painel_diario.py logs/saida_painel_{DATA}.json --out docs/painel/index.html`.
    Toda seção sem dado sai como "pendente" no HTML — o script nunca inventa
    número nem omite seção em silêncio.
