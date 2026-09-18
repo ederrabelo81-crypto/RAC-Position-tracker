@@ -36,10 +36,10 @@ claude mcp add-json postgres '{"command":"npx","args":["-y","@modelcontextprotoc
 ```
 
 **Use uma credencial READ-ONLY do Aiven para esse DSN, diferente da
-`RAC_DB_DSN` de escrita usada pela coleta.** O briefing só lê; uma sessão
-Claude rodando com `--permission-mode bypassPermissions` (obrigatório em
-modo agendado, ver seção 4) não deve ter, por acidente ou por um comando mal
-formado, como escrever no banco de produção. Crie um usuário Postgres
+`RAC_DB_DSN` de escrita usada pela coleta.** O briefing só lê; mesmo com o
+allowlist de permissões da seção 2b restrito às ferramentas certas, uma
+credencial read-only é a segunda camada de defesa contra um comando mal
+formado escrever no banco de produção. Crie um usuário Postgres
 `readonly` na Aiven (Console → Users → Add user, ou
 `CREATE ROLE briefing_ro LOGIN PASSWORD '...'; GRANT CONNECT ON DATABASE defaultdb TO briefing_ro; GRANT USAGE ON SCHEMA public TO briefing_ro; GRANT SELECT ON ALL TABLES IN SCHEMA public TO briefing_ro;`)
 e monte o DSN com esse usuário.
@@ -63,15 +63,40 @@ renova sozinho — a tarefa agendada não precisa de nenhum login futuro.
 ## 2b. Permitir execução sem prompt de aprovação
 
 Uma sessão agendada não tem ninguém no teclado para aprovar cada chamada de
-ferramenta. Configure isso no `settings.json` do Claude Code (não num flag
-dentro do `.bat` versionado no repo — mantém a política de permissão como
-configuração local sua, revisável e reversível, em vez de hardcoded num
-script que todo mundo com acesso ao repo lê). Use a skill `update-config`
-deste projeto (`/update-config` ou peça "configurar permissões para rodar o
-briefing sem prompt") para adicionar as ferramentas específicas que essa
-rotina usa (o conector `postgres`, o conector `notion`, `git add/commit/push`
-neste repo) a um allowlist — evite um bypass geral de todas as permissões;
-restrinja ao que o PASSO 0-8 do prompt realmente precisa.
+ferramenta. Isso é configurado no `settings.json` do Claude Code — **local
+seu** (`.claude/settings.local.json` na raiz do repo, ou o `settings.json`
+do usuário em `~/.claude/settings.json`), nunca num flag dentro do `.bat`
+versionado no repo: mantém a política de permissão como configuração sua,
+revisável e reversível, em vez de hardcoded num script que todo mundo com
+acesso ao repo lê.
+
+Adicione um allowlist restrito às ferramentas que o PASSO 0-8 do prompt
+realmente usa — nunca um bypass geral. Exemplo de `.claude/settings.local.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(git pull --ff-only origin main)",
+      "Bash(git add docs/painel/index.html)",
+      "Bash(git commit -m *)",
+      "Bash(git push origin main)",
+      "Bash(python scripts/render_painel_diario.py *)",
+      "mcp__postgres__*",
+      "mcp__notion__*"
+    ]
+  }
+}
+```
+
+Ajuste os nomes exatos das ferramentas MCP (`mcp__postgres__*`,
+`mcp__notion__*`) conforme aparecerem no seu `claude mcp list` — o prefixo
+depende de como cada servidor nomeia suas tools; rode uma vez de forma
+interativa (`type docs\briefing_diario_prompt.md | claude`) e observe quais
+nomes de ferramenta o CLI pede aprovação, para copiar exatamente esses nomes
+no `allow`. Se você tiver a skill `update-config` instalada nesta conta,
+pode usá-la para gerar/editar esse arquivo em vez de escrevê-lo à mão — mas
+ela é opcional, o `settings.json` acima funciona sozinho.
 
 ## 3. GitHub Pages para o painel
 
@@ -108,6 +133,17 @@ Start-ScheduledTask -TaskName "RAC_Briefing_0700"
 Get-Content logs\briefing_scheduler.log -Tail 80 -Wait
 ```
 
+Fora da janela 7h-10h, ou se já rodou hoje com sucesso, o `.bat` pula sem
+chamar o `claude` (guarda de janela + marcador `logs\briefing_<data>.done`,
+mesmo padrão de `local_scheduled_collect.bat` para a coleta — evita
+republicar o Notion/painel várias vezes no mesmo dia). Para forçar mesmo
+assim (teste manual, fora da janela ou já rodou hoje):
+
+```powershell
+$env:RAC_FORCE_BRIEFING = "1"
+scripts\run_briefing_diario.bat
+```
+
 ## Diagnóstico
 
 | Sintoma | Causa provável |
@@ -116,6 +152,7 @@ Get-Content logs\briefing_scheduler.log -Tail 80 -Wait
 | Log mostra erro do Notion (401/403) | Token OAuth expirou ou foi revogado — refaça `claude mcp add --transport http notion ...`. |
 | Painel não atualiza no GitHub Pages | Cheque se o push do PASSO 8 realmente aconteceu (`git log -1 -- docs/painel/index.html`) e se o Pages está apontando pra `/docs` do `main` (passo 3). Pages pode levar 1-2 min pra propagar. |
 | Tarefa não dispara às 7h | Notebook desligado/deslogado fora da janela 7h-10h — o catch-up de logon cobre isso só dentro da janela. Rode manual (seção "Testar" acima) para o dia. |
+| Log mostra "ja publicado hoje - nada a fazer" | `logs\briefing_<data>.done` já existe (rodou com sucesso hoje). Esperado, não é erro — apague o arquivo ou use `RAC_FORCE_BRIEFING=1` se precisar rodar de novo no mesmo dia. |
 | `claude -p` para pedindo aprovação | O allowlist de permissões local (seção 2b) não cobre uma das ferramentas que o prompt usou naquele dia — confira `settings.json` e amplie o allowlist para a ferramenta específica que travou. |
 
 ## Remover

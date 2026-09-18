@@ -100,13 +100,24 @@ $taskPrincipal = New-ScheduledTaskPrincipal -UserId $TaskUser -LogonType Interac
 
 $action = New-ScheduledTaskAction -Execute "`"$BriefingScript`"" -WorkingDirectory $BaseDir
 
+# O gatilho de logon pode disparar fora da janela 7-10h (StartWhenAvailable,
+# notebook desligado e ligado tarde, etc.) e mais de uma vez no mesmo dia -
+# run_briefing_diario.bat e quem decide se ainda cabe rodar (guarda de janela
+# + marcador logs\briefing_<data>.done), igual ao padrao de
+# local_scheduled_collect.bat para a coleta. A tarefa aqui so dispara; a
+# decisao de rodar ou pular e do .bat.
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $TaskUser
 $logonTrigger.Delay = "PT2M"
 
 $triggers = @((New-ScheduledTaskTrigger -Daily -At "7:00AM"), $logonTrigger)
+# ExecutionTimeLimit generoso (3h): um briefing headless completo faz varias
+# passadas de SQL, escreve no Notion, renderiza o painel e da git push - pode
+# passar de 1h em dia com mais dado ou rede lenta. Um kill no meio da execucao
+# deixa Notion/painel em estado parcial sem chance de reiniciar sozinho no
+# mesmo dia (o marcador so e gravado em caso de SUCESSO).
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10) `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 3)
 
 Write-Host "Registrando: $TaskName (07:00 diario + catch-up no logon, janela 7-10h)" -ForegroundColor Cyan
 Register-ScheduledTask -TaskName $TaskName `

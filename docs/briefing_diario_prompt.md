@@ -57,9 +57,14 @@ PASSO 1 — DIA ALVO E CONEXÃO
 
 - Confirme com uma query em `information_schema.tables` (schema public) que
   `coletas`, `pricetrack_daily` e `pipeline_heartbeat` existem e respondem.
-- Dia alvo = D-1 em BRT (America/Sao_Paulo), não UTC. Pegue a hora atual via
-  bash (`TZ='America/Sao_Paulo' date`) antes de calcular — CURRENT_DATE do
-  Postgres é UTC e depois das 21h BRT já rolou pro dia seguinte (off-by-one).
+- Dia alvo = D-1 em BRT (America/Sao_Paulo), não UTC. Pegue a hora atual
+  rodando `select now() at time zone 'America/Sao_Paulo' as agora_brt;` no
+  próprio conector Postgres/Aiven — nunca `bash`/`date` do shell: o Task
+  Scheduler roda a sessão do `claude` com um PATH reduzido, e o Git for
+  Windows não garante `bash` nesse contexto; a query evita essa dependência
+  de ambiente por completo. CURRENT_DATE do Postgres é UTC e depois das 21h
+  BRT já rolou pro dia seguinte (off-by-one) — é por isso que essa conversão
+  de fuso é obrigatória antes de qualquer cálculo de "dia alvo".
 - Antes de fechar o dia alvo, rode
   `select data, count(*), count(distinct run_id) as runs from coletas where data >= current_date - interval '5 days' group by data order by data desc`
   para confirmar cobertura completa (múltiplos runs, não 1 run parcial). Se
@@ -362,21 +367,20 @@ Rodando localmente, não existe a ferramenta de Artifact da claude.ai — o
 painel é publicado como página estática no GitHub Pages deste mesmo
 repositório (RAC-Position-tracker).
 
-1. Monte o JSON com o schema que `rac_supabase_painel.py` consome (mesmas
-   chaves de sempre: origem, dia, particoes, n_particoes, n_linhas, alertas,
-   cobertura, presenca, patrocinados, profundidade, vitrine, preco,
-   preco_tiers, preco_tiers_tendencia, rodape_de_para, rodape_oscilacao) a
-   partir dos resultados dos PASSOS 2-4 e 3B. Salve em
-   `saida_painel.json` na raiz do repo (nome herdado do tempo do Supabase;
-   conteúdo agora vem do Aiven).
-2. Gere o HTML: `python "Midea Digital Trade Marketing/rac_supabase_painel.py" saida_painel.json > docs/painel/index.html`
-   (ajuste o caminho do script conforme onde ele estiver neste checkout).
+1. Monte o JSON com as chaves consumidas por `scripts/render_painel_diario.py`
+   (deste repositório — confira o schema lendo o próprio arquivo, ele é a
+   fonte de verdade: origem, dia, n_particoes, n_linhas, alertas, cobertura,
+   presenca, patrocinados, profundidade, vitrine, preco, preco_tiers,
+   preco_tiers_tendencia, rodape_de_para, rodape_oscilacao) a partir dos
+   resultados dos PASSOS 2-4 e 3B. Salve em `logs/saida_painel_{DATA}.json`
+   (nunca na raiz do repo).
+2. Gere o HTML: `python scripts/render_painel_diario.py logs/saida_painel_{DATA}.json --out docs/painel/index.html`.
+   Toda seção sem dado sai como "pendente" no HTML — o script nunca inventa
+   número nem omite seção em silêncio.
 3. `git add docs/painel/index.html && git commit -m "chore(painel): atualiza painel diario {DATA}" && git push origin main`
    — o GitHub Pages publica sozinho a cada push (configurado uma vez, ver
    `docs/BRIEFING_LOCAL_SETUP.md`). Não precisa de nenhuma ferramenta de
    Artifact.
-4. Apague `saida_painel.json` da raiz depois de gerar o HTML (ou mova para
-   `logs/`) — não deve ficar solto no working tree do repo.
 
 ═══════════════════════════════════════════
 PASSO F — FALLBACK: SE O AIVEN ESTIVER INDISPONÍVEL
@@ -398,8 +402,13 @@ Drive:
 2. Baixe cada partição, decodifique base64 para uma pasta local, confira o
    tamanho contra o `fileSize` do Drive antes de usar — se não bater,
    exclua a partição e declare.
-3. Rode `rac_drive_analise.py coletas --out-json saida.json` e
-   `rac_drive_painel.py saida.json > docs/painel/index.html`.
+3. Monte o JSON manualmente a partir do que der pra calcular com as
+   partições baixadas (sem script pronto para o formato Parquet do Drive
+   neste repositório — construa o dict em Python inline, seção por seção,
+   igual ao PASSO 8) e gere o HTML com
+   `python scripts/render_painel_diario.py logs/saida_painel_{DATA}.json --out docs/painel/index.html`
+   (mesmo script do PASSO 8 — qualquer seção que não dê pra calcular fica de
+   fora do JSON e o script já renderiza como "pendente").
 4. `estado_match` NÃO existe nas partições cruas do Drive — não filtre por
    ela; use o rodapé "base: coleta do Drive sem de-para aplicado" em vez do
    "MAPEADO". `pricetrack_daily` não está no Drive — marque Preço 9K/12K,
