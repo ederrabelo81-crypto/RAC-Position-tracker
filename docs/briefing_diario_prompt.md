@@ -373,7 +373,10 @@ repositório (RAC-Position-tracker).
    presenca, patrocinados, profundidade, vitrine, preco, preco_tiers,
    preco_tiers_tendencia, rodape_de_para, rodape_oscilacao) a partir dos
    resultados dos PASSOS 2-4 e 3B. Salve em `logs/saida_painel_{DATA}.json`
-   (nunca na raiz do repo).
+   (nunca na raiz do repo — `logs/saida_painel_*.json` já está no
+   `.gitignore`, não precisa se preocupar em deixar isso rastreado por
+   acidente; ainda assim, se o disco acumular muitos, apague os antigos —
+   `del logs\saida_painel_*.json` mantendo só o do dia, se quiser).
 2. Gere o HTML: `python scripts/render_painel_diario.py logs/saida_painel_{DATA}.json --out docs/painel/index.html`.
    Toda seção sem dado sai como "pendente" no HTML — o script nunca inventa
    número nem omite seção em silêncio.
@@ -388,8 +391,23 @@ PASSO F — FALLBACK: SE O AIVEN ESTIVER INDISPONÍVEL
 
 Se as queries de teste do PASSO 0/1 falharem de forma persistente (e o
 conector existe e está configurado — se não existir, é PASSO 0 item 1, não
-este), documente que o Aiven está fora do ar e retome o fluxo por Google
-Drive:
+este), documente que o Aiven está fora do ar.
+
+**Antes de tentar o Drive: confirme que ESTE ambiente tem um conector MCP de
+Google Drive configurado e no allowlist de permissões (seção 2b de
+`docs/BRIEFING_LOCAL_SETUP.md`).** A sessão local (`claude -p` headless, PC
+coletor) só tem os conectores `postgres` e `notion` configurados por padrão
+— **não** tem Google Drive. Rodando sem esse conector, os passos abaixo (que
+dependem de listar/baixar arquivos do Drive) vão falhar sem executar nada
+útil. Se não houver conector Drive configurado: **pare aqui**, publique só
+um relatório de bloqueio ("Aiven indisponível E fallback Drive sem conector
+configurado nesta sessão — nenhum briefing publicado hoje") e não tente
+inventar dado de nenhuma fonte. O fallback abaixo só é executável numa
+sessão interativa (`claude` sem `-p`, rodada por uma pessoa) que já tenha
+esse conector, ou depois de alguém configurar um conector Drive nesta sessão
+agendada — não é o caminho padrão da tarefa automática.
+
+Com o conector confirmado, retome o fluxo por Google Drive:
 
 1. Pasta `RAC Position Tracker - Historico/coletas/` (id
    `1XCxLYOLBzF61mIhBcgdLxZmUVvw8id92`; raiz

@@ -39,6 +39,18 @@ def _pendente(label: str) -> str:
     return f'<p class="pendente">{_esc(label)}: pendente.</p>'
 
 
+def _safe_json(obj: Any) -> str:
+    """json.dumps seguro para embutir dentro de <script>.
+
+    Um label/valor contendo literalmente "</script>" fecharia o bloco de
+    script mais cedo e permitiria injetar HTML/JS na página pública do
+    GitHub Pages. Escapa a barra de fechamento em qualquer sequência
+    "</" do JSON serializado — o parser JS ignora o "\\/" (é um escape
+    válido e opcional para "/"), então isso não muda o valor decodificado.
+    """
+    return json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
+
+
 def _table(headers: List[str], rows: List[List[Any]]) -> str:
     if not rows:
         return ""
@@ -58,6 +70,8 @@ def _section(titulo: str, corpo: str) -> str:
 
 
 def render_alertas(alertas: Optional[List[str]]) -> str:
+    if alertas is None:
+        return _pendente("Alertas do dia")
     if not alertas:
         return "<p>Sem alertas, dia dentro da normalidade.</p>"
     itens = "".join(f"<li>{_esc(a)}</li>" for a in alertas)
@@ -175,7 +189,12 @@ def render_preco_tiers(preco_tiers: Optional[Dict[str, Any]]) -> str:
     if preco_tiers.get("intro"):
         partes.append(f"<p>{_esc(preco_tiers['intro'])}</p>")
     for tier in preco_tiers["tiers"]:
-        partes.append(f"<h3>{_esc(tier.get('titulo'))}</h3>")
+        titulo = tier.get("titulo")
+        partes.append(f"<h3>{_esc(titulo)}</h3>")
+        rows = tier.get("rows") or []
+        if not rows:
+            partes.append(_pendente(f"Preço {titulo or 'tier'}"))
+            continue
         partes.append(
             _table(
                 ["Marca", "Modelo", "BTU", "Mín", "Média", "Moda", "Máx", "n"],
@@ -190,7 +209,7 @@ def render_preco_tiers(preco_tiers: Optional[Dict[str, Any]]) -> str:
                         row.get("maximo"),
                         row.get("n"),
                     ]
-                    for row in tier.get("rows", [])
+                    for row in rows
                 ],
             )
         )
@@ -233,7 +252,7 @@ def render_preco_tiers_tendencia(tendencia: Optional[Dict[str, Any]]) -> tuple[s
         datasets = tier.get("datasets") or []
         if datasets and labels:
             partes.append(f'<canvas id="{canvas_id}" height="120"></canvas>')
-            js_datasets = json.dumps(
+            js_datasets = _safe_json(
                 [
                     {
                         "label": d.get("label"),
@@ -244,13 +263,12 @@ def render_preco_tiers_tendencia(tendencia: Optional[Dict[str, Any]]) -> tuple[s
                         "tension": 0.2,
                     }
                     for d in datasets
-                ],
-                ensure_ascii=False,
+                ]
             )
             chart_scripts.append(
                 f"""new Chart(document.getElementById('{canvas_id}'), {{
   type: 'line',
-  data: {{ labels: {json.dumps(labels, ensure_ascii=False)}, datasets: {js_datasets} }},
+  data: {{ labels: {_safe_json(labels)}, datasets: {js_datasets} }},
   options: {{ responsive: true, plugins: {{ legend: {{ position: 'bottom' }} }} }}
 }});"""
             )

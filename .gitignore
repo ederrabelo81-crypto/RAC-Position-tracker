@@ -20,6 +20,11 @@ coverage/
 # Logs
 *.log
 logs/heartbeat.jsonl
+logs/briefing_*.done
+logs/saida_painel_*.json
+
+# Permissoes locais do Claude Code (maquina-especifico, nunca compartilhado)
+.claude/settings.local.json
 
 # Temp files
 *.tmp

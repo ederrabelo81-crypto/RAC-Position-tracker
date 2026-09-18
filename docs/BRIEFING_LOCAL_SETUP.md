@@ -68,7 +68,9 @@ seu** (`.claude/settings.local.json` na raiz do repo, ou o `settings.json`
 do usuário em `~/.claude/settings.json`), nunca num flag dentro do `.bat`
 versionado no repo: mantém a política de permissão como configuração sua,
 revisável e reversível, em vez de hardcoded num script que todo mundo com
-acesso ao repo lê.
+acesso ao repo lê. `.claude/settings.local.json` já está no `.gitignore`
+deste repositório — mesmo criando dentro da pasta do projeto, ele nunca vira
+configuração compartilhada por acidente.
 
 Adicione um allowlist restrito às ferramentas que o PASSO 0-8 do prompt
 realmente usa — nunca um bypass geral. Exemplo de `.claude/settings.local.json`:
@@ -89,14 +91,15 @@ realmente usa — nunca um bypass geral. Exemplo de `.claude/settings.local.json
 }
 ```
 
-Ajuste os nomes exatos das ferramentas MCP (`mcp__postgres__*`,
-`mcp__notion__*`) conforme aparecerem no seu `claude mcp list` — o prefixo
-depende de como cada servidor nomeia suas tools; rode uma vez de forma
-interativa (`type docs\briefing_diario_prompt.md | claude`) e observe quais
-nomes de ferramenta o CLI pede aprovação, para copiar exatamente esses nomes
-no `allow`. Se você tiver a skill `update-config` instalada nesta conta,
-pode usá-la para gerar/editar esse arquivo em vez de escrevê-lo à mão — mas
-ela é opcional, o `settings.json` acima funciona sozinho.
+`claude mcp list` só confirma que os conectores `postgres`/`notion` estão
+registrados — ele **não** lista os nomes das ferramentas de cada um, então
+não dá pra tirar `mcp__postgres__*`/`mcp__notion__*` exatos dali. Ajuste os
+nomes reais rodando uma vez de forma interativa
+(`type docs\briefing_diario_prompt.md | claude`, sem `-p`) e observando o
+nome exato de cada ferramenta que o CLI pede aprovação na tela — copie
+esses nomes para o `allow`. Se você tiver a skill `update-config` instalada
+nesta conta, pode usá-la para gerar/editar esse arquivo em vez de escrevê-lo
+à mão — mas ela é opcional, o `settings.json` acima funciona sozinho.
 
 ## 3. GitHub Pages para o painel
 

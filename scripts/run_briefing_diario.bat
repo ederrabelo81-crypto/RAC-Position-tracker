@@ -22,15 +22,29 @@
 ::     mais de uma vez no mesmo dia (StartWhenAvailable, VPN reconectando,
 ::     etc.) - sem essa guarda, cada disparo reexecutaria o briefing inteiro,
 ::     reescrevendo o Notion e o painel varias vezes (achado do cubic no PR
-::     que criou este arquivo). O marcador so e gravado em caso de SUCESSO;
+::     que criou este arquivo);
+::   - o marcador so e' gravado quando (a) a data de hoje foi obtida via
+::     PowerShell E (b) `claude -p` saiu com exit 0 E (c) docs\painel\index.html
+::     foi de fato reescrito HOJE. Exit 0 sozinho NAO prova publicacao - o
+::     PASSO 0 do prompt permite terminar normalmente so reportando um
+::     bloqueio (ex.: conector Aiven ausente), e gravar o marcador nesse caso
+::     travaria a proxima tentativa ate o dia seguinte (achado do cubic).
+::     Se a data nao puder ser obtida via PowerShell, o marcador e' pulado por
+::     completo (nunca usa uma data fixa tipo "00000000", que travaria TODAS
+::     as execucoes futuras apos a primeira - outro achado do cubic).
 ::   - log dentro do proprio bat, bloco unico parseado por inteiro antes do
 ::     pull rodar (sobrevive ao git pull reescrever este proprio arquivo em
 ::     disco durante a execucao).
 ::
 :: NUNCA usar "::" DENTRO do bloco entre parenteses abaixo - o cmd.exe trata
 :: "::" como ROTULO ali dentro, nao como comentario, e o parse quebra antes
-:: de qualquer coisa rodar (mesmo achado do cubic). "::" so e seguro FORA de
-:: blocos com parenteses, como neste cabecalho; dentro do bloco, use "rem".
+:: de qualquer coisa rodar (achado do cubic). "::" so e seguro FORA de blocos
+:: com parenteses, como neste cabecalho; dentro do bloco, use "rem".
+::
+:: `EnableDelayedExpansion` (necessario para "!RC!" mais abaixo) so e' ligado
+:: DEPOIS de calcular BASE_DIR - ligado desde o inicio, um caminho de projeto
+:: com "!" (raro, mas possivel) seria corrompido pela propria expansao
+:: adiada antes de qualquer coisa rodar (outro achado do cubic).
 ::
 :: Uso (a tarefa do Task Scheduler chama direto, sem argumento):
 ::   scripts\run_briefing_diario.bat
@@ -39,7 +53,7 @@
 :: Log: logs\briefing_scheduler.log
 :: -----------------------------------------------------------------------------
 
-setlocal EnableDelayedExpansion
+setlocal
 
 for %%I in ("%~dp0..") do set "BASE_DIR=%%~fI"
 cd /d "%BASE_DIR%"
@@ -53,9 +67,10 @@ set "GIT_TERMINAL_PROMPT=0"
 :: hora local do PC coletor ja e BRT.
 set "HOUR="
 set "TODAY="
+set "DATE_KNOWN=0"
 for /f %%H in ('powershell -NoProfile -Command "(Get-Date).Hour" 2^>nul') do set "HOUR=%%H"
 for /f %%D in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd" 2^>nul') do set "TODAY=%%D"
-if not defined TODAY set "TODAY=00000000"
+if defined TODAY set "DATE_KNOWN=1"
 
 set "WIN_MIN=7"
 set "WIN_MAX=10"
@@ -63,10 +78,16 @@ set "WIN_MAX=10"
 echo [run_briefing_diario] logando em "%BASE_DIR%\logs\briefing_scheduler.log"
 
 if "%RAC_FORCE_BRIEFING%"=="1" goto :run
+if "%DATE_KNOWN%"=="0" (
+    (echo [%DATE% %TIME%] [briefing] AVISO: nao obtive a data via PowerShell - marcador diario desativado nesta execucao) >> "%BASE_DIR%\logs\briefing_scheduler.log" 2>&1
+    goto :window_check
+)
 if exist "logs\briefing_%TODAY%.done" (
     (echo [%DATE% %TIME%] [briefing] ja publicado hoje - nada a fazer) >> "%BASE_DIR%\logs\briefing_scheduler.log" 2>&1
     exit /b 0
 )
+
+:window_check
 if not defined HOUR (
     (echo [%DATE% %TIME%] [briefing] AVISO: nao obtive a hora via PowerShell - rodando sem guarda de janela) >> "%BASE_DIR%\logs\briefing_scheduler.log" 2>&1
     goto :run
@@ -81,6 +102,7 @@ if %HOUR% GTR %WIN_MAX% (
 )
 
 :run
+setlocal EnableDelayedExpansion
 (
     echo [%DATE% %TIME%] [briefing] === inicio ===
     if "%RAC_NO_SELFUPDATE%"=="1" (
@@ -92,22 +114,44 @@ if %HOUR% GTR %WIN_MAX% (
     )
     if not exist "%BASE_DIR%\docs\briefing_diario_prompt.md" (
         echo [%DATE% %TIME%] [briefing] ERRO: docs\briefing_diario_prompt.md nao encontrado
-        exit /b 1
-    )
-    echo [%DATE% %TIME%] [briefing] chamando claude -p (nao-interativo^)
-    rem Execucao nao-interativa: o modo de permissao para rodar sem prompt de
-    rem aprovacao e configurado UMA VEZ no settings.json local (nao aqui no
-    rem script) - ver docs/BRIEFING_LOCAL_SETUP.md. O DSN do Aiven usado pelo
-    rem conector MCP local deve ser uma credencial READ-ONLY - nunca a de
-    rem escrita da coleta (RAC_DB_DSN do .env de coleta).
-    type "%BASE_DIR%\docs\briefing_diario_prompt.md" | claude -p
-    set "RC=!ERRORLEVEL!"
-    if not "!RC!"=="0" (
-        echo [%DATE% %TIME%] [briefing] ERRO: claude terminou com falha [exit=!RC!]
     ) else (
-        echo [%DATE% %TIME%] [briefing] concluido
-        del /q "logs\briefing_*.done" 2>nul
-        echo ok> "logs\briefing_%TODAY%.done"
+        echo [%DATE% %TIME%] [briefing] chamando claude -p (nao-interativo^)
+        rem Execucao nao-interativa: o modo de permissao para rodar sem prompt
+        rem de aprovacao e configurado UMA VEZ no settings.json local (nao aqui
+        rem no script) - ver docs/BRIEFING_LOCAL_SETUP.md. O DSN do Aiven usado
+        rem pelo conector MCP local deve ser uma credencial READ-ONLY - nunca a
+        rem de escrita da coleta (RAC_DB_DSN do .env de coleta).
+        rem
+        rem NUNCA usar "goto"/label AQUI DENTRO (mesmo bloco entre parenteses
+        rem que o cabecalho ja avisa sobre "::") - pular para um rotulo
+        rem definido dentro do PROPRIO bloco entre parenteses e' outra
+        rem armadilha classica do cmd.exe (a estrutura do bloco se perde).
+        rem Por isso o restante deste bloco e' if/else aninhado, nunca goto.
+        type "%BASE_DIR%\docs\briefing_diario_prompt.md" | claude -p
+        set "RC=!ERRORLEVEL!"
+        if not "!RC!"=="0" (
+            echo [%DATE% %TIME%] [briefing] ERRO: claude terminou com falha [exit=!RC!]
+        ) else (
+            echo [%DATE% %TIME%] [briefing] claude concluido [exit=0]
+            if "%DATE_KNOWN%"=="0" (
+                echo [%DATE% %TIME%] [briefing] data de hoje desconhecida - marcador NAO gravado nesta execucao
+            ) else (
+                rem exit 0 sozinho nao prova publicacao: o PASSO 0 permite
+                rem terminar normalmente so reportando um bloqueio (ex.: sem
+                rem conector Aiven), sem publicar nada. So grava o marcador se
+                rem docs\painel\index.html foi REESCRITO HOJE - evidencia de
+                rem que ao menos o PASSO 8 rodou.
+                set "PANEL_FRESH=nao"
+                for /f %%P in ('powershell -NoProfile -Command "if (Test-Path 'docs\painel\index.html') { if ((Get-Item 'docs\painel\index.html').LastWriteTime.Date -eq (Get-Date).Date) { 'sim' } else { 'nao' } } else { 'nao' }" 2^>nul') do set "PANEL_FRESH=%%P"
+                if /i "!PANEL_FRESH!"=="sim" (
+                    echo [%DATE% %TIME%] [briefing] painel atualizado hoje - marcador gravado
+                    del /q "logs\briefing_*.done" 2>nul
+                    echo ok> "logs\briefing_%TODAY%.done"
+                ) else (
+                    echo [%DATE% %TIME%] [briefing] painel NAO foi atualizado hoje [claude terminou sem publicar - provavel bloqueio reportado] - marcador NAO gravado, proxima tentativa tenta de novo
+                )
+            )
+        )
     )
     echo [%DATE% %TIME%] [briefing] === fim ===
     exit /b
