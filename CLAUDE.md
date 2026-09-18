@@ -412,6 +412,62 @@ para que as migrações com GRANT rodem **verbatim** em qualquer fornecedor.
 
 ---
 
+## Briefing/resumo diário — nunca consultar o banco de memória (Set/2026) 🆕
+
+**O que aconteceu:** a rotina agendada que publica o briefing diário no Notion
+(`painel-trade-rac-7h`, tarefa agendada fora deste repositório — Cowork
+local, não uma Routine na nuvem) rodou nos dias 12, 13, 14, 15 e 17/09/2026
+escrevendo SQL/consultas **de memória** contra um projeto Supabase fixo, com
+um schema de `pricetrack_daily` que nunca existiu
+(`marca`/`preco`/`capacidade_btu`, em vez de `brand`/`min_price`/`avg_price`/
+`mode_price`/`max_price`/`title`/`sku`/`collection_date` — ver
+`migrations/001_pricetrack.sql`) e uma coluna `job_id` de `pipeline_heartbeat`
+grafada como `job_name`. Quando o banco migrou do Supabase para o Aiven
+(ver seção acima), o projeto Supabase antigo simplesmente parou de receber
+dado novo — **como esperado** — mas a rotina continuou apontando pra ele,
+leu tabela morta e publicou "outage total do pipeline" três dias seguidos no
+Notion. Não houve outage nenhum: 13–16/09 tiveram 31–44 mil linhas/dia em
+`coletas`, coleta normal. Diagnóstico completo:
+[CORREÇÃO 17/09/2026](https://app.notion.com/p/3deca794296e81519982d67a38683d9f)
+na página "Briefing Diário RAC" do Notion.
+
+**Causa raiz:** a rotina nunca passou pelo código deste repositório — nem
+pelo adaptador `utils/db.py`/`utils/supabase_client._get_client()` (que já
+resolve Supabase vs. Aiven pela presença de `RAC_DB_DSN`, sem `if` nenhum no
+chamador), nem pelo portão de frescor `scripts/briefing_gate.py`, nem pelo
+script de capacidade `scripts/pricetrack_capacity_audit.py`. Reescreveu do
+zero, de memória, um schema que o próprio repositório já documenta
+corretamente.
+
+**Regra dura, para qualquer sessão (humana ou agente) que gere o briefing
+diário ou "resumo de tudo que foi coletado":**
+
+1. **Nunca escrever SQL/filtro de schema de memória.** Qualquer consulta a
+   `pricetrack_daily`, `coletas` ou `pipeline_heartbeat` usa as colunas reais
+   documentadas em `migrations/001_pricetrack.sql`,
+   `docs/migrations/019_schema_base_portavel.sql` e
+   `docs/migrations/015_pipeline_heartbeat.sql` — ou melhor, chama o script
+   que já resolve isso (`briefing_gate.py`, `pricetrack_capacity_audit.py`,
+   `pipeline_watch.py`) em vez de reconstruir a query.
+2. **Nunca fixar host/projeto de banco no texto da tarefa.** O destino é
+   sempre resolvido em runtime por `utils/db.py` (variável `RAC_DB_DSN`
+   presente → Aiven; ausente → Supabase) — uma tarefa agendada que hardcoda
+   uma URL de projeto sobrevive à migração seguinte do jeito errado: parada
+   silenciosa lida como "sem dado".
+3. **`pipeline_heartbeat` usa `job_id`, nunca `job_name`.**
+4. **`pricetrack_daily` não tem coluna de capacidade/BTU.** 9K/12K só existe
+   DERIVADO, casando `sku`+`title` contra `pricetrack_dashboard/peer.py` —
+   use `scripts/pricetrack_capacity_audit.py`, nunca `LIKE '%9000%'` no
+   `title` (texto livre do anúncio, não confiável) nem suponha que "zero
+   linha" seja lacuna de coleta sem rodar esse script primeiro.
+5. **Ambiente sem MCP Postgres/Aiven configurado (Cowork, tarefa agendada
+   fora do Claude Code local) não publica diagnóstico de outage** — reporta
+   o bloqueio ("sem conector, não dá pra verificar") e para. Um "sem dado"
+   fabricado por não conseguir consultar a fonte certa é pior que admitir
+   que não deu para checar.
+
+---
+
 ## Table of Contents
 
 1. [Session Start Protocol](#session-start-protocol)
@@ -1416,8 +1472,9 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 
 ---
 
-*Last updated: September 6, 2026 (v5.2)*  
-*Latest changes (06/09/2026): documentado o **Track Position Seller** (`seller_app/`) — app novo, separado do dashboard interno, publicado em Fase 1 do spin-off (`docs/TRACK_POSITION_SELLER.md`). Fato com sujeito seller em `seller_offer_daily` (migrações 016/017), 5 abas de insight, chave `anon` só-leitura + RLS. Nova seção "Track Position Seller — painel do lojista" abaixo.*
+*Last updated: September 18, 2026 (v5.3)*  
+*Latest changes (18/09/2026): nova seção "Briefing/resumo diário — nunca consultar o banco de memória" — documenta o incidente de 12–17/09/2026 (tarefa agendada `painel-trade-rac-7h` publicou "outage total" no Notion 3 dias seguidos porque consultava um schema de `pricetrack_daily` inventado contra o projeto Supabase antigo, já descontinuado pela migração Aiven) e fixa a regra dura: nunca escrever SQL de schema de memória, sempre passar por `utils/db.py`/`briefing_gate.py`/`pricetrack_capacity_audit.py`, `pipeline_heartbeat` usa `job_id` (não `job_name`), e sem conector Postgres/Aiven configurado o resultado é reportar o bloqueio, nunca fabricar diagnóstico.*
+*Anterior (06/09/2026): documentado o **Track Position Seller** (`seller_app/`) — app novo, separado do dashboard interno, publicado em Fase 1 do spin-off (`docs/TRACK_POSITION_SELLER.md`). Fato com sujeito seller em `seller_offer_daily` (migrações 016/017), 5 abas de insight, chave `anon` só-leitura + RLS. Nova seção "Track Position Seller — painel do lojista" abaixo.*
 *Anterior (06/09/2026): Amazon migrada para um coletor **Amazon-only no GitHub Actions** (`collect_amazon_sellers.yml`, 3 turnos 8h/14h/20h) que abre o PDP de cada item para ler a buy box (modo `RAC_AMAZON_PDP_FRESH=1`, sem cache, alimenta o `seller_app`). Saiu da varredura do PC; posse migrou para `gh_amazon_*` no `pipeline_registry`. Novo override `RAC_TURNO` crava o turno de um run agendado (get_turno), imune ao atraso do cron do Actions.*
 *Anterior (04/09/2026): correção factual — Mais Vendidos NÃO foi descontinuado, coleta e grava todo dia (conferido no Supabase); o que falta é o job no `pipeline_registry.py`, e por isso 7 das 20 fontes estão mudas sem ninguém cobrar — a única que importa é `casasbahia` (marketplace), as outras 6 são site próprio e não são prioridade*
 *Anterior: PC coletor como dono ÚNICO de oferta/posição em 3 turnos (08:00 Abertura / 14:00 Tarde / 20:00 Fechamento) coletando TODAS as plataformas + dealers; `get_turno()` passou a 3 turnos; Mais Vendidos descontinuado da coleta agendada; cron do `collect.yml` e VM Oracle desligados como coletores; `pipeline_registry.py` reescrito para o coletor único*  
