@@ -2513,9 +2513,36 @@ def get_sku_options(
             if len(resp.data) < _SUPABASE_PAGE:
                 break
             offset += _SUPABASE_PAGE
-        return sorted({r["produto"] for r in all_rows if r.get("produto")})
+        produtos = {r["produto"] for r in all_rows if r.get("produto")}
     except Exception:
-        return []
+        produtos = set()
+
+    # Une com o histórico frio: com a janela quente em 2 dias, o banco só
+    # conhece produtos de 2 dias. Sem esta união, o dropdown de produto não
+    # ofereceria SKUs de dias já migrados ao Drive — e o filtro por produto do
+    # dado principal (query_coletas) já é híbrido, então o usuário precisa poder
+    # selecioná-los. Mesmos filtros (marca/BTU/tipo) aplicados ao frio.
+    try:
+        since_d = date.today() - timedelta(days=30)
+        df_frio = _history_store().read(
+            "coletas", start=since_d, end=date.today(), columns=["produto", "marca"]
+        )
+        if not df_frio.empty:
+            df_frio = _filter_history_coletas(
+                df_frio,
+                brands=list(brands) or None,
+                btu_filter=list(btu_filter) or None,
+                product_types=list(product_types) or None,
+            )
+            if "produto" in df_frio.columns:
+                produtos.update(
+                    p for p in df_frio["produto"].dropna().astype(str).tolist() if p
+                )
+    except Exception as exc:
+        from loguru import logger as _logger
+        _logger.warning(f"[Dashboard] produtos do histórico frio falharam: {exc}")
+
+    return sorted(produtos)
 
 
 # ---------------------------------------------------------------------------
@@ -4629,39 +4656,60 @@ def _query_health(window_days: int) -> pd.DataFrame:
     query_coletas. Cacheado por 10 min — é um painel de monitoramento, não
     precisa ser tempo real.
     """
-    client = _get_supabase()
-    if client is None:
-        return pd.DataFrame()
-    since = str(date.today() - timedelta(days=max(window_days, 1) - 1))
+    start = date.today() - timedelta(days=max(window_days, 1) - 1)
+    end = date.today()
+    since = str(start)
     cols = ("data,plataforma,buy_box_seller,tipo_seller,qtd_sellers,"
             "reputacao_seller,avaliacao,fulfillment,posicao_patrocinada,"
             "seller,preco,patrocinado")
+    client = _get_supabase()
     rows: list = []
     offset = 0
-    try:
-        while True:
-            resp = (
-                client.table("coletas").select(cols)
-                .gte("data", since)
-                .order("data", desc=True)
-                .range(offset, offset + _SUPABASE_PAGE - 1)
-                .execute()
-            )
-            if not resp.data:
-                break
-            rows.extend(resp.data)
-            if len(resp.data) < _SUPABASE_PAGE:
-                break
-            offset += _SUPABASE_PAGE
-            if offset > 400_000:  # trava de segurança
-                break
-    except Exception as exc:
-        st.error(f"Consulta de health falhou: {exc}")
+    if client is not None:
+        try:
+            while True:
+                resp = (
+                    client.table("coletas").select(cols)
+                    .gte("data", since)
+                    .order("data", desc=True)
+                    .range(offset, offset + _SUPABASE_PAGE - 1)
+                    .execute()
+                )
+                if not resp.data:
+                    break
+                rows.extend(resp.data)
+                if len(resp.data) < _SUPABASE_PAGE:
+                    break
+                offset += _SUPABASE_PAGE
+                if offset > 400_000:  # trava de segurança
+                    break
+        except Exception as exc:
+            # Com o banco em 2 dias (janela quente), a saúde de janelas maiores
+            # depende do frio — não abortar aqui, deixar a costura abaixo cobrir.
+            st.warning(f"Consulta de health (janela quente) falhou: {exc}")
+            rows = []
+
+    df_hot = pd.DataFrame(rows)
+    if not df_hot.empty:
+        df_hot["data"] = pd.to_datetime(df_hot["data"]).dt.date
+
+    # Costura com o histórico frio os dias que o banco não devolveu — com a
+    # janela quente em 2 dias, um slider de 7 dias precisa do Drive para os
+    # demais. Sem filtros: o painel de saúde olha a cobertura de TODOS os
+    # campos crus, não um recorte. Mesmo padrão de dedup por dia de
+    # `_history_gap_fill` (um dia vem de um lado só).
+    dias_hot = set(df_hot["data"].dropna().unique()) if not df_hot.empty else set()
+    df_frio = _history_gap_fill(start, end, dias_hot, limit=400_000)
+    if not df_frio.empty:
+        manter = [c for c in df_frio.columns if c in set(cols.split(",")) or c == "data"]
+        df_frio = df_frio[manter]
+        df = pd.concat([df_hot, df_frio], ignore_index=True) if not df_hot.empty else df_frio
+    else:
+        df = df_hot
+    if df.empty:
         return pd.DataFrame()
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df["data"] = pd.to_datetime(df["data"]).dt.date
+    if "data" in df.columns:
+        df["data"] = pd.to_datetime(df["data"], errors="coerce").dt.date
     return df
 
 

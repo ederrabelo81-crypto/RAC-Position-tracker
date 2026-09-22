@@ -134,26 +134,45 @@ diagnóstico:
 
 | Local em `app.py` | Antes | Depois desta PR |
 |---|---|---|
-| `get_filter_options` (~2309) | RPC `get_filter_options_fast(30)` / query 30d — só o banco quando havia cliente | **une** o banco com `_filter_options_do_historico()` (novo `_merge_filter_options`) → dropdowns cobrem todo o período |
-| `_overview_data`/`query_coletas` | já costurava frio+quente (`_history_gap_fill`) | inalterado — já correto |
-| `get_sku_options` (~2432) | dropdown de produto, 30d no banco | **follow-up** (§6): filtros server-side dificultam a união; o filtro por SKU no dado ainda funciona (via frio), só o dropdown encolhe |
-| cobertura/`estado_match` (`get_mapeado_sem_sku`, health) | RPCs/contagens no banco | **por construção**, viram painéis da janela quente (ver abaixo) |
+| `_overview_data`/`query_coletas`/`query_pricetrack_daily`/`query_price_evolution_data` | já costuravam frio+quente (`_history_gap_fill`/`_pricetrack_gap_fill`) | inalterado — **é o grosso dos gráficos**, já correto |
+| `get_filter_options` (~2309) | RPC/query 30d — só o banco | **une** com `_filter_options_do_historico()` (novo `_merge_filter_options`) |
+| `get_sku_options` (~2432) | dropdown de produto, 30d no banco | **une** com os produtos do frio (mesmos filtros marca/BTU/tipo) |
+| `_query_health` (~4592) | amostra recente, só o banco | costura o frio nos dias faltantes (janela do slider além de 2 dias) |
+| cobertura/`estado_match` (`get_mapeado_sem_sku`, cobertura) | RPCs/contagens no banco | **por construção**, janela quente (ver abaixo) |
 
 `pricetrack_dashboard/app.py` já é híbrido (`_hot_window_days_safe()` +
 `fallback_days`) — herda `RAC_HOT_WINDOW_DAYS=2` sem mudança.
 
+**Briefing diário** (`docs/briefing_diario_prompt.md`): reescrito para o modelo
+híbrido (novo PASSO 0.5). O banco passa a ser os 2 dias quentes; toda janela
+> 2 dias (D-1×D-2, tendências 7/15d, aging MAP ~14d, cobertura vs média) puxa os
+dias antigos do Drive via `utils.history.read_coletas` / `store.read`, com o
+caveat de que `estado_match` só existe nos 2 dias quentes. O antigo PASSO F
+deixa de ser "Aiven fora" e vira "banco inacessível" (caso extremo, distinto da
+leitura fria normal).
+
 **Cobertura/reconciliação é hot-window por natureza.** As colunas
 `estado_match`/`sku_resolvido` são preenchidas pelo gatilho no banco e **não
 estão no Parquet** (`utils.supabase_client.map_record` não as inclui). Fora dos
-2 dias elas não existem no frio — então os painéis de cobertura passam a medir,
-por construção, **a janela quente**. Isso é correto (cobertura é sobre o dado
-que acabou de entrar), mas convém rotular na UI para não parecer dado sumido.
+2 dias elas não existem no frio — então os painéis de cobertura medem, por
+construção, **a janela quente**. Isso é correto (cobertura é sobre o dado que
+acabou de entrar), mas convém rotular na UI para não parecer dado sumido.
 
-**O que esta PR de código já traz:** `RAC_HOT_WINDOW_DAYS` default 2
-(`utils/history/store.py`), `get_filter_options` híbrido
-(`_merge_filter_options`), e a exclusão explícita de `seller_offer_daily` da
-poda de 2 dias (`scripts/history_cli.py`). O `get_sku_options` (dropdown de
-produto por todo o período) fica como follow-up de menor risco.
+**Resíduo conhecido — monitores de preço-piso Midea** (página 🛡️ Price
+Compliance, Top Movers, sparkline "Tendência 7d"): leem `pricetrack_daily`
+direto por `is_midea_group`/`seller_canonical`, colunas **derivadas no banco e
+ausentes do Parquet frio**. Fazê-las híbridas exige **carregar
+`seller_canonical`/`is_midea_group` na escrita do Parquet frio de pricetrack**
+(indo pra frente, testável) — re-derivar `seller_canonical` no cliente
+arriscaria a fragmentação de seller que o `utils/seller_names.py` existe para
+evitar (grafias do mesmo lojista viram sellers diferentes na fronteira
+quente/frio). Por isso ficou **fora** desta PR, como follow-up com teste.
+
+**O que esta PR de código traz:** `RAC_HOT_WINDOW_DAYS` default 2
+(`utils/history/store.py`); `get_filter_options`, `get_sku_options` e
+`_query_health` híbridos (`app.py`); exclusão explícita de `seller_offer_daily`
+da poda (`scripts/history_cli.py`); e o briefing reescrito para o modelo
+híbrido (`docs/briefing_diario_prompt.md`).
 
 ---
 
@@ -259,10 +278,13 @@ RAC_HOT_WINDOW_DAYS=2
 ### Passo 4 — Código dos dashboards (§4) — já entregue
 
 A leitura híbrida da via principal já existia; esta entrega fechou os dropdowns
-(`_merge_filter_options`), o default de 2 dias e a exclusão de
-`seller_offer_daily` da poda. Só rode o `app.py` atualizado. Resta como
-follow-up de baixo risco o `get_sku_options` (dropdown de produto por todo o
-período) — o filtro por SKU no dado já funciona via frio.
+(`get_filter_options`, `get_sku_options`), o painel de saúde (`_query_health`),
+o default de 2 dias, a exclusão de `seller_offer_daily` da poda e o briefing
+híbrido (`docs/briefing_diario_prompt.md`). Só rode o `app.py` e o briefing
+atualizados. **Resta como follow-up** (com teste) tornar híbridos os monitores
+de preço-piso Midea (🛡️ Price Compliance / Top Movers / sparkline), que
+dependem de `seller_canonical`/`is_midea_group` — o caminho correto é
+carregá-las na escrita do Parquet frio de pricetrack (ver §4).
 
 ### Passo 5 — Rodar uma coleta de verdade
 
@@ -393,7 +415,7 @@ Se quiser forçar explicitamente durante a transição:
 - [ ] `coletas` podada para a janela e conferida (Passo 2b)
 - [ ] `VACUUM FULL` rodado; banco < 500 MB (Passo 2c)
 - [ ] `.env`: `RAC_DB_DSN` removido, `RAC_HOT_WINDOW_DAYS=2`, `service_role` (Passo 3)
-- [x] Dashboards híbridos (frio+quente): via principal já era; dropdowns fechados nesta PR (Passo 4)
+- [x] Dashboards híbridos (frio+quente): via principal já era; dropdowns, `_query_health` e briefing fechados nesta PR (Passo 4). Follow-up: monitores de preço-piso Midea
 - [ ] Coleta de teste grava no Supabase, não em 402 (Passo 5)
 - [ ] Secret `RAC_DB_DSN` removido do GitHub Actions (Passo 6)
 - [ ] Validação: briefing/relatório/painel/`pipeline_watch` (Passo 7)
