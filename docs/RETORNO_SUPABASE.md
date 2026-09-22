@@ -18,8 +18,9 @@ A troca de banco é **credencial, não código**: com `RAC_DB_DSN` vazio, todo o
 projeto volta a falar Supabase no comando seguinte (`utils/db.py::
 resolve_backend_name`). O trabalho de verdade não é "virar a chave" — é fazer
 o **Supabase caber em 500 MB** (evacuar as tabelas grandes para o Drive e podar
-`coletas` para 2 dias) e fazer os **dashboards lerem 2 dias quentes do Supabase
-+ o resto do Drive** (o `app.py` interno hoje NÃO faz isso — ver §4).
+`coletas` para 2 dias). A leitura híbrida dos dashboards (2 dias do Supabase + o
+resto do Drive) **já vinha pronta** na via principal (`_history_gap_fill`) e teve
+o que faltava — os dropdowns de filtro — fechado nesta entrega (§4).
 
 ```text
 Estado hoje (Set/2026)                    Estado alvo (este documento)
@@ -119,56 +120,40 @@ no banco direto.
 
 ---
 
-## 4. A única mudança de código de fato: dashboards em 2 dias
+## 4. Leitura híbrida dos dashboards: o que já vinha pronto e o que faltava
 
-Este é o ponto que o `MIGRACAO_AIVEN.md` não precisou enfrentar (lá a janela era
-grande) e que a premissa de 2 dias torna obrigatório.
+Boa surpresa da análise: **a via de dados principal do `app.py` já é híbrida.**
+A função central (`_overview_data`/`query_coletas`, ~app.py:2925) lê o banco e
+**completa com o frio** os dias que o banco não devolveu (`_history_gap_fill`),
+e cai 100% no frio quando o banco está restrito por cota. Ou seja, o DataFrame
+que o dashboard filtra já costura frio+quente, com precedência do quente. Nada
+a fazer ali para os 2 dias.
 
-**Achado da análise:** o dashboard interno `app.py` lê `coletas`
-**direto do banco**, em janelas de 30 e 90 dias, e por RPCs que varrem a tabela
-inteira no servidor:
+O que **faltava** eram os **dropdowns de filtro** e alguns painéis de
+diagnóstico:
 
-| Local em `app.py` | Padrão | Efeito com o banco em 2 dias |
+| Local em `app.py` | Antes | Depois desta PR |
 |---|---|---|
-| `get_filter_options` (~2320) | `client.table("coletas").gte("data", hoje-30)` + RPC `get_filter_options_fast(30)` | dropdowns encolhem para 2 dias |
-| janela de 90 dias (~5205) | `count(*)` no banco | contagens caem |
-| `get_mapeado_sem_sku`, cobertura, etc. | RPCs sobre `coletas` | passam a ver só 2 dias |
-| `mv_filter_options_90d` (matview) | 90 dias no servidor | fica vazia fora da janela |
+| `get_filter_options` (~2309) | RPC `get_filter_options_fast(30)` / query 30d — só o banco quando havia cliente | **une** o banco com `_filter_options_do_historico()` (novo `_merge_filter_options`) → dropdowns cobrem todo o período |
+| `_overview_data`/`query_coletas` | já costurava frio+quente (`_history_gap_fill`) | inalterado — já correto |
+| `get_sku_options` (~2432) | dropdown de produto, 30d no banco | **follow-up** (§6): filtros server-side dificultam a união; o filtro por SKU no dado ainda funciona (via frio), só o dropdown encolhe |
+| cobertura/`estado_match` (`get_mapeado_sem_sku`, health) | RPCs/contagens no banco | **por construção**, viram painéis da janela quente (ver abaixo) |
 
-Ou seja: **podar o banco para 2 dias sem tocar no `app.py` faz o dashboard
-interno perder 28–88 dias das suas análises.** A premissa "puxar 2 dias do
-Supabase e o resto do Drive" **é** essa mudança de código.
+`pricetrack_dashboard/app.py` já é híbrido (`_hot_window_days_safe()` +
+`fallback_days`) — herda `RAC_HOT_WINDOW_DAYS=2` sem mudança.
 
-`pricetrack_dashboard/app.py` já é parcialmente híbrido (tem
-`_hot_window_days_safe()` e um `fallback_days` que cai no frio) — precisa só de
-ajuste fino. O `app.py` interno é o trabalho real.
+**Cobertura/reconciliação é hot-window por natureza.** As colunas
+`estado_match`/`sku_resolvido` são preenchidas pelo gatilho no banco e **não
+estão no Parquet** (`utils.supabase_client.map_record` não as inclui). Fora dos
+2 dias elas não existem no frio — então os painéis de cobertura passam a medir,
+por construção, **a janela quente**. Isso é correto (cobertura é sobre o dado
+que acabou de entrar), mas convém rotular na UI para não parecer dado sumido.
 
-**Estratégia recomendada (faseada):**
-
-1. **Camada de leitura única.** Criar um `carregar_coletas(start, end,
-   colunas=...)` no `app.py` que chama `utils.history.read_coletas(start, end,
-   supabase_client=_get_supabase())`. Trocar os call sites de
-   `client.table("coletas").select(...).gte("data", ...)` por essa função. A
-   precedência quente-sobre-frio já vem de graça.
-2. **RPCs e matview** (`get_filter_options_fast`, `mv_filter_options_90d`,
-   `get_cobertura_resolucao`) rodam **no servidor** e só veem o que está no
-   banco. Duas saídas:
-   - **(a)** derivar as opções de filtro do DataFrame já costurado (frio+quente)
-     em vez da RPC — mais simples, custa uma varredura em pandas do período;
-   - **(b)** manter a RPC só para os 2 dias e unir com os valores distintos que
-     vierem do frio. Preferir **(a)** para começar: menos superfície, e o frio
-     é lido de qualquer forma.
-3. **Cobertura/reconciliação** (`estado_match`, `sku_resolvido`): essas colunas
-   são preenchidas pelo gatilho no banco e **não estão no Parquet**
-   (`utils.supabase_client.map_record` não as inclui). Fora da janela de 2 dias
-   elas não existem no frio — então os painéis de cobertura passam a ser,
-   por construção, **painéis dos 2 dias quentes**. Deixar isso explícito na UI
-   ("cobertura da janela quente") em vez de parecer um bug de dado sumido.
-
-> **Por que não é opcional:** sem o passo 1, o item "os dashboards puxam os 2
-> dias do Supabase e os demais do Drive" simplesmente não acontece — o
-> dashboard interno mostraria 2 dias e ponto. Este é o maior item de esforço
-> desta volta e deve ter a sua própria revisão/PR.
+**O que esta PR de código já traz:** `RAC_HOT_WINDOW_DAYS` default 2
+(`utils/history/store.py`), `get_filter_options` híbrido
+(`_merge_filter_options`), e a exclusão explícita de `seller_offer_daily` da
+poda de 2 dias (`scripts/history_cli.py`). O `get_sku_options` (dropdown de
+produto por todo o período) fica como follow-up de menor risco.
 
 ---
 
@@ -271,11 +256,13 @@ RAC_HOT_WINDOW_DAYS=2
 > para trás **em silêncio**. Confirme `service_role` (o log diz o papel da
 > chave). `scripts\check_local_scheduler.ps1` confere.
 
-### Passo 4 — Aplicar as mudanças de código dos dashboards (§4)
+### Passo 4 — Código dos dashboards (§4) — já entregue
 
-Faseado, na sua própria PR/revisão. Enquanto não estiver pronto, o dashboard
-interno mostra só 2 dias — funcional, mas sem histórico. É a razão de este item
-ter revisão separada e não entrar de carona na virada de infraestrutura.
+A leitura híbrida da via principal já existia; esta entrega fechou os dropdowns
+(`_merge_filter_options`), o default de 2 dias e a exclusão de
+`seller_offer_daily` da poda. Só rode o `app.py` atualizado. Resta como
+follow-up de baixo risco o `get_sku_options` (dropdown de produto por todo o
+período) — o filtro por SKU no dado já funciona via frio.
 
 ### Passo 5 — Rodar uma coleta de verdade
 
@@ -336,14 +323,29 @@ estiver validada, a Aiven é o seu rollback de um comando (§7).
   intra-dia. Com 2 dias quentes, o intra-dia antigo sai; o `Diário` histórico
   vive no Parquet (`DATASET_PRICETRACK`). O painel do PriceTrack já sabe cair no
   frio (`_hot_window_days_safe`), então precisa só herdar `RAC_HOT_WINDOW_DAYS=2`.
-- **`seller_offer_daily` / `seller_app`:** o fato do seller é **reprocessado de
-  `coletas`** (`refresh_seller_offer_daily(data)`). Com `coletas` em 2 dias, só
-  2 dias são reconstruíveis. Duas opções, a decidir explicitamente:
-  **(a)** aceitar que o `seller_app` é um painel de janela curta (2–N dias); ou
-  **(b)** dar ao `seller_offer_daily` uma retenção **própria** maior que a de
-  `coletas` (ele é derivado e menor, ~56 MB para 90 dias) — o que exige não podar
-  essa tabela junto com `coletas`. Recomendo **(b)** se o `seller_app` precisa de
-  série; senão **(a)**.
+- **`seller_offer_daily` / `seller_app` — retenção PRÓPRIA (decisão tomada):**
+  o fato do seller é **reprocessado de `coletas`** (`refresh_seller_offer_daily(
+  data)`). Com `coletas` em 2 dias, só 2 dias são *reconstruíveis*, mas as linhas
+  já materializadas **sobrevivem** — elas não são apagadas por nada. A decisão é
+  dar a `seller_offer_daily`/`seller_coverage_daily` uma **retenção própria,
+  maior que a de `coletas`** (ele é derivado e menor, ~56 MB para 90 dias), para
+  o `seller_app` manter série de buy box. Por isso essas tabelas **não** entram
+  na poda do `tier` (agora comentado explícito em `scripts/history_cli.py::
+  _TIER_SPECS`). Para **limitar** o crescimento sem cortar junto com `coletas`,
+  pode-se podar essas duas ao seu próprio horizonte, num passo de manutenção
+  separado (ex.: 90 dias):
+
+  ```sql
+  -- Retenção própria do fato de seller (NÃO é a janela de 2 dias de coletas).
+  -- Ajuste os 90 dias ao horizonte que o seller_app precisa.
+  DELETE FROM seller_offer_daily    WHERE data < CURRENT_DATE - 90;
+  DELETE FROM seller_coverage_daily WHERE data < CURRENT_DATE - 90;
+  VACUUM (FULL, ANALYZE) seller_offer_daily;
+  VACUUM (FULL, ANALYZE) seller_coverage_daily;
+  ```
+
+  Enquanto o `seller_app` couber no orçamento de 500 MB, essa poda é opcional;
+  ela existe para o dia em que a soma se aproximar do teto (§8).
 - **`bestsellers`:** tabela pequena, cadência própria, `referencia`-aware. Não
   entra na conta dos 2 dias; mantenha a política atual.
 - **Cobertura/`estado_match`:** não está no Parquet (é do gatilho). Fora dos 2
@@ -391,7 +393,7 @@ Se quiser forçar explicitamente durante a transição:
 - [ ] `coletas` podada para a janela e conferida (Passo 2b)
 - [ ] `VACUUM FULL` rodado; banco < 500 MB (Passo 2c)
 - [ ] `.env`: `RAC_DB_DSN` removido, `RAC_HOT_WINDOW_DAYS=2`, `service_role` (Passo 3)
-- [ ] Dashboards híbridos (frio+quente) implantados (Passo 4 — PR própria)
+- [x] Dashboards híbridos (frio+quente): via principal já era; dropdowns fechados nesta PR (Passo 4)
 - [ ] Coleta de teste grava no Supabase, não em 402 (Passo 5)
 - [ ] Secret `RAC_DB_DSN` removido do GitHub Actions (Passo 6)
 - [ ] Validação: briefing/relatório/painel/`pipeline_watch` (Passo 7)

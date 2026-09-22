@@ -2322,13 +2322,19 @@ def get_filter_options() -> dict:
         if data:
             raw_brands     = data.get("brands") or []
             raw_platforms  = data.get("platforms") or []
-            return {
+            db_opts = {
                 "platforms":      sorted({_normalize_platform(p) for p in raw_platforms if p}),
                 "platform_types": sorted(data.get("platform_types") or []),
                 "brands":         sorted({_MARCA_TO_CANONICAL.get(b, b) for b in raw_brands if b}),
                 "keywords":       sorted(data.get("keywords") or []),
                 "sellers":        _canonical_seller_options(data.get("sellers") or []),
             }
+            # Com a janela quente em 2 dias (docs/RETORNO_SUPABASE.md), o banco só
+            # conhece 2 dias de valores. Une com o histórico frio para os dropdowns
+            # continuarem oferecendo todo o período — a via de dados principal
+            # (_overview_data) já costura frio+quente, mas de nada serve poder
+            # filtrar por uma marca/seller que o dropdown não lista.
+            return _merge_filter_options(db_opts, _filter_options_do_historico())
     except Exception:
         pass  # cai no fallback paginado abaixo
     try:
@@ -2367,13 +2373,15 @@ def get_filter_options() -> dict:
             for p in df["plataforma"].dropna().unique()
         ))
 
-        return {
+        db_opts = {
             "platforms":      platforms_normalized,
             "platform_types": sorted(df["tipo"].dropna().unique().tolist()) if "tipo" in df.columns else [],
             "brands":         brands_canonical,
             "keywords":       sorted(df["keyword"].dropna().unique().tolist()),
             "sellers":        _canonical_seller_options(df["seller"].dropna().unique()) if "seller" in df.columns else [],
         }
+        # Une com o frio (mesma razão do caminho da RPC acima).
+        return _merge_filter_options(db_opts, _filter_options_do_historico())
     except Exception as exc:
         # Cota estourada (402) derruba até leitura — cai no histórico antes de
         # desistir, para a barra lateral continuar utilizável.
@@ -2382,6 +2390,30 @@ def get_filter_options() -> dict:
             return do_frio
         st.warning(f"Filter options query failed: {exc}")
         return empty
+
+
+def _merge_filter_options(a: dict, b: dict) -> dict:
+    """Une duas grades de opções de dropdown (banco + histórico frio).
+
+    Cada valor é uma lista já canônica (plataforma normalizada, marca/seller
+    colapsados). A união por chave, deduplicada e reordenada, faz os dropdowns
+    refletirem TODO o período mesmo com o banco guardando só a janela quente de
+    2 dias (docs/RETORNO_SUPABASE.md). ``b`` vazio devolve ``a`` intacto.
+
+    Args:
+        a: Grade do banco (janela quente).
+        b: Grade do histórico frio. ``{}`` quando não há Parquet no período.
+
+    Returns:
+        Dicionário no mesmo formato, com as listas unidas e ordenadas.
+    """
+    if not b:
+        return a
+    chaves = ("platforms", "platform_types", "brands", "keywords", "sellers")
+    return {
+        chave: sorted(set(a.get(chave) or []) | set(b.get(chave) or []))
+        for chave in chaves
+    }
 
 
 def _filter_options_do_historico(dias: int = 120) -> dict:

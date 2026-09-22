@@ -558,7 +558,7 @@ def _series_span_days(ts: TierSeries) -> Optional[int]:
     """Dias de calendário do 1º ao último ponto REAL da série (inclusive).
 
     Nunca confiar na janela pedida pelo usuário para rotular o Delta: o
-    Supabase só guarda a janela quente (`RAC_HOT_WINDOW_DAYS`, ~15 dias por
+    Supabase só guarda a janela quente (`RAC_HOT_WINDOW_DAYS`, 2 dias por
     padrão) — pedir 30 dias pode devolver bem menos, e rotular "Delta30d"
     nesse caso mentiria sobre o período realmente medido.
     """

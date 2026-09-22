@@ -357,8 +357,14 @@ class TestJanelaQuente:
         assert hot_window_start(date(2026, 7, 25)) == date(2026, 7, 19)
 
     def test_env_invalida_cai_no_default(self, monkeypatch):
+        # Default agora é 2 (retorno ao Supabase, docs/RETORNO_SUPABASE.md):
+        # 25 - (2 - 1) = 24.
         monkeypatch.setenv("RAC_HOT_WINDOW_DAYS", "zero")
-        assert hot_window_start(date(2026, 7, 25)) == date(2026, 7, 11)
+        assert hot_window_start(date(2026, 7, 25)) == date(2026, 7, 24)
+
+    def test_default_sem_env_e_dois_dias(self, monkeypatch):
+        monkeypatch.delenv("RAC_HOT_WINDOW_DAYS", raising=False)
+        assert hot_window_start(date(2026, 7, 25)) == date(2026, 7, 24)
 
 
 # ---------------------------------------------------------------------------

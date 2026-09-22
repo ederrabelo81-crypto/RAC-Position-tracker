@@ -402,7 +402,7 @@ direto para ler qualquer período, resolvido ou não.
 | `RAC_HISTORY` | `on` | `off` desliga a gravação do histórico na coleta |
 | `RAC_HISTORY_BACKEND` | `auto` | `auto` usa Drive se houver `GDRIVE_FOLDER_ID`, senão disco |
 | `RAC_HISTORY_DIR` | `data/history` | Destino local e cache das partições do Drive |
-| `RAC_HOT_WINDOW_DAYS` | `15` | Dias mantidos no Supabase antes de migrar |
+| `RAC_HOT_WINDOW_DAYS` | `2` | Dias mantidos no banco antes de migrar (era 15; ver `docs/RETORNO_SUPABASE.md`) |
 | `RAC_DRIVE_CSV` | `on` | `off` desliga o espelho do CSV cru em `csv_coletas/` |
 | `GDRIVE_FOLDER_ID` | — | Pasta raiz do histórico |
 | `GDRIVE_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` | — | OAuth de usuário |

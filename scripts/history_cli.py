@@ -82,6 +82,15 @@ class TierSpec(NamedTuple):
     date_col: str
 
 
+# Só tabelas de FATO que vivem no Parquet entram na poda da janela quente. Com
+# a janela em 2 dias (docs/RETORNO_SUPABASE.md), este dicionário é a lista do que
+# o `tier` apaga do banco. `seller_offer_daily`/`seller_coverage_daily` NÃO
+# entram de propósito: são fatos DERIVADOS de `coletas` (não estão no Parquet) e
+# têm RETENÇÃO PRÓPRIA, maior que a de `coletas`, para o `seller_app` manter
+# série de buy box mesmo com `coletas` guardando só 2 dias (a decisão e o SQL da
+# poda independente estão em docs/RETORNO_SUPABASE.md §6). Adicioná-las aqui as
+# cortaria para 2 dias junto com `coletas` — exatamente o que a retenção própria
+# existe para evitar.
 _TIER_SPECS: Dict[str, TierSpec] = {
     DATASET_COLETAS: TierSpec(DATASET_COLETAS, "coletas", "data"),
     DATASET_PRICETRACK: TierSpec(DATASET_PRICETRACK, "pricetrack_daily", "collection_date"),
