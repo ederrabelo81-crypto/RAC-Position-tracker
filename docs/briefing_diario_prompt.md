@@ -3,8 +3,20 @@
 Este arquivo é o prompt completo passado ao `claude` local (Claude Code CLI)
 pelo `scripts/run_briefing_diario.bat`, agendado via
 `scripts/setup_briefing_scheduler.ps1`. Roda no PC coletor porque é o único
-ambiente com o conector MCP Postgres apontando pro Aiven (`RAC_DB_DSN`) — ver
-`docs/MIGRACAO_AIVEN.md` seção 6.
+ambiente com o banco da janela quente **e** as credenciais do Google Drive
+(histórico frio) no mesmo lugar.
+
+> **⚠️ Modelo de dados (retorno ao Supabase, 22/09/2026 —
+> `docs/RETORNO_SUPABASE.md`):** o banco (agora **Supabase**) guarda só a
+> **janela quente de 2 dias**; todo o histórico anterior vive em **Parquet no
+> Google Drive**. A leitura é **HÍBRIDA e esse é o caminho NORMAL, não um
+> fallback de outage**: qualquer análise que abranja mais que os últimos ~2
+> dias (D-1 vs D-2, tendências de 7/15 dias, aging de MAP, cobertura vs média
+> recente) tem de unir os 2 dias do banco com os dias mais antigos do Drive.
+> SQL cru sobre o banco sozinho, para uma janela de 5/7/15 dias, devolve só 2
+> dias e mente sobre o resto — exatamente o que o PASSO 0.5 existe para
+> evitar. Onde este documento ainda diz "Aiven", leia **"o banco da janela
+> quente"** (a virada de provedor é credencial, não muda a lógica).
 
 **Histórico:** esta rotina rodava antes como tarefa agendada no Cowork
 (claude.ai), apontando por engano pro Supabase antigo entre 12–17/09/2026
@@ -45,11 +57,53 @@ Você é analista de Trade Marketing Digital de Ar Condicionado (RAC) da Midea
 Carrier Brasil. Gere o briefing diário do RAC Position Tracker no FORMATO v2
 COMPLETO (restaurado em 25/08/2026).
 
-ORIGEM DOS DADOS: **Aiven** (Postgres gerenciado, via o conector MCP
-`postgres` local, conectado ao DSN em `RAC_DB_DSN` — NUNCA um project_id do
-Supabase), tabelas `coletas` + `pricetrack_daily` + `pipeline_heartbeat`. Só
-caia para o Drive (PASSO F) se o Aiven estiver de fato inacessível — teste
-primeiro com `select 1`.
+ORIGEM DOS DADOS: a **janela quente de 2 dias** vive no banco (Supabase, via o
+conector MCP `postgres` local), tabelas `coletas` + `pricetrack_daily` +
+`pipeline_heartbeat`; **todo o resto do histórico vive no Parquet do Google
+Drive**. A leitura é HÍBRIDA (PASSO 0.5) — o Drive é fonte NORMAL do dado com
+mais de 2 dias, não fallback de outage. O PASSO F só entra quando o BANCO está
+inacessível (nem os 2 dias quentes respondem).
+
+═══════════════════════════════════════════
+PASSO 0.5 — MODELO HÍBRIDO DE DADOS (leia antes de qualquer análise multi-dia)
+═══════════════════════════════════════════
+
+O banco guarda só **~2 dias** (janela quente, `RAC_HOT_WINDOW_DAYS`). Uma
+query SQL de 5/7/15 dias sobre `coletas`/`pricetrack_daily` devolve só 2 dias
+e **mente sobre o resto**. Regra dura:
+
+- **Janela ≤ 2 dias (D-1, D0, snapshot do dia):** SQL direto no banco, como
+  antes. É onde `estado_match`/de-para estão preenchidos.
+- **Janela > 2 dias (D-1 vs D-2, tendências 7/15 dias, aging MAP ~14 dias,
+  cobertura vs média recente):** obtenha a série pelo leitor HÍBRIDO em
+  Python, que costura os 2 dias quentes do banco com os dias antigos do Drive
+  e resolve dias sobrepostos com precedência do quente:
+
+  ```python
+  # roda no PC coletor (tem banco + credenciais do Drive)
+  from datetime import date
+  from utils.history import read_coletas
+  from utils.supabase_client import _get_client
+  df = read_coletas(date(2026, 9, 8), date(2026, 9, 22),
+                    supabase_client=_get_client())   # hot+cold já unidos
+  ```
+
+  Para `pricetrack_daily`, o análogo é `store.read("pricetrack", start, end)`
+  do `utils.history` (o Parquet frio guarda as colunas cruas). Prefira montar
+  os agregados multi-dia a partir desses DataFrames a emitir SQL que só
+  alcança 2 dias.
+
+- **De-para/`estado_match` NÃO existe no frio** (é do gatilho no banco, só nos
+  2 dias quentes). Então, em análise multi-dia, os dias antigos vêm **sem
+  MAPEADO aplicado**: declare no rodapé "dias > 2 fora da janela quente: base
+  do Drive sem de-para" em vez de fingir que o filtro MAPEADO cobriu tudo.
+  Nunca trate a ausência de `estado_match` nos dias frios como "dado sumido".
+- **Dedup:** `read_coletas` já entrega um dia de um lado só (quente vence).
+  Não reprocesse a união à mão.
+
+ORIGEM (resumo): banco = 2 dias quentes; Drive = histórico frio; juntos = a
+série completa. Só caia para o PASSO F se o BANCO estiver de fato inacessível
+— teste primeiro com `select 1`.
 
 ═══════════════════════════════════════════
 PASSO 1 — DIA ALVO E CONEXÃO
@@ -65,9 +119,13 @@ PASSO 1 — DIA ALVO E CONEXÃO
   de ambiente por completo. CURRENT_DATE do Postgres é UTC e depois das 21h
   BRT já rolou pro dia seguinte (off-by-one) — é por isso que essa conversão
   de fuso é obrigatória antes de qualquer cálculo de "dia alvo".
-- Antes de fechar o dia alvo, rode
-  `select data, count(*), count(distinct run_id) as runs from coletas where data >= current_date - interval '5 days' group by data order by data desc`
-  para confirmar cobertura completa (múltiplos runs, não 1 run parcial). Se
+- Antes de fechar o dia alvo, confirme a cobertura dos últimos ~5 dias. Como
+  o banco só tem 2 dias (PASSO 0.5), essa janela de 5 dias é HÍBRIDA: use o
+  `read_coletas(hoje-5, hoje)` em Python (quente+frio) e conte linhas/runs por
+  dia a partir do DataFrame — o `select ... where data >= current_date -
+  interval '5 days'` sozinho só enxerga os 2 dias quentes e faria um dia frio
+  íntegro parecer "sumido".
+  Confirme cobertura completa (múltiplos runs, não 1 run parcial). Se
   o D-1 esperado tiver muito menos linhas/runs que os dias vizinhos, ou se D0
   já tiver partição parcial no momento da rotina, prefira o D-1 completo e
   diga isso explicitamente no cabeçalho do briefing — nunca escorregue de dia
@@ -161,7 +219,9 @@ Casas Bahia — declare como limitação, não sinal).
    D-1/D-2(n)/SoV D-2/Δ, líder do dia e gap líder−Midea.
 3. **Tendência 7 dias**: (a) SoV Top-10 ML — Midea por dia com MM3d + líder +
    gap; (b) share Midea Top-10 por marketplace nos 7 dias. Separe quebra de
-   tendência real de ruído de cobertura.
+   tendência real de ruído de cobertura. **Janela de 7 dias = HÍBRIDA
+   (PASSO 0.5)**: monte a série com `read_coletas(hoje-7, hoje)`; SQL sobre o
+   banco só traria 2 dias e a "tendência" seria um serrote de cobertura.
 4. **Batalha de mídia — ML**: por marca, `patrocinado=true` em
    `categoria='Genérica'` → ads genéricas, quantas em Top-5
    (`posicao_geral<=5`), conversão Top-5; coluna SEPARADA de **defesa de
@@ -175,7 +235,9 @@ Casas Bahia — declare como limitação, não sinal).
    join com `produtos_catalogo` — ver PASSO 3), piso=min(min_price),
    teto=max(max_price), spread=(teto−piso)/piso. Liste os ≥70% com `title` e
    o aging (streak de dias consecutivos ≥70% terminando no dia alvo, janela
-   ~14 dias).
+   ~14 dias). **O aging de ~14 dias é HÍBRIDO (PASSO 0.5)**: o streak precisa
+   dos dias frios do `pricetrack` (Drive); com só 2 dias do banco o streak
+   máximo seria 2 e o aging mentiria.
 7. **Preço 9K/12K — sellers mais baratos por marketplace**: seller Midea
    mais barato (piso) em cada marketplace, 9k e 12k, e piso nacional Midea.
 8. **Mix Top-10 (genéricas) e radar concorrente**: famílias Midea no Top-10
@@ -257,7 +319,11 @@ sku: `min(min_price)`, `avg(avg_price)`, `avg(mode_price)`, `max(max_price)`,
 síntese (moda Midea 9k/12k por tier).
 
 **Seção 10C** — Tendência 7 e 15 dias. Janela de 15 dias terminando no dia
-da base de preço. Moda Midea = `avg(mode_price)` por `collection_date`;
+da base de preço. **15 dias = HÍBRIDO (PASSO 0.5)**: o `pricetrack_daily` do
+banco tem só 2 dias; puxe os dias antigos do Parquet frio
+(`store.read("pricetrack", inicio, fim)` do `utils.history`) e uma o resultado
+com os 2 dias quentes antes de calcular a tendência. Moda Midea =
+`avg(mode_price)` por `collection_date`;
 peer = mediana (`percentile_cont(0.5)`) da moda-por-sku dos peers do tier.
 Tabela: Tier/BTU | moda D-15 | D-7 | D0 | Δ7d | Δ15d | peer D0 | gap. Texto
 por tier lendo direção Midea + movimento dos peers.
@@ -270,7 +336,10 @@ PASSO 4 — COBERTURA DE COLETA DO DIA
 ═══════════════════════════════════════════
 
 Compare registros por plataforma no dia alvo contra a média dos últimos dias
-disponíveis em `coletas`. Canal abaixo de 50% da média = alerta de cobertura
+disponíveis em `coletas`. **A média dos "últimos dias" é HÍBRIDA (PASSO 0.5)**:
+use `read_coletas(hoje-7, hoje)` para a base da média — o banco sozinho só tem
+2 dias e a média ficaria enviesada para os 2 dias quentes. Canal abaixo de 50%
+da média = alerta de cobertura
 suspensa; canal com zero linhas = lacuna de monitoramento (tire da tabela,
 não reporte zero). Dia com mais runs que os vizinhos → canais acima de 100%
 da média = volume de coleta, não sinal de mercado.
@@ -389,12 +458,17 @@ repositório (RAC-Position-tracker).
    Artifact.
 
 ═══════════════════════════════════════════
-PASSO F — FALLBACK: SE O AIVEN ESTIVER INDISPONÍVEL
+PASSO F — FALLBACK: SE O BANCO ESTIVER INDISPONÍVEL
 ═══════════════════════════════════════════
+
+> Não confunda com o PASSO 0.5. Ler o Drive para os dias > 2 é o caminho
+> NORMAL (o banco só tem 2 dias). O PASSO F é o caso EXTREMO: nem os 2 dias
+> quentes do banco respondem, então TODO o briefing (inclusive o dia alvo)
+> tem de sair do Drive, sem de-para.
 
 Se as queries de teste do PASSO 0/1 falharem de forma persistente (e o
 conector existe e está configurado — se não existir, é PASSO 0 item 1, não
-este), documente que o Aiven está fora do ar.
+este), documente que o banco da janela quente está fora do ar.
 
 **Antes de tentar o Drive: confirme que ESTE ambiente tem um conector MCP de
 Google Drive configurado e no allowlist de permissões (seção 2b de

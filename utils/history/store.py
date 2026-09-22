@@ -64,8 +64,16 @@ except ImportError:  # pragma: no cover - python-dotenv é dependência declarad
 DATASET_COLETAS = "coletas"
 DATASET_PRICETRACK = "pricetrack"
 
-#: Janela quente padrão: dias mantidos no Supabase antes de migrarem ao Drive.
-DEFAULT_HOT_WINDOW_DAYS = 15
+#: Janela quente padrão: dias mantidos no banco antes de migrarem ao Drive.
+#:
+#: Encolhida de 15 para **2** no retorno ao Supabase (Set/2026,
+#: `docs/RETORNO_SUPABASE.md`): 15 dias de `coletas` (~510 MB) não cabem no free
+#: tier de 500 MB do Supabase; 2 dias (~68 MB) cabem com folga. Todo o histórico
+#: continua em Parquet no Drive — a janela quente é só a vitrine fresca.
+#:
+#: É o valor DEFAULT (sem `RAC_HOT_WINDOW_DAYS` no ambiente). Uma máquina que
+#: precise seguir em 15 durante a transição pinça isso com a env explícita.
+DEFAULT_HOT_WINDOW_DAYS = 2
 
 #: Tipos das colunas conhecidas de `coletas`. Colunas extras (id,
 #: estado_match, sku_resolvido…) passam com o tipo inferido — o schema é

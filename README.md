@@ -37,7 +37,8 @@ Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos ma
 >
 > O Supabase é a **base de dados principal**. Como o plano free termina em
 > 500 MB, ele guarda apenas a **janela quente** (`RAC_HOT_WINDOW_DAYS`, hoje
-> 15 dias) — é o lado com SQL, RPCs e o de-para aplicado pela automação Admin.
+> **2 dias** — encolhida de 15 no retorno ao Supabase, `docs/RETORNO_SUPABASE.md`)
+> — é o lado com SQL, RPCs e o de-para aplicado pela automação Admin.
 > Todo o histórico que não cabe ali vive em **Parquet no Google Drive**, que
 > não tem teto prático (um ano ≈ 0,23 GB contra 15 GB gratuitos).
 >
