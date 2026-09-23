@@ -322,6 +322,19 @@ chave `anon` grava nada em silêncio).
 
 ## Banco intercambiável — a cota do Supabase estourou (Set/2026) 🆕
 
+> **⚠️ Revertido em 22/09/2026 — leia antes de agir nesta seção.** A janela
+> quente **voltou para o Supabase** (`docs/RETORNO_SUPABASE.md`), encolhida de
+> 15 para **2 dias** (`RAC_HOT_WINDOW_DAYS=2`), com o resto do histórico só no
+> Parquet do Drive. A Aiven descrita abaixo é hoje só o **rollback** (só volta
+> a ser a fonte viva se alguém repopular `RAC_DB_DSN`) — não recebe coleta
+> nova. Todo este bloco documenta a IDA (por que saiu do Supabase, como o
+> adaptador funciona); ele continua válido como explicação do mecanismo
+> (`utils/db.py`, reversível por credencial), mas **a seleção atual do
+> backend é Supabase**, não Aiven. Em 23/09/2026 o banco estourou a cota de
+> novo (1053 MB — a poda diária do Passo 8 daquele runbook ainda não estava
+> agendada) e foi resetado; ver `docs/RETORNO_SUPABASE.md` §5.1 para o
+> procedimento de emergência e o estado do Supabase logo depois.
+
 **O que aconteceu:** em 12/09/2026 o banco passou de **1 GB** contra os 500 MB
 do free tier. O Postgres seguiu saudável e gravável (`read_only=off`), mas o
 **PostgREST** — a API que o `supabase-py` consome — passou a devolver **402
@@ -1491,8 +1504,9 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 
 ---
 
-*Last updated: September 18, 2026 (v5.3)*  
-*Latest changes (18/09/2026, 2): o briefing diário v2 completo foi movido para rodar **localmente** (Claude Code CLI headless no PC coletor) porque o Cowork/claude.ai não tem conector MCP Postgres genérico para o Aiven (só serviços com OAuth publicado no diretório, tipo Supabase/Neon). Novo `docs/briefing_diario_prompt.md` (prompt versionado, com as correções de schema já aplicadas), `scripts/run_briefing_diario.bat` + `scripts/setup_briefing_scheduler.ps1` (tarefa `RAC_Briefing_0700`, 07:00 BRT), `docs/BRIEFING_LOCAL_SETUP.md` (setup único: conector Postgres/Aiven read-only, conector Notion via OAuth, GitHub Pages). O painel deixou de ser Artifact da claude.ai (ferramenta ausente no Claude Code CLI) e virou página estática em `docs/painel/index.html`, publicada via GitHub Pages a cada push do próprio briefing.*
+*Last updated: September 23, 2026 (v5.4)*  
+*Latest changes (23/09/2026): correção pós-incidente — a janela quente voltou do Aiven para o **Supabase** em 22/09/2026 (`docs/RETORNO_SUPABASE.md`, `RAC_HOT_WINDOW_DAYS=2`), mas `docs/briefing_diario_prompt.md` e `docs/BRIEFING_LOCAL_SETUP.md` continuaram exigindo/documentando um conector Postgres apontado pra **Aiven** — o PASSO 0 chegava a proibir explicitamente o Supabase. Efeito: o conector local, se apontado (por essas instruções) pra Aiven, lê um banco congelado desde a virada (sem coleta nova) e reproduz o mesmo padrão de falso "outage" do incidente de 12–17/09. Corrigido: todos os pontos de `briefing_diario_prompt.md` que citavam "Aiven" como origem de dado (PASSO 0, 3, 5, 6, 7.3) agora dizem Supabase; `BRIEFING_LOCAL_SETUP.md` §1 reescrita para apontar o conector `postgres` pro **Session Pooler do Supabase** (conexão direta, sobrevive a uma restrição de cota na API REST — `docs/RETORNO_SUPABASE.md` §5.1) em vez da Aiven; comentários de `scripts/run_briefing_diario.bat` e `scripts/setup_briefing_scheduler.ps1` idem. Nova seção "Banco intercambiável" acima recebeu um aviso de reversão no topo, para não ser lida como estado atual. Também confirmado nesta sessão: o projeto Supabase (`ailbsczkrympslpjwwko`) segue com `status=ACTIVE_HEALTHY` e a conexão Postgres direta respondendo normalmente (banco em 125 MB, bem abaixo dos 500 MB) mesmo com o painel mostrando PostgREST/Auth "Unhealthy" e o banner "Services restricted" — condizente com a nota de `RETORNO_SUPABASE.md` §5.1 de que a reavaliação da cota pela plataforma leva minutos a algumas horas após o banco encolher, e não há ação de API/dashboard disponível para acelerá-la; se persistir muitas horas com o banco pequeno, checar Organization Settings → Billing para uma restrição distinta (billing), não de tamanho.*
+*Anterior (18/09/2026, 2): o briefing diário v2 completo foi movido para rodar **localmente** (Claude Code CLI headless no PC coletor) porque o Cowork/claude.ai não tem conector MCP Postgres genérico para o Aiven (só serviços com OAuth publicado no diretório, tipo Supabase/Neon). Novo `docs/briefing_diario_prompt.md` (prompt versionado, com as correções de schema já aplicadas), `scripts/run_briefing_diario.bat` + `scripts/setup_briefing_scheduler.ps1` (tarefa `RAC_Briefing_0700`, 07:00 BRT), `docs/BRIEFING_LOCAL_SETUP.md` (setup único: conector Postgres/Aiven read-only, conector Notion via OAuth, GitHub Pages). O painel deixou de ser Artifact da claude.ai (ferramenta ausente no Claude Code CLI) e virou página estática em `docs/painel/index.html`, publicada via GitHub Pages a cada push do próprio briefing.*
 *Anterior (18/09/2026): nova seção "Briefing/resumo diário — nunca consultar o banco de memória" — documenta o incidente de 12–17/09/2026 (tarefa agendada `painel-trade-rac-7h` publicou "outage total" no Notion 3 dias seguidos porque consultava um schema de `pricetrack_daily` inventado contra o projeto Supabase antigo, já descontinuado pela migração Aiven) e fixa a regra dura: nunca escrever SQL de schema de memória, sempre passar por `utils/db.py`/`briefing_gate.py`/`pricetrack_capacity_audit.py`, `pipeline_heartbeat` usa `job_id` (não `job_name`), e sem conector Postgres/Aiven configurado o resultado é reportar o bloqueio, nunca fabricar diagnóstico.*
 *Anterior (06/09/2026): documentado o **Track Position Seller** (`seller_app/`) — app novo, separado do dashboard interno, publicado em Fase 1 do spin-off (`docs/TRACK_POSITION_SELLER.md`). Fato com sujeito seller em `seller_offer_daily` (migrações 016/017), 5 abas de insight, chave `anon` só-leitura + RLS. Nova seção "Track Position Seller — painel do lojista" abaixo.*
 *Anterior (06/09/2026): Amazon migrada para um coletor **Amazon-only no GitHub Actions** (`collect_amazon_sellers.yml`, 3 turnos 8h/14h/20h) que abre o PDP de cada item para ler a buy box (modo `RAC_AMAZON_PDP_FRESH=1`, sem cache, alimenta o `seller_app`). Saiu da varredura do PC; posse migrou para `gh_amazon_*` no `pipeline_registry`. Novo override `RAC_TURNO` crava o turno de um run agendado (get_turno), imune ao atraso do cron do Actions.*

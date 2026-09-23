@@ -15,8 +15,14 @@ ambiente com o banco da janela quente **e** as credenciais do Google Drive
 > recente) tem de unir os 2 dias do banco com os dias mais antigos do Drive.
 > SQL cru sobre o banco sozinho, para uma janela de 5/7/15 dias, devolve só 2
 > dias e mente sobre o resto — exatamente o que o PASSO 0.5 existe para
-> evitar. Onde este documento ainda diz "Aiven", leia **"o banco da janela
-> quente"** (a virada de provedor é credencial, não muda a lógica).
+> evitar. **Correção de 23/09/2026:** a leitura anterior deste bloco ("onde
+> disser Aiven, leia banco da janela quente") não bastava — o PASSO 0 abaixo
+> chegava a **exigir** o DSN da Aiven e **proibir** o Supabase, o inverso do
+> que a virada de 22/09 decidiu. Todos os pontos que citavam "Aiven" como
+> origem de dado foram corrigidos para "Supabase" nesta revisão; se algum
+> trecho novo ainda disser "Aiven" fora do contexto de rollback (§ PASSO 9 de
+> `docs/RETORNO_SUPABASE.md`), trate como bug de documentação, não como
+> instrução válida.
 
 **Histórico:** esta rotina rodava antes como tarefa agendada no Cowork
 (claude.ai), apontando por engano pro Supabase antigo entre 12–17/09/2026
@@ -37,16 +43,27 @@ PASSO 0 — PRÉ-CONDIÇÃO DE EXECUÇÃO (não pule)
 ═══════════════════════════════════════════
 
 1. Confirme que o conector MCP Postgres (`postgres`, apontando pro
-   `RAC_DB_DSN` do Aiven — nunca o MCP Supabase antigo, que não deve mais ser
-   usado em hipótese nenhuma) está disponível. Se não estiver: pare, não rode
+   **Supabase** — a conexão direta via Session Pooler, credencial read-only,
+   NÃO a Aiven — ver `docs/BRIEFING_LOCAL_SETUP.md` seção 1) está disponível.
+   **Desde a virada de 22/09/2026 (`docs/RETORNO_SUPABASE.md`) o banco da
+   janela quente é o Supabase; a Aiven só existe como rollback (Passo 9 desse
+   runbook) e não recebe coleta nova.** Um conector `postgres` ainda apontado
+   pra Aiven fala com um banco congelado na data da virada e produz o mesmo
+   diagnóstico de "outage" falso que motivou este documento — se suspeitar
+   disso, confira o host na connection string do conector antes de rodar
+   qualquer query. Se o conector não estiver disponível: pare, não rode
    nenhuma query, não caia para o fallback do Drive (PASSO F) como se fosse
    "banco indisponível" — ausência de conector é lacuna de ferramenta, e isso
    é o que a rotina anterior errou. Escreva só um relatório do bloqueio (o
    que falta configurar) e encerre.
 2. Rode `select 1` e `select count(*) from coletas where data = current_date`
-   para confirmar que a conexão realmente fala com o Aiven antes de seguir.
-   Se falhar de forma persistente (não erro pontual de sintaxe), trate como
-   "banco indisponível" e siga para o PASSO F.
+   para confirmar que a conexão realmente fala com o Supabase (a janela
+   quente atual) antes de seguir. Se falhar de forma persistente (não erro
+   pontual de sintaxe), trate como "banco indisponível" e siga para o PASSO
+   F. Se a conexão funcionar mas devolver 0 linhas em `coletas` para os
+   últimos dias enquanto `pipeline_heartbeat` mostra runs recentes com
+   sucesso (PASSO 1B), não declare "banco fora do ar" — confira antes se o
+   conector não está, por engano, apontado pra Aiven (item 1).
 3. Nunca escreva SELECT de schema de memória. As colunas usadas neste
    documento já foram conferidas contra o schema real (PASSO 3); se precisar
    de uma coluna não listada aqui, confirme com
@@ -113,7 +130,7 @@ PASSO 1 — DIA ALVO E CONEXÃO
   `coletas`, `pricetrack_daily` e `pipeline_heartbeat` existem e respondem.
 - Dia alvo = D-1 em BRT (America/Sao_Paulo), não UTC. Pegue a hora atual
   rodando `select now() at time zone 'America/Sao_Paulo' as agora_brt;` no
-  próprio conector Postgres/Aiven — nunca `bash`/`date` do shell: o Task
+  próprio conector Postgres (Supabase) — nunca `bash`/`date` do shell: o Task
   Scheduler roda a sessão do `claude` com um PATH reduzido, e o Git for
   Windows não garante `bash` nesse contexto; a query evita essa dependência
   de ambiente por completo. CURRENT_DATE do Postgres é UTC e depois das 21h
@@ -276,8 +293,9 @@ Método correto (igual a `pricetrack_dashboard/peer.py::match_haystack` e
    desde 17/09/2026).
 5. Sem dado para o `collection_date` do dia alvo → marque pendente, não
    junte com outro dia sem avisar.
-6. Declare sempre: preço vem de `pricetrack_daily` (Aiven); capacidade é
-   DERIVADA por código de modelo, não coluna.
+6. Declare sempre: preço vem de `pricetrack_daily` (banco da janela quente —
+   Supabase — ou Drive quando fora dos ~2 dias); capacidade é DERIVADA por
+   código de modelo, não coluna.
 
 ═══════════════════════════════════════════
 PASSO 3B — PREÇO POR TIER DE LINHA (peer-to-peer) + TENDÊNCIA 7/15 DIAS
@@ -358,7 +376,8 @@ PASSO 5 — REGRA DE OURO (anti-fabricação) E FORMATO
   `information_schema.columns` quando precisar de coluna não listada aqui.
 - Nunca fixar host/projeto de banco no texto desta tarefa — a conexão é
   sempre via o conector MCP `postgres` local, configurado uma vez.
-- Rodapé obrigatório: *"base: Aiven, estado_match = MAPEADO aplicado"*.
+- Rodapé obrigatório: *"base: Supabase (janela quente) + Drive (histórico),
+  estado_match = MAPEADO aplicado nos dias quentes"*.
 - Caveat fixo: *"leia direção, não casa decimal"*.
 - Formato numérico BR: milhar com ponto (5.157), decimal com vírgula
   (23,7%), moeda R$ 1.952. Sem travessão no corpo (exceção: título fixo da
@@ -370,8 +389,9 @@ PASSO 5 — REGRA DE OURO (anti-fabricação) E FORMATO
 PASSO 6 — ESTRUTURA DO BRIEFING v2
 ═══════════════════════════════════════════
 
-Primeira linha: dia da coleta, nº de runs/linhas, origem **Aiven** (tabela
-coletas, estado_match=MAPEADO), formato v2 completo.
+Primeira linha: dia da coleta, nº de runs/linhas, origem **Supabase** (tabela
+coletas, estado_match=MAPEADO — mais Drive para o que ficar fora da janela
+quente), formato v2 completo.
 
 0. **Conclusão do dia** (4-6 linhas) + **ALERTAS DO DIA** (Δ SoV líder ML;
    saltos de ads ≥50% D-1/D-2 com ressalva de cobertura; SKUs em violação MAP
@@ -425,7 +445,7 @@ PASSO 7.3 — ATUALIZAR PÁGINA PRINCIPAL: `command="update_content"` com pares
 (b) inserir `<page url="...">Briefing {DATA}</page>` no TOPO de "## 📚
 Histórico diário" (mover a tag existente do fim pro topo no mesmo
 update_content); (c) trocar a linha final "*Atualizado automaticamente em
-{DATA_HORA} (BRT) · Origem: Aiven*". Nunca `command="replace_content"` na
+{DATA_HORA} (BRT) · Origem: Supabase*". Nunca `command="replace_content"` na
 página principal. NÃO use allow_deleting_content=true.
 
 ═══════════════════════════════════════════
@@ -477,8 +497,9 @@ coletor) só tem os conectores `postgres` e `notion` configurados por padrão
 — **não** tem Google Drive. Rodando sem esse conector, os passos abaixo (que
 dependem de listar/baixar arquivos do Drive) vão falhar sem executar nada
 útil. Se não houver conector Drive configurado: **pare aqui**, publique só
-um relatório de bloqueio ("Aiven indisponível E fallback Drive sem conector
-configurado nesta sessão — nenhum briefing publicado hoje") e não tente
+um relatório de bloqueio ("Supabase indisponível E fallback Drive sem
+conector configurado nesta sessão — nenhum briefing publicado hoje") e não
+tente
 inventar dado de nenhuma fonte. O fallback abaixo só é executável numa
 sessão interativa (`claude` sem `-p`, rodada por uma pessoa) que já tenha
 esse conector, ou depois de alguém configurar um conector Drive nesta sessão
@@ -509,4 +530,4 @@ Com o conector confirmado, retome o fluxo por Google Drive:
    "MAPEADO". `pricetrack_daily` não está no Drive — marque Preço 9K/12K,
    10B, 10C, Watchlist MAP e Buy Box cross-seller como pendentes/reduzidos.
 5. Siga PASSO 6-8 normalmente, com origem "Google Drive" declarada em todo
-   lugar (título Notion, painel, rodapés) em vez de Aiven.
+   lugar (título Notion, painel, rodapés) em vez de Supabase.
