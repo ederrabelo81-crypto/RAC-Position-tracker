@@ -143,6 +143,47 @@ class TestRawGapFill:
         )
         assert set(out["sku"].unique()) == {"SKU-9K"}  # só as linhas Midea
 
+    def test_midea_only_flag_nula_com_marca_midea_e_mantida(self, store):
+        """Mix na coluna: flag nula + marca Midea NÃO pode sumir do MCJV.
+
+        Sem derivar do brand para os nulos, o Price Compliance subcontaria
+        sellers e dias (achado cubic P2).
+        """
+        df = pd.DataFrame([
+            {"collection_date": date(2026, 3, 10), "turno": "Diário",
+             "brand": "MIDEA", "sku": "S1", "title": "t", "marketplace": "AMAZON",
+             "seller": "a", "min_price": 10.0, "is_midea_group": True, "id": 1},
+            {"collection_date": date(2026, 3, 10), "turno": "Diário",
+             "brand": "MIDEA", "sku": "S2", "title": "t", "marketplace": "AMAZON",
+             "seller": "b", "min_price": 11.0, "is_midea_group": None, "id": 2},
+            {"collection_date": date(2026, 3, 10), "turno": "Diário",
+             "brand": "LG", "sku": "S3", "title": "t", "marketplace": "AMAZON",
+             "seller": "c", "min_price": 12.0, "is_midea_group": None, "id": 3},
+        ])
+        _grava(store, df)
+        out = app._pricetrack_raw_gap_fill(
+            date(2026, 3, 1), date(2026, 3, 31), set(), midea_only=True
+        )
+        # S1 (flag True) e S2 (flag nula + marca Midea) entram; S3 (LG) não.
+        assert set(out["sku"].unique()) == {"S1", "S2"}
+
+    def test_midea_only_flag_false_explicita_nao_e_resgatada(self, store):
+        """Flag False explícita fica de fora mesmo com marca Midea — a coluna,
+        quando presente e não-nula, é a autoridade."""
+        df = pd.DataFrame([
+            {"collection_date": date(2026, 3, 10), "turno": "Diário",
+             "brand": "MIDEA", "sku": "S1", "title": "t", "marketplace": "AMAZON",
+             "seller": "a", "min_price": 10.0, "is_midea_group": False, "id": 1},
+            {"collection_date": date(2026, 3, 10), "turno": "Diário",
+             "brand": "MIDEA", "sku": "S2", "title": "t", "marketplace": "AMAZON",
+             "seller": "b", "min_price": 11.0, "is_midea_group": True, "id": 2},
+        ])
+        _grava(store, df)
+        out = app._pricetrack_raw_gap_fill(
+            date(2026, 3, 1), date(2026, 3, 31), set(), midea_only=True
+        )
+        assert set(out["sku"].unique()) == {"S2"}
+
     def test_midea_only_derivado_da_marca_sem_coluna(self, store):
         """Partição antiga sem `is_midea_group`: deriva do brand canônico."""
         df = pd.DataFrame([
@@ -216,10 +257,14 @@ class TestRawGapFill:
         ).empty
 
     def test_historico_indisponivel_degrada_sem_quebrar(self, monkeypatch):
-        def _explode():
-            raise RuntimeError("pyarrow ausente")
+        # A falha real de pyarrow acontece em `store.read()` (via
+        # `_require_pyarrow()`), não em `_history_store()` — o mock espelha isso.
+        class _StoreQuebrado:
+            def read(self, *a, **k):
+                raise RuntimeError("pyarrow ausente")
 
-        monkeypatch.setattr(app, "_history_store", _explode)
+        monkeypatch.setattr(app, "_history_store", lambda: _StoreQuebrado())
+        monkeypatch.setattr(app, "_avisar_particoes_ilegiveis", lambda *_a, **_k: None)
         monkeypatch.setattr(app, "_avisar_uma_vez", lambda *_a, **_k: None)
         out = app._pricetrack_raw_gap_fill(date(2026, 3, 1), date(2026, 3, 31), set())
         assert out.empty
@@ -297,6 +342,16 @@ class TestTopMoversCosturaFrio:
         assert set(out["collection_date"].unique()) == {date(2026, 3, 10), date(2026, 3, 11)}
         # Top Movers preserva a granularidade — inclui não-Midea também.
         assert set(out["sku"].unique()) == {"SKU-9K", "SKU-12K"}
+
+    def test_frio_respeita_o_teto(self, store, linhas, monkeypatch):
+        """O combinado nunca ultrapassa `limit` (achado cubic P2)."""
+        _grava(store, linhas)
+        monkeypatch.setattr(app, "_get_supabase", lambda: None)
+        monkeypatch.setattr(app, "st", _StStub())
+        out = app._pt_top_movers_data(
+            "2026-03-01", "2026-04-01", (), (), (), (), limit=1,
+        )
+        assert len(out) <= 1
 
     def test_frio_respeita_filtro_de_marca(self, store, linhas, monkeypatch):
         _grava(store, linhas)

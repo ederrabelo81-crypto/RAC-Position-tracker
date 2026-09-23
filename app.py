@@ -2091,14 +2091,24 @@ def _pricetrack_raw_gap_fill(
         )
 
     if midea_only:
-        if "is_midea_group" in df.columns and df["is_midea_group"].notna().any():
+        if "is_midea_group" in df.columns:
             # `_coerce_types` grava a coluna como bool quando o dia não tem nulo,
             # mas como texto ("True"/"False") quando tem — o truthy cobre os dois.
             def _truthy(v) -> bool:
                 if isinstance(v, str):
                     return v.strip().casefold() in ("true", "t", "1", "yes")
                 return bool(v) if (v is not None and v == v) else False
-            df = df[df["is_midea_group"].map(_truthy)]
+            keep = df["is_midea_group"].map(_truthy)
+            # Partição com a coluna PARCIALMENTE nula (mix): a linha de flag nulo
+            # não pode sumir do MCJV se a marca canônica é Midea — senão o
+            # Price Compliance subconta sellers e dias. Deriva do brand só para
+            # os nulos, sem sobrepor a flag explícita False.
+            if "brand" in df.columns:
+                keep = keep | (
+                    df["is_midea_group"].isna()
+                    & df["brand"].astype(str).str.casefold().eq("midea")
+                )
+            df = df[keep]
         elif "brand" in df.columns:
             # Partição sem a coluna: o grupo MCJV é exatamente a marca canônica
             # Midea (MIDEA/MIDEA CARRIER/SPRINGER … já colapsadas acima).
@@ -7829,7 +7839,7 @@ def _pt_top_movers_data(
     if end_inclusive < start_str:
         return pd.DataFrame()
 
-    def _frio(ja_presentes: set) -> pd.DataFrame:
+    def _frio(ja_presentes: set, teto: int | None = limit) -> pd.DataFrame:
         # Costura com o histórico frio (Parquet no Drive): a janela quente do
         # Supabase é de 2 dias (docs/RETORNO_SUPABASE.md), então qualquer
         # comparação de janelas do Top Movers precisa do Drive para os dias
@@ -7840,7 +7850,7 @@ def _pt_top_movers_data(
             brands=list(brands_tuple) or None,
             platforms=list(platforms_tuple) or None,
             sku_set=sku_set or None,
-            limit=limit,
+            limit=teto,
         )
 
     client = _get_supabase()
@@ -7906,9 +7916,11 @@ def _pt_top_movers_data(
                 pd.to_datetime(df_hot["collection_date"], errors="coerce")
                 .dt.date.dropna().unique()
             )
-        # Só os dias que o banco NÃO devolveu vêm do frio (dedup por dia).
+        # Só os dias que o banco NÃO devolveu vêm do frio (dedup por dia), e só
+        # até o teto que o quente ainda não preencheu — senão o combinado
+        # estouraria `limit` e agregaria linhas à toa.
         restante = None if limit is None else max(0, limit - len(df_hot))
-        df_frio = _frio(dias_hot) if restante != 0 else pd.DataFrame()
+        df_frio = _frio(dias_hot, teto=restante) if restante != 0 else pd.DataFrame()
         partes = [d for d in (df_hot, df_frio) if not d.empty]
         if not partes:
             return pd.DataFrame()
