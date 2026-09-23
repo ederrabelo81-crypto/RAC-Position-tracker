@@ -1,9 +1,10 @@
 # =============================================================================
 # setup_briefing_scheduler.ps1 - Agenda o briefing diario (Claude Code local,
-# headless, contra o Aiven) no notebook/PC coletor.
+# headless, contra o banco da janela quente - Supabase desde 22/09/2026, ver
+# docs/RETORNO_SUPABASE.md) no notebook/PC coletor.
 #
 # PRE-REQUISITO (uma vez, ver docs/BRIEFING_LOCAL_SETUP.md):
-#   1. claude mcp add-json postgres '{"command":"npx","args":["-y","@modelcontextprotocol/server-postgres","<DSN Aiven READ-ONLY>"]}'
+#   1. claude mcp add-json postgres '{"command":"npx","args":["-y","@modelcontextprotocol/server-postgres","<DSN Session Pooler do Supabase, READ-ONLY>"]}'
 #   2. claude mcp add --transport http notion https://mcp.notion.com/mcp
 #      (abre o navegador para login OAuth - feito uma unica vez, o token
 #      renova sozinho depois)
@@ -122,7 +123,7 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Write-Host "Registrando: $TaskName (07:00 diario + catch-up no logon, janela 7-10h)" -ForegroundColor Cyan
 Register-ScheduledTask -TaskName $TaskName `
     -Action $action -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
-    -Description "Briefing diario RAC (Claude Code local -> Aiven -> Notion + painel GitHub Pages)" `
+    -Description "Briefing diario RAC (Claude Code local -> Supabase -> Notion + painel GitHub Pages)" `
     -Force | Out-Null
 
 Write-Host ""
@@ -133,7 +134,7 @@ Write-Host "Testar:      Start-ScheduledTask -TaskName '$TaskName'" -ForegroundC
 Write-Host "Logs:        Get-Content '$BaseDir\logs\briefing_scheduler.log' -Tail 80" -ForegroundColor Gray
 Write-Host ""
 Write-Host "IMPORTANTE (setup unico, se ainda nao fez - ver docs\BRIEFING_LOCAL_SETUP.md):" -ForegroundColor Yellow
-Write-Host "  1. Conector MCP Postgres/Aiven ja configurado neste 'claude' local?" -ForegroundColor Yellow
+Write-Host "  1. Conector MCP Postgres/Supabase ja configurado neste 'claude' local?" -ForegroundColor Yellow
 Write-Host "     Confira com: claude mcp list" -ForegroundColor Yellow
 Write-Host "  2. Conector MCP Notion adicionado (login OAuth feito 1x)?" -ForegroundColor Yellow
 Write-Host "     claude mcp add --transport http notion https://mcp.notion.com/mcp" -ForegroundColor Yellow

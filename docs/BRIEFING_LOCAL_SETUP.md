@@ -3,9 +3,17 @@
 O briefing diário roda no PC coletor (Claude Code CLI local, headless),
 não no Cowork/claude.ai, porque hoje não existe conector MCP Postgres
 genérico no diretório de conectores do Cowork — só serviços com conector
-OAuth publicado (Supabase, Neon, etc.), e o Aiven não é um deles. Ver
-CLAUDE.md, seção "Briefing/resumo diário — nunca consultar o banco de
-memória", para o incidente que motivou essa migração.
+OAuth publicado (Supabase, Neon, etc.). Ver CLAUDE.md, seção
+"Briefing/resumo diário — nunca consultar o banco de memória", para o
+incidente que motivou essa migração.
+
+> **Atualização (23/09/2026):** o banco da janela quente voltou a ser o
+> **Supabase** (`docs/RETORNO_SUPABASE.md`, decisão de 22/09) — a Aiven só
+> existe como rollback e não recebe coleta nova desde a virada. A seção 1
+> abaixo foi reescrita para apontar o conector `postgres` local pro
+> Supabase; se o `claude mcp list` desta máquina ainda mostrar o conector
+> com um DSN de Aiven (host `*.aivencloud.com`), ele está desatualizado —
+> refaça o passo 1 antes de confiar em qualquer briefing gerado.
 
 Arquivos envolvidos:
 - `docs/briefing_diario_prompt.md` — o prompt completo, versionado no repo.
@@ -20,34 +28,47 @@ tarefa agendada roda sozinha, sem comando manual nenhum.
 
 ---
 
-## 1. Conector MCP Postgres/Aiven (se ainda não existir)
+## 1. Conector MCP Postgres/Supabase (se ainda não existir)
 
-Já deve existir, é o mesmo usado nas consultas ad-hoc do dia a dia (ver
-`docs/MIGRACAO_AIVEN.md`, seção 6). Confirme com:
+Confirme se já existe:
 
 ```powershell
 claude mcp list
 ```
 
-Se `postgres` não aparecer na lista, adicione:
+Se `postgres` aparecer na lista mas com um DSN de Aiven (host
+`*.aivencloud.com`), **remova e recrie** — apontar pra Aiven faz o briefing
+ler um banco congelado desde a virada de 22/09/2026, que não recebe coleta
+nova (é o rollback, não a fonte viva):
 
 ```powershell
-claude mcp add-json postgres '{"command":"npx","args":["-y","@modelcontextprotocol/server-postgres","<DSN Aiven>"]}'
+claude mcp remove postgres
 ```
 
-**Use uma credencial READ-ONLY do Aiven para esse DSN, diferente da
-`RAC_DB_DSN` de escrita usada pela coleta.** O briefing só lê; mesmo com o
-allowlist de permissões da seção 2b restrito às ferramentas certas, uma
-credencial read-only é a segunda camada de defesa contra um comando mal
-formado escrever no banco de produção. Crie um usuário Postgres
-`readonly` na Aiven (Console → Users → Add user, ou
-`CREATE ROLE briefing_ro LOGIN PASSWORD '...'; GRANT CONNECT ON DATABASE defaultdb TO briefing_ro; GRANT USAGE ON SCHEMA public TO briefing_ro; GRANT SELECT ON ALL TABLES IN SCHEMA public TO briefing_ro;`)
-e monte o DSN com esse usuário.
+Adicione apontando pro **Supabase**, usando a conexão direta via **Session
+Pooler** (Supabase → Project Settings → Database → Connection string →
+Session pooler) — essa conexão fala Postgres puro na porta 5432, então
+continua de pé mesmo quando a API REST (PostgREST) está restrita por cota
+(`docs/RETORNO_SUPABASE.md`, §5.1):
 
-Sobre TLS: o driver Node por trás desse MCP server precisa do certificado da
-Aiven para `sslmode=verify-full` (ver `docs/MIGRACAO_AIVEN.md` seção 6 —
-`certs/aiven-ca.pem`, já versionado no repo). `sslmode=no-verify` funciona
-sem o certificado, mas valida menos a cadeia.
+```powershell
+claude mcp add-json postgres '{"command":"npx","args":["-y","@modelcontextprotocol/server-postgres","<DSN Session Pooler do Supabase>"]}'
+```
+
+**Use uma credencial READ-ONLY do Supabase para esse DSN, diferente da
+`SUPABASE_KEY` (service_role) de escrita usada pela coleta.** O briefing só
+lê; mesmo com o allowlist de permissões da seção 2b restrito às ferramentas
+certas, uma credencial read-only é a segunda camada de defesa contra um
+comando mal formado escrever no banco de produção. Crie um usuário Postgres
+dedicado no Supabase (SQL Editor, com a mesma conexão do Session Pooler):
+`CREATE ROLE briefing_ro LOGIN PASSWORD '...'; GRANT CONNECT ON DATABASE postgres TO briefing_ro; GRANT USAGE ON SCHEMA public TO briefing_ro; GRANT SELECT ON ALL TABLES IN SCHEMA public TO briefing_ro;`
+e monte o DSN com esse usuário (senha sem símbolos, ou URL-encode —
+`@`→`%40`, `#`→`%23`, `/`→`%2F`, `+`→`%2B`, espaço→`%20`).
+
+Sobre TLS: o Supabase aceita `sslmode=require` na connection string do
+Session Pooler sem certificado adicional (diferente da Aiven, que exigia
+`certs/aiven-ca.pem` para `sslmode=verify-full` — não é preciso replicar
+esse certificado aqui).
 
 ## 2. Conector MCP Notion
 

@@ -1,17 +1,20 @@
 @echo off
 :: -----------------------------------------------------------------------------
 :: run_briefing_diario.bat - Launcher agendado do briefing diario (Claude Code
-:: local, headless, apontando pro Aiven via o conector MCP "postgres" ja
-:: configurado nesta maquina).
+:: local, headless, apontando pro banco da janela quente - Supabase desde
+:: 22/09/2026, ver docs/RETORNO_SUPABASE.md - via o conector MCP "postgres"
+:: ja configurado nesta maquina).
 ::
 :: Por que roda AQUI e nao no Cowork/claude.ai: o Cowork nao tem (e hoje nao
 :: pode ter) um conector MCP Postgres generico - so servicos com conector
-:: OAuth publicado no diretorio (Supabase, Neon, etc.), e o Aiven nao e um
-:: deles. A rotina anterior, agendada no Cowork, ficou apontando pro projeto
-:: Supabase antigo depois da migracao e publicou "outage total" 3 dias
-:: seguidos (12-17/09/2026) - ver CLAUDE.md, secao "Briefing/resumo diario -
-:: nunca consultar o banco de memoria". Rodando aqui, usa o mesmo conector
-:: Postgres/Aiven que ja existe no `claude` deste PC (docs/MIGRACAO_AIVEN.md).
+:: OAuth publicado no diretorio (Supabase, Neon, etc.), e nem sempre o
+:: provedor certo esta nesse diretorio (foi o caso da Aiven, usada ate
+:: 22/09/2026). A rotina anterior, agendada no Cowork, ficou apontando pro
+:: projeto Supabase antigo depois de uma migracao e publicou "outage total"
+:: 3 dias seguidos (12-17/09/2026) - ver CLAUDE.md, secao "Briefing/resumo
+:: diario - nunca consultar o banco de memoria". Rodando aqui, usa o mesmo
+:: conector Postgres/Supabase que ja existe no `claude` deste PC
+:: (docs/BRIEFING_LOCAL_SETUP.md, secao 1).
 ::
 :: Segue o MESMO padrao de run_local_scheduled.bat + local_scheduled_collect.bat:
 ::   - sem "cmd /c" na Action da tarefa (espaco no caminho do projeto quebra
@@ -126,9 +129,9 @@ setlocal EnableDelayedExpansion
         echo [%DATE% %TIME%] [briefing] chamando claude -p (nao-interativo^)
         rem Execucao nao-interativa: o modo de permissao para rodar sem prompt
         rem de aprovacao e configurado UMA VEZ no settings.json local (nao aqui
-        rem no script) - ver docs/BRIEFING_LOCAL_SETUP.md. O DSN do Aiven usado
-        rem pelo conector MCP local deve ser uma credencial READ-ONLY - nunca a
-        rem de escrita da coleta (RAC_DB_DSN do .env de coleta).
+        rem no script) - ver docs/BRIEFING_LOCAL_SETUP.md. O DSN do Supabase
+        rem usado pelo conector MCP local deve ser uma credencial READ-ONLY -
+        rem nunca a `SUPABASE_KEY` (service_role) de escrita usada pela coleta.
         rem
         rem NUNCA usar "goto"/label AQUI DENTRO (mesmo bloco entre parenteses
         rem que o cabecalho ja avisa sobre "::") - pular para um rotulo
@@ -147,7 +150,7 @@ setlocal EnableDelayedExpansion
             ) else (
                 rem exit 0 sozinho nao prova publicacao: o PASSO 0 permite
                 rem terminar normalmente so reportando um bloqueio (ex.: sem
-                rem conector Aiven), sem publicar nada. So grava o marcador se
+                rem conector Postgres/Supabase), sem publicar nada. So grava o marcador se
                 rem docs\painel\index.html foi REESCRITO HOJE - evidencia de
                 rem que ao menos o PASSO 8 rodou.
                 set "PANEL_FRESH=nao"
