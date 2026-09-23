@@ -229,26 +229,39 @@ python scripts\evacuate_pricetrack.py                    # exporta + CONFERE (n�
 python scripts\evacuate_pricetrack.py --confirmar-delete # apaga só depois de conferir
 ```
 
-**2b. `coletas` antigas → Parquet, mantendo só a janela.** Com
-`RAC_HOT_WINDOW_DAYS=2` já no `.env` (Passo 3), o migrador poda para 2 dias:
-
-```powershell
-python scripts\history_cli.py tier --dry-run   # quantos dias sairiam do banco
-python scripts\history_cli.py tier --confirm   # migra p/ Parquet, confere e apaga
-```
-
-O `tier --confirm` migra todo dia anterior a `hot_window_start()` para o
-Parquet, **confere** a gravação no Drive e só então apaga do banco (Guarda P1:
-não apaga se o frio for local).
-
-**2c. Recuperar disco de verdade.** `DELETE`/migração **não** encolhe o arquivo
-— o Postgres guarda as páginas como dead tuples. Rode `VACUUM FULL` fora de
-transação, numa janela de manutenção (pelo SQL Editor ou `psql`):
+**2b. `coletas` antigas.** ⚠️ **O `tier` NÃO serve enquanto a cota está
+estourada** — ele fala pela API REST, que está 402. Só rode `tier` **depois**
+que o banco cair abaixo de 500 MB e a REST voltar (Passo 8). Enquanto restrito,
+pode `coletas` por **SQL direto** (a conexão Postgres não é derrubada pela
+cota). `coletas` é gravada em dobro (banco + Parquet no Drive) desde Jul/2026,
+então os dias antigos já estão frios; corte cauteloso pelos dias claramente
+frios (ex.: > 7 dias) e deixe o `tier` fazer a poda fina 7→2 dias, conferida,
+quando a REST voltar:
 
 ```sql
-VACUUM (FULL, ANALYZE) pricetrack_daily;
-VACUUM (FULL, ANALYZE) coletas;
+-- SQL Editor (roda o DELETE SOZINHO — ver 2c sobre por que não junto do VACUUM)
+DELETE FROM coletas WHERE data < CURRENT_DATE - 7;
 ```
+
+**2c. Recuperar disco de verdade — `VACUUM FULL` FORA de transação.**
+`DELETE`/`TRUNCATE` liberam páginas, mas só `VACUUM FULL` devolve o arquivo ao
+SO. Dois erros reais a evitar (ambos vistos em 23/09/2026):
+
+- **O SQL Editor do Supabase envolve o script numa transação.** `VACUUM` ali
+  falha com `25001: VACUUM cannot run inside a transaction block` — **e como o
+  DELETE estava na mesma transação, ele é desfeito junto** (a tabela volta
+  cheia). Por isso o DELETE do 2b roda SOZINHO e o VACUUM roda por fora.
+- Rode o `VACUUM FULL` pelo script do repo, que conecta em autocommit:
+
+  ```powershell
+  python scripts\db_vacuum.py --full --confirmar --tabela coletas --dsn "<URI do Session pooler>"
+  # pricetrack_daily saiu por TRUNCATE (evacuate) — não precisa de VACUUM FULL
+  ```
+
+  Sem o script, o equivalente cru também em autocommit:
+  ```powershell
+  python -c "import psycopg2; c=psycopg2.connect('<URI>'); c.autocommit=True; c.cursor().execute('VACUUM (FULL, ANALYZE) coletas'); c.close()"
+  ```
 
 **2d. Tabelas legadas.** `rac_monitoramento` (~33 MB) é legado. Confirme se o
 `app.py` ainda a lê antes de mexer; se sim, mantenha; se não, ela pode sair.
@@ -336,6 +349,62 @@ Idempotente por dia; só migra o que passou da janela. Some um alarme de tamanho
 Com uma semana de coleta estável no Supabase e o frio conferido, o serviço da
 Aiven pode ser pausado/removido no console. **Não** antes: enquanto a volta não
 estiver validada, a Aiven é o seu rollback de um comando (§7).
+
+---
+
+## 5.1 Emergência — destravar quando a cota JÁ estourou (REST em 402)
+
+> Sequência real executada em **23/09/2026** (banco a 1053 MB, projeto
+> `Services restricted / EXCEEDING USAGE LIMITS`). Use isto quando a coleta e o
+> `tier` já falham com `exceed_db_size_quota` (HTTP 402). **A cota derruba só a
+> API REST (PostgREST); a conexão Postgres direta continua funcionando** — todo
+> o trabalho abaixo é por ela (SQL Editor + scripts com `--dsn`).
+
+1. **Credencial certa.** Precisa da conexão do **Session pooler** (IPv4):
+   Supabase → Project Settings → Database → Connection string → **Session
+   pooler**. A senha é a **Database password** (Project Settings → Database →
+   *Reset database password* se você não a tem) — **NÃO** é a `SUPABASE_KEY`
+   (service_role) nem o login da conta. Símbolos na senha quebram o URI:
+   gere uma só com letras/números, ou URL-encode (`@`→`%40`, `#`→`%23`,
+   `/`→`%2F`, `+`→`%2B`, espaço→`%20`).
+
+2. **Medir** (SQL Editor — funciona mesmo em 402, é Postgres direto):
+   ```sql
+   SELECT pg_size_pretty(pg_database_size(current_database())) AS db,
+          pg_size_pretty(pg_total_relation_size('pricetrack_daily')) AS pricetrack,
+          pg_size_pretty(pg_total_relation_size('coletas'))          AS coletas;
+   ```
+
+3. **Evacuar `pricetrack_daily`** (maior tabela; `TRUNCATE` libera o disco na
+   hora, sem `VACUUM`): `evacuate_pricetrack.py` com `SUPABASE_DSN` setado
+   (`--dry-run` → sem flag p/ exportar+conferir → `--confirmar-delete`). Em
+   23/09 isso levou o banco de 1053 → 601 MB.
+
+4. **Podar `coletas` por SQL direto** (o `tier` NÃO roda — é REST/402). Rode o
+   **DELETE sozinho** no SQL Editor (ver passo 5 sobre por que separado):
+   ```sql
+   DELETE FROM coletas WHERE data < CURRENT_DATE - 7;   -- dias já frios no Drive
+   ```
+
+5. **`VACUUM FULL` FORA de transação.** O SQL Editor envolve tudo numa
+   transação → `VACUUM` falha com `25001` **e desfaz o DELETE junto**. Rode por
+   fora, em autocommit:
+   ```powershell
+   python scripts\db_vacuum.py --full --confirmar --tabela coletas --dsn "<URI Session pooler>"
+   ```
+   Em 23/09 o banco foi de 601 → **120 MB**.
+
+6. **Esperar a reavaliação.** Abaixo de 500 MB a restrição sai **sozinha**, mas
+   a plataforma reavalia o tamanho em **minutos a algumas horas** — o
+   `tier --dry-run` pode seguir 402 por um tempo mesmo já pequeno. Só esperar.
+
+7. **REST de volta → retomar o normal:** `history_cli.py tier --confirm` (corta
+   7→2 dias, conferido), coleta de teste, e agendar a poda diária (Passo 8).
+
+> Se o banco ficar bem abaixo de 500 MB por horas e a restrição **não** sair, aí
+> pode ser limite de **organização/billing** (banner "used up its quota" +
+> "Resolve billing issues"), não tamanho de banco — caminho diferente.
+> `rac_monitoramento` (~33 MB) fica de fora: é legado ainda usado pelo `app.py`.
 
 ---
 
