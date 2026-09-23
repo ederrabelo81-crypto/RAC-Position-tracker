@@ -1986,6 +1986,150 @@ def _pt_raw_to_df(raw: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _pricetrack_raw_gap_fill(
+    start_date: date,
+    end_date: date,
+    ja_presentes: set,
+    *,
+    midea_only: bool = False,
+    drop_empty_sku: bool = False,
+    brands: list[str] | None = None,
+    platforms: list[str] | None = None,
+    sku_set: set | None = None,
+    limit: int | None = None,
+) -> pd.DataFrame:
+    """Lê do histórico frio os dias de PriceTrack no schema **CRU** da tabela.
+
+    `_pricetrack_gap_fill` converte para o schema de coletas (via
+    `_pt_raw_to_df`) e serve as páginas que costuram coleta + PriceTrack. Mas as
+    páginas **🛡️ Price Compliance** e **🚨 Top Movers** consomem
+    `pricetrack_daily` direto, com as colunas cruas (`collection_date`,
+    `min_price`, `avg_price`, `mode_price`, `seller_canonical`,
+    `is_midea_group`, …). Sem esta contraparte, elas mostravam "sem dados" para
+    qualquer janela maior que a janela quente (2 dias, docs/RETORNO_SUPABASE.md)
+    mesmo com o dado íntegro no Drive.
+
+    Diferente do gap-fill do schema de coletas, aqui **não** se filtra por turno:
+    as duas páginas leem todos os turnos no banco, então o frio precisa fazer o
+    mesmo (senão só os "Diário" voltariam).
+
+    Args:
+        start_date: Primeiro dia pedido (inclusivo).
+        end_date: Último dia pedido (inclusivo).
+        ja_presentes: Dias que o Supabase já entregou (não relidos aqui).
+        midea_only: Espelha `.eq("is_midea_group", True)` do compliance. Quando
+            a coluna falta na partição antiga, deriva do `brand` canônico
+            ``Midea`` — é a mesma definição de grupo MCJV.
+        drop_empty_sku: Espelha `.neq("sku", "")` do compliance.
+        brands: Marcas canônicas (expandidas em `_filter_history_pricetrack`).
+        platforms: Nomes canônicos de plataforma.
+        sku_set: SKUs canônicos do catálogo.
+        limit: Teto de linhas; mantém os dias mais recentes, como o keyset.
+
+    Returns:
+        DataFrame no schema cru de `pricetrack_daily`, com `seller_canonical` e
+        (se `midea_only`) `is_midea_group` garantidos; vazio se não há frio.
+    """
+    if limit is not None and limit <= 0:
+        return pd.DataFrame()
+    try:
+        store = _history_store()
+        df = store.read("pricetrack", start=start_date, end=end_date)
+        _avisar_particoes_ilegiveis(store)
+    except Exception as exc:
+        from loguru import logger as _logger
+        _logger.warning(
+            f"[Dashboard] histórico frio do PriceTrack indisponível: {exc}"
+        )
+        _avisar_uma_vez(
+            "historico_frio_pricetrack_indisponivel",
+            f"Histórico frio do PriceTrack (Parquet no Drive) indisponível — o "
+            f"painel está mostrando apenas o que o Supabase devolveu. Causa: {exc}",
+        )
+        return pd.DataFrame()
+
+    if df.empty:
+        return df
+    if ja_presentes and "collection_date" in df.columns:
+        dias = pd.to_datetime(df["collection_date"], errors="coerce").dt.date
+        df = df[~dias.isin(ja_presentes)]
+    if df.empty:
+        return df
+
+    # Turno: NÃO filtra (compliance e top movers leem todos os turnos no banco).
+    # Passar a lista de turnos presentes neutraliza o default "Diário" de
+    # `_filter_history_pricetrack` sem duplicar a lógica dos demais predicados.
+    turnos_all = (
+        sorted(df["turno"].dropna().astype(str).unique().tolist())
+        if "turno" in df.columns else None
+    )
+    df = _filter_history_pricetrack(
+        df, turnos=turnos_all, brands=brands, platforms=platforms, sku_set=sku_set,
+    )
+    if df.empty:
+        return df
+
+    df = df.copy()
+    df["collection_date"] = (
+        pd.to_datetime(df["collection_date"], errors="coerce").dt.date
+    )
+
+    # `seller_canonical` garantido: a partição pode ser anterior à coluna, ou
+    # tê-la nula. Deriva de `seller` pelo mesmo de-para do lado quente.
+    if "seller" in df.columns:
+        canon = df["seller"].map(_canonical_seller)
+        if "seller_canonical" in df.columns:
+            atual = df["seller_canonical"]
+            vazio = ~(atual.notna() & (atual.astype(str).str.strip() != ""))
+            df["seller_canonical"] = atual.where(~vazio, canon)
+        else:
+            df["seller_canonical"] = canon
+
+    if "brand" in df.columns and _MARCA_TO_CANONICAL:
+        df["brand"] = df["brand"].map(
+            lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
+        )
+
+    if midea_only:
+        if "is_midea_group" in df.columns:
+            # `_coerce_types` grava a coluna como bool quando o dia não tem nulo,
+            # mas como texto ("True"/"False") quando tem — o truthy cobre os dois.
+            def _truthy(v) -> bool:
+                if isinstance(v, str):
+                    return v.strip().casefold() in ("true", "t", "1", "yes")
+                return bool(v) if (v is not None and v == v) else False
+            keep = df["is_midea_group"].map(_truthy)
+            # Partição com a coluna PARCIALMENTE nula (mix): a linha de flag nulo
+            # não pode sumir do MCJV se a marca canônica é Midea — senão o
+            # Price Compliance subconta sellers e dias. Deriva do brand só para
+            # os nulos, sem sobrepor a flag explícita False.
+            if "brand" in df.columns:
+                keep = keep | (
+                    df["is_midea_group"].isna()
+                    & df["brand"].astype(str).str.casefold().eq("midea")
+                )
+            df = df[keep]
+        elif "brand" in df.columns:
+            # Partição sem a coluna: o grupo MCJV é exatamente a marca canônica
+            # Midea (MIDEA/MIDEA CARRIER/SPRINGER … já colapsadas acima).
+            df = df[df["brand"].astype(str).str.casefold() == "midea"]
+        else:
+            return pd.DataFrame()
+        if df.empty:
+            return df
+
+    if drop_empty_sku and "sku" in df.columns:
+        df = df[df["sku"].notna() & (df["sku"].astype(str).str.strip() != "")]
+        if df.empty:
+            return df
+
+    df["_origem"] = "historico"
+    if limit is not None and len(df) > limit:
+        df = df.sort_values("collection_date", ascending=False, kind="stable")
+        df = df.head(limit)
+    return df.reset_index(drop=True)
+
+
 def query_pricetrack_daily(
     start_date: date,
     end_date: date,
@@ -7124,42 +7268,89 @@ def _query_pt_compliance(
     `sources_tuple` espelha o filtro global de Fonte de Dados — entra na chave
     de cache e zera o resultado quando "pricetrack" está desligada.
     """
-    client = _get_supabase()
-    if client is None:
-        return pd.DataFrame()
     if "pricetrack" not in sources_tuple:
         return pd.DataFrame()
-    since = str(date.today() - timedelta(days=max(window_days, 1)))
+    since_date = date.today() - timedelta(days=max(window_days, 1))
+    since = str(since_date)
+    hoje = date.today()
     cols = "collection_date,sku,brand,marketplace,seller_canonical,min_price"
+
+    def _frio(ja_presentes: set) -> pd.DataFrame:
+        # Costura com o histórico frio (Parquet no Drive): a janela quente do
+        # Supabase é de 2 dias (docs/RETORNO_SUPABASE.md), então um slider de
+        # 7/14/30 dias só se completa com o Drive. Sem isto a página mostrava
+        # "sem dados" para qualquer janela maior que 2 dias.
+        return _pricetrack_raw_gap_fill(
+            since_date, hoje, ja_presentes,
+            midea_only=True, drop_empty_sku=True,
+        )
+
+    client = _get_supabase()
     rows: list = []
-    offset = 0
-    try:
-        while True:
-            resp = (
-                client.table("pricetrack_daily").select(cols)
-                .eq("is_midea_group", True)
-                .gte("collection_date", since)
-                .neq("sku", "")
-                .order("id", desc=True)
-                .range(offset, offset + _SUPABASE_PAGE - 1)
-                .execute()
+    if client is not None:
+        offset = 0
+        try:
+            while True:
+                resp = (
+                    client.table("pricetrack_daily").select(cols)
+                    .eq("is_midea_group", True)
+                    .gte("collection_date", since)
+                    .neq("sku", "")
+                    .order("id", desc=True)
+                    .range(offset, offset + _SUPABASE_PAGE - 1)
+                    .execute()
+                )
+                if not resp.data:
+                    break
+                rows.extend(resp.data)
+                if len(resp.data) < _SUPABASE_PAGE:
+                    break
+                offset += _SUPABASE_PAGE
+                if offset > 200_000:  # trava de segurança (30d ≈ 110k MCJV)
+                    break
+        except Exception as exc:
+            # Cota estourada (402) recusa até leitura — cai no frio antes de
+            # desistir, para a página continuar respondendo.
+            from loguru import logger as _logger
+            _logger.warning(f"[Dashboard] pricetrack_daily (compliance) falhou: {exc}")
+            df_frio = _frio(set())
+            if df_frio.empty:
+                st.error(f"Consulta pricetrack_daily falhou: {exc}")
+                return pd.DataFrame()
+            st.warning(
+                f"Supabase indisponível ({exc}) — exibindo {len(df_frio):,} "
+                f"linha(s) do histórico frio (Parquet)."
             )
-            if not resp.data:
-                break
-            rows.extend(resp.data)
-            if len(resp.data) < _SUPABASE_PAGE:
-                break
-            offset += _SUPABASE_PAGE
-            if offset > 200_000:  # trava de segurança (30d ≈ 110k linhas MCJV)
-                break
-    except Exception as exc:
-        st.error(f"Consulta pricetrack_daily falhou: {exc}")
+            return _pt_compliance_finalize(df_frio)
+
+    df_hot = pd.DataFrame(rows)
+    dias_hot: set = set()
+    if not df_hot.empty and "collection_date" in df_hot.columns:
+        dias_hot = set(
+            pd.to_datetime(df_hot["collection_date"], errors="coerce")
+            .dt.date.dropna().unique()
+        )
+    df_frio = _frio(dias_hot)
+
+    partes = [d for d in (df_hot, df_frio) if not d.empty]
+    if not partes:
         return pd.DataFrame()
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df["collection_date"] = pd.to_datetime(df["collection_date"]).dt.date
-    df["min_price"] = pd.to_numeric(df["min_price"], errors="coerce")
+    df = pd.concat(partes, ignore_index=True) if len(partes) > 1 else partes[0]
+    return _pt_compliance_finalize(df)
+
+
+def _pt_compliance_finalize(df: pd.DataFrame) -> pd.DataFrame:
+    """Tipa e canoniza a base do Price Compliance (quente ou frio).
+
+    Uma função só garante que um dia vindo do Drive receba exatamente o mesmo
+    tratamento de `min_price` (numérico, > 0) e de marca canônica que o dia
+    ainda no Supabase — sem isso as duas fontes divergiriam no mesmo gráfico.
+    """
+    if df.empty:
+        return df
+    df = df.copy()
+    df["collection_date"] = pd.to_datetime(df["collection_date"], errors="coerce").dt.date
+    df["min_price"] = pd.to_numeric(df.get("min_price"), errors="coerce")
     df = df.dropna(subset=["min_price"])
     df = df[df["min_price"] > 0]
     # Consolida variantes da mesma marca ("MIDEA", "MIDEA CARRIER",
@@ -7169,7 +7360,7 @@ def _query_pt_compliance(
         df["brand"] = df["brand"].map(
             lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
         )
-    return df
+    return df.reset_index(drop=True)
 
 
 def page_price_compliance() -> None:
@@ -7629,9 +7820,6 @@ def _pt_top_movers_data(
     `sources_tuple` espelha o filtro global de Fonte de Dados — entra na chave
     de cache e zera o resultado quando "pricetrack" está desligada.
     """
-    client = _get_supabase()
-    if client is None:
-        return pd.DataFrame()
     if "pricetrack" not in sources_tuple:
         return pd.DataFrame()
 
@@ -7650,6 +7838,24 @@ def _pt_top_movers_data(
         return pd.DataFrame()
     if end_inclusive < start_str:
         return pd.DataFrame()
+
+    def _frio(ja_presentes: set, teto: int | None = limit) -> pd.DataFrame:
+        # Costura com o histórico frio (Parquet no Drive): a janela quente do
+        # Supabase é de 2 dias (docs/RETORNO_SUPABASE.md), então qualquer
+        # comparação de janelas do Top Movers precisa do Drive para os dias
+        # antigos — senão a página fica muda fora dos 2 últimos dias.
+        return _pricetrack_raw_gap_fill(
+            date.fromisoformat(start_str), date.fromisoformat(end_inclusive),
+            ja_presentes,
+            brands=list(brands_tuple) or None,
+            platforms=list(platforms_tuple) or None,
+            sku_set=sku_set or None,
+            limit=teto,
+        )
+
+    client = _get_supabase()
+    if client is None:
+        return _pt_top_movers_finalize(_frio(set()))
 
     def _build_q():
         q = (
@@ -7703,23 +7909,58 @@ def _pt_top_movers_data(
             if last_date is None or last_id is None:
                 break
 
-        if not all_rows:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(all_rows)
-        df["collection_date"] = pd.to_datetime(df["collection_date"]).dt.date
-        for col in ("min_price", "avg_price", "mode_price"):
-            df[col] = pd.to_numeric(df.get(col), errors="coerce")
-        # Consolida variantes da mesma marca ("MIDEA CARRIER",
-        # "SPRINGER CARRIER MIDEA" → "Midea") no rótulo canônico do painel.
-        if "brand" in df.columns and _MARCA_TO_CANONICAL:
-            df["brand"] = df["brand"].map(
-                lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
+        df_hot = pd.DataFrame(all_rows)
+        dias_hot: set = set()
+        if not df_hot.empty and "collection_date" in df_hot.columns:
+            dias_hot = set(
+                pd.to_datetime(df_hot["collection_date"], errors="coerce")
+                .dt.date.dropna().unique()
             )
-        return df
+        # Só os dias que o banco NÃO devolveu vêm do frio (dedup por dia), e só
+        # até o teto que o quente ainda não preencheu — senão o combinado
+        # estouraria `limit` e agregaria linhas à toa.
+        restante = None if limit is None else max(0, limit - len(df_hot))
+        df_frio = _frio(dias_hot, teto=restante) if restante != 0 else pd.DataFrame()
+        partes = [d for d in (df_hot, df_frio) if not d.empty]
+        if not partes:
+            return pd.DataFrame()
+        df = pd.concat(partes, ignore_index=True) if len(partes) > 1 else partes[0]
+        return _pt_top_movers_finalize(df)
     except Exception as exc:
-        st.warning(f"Erro consultando pricetrack_daily: {exc}")
-        return pd.DataFrame()
+        # Cota (402) recusa leitura — cai no frio antes de desistir.
+        from loguru import logger as _logger
+        _logger.warning(f"[Dashboard] pricetrack_daily (top movers) falhou: {exc}")
+        df_frio = _frio(set())
+        if df_frio.empty:
+            st.warning(f"Erro consultando pricetrack_daily: {exc}")
+            return pd.DataFrame()
+        st.warning(
+            f"Supabase indisponível ({exc}) — exibindo {len(df_frio):,} "
+            f"linha(s) do histórico frio (Parquet)."
+        )
+        return _pt_top_movers_finalize(df_frio)
+
+
+def _pt_top_movers_finalize(df: pd.DataFrame) -> pd.DataFrame:
+    """Tipa e canoniza a base do Top Movers (quente ou frio).
+
+    Mesma razão de `_pt_compliance_finalize`: garante que o dia vindo do Drive
+    receba o mesmo tratamento de datas, preços e marca canônica que o dia ainda
+    no Supabase, para as duas fontes coexistirem no mesmo cálculo de variação.
+    """
+    if df.empty:
+        return df
+    df = df.copy()
+    df["collection_date"] = pd.to_datetime(df["collection_date"], errors="coerce").dt.date
+    for col in ("min_price", "avg_price", "mode_price"):
+        df[col] = pd.to_numeric(df.get(col), errors="coerce")
+    # Consolida variantes da mesma marca ("MIDEA CARRIER",
+    # "SPRINGER CARRIER MIDEA" → "Midea") no rótulo canônico do painel.
+    if "brand" in df.columns and _MARCA_TO_CANONICAL:
+        df["brand"] = df["brand"].map(
+            lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
+        )
+    return df.reset_index(drop=True)
 
 
 def page_top_movers() -> None:
