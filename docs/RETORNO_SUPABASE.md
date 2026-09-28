@@ -520,9 +520,15 @@ código** — a leitura híbrida no `main` já está correta (Passo 4).
    "2"`.
 3. **Garantir os secrets `GDRIVE_*`** (`GDRIVE_FOLDER_ID` + OAuth ou
    `GDRIVE_SERVICE_ACCOUNT_JSON`). Sem eles, com a janela de 2 dias o painel
-   mostra só 2 dias do Supabase e exibe o aviso "Histórico frio (Parquet no
-   Drive) indisponível" (`_history_gap_fill`, `app.py`). As libs já estão no
-   `requirements_app.txt` (`pyarrow` + `google-api-python-client`).
+   mostra só 2 dias do Supabase **em silêncio, sem aviso**: sem
+   `GDRIVE_FOLDER_ID`, `resolve_backend_name()` (`utils/history/store.py`) cai
+   no backend de **disco local** sem lançar, e `HistoryStore.read()` num
+   diretório vazio devolve DataFrame vazio — então o `except` de
+   `_history_gap_fill` (`app.py`), que emitiria "Histórico frio (Parquet no
+   Drive) indisponível", **nunca dispara** (esse aviso só aparece quando a
+   leitura do histórico *lança*, ex.: credencial presente porém inválida). As
+   libs já estão no `requirements_app.txt` (`pyarrow` +
+   `google-api-python-client`).
 4. **Reboot do app** — o Cloud reinicia ao salvar secrets, o que limpa o
    `@st.cache_resource` que guarda a conexão. Se não reiniciar sozinho, usar
    *Reboot app*.
