@@ -476,6 +476,74 @@ Se quiser forçar explicitamente durante a transição:
 
 ---
 
+## 8.1 Incidente 28/09/2026 — painel congelado em 22/09 (dashboard lendo a Aiven)
+
+> **Sintoma:** o Streamlit (`rac-position-tracker.streamlit.app`) mostrava
+> `ÚLTIMA COLETA 22/09/2026` e ~15 mil registros na janela de 8 dias, enquanto
+> o usuário reportava que "a pausa de requests do Supabase já estava OK". A
+> coleta parecia ter parado; **não parou.**
+
+**O que a investigação achou (Supabase `ailbsczkrympslpjwwko`, medido via SQL
+direto em 28/09):**
+
+| Tabela | Última data no banco | Linhas | Tamanho |
+|---|---|---:|---|
+| `coletas` | **2026-09-28** (dia da conferência) | 36.526 | 42 MB |
+| `seller_offer_daily` | **2026-09-28** | 102.610 | 62 MB |
+| `pricetrack_daily` | 2026-09-27 | 301.212 | 154 MB |
+| **DB total** | — | — | **320 MB** (< 500 MB, sem 402) |
+
+Ou seja: a **coleta está gravando no Supabase com dado fresco** (o `.env` do PC
+coletor já foi virado — Passos 3/5 — pois o dado só chega ali se `RAC_DB_DSN`
+estiver ausente). A cota está saudável. **Quem parou em 22/09 foi a leitura do
+painel.**
+
+**Causa raiz — o dashboard estava lendo a Aiven congelada.** `22/09` é
+exatamente o dia da decisão de retorno (topo deste documento): desde então a
+Aiven "não recebe coleta nova" (`CLAUDE.md`, seção "Banco intercambiável"). O
+`app.py` (`_get_supabase`, ~`app.py:606`) resolve o backend assim:
+
+- **`RAC_DB_DSN` presente em `st.secrets`** → conecta nesse Postgres (= **Aiven,
+  parada em 22/09**);
+- `RAC_DB_DSN` ausente → **Supabase** (o que tem o dado novo).
+
+O deploy no **Streamlit Community Cloud ainda tinha `RAC_DB_DSN` (Aiven) nos
+secrets**. É a única explicação consistente: Supabase tem 28/09, o painel mostra
+22/09, logo o painel não estava lendo o Supabase. Isto é config de deploy, **não
+código** — a leitura híbrida no `main` já está correta (Passo 4).
+
+**Correção (no Streamlit Cloud → Manage app → Settings → Secrets):**
+
+1. **Remover `RAC_DB_DSN`** (ou, sem apagar, `RAC_DB_BACKEND = "supabase"` — o
+   rollback documentado na §7). Isso sozinho vira o painel para o Supabase.
+2. Confirmar `SUPABASE_URL` / `SUPABASE_KEY` presentes e `RAC_HOT_WINDOW_DAYS =
+   "2"`.
+3. **Garantir os secrets `GDRIVE_*`** (`GDRIVE_FOLDER_ID` + OAuth ou
+   `GDRIVE_SERVICE_ACCOUNT_JSON`). Sem eles, com a janela de 2 dias o painel
+   mostra só 2 dias do Supabase **em silêncio, sem aviso**: sem
+   `GDRIVE_FOLDER_ID`, `resolve_backend_name()` (`utils/history/store.py`) cai
+   no backend de **disco local** sem lançar, e `HistoryStore.read()` num
+   diretório vazio devolve DataFrame vazio — então o `except` de
+   `_history_gap_fill` (`app.py`), que emitiria "Histórico frio (Parquet no
+   Drive) indisponível", **nunca dispara** (esse aviso só aparece quando a
+   leitura do histórico *lança*, ex.: credencial presente porém inválida). As
+   libs já estão no `requirements_app.txt` (`pyarrow` +
+   `google-api-python-client`).
+4. **Reboot do app** — o Cloud reinicia ao salvar secrets, o que limpa o
+   `@st.cache_resource` que guarda a conexão. Se não reiniciar sozinho, usar
+   *Reboot app*.
+5. Conferir que o deploy aponta para o `main` atual (correções híbridas #384 e a
+   costura Price Compliance/Top Movers com o frio #387/#388 já mergeadas). Se
+   estiver pinado num commit/branch antigo, redeploy do `main`.
+
+**Lição para não repetir:** ao virar de banco (§3), `RAC_DB_DSN` mora em **três
+lugares independentes** — `.env` do PC coletor, secrets do GitHub Actions
+(Passo 6) e **secrets do Streamlit Cloud**. Virar um não vira os outros. O
+Passo 6 cita Actions e `.env`; o **Streamlit Cloud é o terceiro lugar** e foi o
+que ficou para trás aqui.
+
+---
+
 ## 9. Checklist
 
 - [ ] Drive configurado e recebendo (`gdrive_setup.py --check`)
@@ -487,13 +555,16 @@ Se quiser forçar explicitamente durante a transição:
 - [x] Dashboards híbridos (frio+quente): via principal já era; dropdowns, `_query_health` e briefing fechados nesta PR (Passo 4). Follow-up: monitores de preço-piso Midea
 - [ ] Coleta de teste grava no Supabase, não em 402 (Passo 5)
 - [ ] Secret `RAC_DB_DSN` removido do GitHub Actions (Passo 6)
+- [ ] Secret `RAC_DB_DSN` removido do **Streamlit Cloud** + `GDRIVE_*` presentes + reboot (§8.1) — o painel lia a Aiven congelada em 22/09
 - [ ] Validação: briefing/relatório/painel/`pipeline_watch` (Passo 7)
 - [ ] Poda diária agendada (Passo 8)
 - [ ] Aiven desligada só após ≥1 semana verde (Passo 9)
 
 ---
 
-*Criado em 22/09/2026. Par simétrico de `docs/MIGRACAO_AIVEN.md`.*
+*Criado em 22/09/2026. Par simétrico de `docs/MIGRACAO_AIVEN.md`. Atualizado em
+28/09/2026 com o incidente §8.1 (painel congelado em 22/09 por `RAC_DB_DSN` ainda
+apontando para a Aiven nos secrets do Streamlit Cloud).*
 *A troca de backend é dirigida por `RAC_DB_DSN` (`utils/db.py`); a janela, por
 `RAC_HOT_WINDOW_DAYS` (`utils/history/store.py`); a costura frio+quente, por
 `utils.history.read_coletas`.*
