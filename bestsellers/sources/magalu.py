@@ -13,9 +13,24 @@ impersonation, sessão Akamai validada e cacheada) e os TRÊS parsers que ele j�
 mantém sobre o mesmo HTML — `__NEXT_DATA__` → RSC do App Router → cards do
 DOM. É o que impede que a próxima troca de layout da Magalu vire "0 produtos"
 indistinguível de bloqueio.
+
+POPULAÇÃO (Set/2026): por ser BUSCA, a página traz dois tipos de intruso que
+não pertencem ao ranking e saem antes de numerar as posições:
+
+  * anúncio patrocinado (`ads=patrocinado` na URL) — é espaço comprado,
+    inserido na grade independentemente da ordenação por vendas. Em 28–29/09
+    uma "Geladeira Midea" patrocinada ocupou o nº 1 da lista de ar
+    condicionado e entrou no KPI do grupo Midea;
+  * produto de outro departamento — a busca é difusa ("máquina de corte",
+    "geladeira"). A própria Magalu carimba o departamento na URL do produto
+    (`/p/<id>/ar/aciv/`); todo ar condicionado da série histórica está em
+    `ar` (Ar e Ventilação). Ventilador e climatizador também moram em `ar` e
+    FICAM — são contaminação de categoria, e é o portão de escopo que os
+    denuncia (ver `validate.py`).
 """
 
 import random
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
@@ -28,6 +43,15 @@ from scrapers.magalu import MagaluScraper
 _KEYWORD = "ar condicionado"
 _SORT_PARAMS = {"sortType": "soldQuantity", "sortOrientation": "desc"}
 _TIMEOUT = 20
+
+# Departamento "Ar e Ventilação" na URL do produto: `/p/<id>/<depto>/<sub>/`.
+_DEPARTAMENTO_AR = "ar"
+_DEPARTAMENTO_RE = re.compile(r"/p/[^/?#]+/([a-z0-9]+)/", re.IGNORECASE)
+
+# Espera por um card ORGÂNICO. O card de anúncio chega renderizado do
+# servidor; esperar por qualquer `/p/` liberava a leitura antes de a grade
+# orgânica hidratar, e a página saía só com os patrocinados.
+_SELETOR_CARD_ORGANICO = 'a[href*="/p/"]:not([href*="ads="])'
 
 
 class MagaluBestSellers(BestSellerSource):
@@ -79,6 +103,10 @@ class MagaluBestSellers(BestSellerSource):
                 self._mag._diagnose_empty_html(html, f"mais-vendidos p{pagina}", pagina)
                 break
 
+            produtos = self._filtrar_populacao(produtos, html, pagina)
+            if not produtos:
+                break
+
             for produto in produtos:
                 titulo = self._titulo(produto)
                 if not titulo:
@@ -95,6 +123,87 @@ class MagaluBestSellers(BestSellerSource):
                     url_produto=self._mag._extract_url(produto),
                 ))
         return itens
+
+    # ------------------------------------------------------------------
+    # População da lista
+    # ------------------------------------------------------------------
+
+    def _filtrar_populacao(
+        self, produtos: List[Dict[str, Any]], html: str, pagina: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Tira da página o que não pertence ao ranking por vendas.
+
+        Sai ANTES de numerar as posições: um anúncio no nº 1 empurra todos os
+        ar condicionados uma casa para baixo, e o top 10 passa a ter nove.
+
+        Args:
+            produtos: produtos extraídos da página, na ordem de exibição.
+            html:     HTML da página (salvo para diagnóstico se nada sobrar).
+            pagina:   número da página (1-based), para log.
+
+        Returns:
+            Só os produtos orgânicos do departamento de ar condicionado, na
+            ordem original.
+        """
+        mantidos: List[Dict[str, Any]] = []
+        anuncios: List[str] = []
+        outro_depto: List[str] = []
+        for produto in produtos:
+            motivo = self._motivo_descarte(produto)
+            if motivo is None:
+                mantidos.append(produto)
+            elif motivo == "anuncio":
+                anuncios.append(self._titulo(produto) or "?")
+            else:
+                outro_depto.append(self._titulo(produto) or "?")
+
+        if anuncios or outro_depto:
+            exemplos = "; ".join(t[:60] for t in (anuncios + outro_depto)[:3])
+            logger.info(
+                f"[{self.nome}] p{pagina}: {len(anuncios)} anúncio(s) "
+                f"patrocinado(s) e {len(outro_depto)} item(ns) de outro "
+                f"departamento fora do ranking (ex.: {exemplos})"
+            )
+
+        if not mantidos:
+            # Página que só trouxe intrusos: a grade orgânica não carregou (ou
+            # mudou de layout). Não é lista vazia legítima — nomeia a causa e
+            # guarda o HTML para quem for corrigir.
+            self.falha = (
+                f"página {pagina} só trouxe {len(anuncios)} anúncio(s) e "
+                f"{len(outro_depto)} item(ns) de outro departamento — grade "
+                "orgânica ausente (hidratação lenta ou layout novo)"
+            )
+            logger.warning(f"[{self.nome}] {self.falha}")
+            self._mag._dump_block_html(html, f"so_intrusos_mais-vendidos_p{pagina}")
+        return mantidos
+
+    def _motivo_descarte(self, produto: Dict[str, Any]) -> Optional[str]:
+        """Motivo para tirar o produto do ranking ("anuncio"/"departamento"), ou None."""
+        if self._mag._is_sponsored(produto):
+            return "anuncio"
+        departamento = self._departamento(produto)
+        if departamento is not None and departamento != _DEPARTAMENTO_AR:
+            return "departamento"
+        return None
+
+    @staticmethod
+    def _departamento(produto: Dict[str, Any]) -> Optional[str]:
+        """
+        Código do departamento Magalu carimbado na URL do produto.
+
+        `/geladeira-midea-…/p/cj10982ahd/ed/refr/` → "ed". None quando a URL
+        não traz o segmento — sem prova, o produto fica (descartar no escuro
+        tiraria ar condicionado de verdade da lista).
+        """
+        for chave in ("path", "url", "href"):
+            valor = produto.get(chave)
+            if isinstance(valor, str):
+                achado = _DEPARTAMENTO_RE.search(valor)
+                if achado:
+                    return achado.group(1).lower()
+        return None
 
     def _baixar(self, url: str, pagina: int) -> Optional[str]:
         """
@@ -146,18 +255,22 @@ class MagaluBestSellers(BestSellerSource):
     @staticmethod
     def _esperar_produtos(page: Any) -> None:
         """
-        Aguarda o primeiro card renderizar — mesmos seletores que
-        `MagaluScraper._search_via_browser` usa.
+        Aguarda o primeiro card ORGÂNICO renderizar.
+
+        O card de anúncio (`ads=patrocinado`) vem pronto do servidor; esperar
+        por qualquer link `/p/` — o seletor anterior — liberava a leitura
+        antes de a grade orgânica hidratar, e a página saía só com os
+        patrocinados (28–29/09/2026: 2 itens, ambos anúncio).
 
         Timeout aqui não é erro: a página pode ter mudado de layout e ainda
         assim conter produtos que um dos três parsers reconhece.
         """
         try:
-            page.wait_for_selector(
-                'a[href*="/p/"], [data-testid="product-card"]', timeout=12_000
-            )
+            page.wait_for_selector(_SELETOR_CARD_ORGANICO, timeout=12_000)
         except Exception:
-            logger.debug("[Magalu] Cards não apareceram em 12s — segue para o parse.")
+            logger.debug(
+                "[Magalu] Card orgânico não apareceu em 12s — segue para o parse."
+            )
 
     @staticmethod
     def _rolar(page: Any) -> None:

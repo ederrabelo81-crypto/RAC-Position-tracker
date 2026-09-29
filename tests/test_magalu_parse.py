@@ -122,6 +122,21 @@ class TestParseDomCards:
         prod = scraper._parse_dom_cards(html)[0]
         assert prod["badge"] == "Patrocinado"
 
+    def test_titulo_nao_arrasta_o_bloco_de_preco(self, scraper):
+        """28/09/2026: o título saiu do texto do card com preço e parcelamento
+        — "Geladeira … Inverter R$ 2.077,77 no Pix Ou 10x de R$ 244,44 …"."""
+        html = _serp_html("""
+        <li data-testid="product-card">
+          <a data-testid="product-card-container" href="/x/p/cj10982ahd/ed/refr/">
+            <span>Geladeira Midea Duplex 410L Inverter</span>
+            <span>R$ 2.077,77 no Pix</span><span>Ou 10x de R$ 244,44 sem juros</span>
+          </a>
+        </li>
+        """)
+        prod = scraper._parse_dom_cards(html)[0]
+        assert prod["title"] == "Geladeira Midea Duplex 410L Inverter"
+        assert scraper._extract_price(prod) == 2077.77
+
     def test_preco_por_regex_quando_nao_ha_seletor(self, scraper):
         """Magalu troca data-testid de preço com frequência — resta o texto."""
         html = _serp_html("""
@@ -294,6 +309,19 @@ class TestRecordsFromHtml:
         assert scraper._records_from_html(
             _LOGIN_HTML, "kw", {}, page=1, source="browser"
         ) == []
+
+    def test_ads_patrocinado_na_url_marca_anuncio(self, scraper):
+        """A Magalu sinaliza o anúncio com `ads=patrocinado` na URL do card —
+        sem badge nenhum. Até Set/2026 isso entrava como orgânico."""
+        html = _serp_html(
+            _card(href="/g/p/cj10982ahd/ed/refr/?seller_id=mgshopgra&ads=patrocinado")
+            + _card()
+        )
+        records = scraper._records_from_html(html, "kw", {}, page=1, source="browser")
+        assert records[0]["Patrocinado?"] == "Sim"
+        assert records[0]["Posição Orgânica"] is None
+        assert records[1]["Patrocinado?"] == "Não"
+        assert records[1]["Posição Orgânica"] == 1
 
 
 # ---------------------------------------------------------------------------
