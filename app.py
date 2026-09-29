@@ -480,12 +480,29 @@ def _pt_platform_match_values(platforms: list[str]) -> list[str]:
 # Supabase client (cached — one connection per session)
 # ---------------------------------------------------------------------------
 
+def _secret_para_texto(valor) -> str:
+    """Converte um valor de `st.secrets` em texto utilizável como env var.
+
+    Uma tabela TOML (`[GDRIVE_SERVICE_ACCOUNT_JSON]` com `type = ...`,
+    `private_key = ...` — o formato que a própria documentação do Streamlit
+    sugere para contas de serviço) chega como mapeamento, não como string.
+    `str()` nele produz o repr do Python (aspas simples), que `json.loads`
+    recusa — e o histórico caía no disco local sem aviso nenhum. Mapeamento
+    vira JSON de verdade.
+    """
+    if hasattr(valor, "keys"):
+        def _plano(v):
+            return {k: _plano(v[k]) for k in v.keys()} if hasattr(v, "keys") else v
+        return json.dumps(_plano(valor))
+    return str(valor).strip()
+
+
 def _resolve_secret(name: str) -> str:
     """st.secrets (Streamlit Cloud) → os.getenv (.env local) → ''."""
     try:
         v = st.secrets.get(name, "")
         if v:
-            return str(v).strip()
+            return _secret_para_texto(v)
     except Exception:
         pass
     return os.getenv(name, "").strip()
@@ -541,7 +558,56 @@ def _history_store():
     """
     from utils.history import get_store
     _exportar_credenciais_historico()
-    return get_store()
+    store = get_store()
+    _avisar_historico_nao_configurado(store)
+    return store
+
+
+def _historico_status(store) -> str:
+    """Estado do histórico frio visto por este processo do dashboard.
+
+    Returns:
+        ``"drive"`` — backend remoto (Google Drive) configurado;
+        ``"local"`` — disco local com partições (PC coletor rodando o painel);
+        ``"ausente"`` — disco local SEM nenhuma partição de `coletas`. É o
+        estado de um deploy no Streamlit Cloud sem os secrets `GDRIVE_*`: o
+        store cai no disco do container, que é vazio, e todo o período fora da
+        janela quente some do painel sem erro.
+    """
+    from utils.history import LocalBackend
+    if not isinstance(getattr(store, "backend", None), LocalBackend):
+        return "drive"
+    try:
+        tem_particao = bool(store.backend.list("coletas"))
+    except Exception:
+        tem_particao = False
+    return "local" if tem_particao else "ausente"
+
+
+def _avisar_historico_nao_configurado(store) -> None:
+    """Avisa, uma vez por sessão, quando o histórico frio não existe aqui.
+
+    Sem `GDRIVE_FOLDER_ID` o `get_store()` resolve o disco local de propósito
+    (a coleta nunca pode falhar por falta de credencial). No PC coletor isso
+    é legítimo; no Streamlit Cloud o disco é vazio e a leitura devolve
+    ``DataFrame()`` — indistinguível de "o período não tem dado". Com a janela
+    quente do Supabase em 2 dias, o sintoma é o painel inteiro (preço, buy
+    box, posição) encolher para os últimos 2 dias, com as séries do Drive
+    invisíveis e nenhum aviso na tela.
+    """
+    if _historico_status(store) != "ausente":
+        return
+    from utils.history import hot_window_days
+    _avisar_uma_vez(
+        "historico_frio_nao_configurado",
+        f"Histórico frio (Parquet no Google Drive) **não configurado neste "
+        f"deploy** — o painel só enxerga a janela quente do Supabase (últimos "
+        f"{hot_window_days()} dias). Cadastre em *Manage app → Settings → "
+        f"Secrets*: `GDRIVE_FOLDER_ID` + `GDRIVE_CLIENT_ID` / "
+        f"`GDRIVE_CLIENT_SECRET` / `GDRIVE_REFRESH_TOKEN` (ou "
+        f"`GDRIVE_SERVICE_ACCOUNT_JSON`) — os mesmos valores do `.env` do PC "
+        f"coletor. Modelo em `.streamlit/secrets.toml.example`.",
+    )
 
 
 def _avisar_particoes_ilegiveis(store) -> None:
@@ -1308,19 +1374,32 @@ def _filter_history_coletas(
     # `sem_depara=None` lê o filtro global (uso do `query_coletas`, que não é
     # cacheado). Chamador cacheado passa o valor EXPLÍCITO, para a flag entrar
     # na chave de cache em vez de virar leitura stale de session_state.
+    #
+    # A decisão é POR LINHA, não por partição: `_history_gap_fill` aplica o
+    # de-para às partições cruas (`_resolver_depara_historico`), então uma
+    # mesma leitura mistura linhas classificadas (seguem os filtros estritos,
+    # como no banco) e linhas cujo nome o de-para não conhece (`estado_match`
+    # nulo — essas o interruptor decide). Coluna ausente = todas não
+    # classificadas, que é o caso de antes.
     _admite = _gf_historico_sem_depara() if sem_depara is None else sem_depara
-    _sem_resolucao = "estado_match" not in out.columns
-    _passa_sem_depara = _sem_resolucao and _admite
+    if "estado_match" in out.columns:
+        _sem_depara_linha = out["estado_match"].isna()
+    else:
+        _sem_depara_linha = pd.Series(True, index=out.index)
+    _passa_sem_depara = _sem_depara_linha & bool(_admite)
+
+    def _passa(idx) -> pd.Series:
+        """Máscara das linhas admitidas sem de-para, alinhada ao recorte atual."""
+        return _passa_sem_depara.reindex(idx, fill_value=False)
 
     def _isin_resolvido(col: str, values) -> None:
         nonlocal out
         if not values:
             return
         if col not in out.columns:
-            if not _passa_sem_depara:
-                out = out.iloc[0:0]
+            out = out[_passa(out.index)]
             return
-        out = out[out[col].isin(list(values))]
+        out = out[out[col].isin(list(values)) | _passa(out.index)]
 
     final_estados = estados_match if estados_match is not None else _gf_estados()
     final_familias = familias_resolvidas if familias_resolvidas is not None else _gf_familias()
@@ -1353,8 +1432,7 @@ def _filter_history_coletas(
             # Nenhuma coluna do catálogo existe. Fail-closed por padrão (igual
             # aos demais filtros de resolução), salvo quando o histórico sem
             # de-para foi explicitamente admitido.
-            if not _passa_sem_depara:
-                out = out.iloc[0:0]
+            out = out[_passa(out.index)]
         else:
             cat = get_catalogo()
             skus_btu = (cat[cat["capacidade_btu"].isin(gf_btu_cat)]["sku"].tolist()
@@ -1366,8 +1444,110 @@ def _filter_history_coletas(
                     mask |= fam.str.contains(f"-{int(btu)}-", regex=False, na=False)
             if skus_btu and tem_sku:
                 mask |= out["sku_resolvido"].isin(skus_btu)
-            out = out[mask]
+            out = out[mask | _passa(out.index)]
 
+    return out
+
+
+#: Coluna técnica com a chave da partição de origem (ver `HistoryStore.read`).
+_COL_PARTICAO = "_particao"
+
+#: Colunas que o gatilho `trg_resolve_familia_coletas` preenche no INSERT —
+#: destino → coluna de `produtos_depara_nome`.
+_DEPARA_COLUNAS = (
+    ("familia_resolvida", "familia"),
+    ("sku_resolvido", "sku"),
+    ("estado_match", "estado"),
+)
+
+
+def _dedup_particoes_historico(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove linhas repetidas entre partição da coleta e partição do `tier`.
+
+    Um dia pode ter as duas no Drive: `main.py` grava uma partição por run
+    (`__run-<uuid>`, crua) e o `history_cli.py tier` grava o dia inteiro lido
+    do banco (`__run-tier<MMDD>`, já com de-para) quando ele sai da janela
+    quente. Lidas juntas, as mesmas ofertas apareceriam duas vezes — antes o
+    filtro `estado_match = MAPEADO` escondia a cópia crua por acidente; com o
+    de-para aplicado às cruas (`_resolver_depara_historico`) ela passaria.
+
+    Precedência do `tier` (é o banco, com normalização e de-para da automação
+    Admin), casando por ``(data, run_id)``: a linha crua só sobrevive se a
+    run dela não chegou ao banco — caso de upload recusado por cota, em que a
+    partição da coleta é a única cópia.
+
+    Args:
+        df: Leitura do histórico com a coluna `_COL_PARTICAO`.
+
+    Returns:
+        DataFrame sem a coluna técnica e sem as linhas cruas redundantes.
+    """
+    if df.empty or _COL_PARTICAO not in df.columns:
+        return df
+    is_tier = df[_COL_PARTICAO].astype(str).str.contains("__run-tier", regex=False)
+    if is_tier.any() and not is_tier.all() and "data" in df.columns:
+        rid = (df["run_id"].astype("string").fillna("")
+               if "run_id" in df.columns
+               else pd.Series("", index=df.index, dtype="string"))
+        chaves_tier = set(zip(df.loc[is_tier, "data"], rid[is_tier]))
+        dias_tier = {d for d, _ in chaves_tier}
+        # Tier sem run_id num dia = não dá para saber quais runs ele cobre;
+        # ele é o dia inteiro do banco, então vence o dia inteiro.
+        dias_sem_run = {d for d, r in chaves_tier if not r}
+        redundante = [
+            (not t) and d in dias_tier
+            and (not r or d in dias_sem_run or (d, r) in chaves_tier)
+            for t, d, r in zip(is_tier, df["data"], rid)
+        ]
+        df = df[~pd.Series(redundante, index=df.index)]
+    return df.drop(columns=[_COL_PARTICAO])
+
+
+def _resolver_depara_historico(df: pd.DataFrame) -> pd.DataFrame:
+    """Aplica o de-para nome→família às linhas do histórico que não o têm.
+
+    Réplica, em pandas, do gatilho `fn_resolve_familia_coletas`
+    (`docs/migrations/019_schema_base_portavel.sql`): casamento EXATO de
+    `produto` com `produtos_depara_nome.nome_coletado`, copiando `familia`,
+    `sku` e `estado`. As partições gravadas pela coleta (`main.py`) nunca
+    passaram pelo banco e não têm essas colunas — sem esta etapa, os dias
+    fora da janela quente somem de toda visão agrupada por SKU (o gráfico de
+    preço descarta linha sem `sku_resolvido`) e dos filtros de família.
+
+    Só linhas com `estado_match` nulo são tocadas: o que já veio classificado
+    do banco (partição do `tier`) é preservado. Nome que o de-para não conhece
+    segue nulo — como no banco — e o interruptor "histórico sem de-para"
+    decide se ele aparece.
+
+    Args:
+        df: Linhas do histórico no schema de `coletas`.
+
+    Returns:
+        Cópia com as colunas de resolução preenchidas onde houve casamento;
+        o próprio `df` se não há o que resolver ou o de-para está indisponível.
+    """
+    if df.empty or "produto" not in df.columns:
+        return df
+    if "estado_match" in df.columns:
+        pendente = df["estado_match"].isna()
+    else:
+        pendente = pd.Series(True, index=df.index)
+    if not pendente.any():
+        return df
+    depara = get_depara()
+    if depara.empty or "nome_coletado" not in depara.columns:
+        return df
+    mapa = depara.drop_duplicates("nome_coletado").set_index("nome_coletado")
+    out = df.copy()
+    nomes = out.loc[pendente, "produto"]
+    for destino, origem in _DEPARA_COLUNAS:
+        if origem not in mapa.columns:
+            continue
+        if destino not in out.columns:
+            out[destino] = pd.Series(None, index=out.index, dtype="object")
+        else:
+            out[destino] = out[destino].astype("object")
+        out.loc[pendente, destino] = nomes.map(mapa[origem]).values
     return out
 
 
@@ -1400,7 +1580,10 @@ def _history_gap_fill(
         return pd.DataFrame()
     try:
         store = _history_store()
-        df = store.read("coletas", start=start_date, end=end_date)
+        df = store.read(
+            "coletas", start=start_date, end=end_date,
+            partition_column=_COL_PARTICAO,
+        )
         _avisar_particoes_ilegiveis(store)
     except Exception as exc:
         # app.py não usa loguru no escopo global — import local para não
@@ -1424,13 +1607,19 @@ def _history_gap_fill(
     if df.empty:
         return df
 
-    _nao_resolvida = "estado_match" not in df.columns
+    df = _dedup_particoes_historico(df)
+    df = _resolver_depara_historico(df)
     df = _filter_history_coletas(df, **filtros)
     if df.empty:
         return df
-    # Marca a procedência: permite ao painel avisar que parte dos números vem
-    # do histórico frio, e quanto disso ainda não passou pelo de-para.
-    df["_origem"] = "historico_sem_depara" if _nao_resolvida else "historico"
+    # Marca a procedência (por linha): permite ao painel avisar que parte dos
+    # números vem do histórico frio, e quanto disso o de-para não conhece.
+    if "estado_match" in df.columns:
+        df["_origem"] = df["estado_match"].isna().map(
+            {True: "historico_sem_depara", False: "historico"}
+        )
+    else:
+        df["_origem"] = "historico_sem_depara"
     if "marca" in df.columns and _MARCA_TO_CANONICAL:
         df["marca"] = df["marca"].map(
             lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
@@ -11959,6 +12148,15 @@ def _main() -> None:
         # ── Status footer ──────────────────────────────────────────────────────
         client_ok = _get_supabase() is not None
         st.caption(f"Supabase: {'🟢 conectado' if client_ok else '🔴 desconectado'}")
+        try:
+            _hist = _historico_status(_history_store())
+        except Exception:
+            _hist = "ausente"
+        st.caption("Histórico (Parquet): " + {
+            "drive": "🟢 Google Drive",
+            "local": "🟡 disco local",
+            "ausente": "🔴 não configurado",
+        }[_hist])
         st.caption(f"🕐 {date.today().strftime('%d/%m/%Y')}")
 
     _render_cobertura_banner()

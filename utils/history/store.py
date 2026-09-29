@@ -334,6 +334,7 @@ class HistoryStore:
         start: Optional[date] = None,
         end: Optional[date] = None,
         columns: Optional[Sequence[str]] = None,
+        partition_column: Optional[str] = None,
     ) -> pd.DataFrame:
         """Lê o histórico de um intervalo de dias.
 
@@ -342,6 +343,11 @@ class HistoryStore:
             start: Primeiro dia (inclusivo). ``None`` = desde o começo.
             end: Último dia (inclusivo). ``None`` = até o fim.
             columns: Subconjunto de colunas (projeção). ``None`` = todas.
+            partition_column: Se informado, cada linha ganha esta coluna com a
+                chave da partição de onde veio — é o que permite ao leitor
+                distinguir uma partição da coleta (``run-<uuid>``) de uma
+                migrada do banco (``run-tier<MMDD>``) quando as duas cobrem o
+                mesmo dia.
 
         Returns:
             DataFrame com as linhas do período; vazio se não há partição.
@@ -366,7 +372,10 @@ class HistoryStore:
             try:
                 path = self._local_path(key)
                 table = pq.read_table(path, columns=list(columns) if columns else None)
-                frames.append(table.to_pandas())
+                frame = table.to_pandas()
+                if partition_column:
+                    frame[partition_column] = key
+                frames.append(frame)
             except HistoryBackendError as exc:
                 # Uma partição ilegível não pode derrubar o relatório inteiro —
                 # o dia entra faltando, o log diz qual e o chamador consegue
