@@ -246,7 +246,7 @@ PowerShell -ExecutionPolicy Bypass -File scripts\check_local_scheduler.ps1
 |---|---|---|---|
 | **Amazon** | `gp/bestsellers` | velocidade (recalculado de hora em hora) | O nó 17125373011 fica no departamento Casa: mistura split, janela e portátil |
 | **Mercado Livre** | `mais-vendidos/MLB1646` | acumulado | "+5mil vendidos" é vitalício do anúncio; favorece anúncio velho. Traz seller (leitura de buy box) |
-| **Magazine Luiza** | `sortType=soldQuantity` | acumulado | É busca, não categoria — sensível ao algoritmo de busca; viés para anúncio velho |
+| **Magazine Luiza** | `sortType=soldQuantity` | acumulado | É busca, não categoria — sensível ao algoritmo de busca; viés para anúncio velho. A busca traz **anúncio patrocinado** (`ads=patrocinado` na URL) e produto de **outro departamento**: ambos saem antes de numerar o ranking — o departamento é o da própria URL do produto (`/p/<id>/ar/…`; só `ar` fica). Em 28–29/09/2026 uma geladeira patrocinada foi o nº 1 |
 | **Shopee** | `sortBy=sales` / API `by=sales` | vendas/mês | **Sem a ordenação, a lista é RELEVÂNCIA** — universo diferente. Única fonte de velocidade real |
 | **Leroy Merlin** | índice `production_products_most_sales` | declarado (**sob suspeita**) | 41% dos itens parados em 48h contra 12–19% nas demais. Não sustenta corte de verba sozinho |
 | **Casas Bahia** | `orders_desc` (site: `ordenacao=maisvendidos`) | acumulado | Contaminação alta: 6 de 20 itens não-RAC em 10/08/2026, inclusive #3, #4 e #5 |

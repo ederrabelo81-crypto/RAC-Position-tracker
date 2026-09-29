@@ -413,3 +413,38 @@ pergunta, com outro nome.
 (`render_price_basis_notice`); `scripts/pricetrack_price_audit.py`;
 `tests/test_pricetrack_api_import.py`; diagnóstico completo em
 `docs/PRICETRACK_FIDELIDADE.md`
+
+## 25. "Inverter" como prova de ar condicionado + anúncio da Magalu no ranking (29/09/2026)
+
+❌ **Errado — até 29/09/2026**
+```python
+_RE_SPLIT = re.compile(r"\bSPLIT\b|HI\s*[-\s]?WALL|HIGH\s*WALL|\bHW\b|INVERTER")  # models.py
+for produto in produtos:                      # bestsellers/sources/magalu.py
+    rank += 1                                 # anúncio e outro departamento viram posição
+```
+
+✅ **Certo**
+```python
+if _RE_INDICIO_SPLIT.search(t) and _tem_evidencia_ac(t):   # INVERTER/HW exigem núcleo ou BTU
+    return TIPO_SPLIT_HW
+produtos = self._filtrar_populacao(produtos, html, pagina)  # sai ads=patrocinado e depto != "ar"
+```
+
+**Why:** a lista de mais vendidos da Magalu é uma BUSCA ordenada por vendas, e
+a busca aceita anúncio de qualquer produto. Em 28–29/09 ela saiu com 2 itens:
+o nº 1 era uma "Geladeira Midea … Inverter" patrocinada (`/p/…/ed/refr/?…&ads=patrocinado`).
+INVERTER bastava para o classificador chamá-la de SPLIT_HW, então ela entrou
+no KPI do grupo Midea como líder da plataforma. A Amazon já tinha gravado uma
+"Geladeira Panasonic … Inverter" do mesmo jeito. Geladeira, lavadora e
+micro-ondas também são "Inverter" — e a Midea vende os três, então o erro é
+ASSIMÉTRICO a favor do grupo.
+
+**Regra dura:** termo que não é exclusivo de ar condicionado (INVERTER, HW)
+não classifica sozinho — exige núcleo ("ar condicionado", "split", "hi wall")
+ou capacidade em BTU. Na Magalu, anúncio (`ads=patrocinado`) e produto fora do
+departamento `ar` (carimbado pela própria Magalu na URL `/p/<id>/<depto>/<sub>/`)
+saem ANTES de numerar o ranking; contaminação dentro de `ar` (ventilador,
+climatizador) FICA na base para o portão de escopo denunciar.
+**Files:** `bestsellers/models.py` `classificar_tipo()`,
+`bestsellers/sources/magalu.py` `_filtrar_populacao()`,
+`scrapers/magalu.py` `_is_sponsored()`, `_clean_dom_title()`

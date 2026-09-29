@@ -327,6 +327,10 @@ _DOM_SPONSORED_PATTERNS = ("patrocinado", "patrocinada", "anúncio", "anuncio", 
 # Regex de preço BR dentro do texto do card (último recurso do parser DOM).
 _DOM_PRICE_RE = re.compile(r"R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}")
 
+# Card de anúncio: a Magalu acrescenta `ads=patrocinado` à URL do produto
+# (`/p/cj10982ahd/ed/refr/?seller_id=mgshopgra&ads=patrocinado`).
+_SPONSORED_URL_RE = re.compile(r"[?&]ads=patrocinad", re.IGNORECASE)
+
 # Erros de rede do Chrome que NÃO são bloqueio anti-bot — internet caiu,
 # DNS falhou, proxy derrubou a conexão. Contá-los como bloqueio Akamai
 # manda o diagnóstico (e o operador) pro lado errado.
@@ -1942,6 +1946,28 @@ class MagaluScraper(BaseScraper):
         return None
 
     @staticmethod
+    def _clean_dom_title(title: Optional[str]) -> Optional[str]:
+        """
+        Corta o bloco de preço que vaza para o título do card.
+
+        Quando o título sai de um seletor largo (`[class*="title"]` num
+        wrapper) ou do texto do próprio `<a>`, ele arrasta o preço e o
+        parcelamento: "Geladeira … Inverter R$ 2.077,77 no Pix Ou 10x de
+        R$ 244,44 sem juros" foi gravado assim em Set/2026. Nenhum título de
+        produto contém "R$", então tudo a partir do primeiro é descartado.
+
+        Args:
+            title: texto candidato a título.
+
+        Returns:
+            Título sem o bloco de preço, ou None se nada sobrar.
+        """
+        if not title:
+            return None
+        cleaned = title.split("R$", 1)[0].strip(" \t\n\xa0-|·•")
+        return cleaned or None
+
+    @staticmethod
     def _is_card_container(node: Any) -> bool:
         """True se o elemento delimita UM produto (e não a lista inteira)."""
         try:
@@ -2028,6 +2054,7 @@ class MagaluScraper(BaseScraper):
             if not title:
                 # Tenta pegar o texto do próprio elemento <a> como último recurso
                 title = card.get_text(" ", strip=True)
+            title = self._clean_dom_title(title)
             if not title or len(title) < 3:
                 continue
 
@@ -2321,6 +2348,47 @@ class MagaluScraper(BaseScraper):
         base = _MAGALU_MOBILE_BASE if "m.magazineluiza" in self._home_used else _MAGALU_DESKTOP_BASE
         return f"{base}{'' if path.startswith('/') else '/'}{path}"
 
+    @classmethod
+    def _is_sponsored(cls, prod: Dict[str, Any]) -> bool:
+        """
+        True se o produto é um anúncio patrocinado.
+
+        O campo varia entre versões do payload do Next.js; testamos as chaves
+        conhecidas, um badge/label textual explícito ("Patrocinado"/"Anúncio")
+        e o parâmetro `ads=patrocinado` que a Magalu acrescenta à URL do card
+        de anúncio. Este último é o sinal que ela de fato emite hoje: até
+        Set/2026 ele era ignorado e 56 anúncios entraram na coleta como
+        orgânicos — e um deles, uma geladeira, virou o nº 1 do ranking de
+        mais vendidos de ar condicionado. Conservador: sem sinal claro, fica
+        orgânico (não infere ads por heurística frouxa).
+
+        Args:
+            prod: dict do produto (JSON do Next.js, RSC ou card do DOM).
+
+        Returns:
+            True quando algum sinal explícito de anúncio está presente.
+        """
+        badge_txt = " ".join(str(v) for v in (
+            prod.get("badge"),
+            cls._deep_get(prod, "label", "text"),
+            prod.get("tag"),
+        ) if v).lower()
+        url = " ".join(
+            str(prod.get(k)) for k in ("path", "url", "href") if prod.get(k)
+        )
+        return bool(
+            prod.get("sponsored")
+            or prod.get("isSponsored")
+            or prod.get("isAd")
+            or prod.get("advertisement")
+            or cls._deep_get(prod, "marketing", "sponsored")
+            or cls._deep_get(prod, "advertising", "sponsored")
+            or "patrocinad" in badge_txt
+            or "anúncio" in badge_txt
+            or "anuncio" in badge_txt
+            or _SPONSORED_URL_RE.search(url)
+        )
+
     def _parse_products(
         self,
         products: List[Dict],
@@ -2352,26 +2420,7 @@ class MagaluScraper(BaseScraper):
                 skipped_no_price += 1
                 continue
 
-            # Detecta patrocinado — o campo varia entre versões do payload do
-            # Next.js; testamos as chaves conhecidas + um badge/label textual
-            # explícito ("Patrocinado"/"Anúncio"). Conservador: sem sinal
-            # claro, fica orgânico (não infere ads por heurística frouxa).
-            _badge_txt = " ".join(str(v) for v in (
-                prod.get("badge"),
-                self._deep_get(prod, "label", "text"),
-                prod.get("tag"),
-            ) if v).lower()
-            sponsored = bool(
-                prod.get("sponsored")
-                or prod.get("isSponsored")
-                or prod.get("isAd")
-                or prod.get("advertisement")
-                or self._deep_get(prod, "marketing", "sponsored")
-                or self._deep_get(prod, "advertising", "sponsored")
-                or "patrocinad" in _badge_txt
-                or "anúncio" in _badge_txt
-                or "anuncio" in _badge_txt
-            )
+            sponsored = self._is_sponsored(prod)
 
             pos_general = offset + idx + 1
             if sponsored:

@@ -35,9 +35,19 @@ from utils.brands import extract_brand
 
 # Outro produto, não um ar condicionado. Nunca aparecem num título de AC
 # legítimo, então valem em qualquer posição (com fronteira de palavra).
+#
+# A linha branca entrou em Set/2026: a busca da Magalu devolveu uma "Geladeira
+# Midea … Inverter" (anúncio patrocinado) no topo da lista de mais vendidos, e
+# a Amazon trouxe uma "Geladeira Panasonic … Inverter". INVERTER bastava para
+# virar SPLIT_HW — e como a Midea vende geladeira, lavadora e micro-ondas, o
+# erro inflava justamente o KPI do grupo. Fragmentos são regex, como em
+# `_ACESSORIOS_NAO_RAC` (o `norm` preserva o hífen de "MICRO-ONDAS").
 _PRODUTOS_NAO_RAC = (
     "UMIDIFICADOR", "DEPURADOR", "PURIFICADOR", "VENTILADOR", "CLIMATIZADOR",
     "CIRCULADOR", "EXAUSTOR",
+    "GELADEIRA", "REFRIGERADOR", "FREEZER", "FRIGOBAR", "LAVADORA",
+    r"LAVA\s+E\s+SECA", "SECADORA", r"LAVA\s*-?\s*LOUCAS", r"MICRO\s*-?\s*ONDAS",
+    "FOGAO", "COOKTOP", "FORNO",
 )
 
 # Acessório ou insumo. Estes só desqualificam quando são o SUBSTANTIVO
@@ -122,8 +132,21 @@ _RE_OUTROS_RAC = re.compile(
     r"CASSETE|PISO\s*[-\s]?TETO|MULTI\s*[-\s]?SPLIT|DUTAD|BUILT\s*IN|"
     r"\bVRF\b|\bCHILLER\b"
 )
-_RE_SPLIT = re.compile(r"\bSPLIT\b|HI\s*[-\s]?WALL|HIGH\s*WALL|\bHW\b|INVERTER")
+_RE_SPLIT = re.compile(r"\bSPLIT\b|HI\s*[-\s]?WALL|HIGH\s*WALL")
+# Indícios de split que NÃO são exclusivos de ar condicionado: geladeira,
+# lavadora e micro-ondas também são "Inverter", e "HW" é sigla solta. Só
+# classificam como split quando o título prova que é um ar condicionado
+# (núcleo ou capacidade em BTU) — ver `_tem_evidencia_ac`.
+_RE_INDICIO_SPLIT = re.compile(r"\bHW\b|INVERTER")
 _RE_AR_CONDICIONADO = re.compile(r"AR\s*[-\s]?CONDICIONADO|AIR\s+CONDITIONER")
+
+
+def _tem_evidencia_ac(texto_normalizado: str) -> bool:
+    """True se o título diz que é ar condicionado ou declara capacidade em BTU."""
+    return (
+        _RE_NUCLEO_AC.search(texto_normalizado) is not None
+        or parse_btu(texto_normalizado) is not None
+    )
 
 
 def classificar_tipo(titulo: Optional[str]) -> str:
@@ -149,6 +172,8 @@ def classificar_tipo(titulo: Optional[str]) -> str:
         'FORA_ESCOPO'
         >>> classificar_tipo("Suporte para Ar Condicionado Split")
         'FORA_ESCOPO'
+        >>> classificar_tipo("Geladeira Midea Duplex 410L Inverter")
+        'FORA_ESCOPO'
     """
     if not titulo:
         return TIPO_INDEFINIDO
@@ -165,6 +190,10 @@ def classificar_tipo(titulo: Optional[str]) -> str:
     if _RE_OUTROS_RAC.search(t):
         return TIPO_OUTROS_RAC
     if _RE_SPLIT.search(t):
+        return TIPO_SPLIT_HW
+    # "Inverter"/"HW" sozinhos não provam nada — "Geladeira … Inverter" virava
+    # split hi-wall no topo da Magalu. Exigem o núcleo ou a capacidade em BTU.
+    if _RE_INDICIO_SPLIT.search(t) and _tem_evidencia_ac(t):
         return TIPO_SPLIT_HW
     # Sem palavra de formato: só assume split se o título é de fato um ar
     # condicionado E declara capacidade. "Ar condicionado 12000 BTUs" é split

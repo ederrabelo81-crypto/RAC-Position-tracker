@@ -181,3 +181,49 @@ class TestFalsosPositivosDeEscopo:
         """O termo desqualifica quando vem ANTES do núcleo 'ar condicionado'
         (ou quando não há núcleo nenhum) — aí ele é o substantivo principal."""
         assert classificar_tipo(titulo) == TIPO_FORA_ESCOPO
+
+
+class TestInverterNaoProvaArCondicionado:
+    """
+    Set/2026: "Geladeira Midea … Inverter" (Magalu, nº 1 da lista) e
+    "Geladeira Panasonic … Inverter" (Amazon) viraram SPLIT_HW só por causa de
+    INVERTER. Como a Midea vende geladeira, lavadora e micro-ondas, o erro
+    inflava justamente o KPI do grupo.
+    """
+
+    @pytest.mark.parametrize("titulo", [
+        "Geladeira Midea Cycle Defrost Duplex 410L Inverter",
+        "Geladeira Ideal+ Panasonic BT44 Frost Free Inverter 391L Aço Escovado",
+        "Refrigerador Frost Free Inverter 460L Electrolux",
+        "Lavadora de Roupas Midea 12kg Inverter Storm Wash",
+        "Lava e Seca LG 11kg Inverter Direct Drive",
+        "Micro-ondas Midea 30 Litros Inverter",
+        "Freezer Horizontal Inverter 400L",
+    ])
+    def test_linha_branca_inverter_fica_fora(self, titulo):
+        assert classificar_tipo(titulo) == TIPO_FORA_ESCOPO
+
+    @pytest.mark.parametrize("titulo", [
+        "Máquina de Solda Inverter 200A",
+        "Gerador Inverter HW 2000W",
+    ])
+    def test_inverter_sem_evidencia_de_ac_nao_e_split(self, titulo):
+        assert classificar_tipo(titulo) != TIPO_SPLIT_HW
+
+    @pytest.mark.parametrize("titulo", [
+        # Sem SPLIT no título: é o núcleo ou o BTU que provam o ar condicionado.
+        "Ar-condicionado Inverter WindFree AI Pro 12000 BTU QF",
+        "Ar Condicionado Inverter Elgin 24.000 Btus Eco Inverter II Wifi Frio 220v",
+        "Midea Airvolution Inverter 12000 BTUs Frio 220V",
+        "Ar Condicionado HW Inverter Midea Frio 220V",
+    ])
+    def test_inverter_com_evidencia_de_ac_continua_split(self, titulo):
+        assert classificar_tipo(titulo) == TIPO_SPLIT_HW
+
+    def test_geladeira_midea_nao_entra_no_kpi(self):
+        item = BestSellerItem(
+            rank=1, titulo="Geladeira Midea Cycle Defrost Duplex 410L Inverter"
+        )
+        assert item.grupo_midea is True   # a marca é Midea…
+        assert item.no_escopo is False    # …mas não é ar condicionado
+        assert item.tipo == TIPO_FORA_ESCOPO
