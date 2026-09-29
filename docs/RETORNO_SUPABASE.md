@@ -528,7 +528,11 @@ código** — a leitura híbrida no `main` já está correta (Passo 4).
    Drive) indisponível", **nunca dispara** (esse aviso só aparece quando a
    leitura do histórico *lança*, ex.: credencial presente porém inválida). As
    libs já estão no `requirements_app.txt` (`pyarrow` +
-   `google-api-python-client`).
+   `google-api-python-client`). **Desde 29/09/2026 o silêncio acabou:** a
+   barra lateral mostra `Histórico (Parquet): 🔴 não configurado` e a página
+   exibe um aviso com os secrets a cadastrar (modelo em
+   `.streamlit/secrets.toml.example`); a conta de serviço também pode ser
+   colada como tabela TOML.
 4. **Reboot do app** — o Cloud reinicia ao salvar secrets, o que limpa o
    `@st.cache_resource` que guarda a conexão. Se não reiniciar sozinho, usar
    *Reboot app*.
