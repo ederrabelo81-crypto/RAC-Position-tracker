@@ -568,14 +568,27 @@ def _historico_status(store) -> str:
 
     Returns:
         ``"drive"`` — backend remoto (Google Drive) configurado;
+        ``"drive_sem_credencial"`` — `GDRIVE_FOLDER_ID` presente, mas nem
+        conta de serviço nem OAuth utilizáveis;
         ``"local"`` — disco local com partições (PC coletor rodando o painel);
         ``"ausente"`` — disco local SEM nenhuma partição de `coletas`. É o
         estado de um deploy no Streamlit Cloud sem os secrets `GDRIVE_*`: o
         store cai no disco do container, que é vazio, e todo o período fora da
         janela quente some do painel sem erro.
     """
-    from utils.history import LocalBackend
-    if not isinstance(getattr(store, "backend", None), LocalBackend):
+    from utils.history import GoogleDriveBackend, LocalBackend
+    backend = getattr(store, "backend", None)
+    if isinstance(backend, GoogleDriveBackend):
+        # `GoogleDriveBackend` é preguiçoso: nasce só com o folder id e só
+        # resolve a credencial na 1ª chamada à API. Sem esta checagem, um
+        # GDRIVE_FOLDER_ID sem OAuth/conta de serviço apareceria verde.
+        from utils.history.backends import HistoryBackendError, _load_drive_credentials
+        try:
+            _load_drive_credentials()
+        except HistoryBackendError:
+            return "drive_sem_credencial"
+        return "drive"
+    if not isinstance(backend, LocalBackend):
         return "drive"
     try:
         tem_particao = bool(store.backend.list("coletas"))
@@ -595,7 +608,18 @@ def _avisar_historico_nao_configurado(store) -> None:
     box, posição) encolher para os últimos 2 dias, com as séries do Drive
     invisíveis e nenhum aviso na tela.
     """
-    if _historico_status(store) != "ausente":
+    status = _historico_status(store)
+    if status == "drive_sem_credencial":
+        _avisar_uma_vez(
+            "historico_frio_sem_credencial",
+            "Histórico frio: `GDRIVE_FOLDER_ID` está nos secrets, mas faltam "
+            "as credenciais do Drive — cadastre `GDRIVE_CLIENT_ID` / "
+            "`GDRIVE_CLIENT_SECRET` / `GDRIVE_REFRESH_TOKEN` (ou "
+            "`GDRIVE_SERVICE_ACCOUNT_JSON`). Até lá o painel só enxerga a "
+            "janela quente do Supabase.",
+        )
+        return
+    if status != "ausente":
         return
     from utils.history import hot_window_days
     _avisar_uma_vez(
@@ -1420,7 +1444,14 @@ def _filter_history_coletas(
             _isin_resolvido("familia_resolvida", fam_linhas)
             voltagens = (picked["voltagem"].dropna().unique().tolist()
                          if "voltagem" in picked.columns else [])
-            _isin_resolvido("voltagem_resolvida", voltagens)
+            # Voltagem só restringe onde é CONHECIDA. `voltagem_resolvida` está
+            # nula em toda a base (Supabase e partições do `tier`, conferido em
+            # 29/09/2026) e o de-para não a preenche — exigir a coluna aqui
+            # derrubaria toda linha já filtrada pela família. Nulo = não
+            # informado, não "voltagem diferente".
+            if voltagens and "voltagem_resolvida" in out.columns:
+                _v = out["voltagem_resolvida"]
+                out = out[_v.isna() | _v.isin(voltagens)]
         else:
             _isin_resolvido("sku_resolvido", final_skus)
 
@@ -1491,12 +1522,12 @@ def _dedup_particoes_historico(df: pd.DataFrame) -> pd.DataFrame:
                else pd.Series("", index=df.index, dtype="string"))
         chaves_tier = set(zip(df.loc[is_tier, "data"], rid[is_tier]))
         dias_tier = {d for d, _ in chaves_tier}
-        # Tier sem run_id num dia = não dá para saber quais runs ele cobre;
-        # ele é o dia inteiro do banco, então vence o dia inteiro.
-        dias_sem_run = {d for d, r in chaves_tier if not r}
+        # Linha do tier SEM run_id é histórico anterior à feature — não tem
+        # partição crua correspondente, então não serve para derrubar nenhuma
+        # run. Só o casamento explícito (data, run_id) marca redundância; linha
+        # crua sem run_id num dia com tier é ambígua e cede ao banco.
         redundante = [
-            (not t) and d in dias_tier
-            and (not r or d in dias_sem_run or (d, r) in chaves_tier)
+            (not t) and d in dias_tier and (not r or (d, r) in chaves_tier)
             for t, d, r in zip(is_tier, df["data"], rid)
         ]
         df = df[~pd.Series(redundante, index=df.index)]
@@ -12154,6 +12185,7 @@ def _main() -> None:
             _hist = "ausente"
         st.caption("Histórico (Parquet): " + {
             "drive": "🟢 Google Drive",
+            "drive_sem_credencial": "🔴 Drive sem credencial",
             "local": "🟡 disco local",
             "ausente": "🔴 não configurado",
         }[_hist])

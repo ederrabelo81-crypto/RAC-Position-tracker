@@ -122,6 +122,16 @@ class TestDedupParticoes:
         ])
         assert len(app._dedup_particoes_historico(df)) == 2
 
+    def test_tier_sem_run_id_nao_apaga_run_que_nao_chegou_ao_banco(self):
+        """Linha do tier sem run_id (histórico pré-feature) não cobre run nenhuma."""
+        df = pd.DataFrame([
+            _linha(NOME, run_id="run-b",
+                   _particao="coletas/data=2026-09-24__run-run-b.parquet"),
+            _linha(NOME, run_id=None,
+                   _particao="coletas/data=2026-09-24__run-tier0924.parquet"),
+        ])
+        assert len(app._dedup_particoes_historico(df)) == 2
+
     def test_dia_sem_tier_nao_e_tocado(self):
         df = pd.DataFrame([
             _linha(NOME, _particao="coletas/data=2026-09-24__run-run-a.parquet"),
@@ -149,6 +159,37 @@ class TestGapFillResolvido:
         assert list(out["_origem"]) == ["historico"]
 
 
+class TestFiltroPorSkuComVoltagemNula:
+    """`voltagem_resolvida` é nula em toda a base: não pode zerar o filtro."""
+
+    @pytest.fixture
+    def catalogo(self, monkeypatch):
+        cat = pd.DataFrame([{
+            "sku": "42EZVCA12M5", "familia": "MIDEA-ECOMASTER-12000-F",
+            "familia_linha": "MIDEA-ECOMASTER-12000-F", "voltagem": "220V",
+            "capacidade_btu": 12000, "marca": "MIDEA",
+        }])
+        monkeypatch.setattr(app, "get_catalogo", lambda: cat)
+
+    def test_linha_resolvida_sem_voltagem_passa(self, depara, catalogo):
+        df = app._resolver_depara_historico(pd.DataFrame([_linha(NOME)]))
+        out = app._filter_history_coletas(
+            df, skus_resolvidos=["42EZVCA12M5"], estados_match=["MAPEADO"],
+            sem_depara=False,
+        )
+        assert list(out["produto"]) == [NOME]
+
+    def test_voltagem_conhecida_diferente_sai(self, depara, catalogo):
+        df = app._resolver_depara_historico(
+            pd.DataFrame([_linha(NOME, voltagem_resolvida="110V")])
+        )
+        out = app._filter_history_coletas(
+            df, skus_resolvidos=["42EZVCA12M5"], estados_match=["MAPEADO"],
+            sem_depara=False,
+        )
+        assert out.empty
+
+
 class TestStatusDoHistorico:
     def test_disco_vazio_e_ausente(self, tmp_path):
         from utils.history import HistoryStore, LocalBackend
@@ -160,6 +201,24 @@ class TestStatusDoHistorico:
         store = HistoryStore(LocalBackend(tmp_path / "h"))
         store.write_records([{"data": "2026-09-24", "produto": "x"}], dataset="coletas")
         assert app._historico_status(store) == "local"
+
+    def test_drive_sem_credencial(self, monkeypatch):
+        from utils.history import GoogleDriveBackend, HistoryStore, LocalBackend
+        for k in ("GDRIVE_SERVICE_ACCOUNT_JSON", "GDRIVE_CLIENT_ID",
+                  "GDRIVE_CLIENT_SECRET", "GDRIVE_REFRESH_TOKEN"):
+            monkeypatch.delenv(k, raising=False)
+        store = HistoryStore(GoogleDriveBackend("pasta"), cache=LocalBackend(Path("/tmp")))
+        assert app._historico_status(store) == "drive_sem_credencial"
+
+    def test_drive_com_oauth(self, monkeypatch):
+        pytest.importorskip("google.oauth2.credentials")
+        from utils.history import GoogleDriveBackend, HistoryStore, LocalBackend
+        monkeypatch.delenv("GDRIVE_SERVICE_ACCOUNT_JSON", raising=False)
+        monkeypatch.setenv("GDRIVE_CLIENT_ID", "id")
+        monkeypatch.setenv("GDRIVE_CLIENT_SECRET", "segredo")
+        monkeypatch.setenv("GDRIVE_REFRESH_TOKEN", "token")
+        store = HistoryStore(GoogleDriveBackend("pasta"), cache=LocalBackend(Path("/tmp")))
+        assert app._historico_status(store) == "drive"
 
     def test_backend_remoto_e_drive(self):
         class _Remoto:
