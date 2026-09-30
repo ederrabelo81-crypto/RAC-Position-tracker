@@ -371,8 +371,22 @@ class HistoryStore:
         for key in keys:
             try:
                 path = self._local_path(key)
-                table = pq.read_table(path, columns=list(columns) if columns else None)
-                frame = table.to_pandas()
+                if columns:
+                    # Projeção tolerante: partição antiga sem uma coluna nova
+                    # (ex.: `buy_box_seller`, anterior à migração 003) entra com
+                    # a coluna nula. Antes o pyarrow recusava a leitura e o DIA
+                    # INTEIRO sumia do resultado, registrado como "ilegível".
+                    existentes = set(pq.read_schema(path).names)
+                    pedidas = list(columns)
+                    table = pq.read_table(
+                        path, columns=[c for c in pedidas if c in existentes]
+                    )
+                    frame = table.to_pandas()
+                    for faltante in (c for c in pedidas if c not in existentes):
+                        frame[faltante] = pd.NA
+                    frame = frame[pedidas]
+                else:
+                    frame = pq.read_table(path).to_pandas()
                 if partition_column:
                     frame[partition_column] = key
                 frames.append(frame)

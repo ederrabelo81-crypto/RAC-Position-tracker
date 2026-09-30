@@ -7,19 +7,48 @@ analítica, como eles se conectam entre si e como interagem com o banco de dados
 
 ## Filtros Globais (sidebar persistente)
 
-O painel **🌐 Filtros Globais** (topo da sidebar, `_render_global_filters()`)
-foi **enxugado** (Jun/2026) para conter só recortes verdadeiramente
-transversais. Cada página analítica já expõe os filtros finos na própria
-sidebar, então o global não os duplica mais.
+> **Set/2026 — os filtros globais passaram a valer para TODAS as páginas.**
+> Até aqui eles só mandavam no Overview e no Top Movers: as demais páginas
+> tinham o próprio Período/Plataformas/Marcas (com janelas padrão de 7, 14 ou
+> 30 dias) e ignoravam o global — o painel mostrava dois conjuntos dos mesmos
+> filtros e cada página contava uma janela diferente.
+
+O painel **🌐 Filtros globais** (topo da sidebar, `_render_global_filters()`)
+mostra só o que é decisão de negócio; o técnico foi para **⚙️ Avançado**.
 
 | Filtro global | Estado em `session_state` | Consumido por |
 |---|---|---|
-| **Período** | `gf_dates` | Overview, Top Movers (e default de comparação) |
-| **Plataformas** | `gf_platforms` | Overview, Top Movers |
-| **Marcas** | `gf_brands` | Overview, Top Movers |
-| **Fonte de Dados** | `gf_sources` | **Todas** (gating de fonte — ver abaixo) |
-| **Comparar período anterior** | `gf_compare` | Overview (janela de comparação **automática**) |
-| Presets (salvar/carregar) | `filter_presets.json` | persiste os itens acima |
+| **Período** | `gf_dates` | **Todas** as páginas analíticas (`_page_period()` substituiu os 9 date-pickers por página). Exceções deliberadas: 📅 Daily Price Vision (visão de 1 dia), 🚨 Top Movers (duas janelas) e 🥇 Mais Vendidos (semana/mês) |
+| **Canal** 🆕 | `gf_canais` | **Todas** — Marketplaces / Lojas próprias (dealers) / Comparador. Deriva de `utils/seller_surface.py` (superfície), não de "Tipo Plataforma" (porte) |
+| **Plataformas** | `gf_platforms` | **Todas** — `_gf_platforms()` devolve Canal ∩ Plataformas; canal sem plataforma = todas daquele canal |
+| **Marcas** | `gf_brands` | **Todas** |
+| ⚙️ Fonte de Dados | `gf_sources` | **Todas** (gating de fonte — ver abaixo) |
+| ⚙️ Histórico sem de-para | `gf_historico_sem_depara` | Leituras do histórico frio |
+| ⚙️ Comparar período anterior | `gf_compare` | páginas com comparação de janela |
+| ⚙️ Presets (salvar/carregar) | `filter_presets.json` | persiste Período/Canal/Plataformas/Marcas/Fonte — **arquivo no servidor**: no Streamlit Cloud some a cada reinício e é compartilhado entre usuários |
+
+**Como a página herda o global — `_inherit_global(page_key, global, options)`.**
+Chamado antes de cada multiselect de Plataformas/Marcas das páginas: sempre que
+o global muda, a seleção da página é reescrita com ele; enquanto o global não
+muda, o refino feito na página fica. Assim a página parte do mesmo recorte, mas
+pode estreitar (ex.: global = Marketplaces, página = só Magalu).
+
+**Keywords — agrupadas por tipo de busca (`_keyword_multiselect`).** O
+dropdown misturava 57 valores em ordem alfabética com caixa: buscas genéricas,
+buscas de marca e as **vitrines de dealer** (`WebContinental`, `PoloAr`… —
+`categoria = 'Dealers'`, que não são buscas). Agora
+(`utils/keyword_taxonomy.py`):
+
+- vitrines de dealer saem da lista (o recorte delas é Plataforma/Canal);
+- cada keyword leva o ícone do tipo: 🔎 genérica · 🟦 marca própria · 🥊 marca concorrente;
+- atalhos no topo (`▸ Todas as genéricas`, `▸ Todas de marca própria`,
+  `▸ Todas de marca concorrente`) consolidam o grupo inteiro de uma vez — a
+  página recebe a lista concreta expandida (`expand_keyword_selection`).
+
+**Sellers — casam pelo seller EFETIVO.** Filtro e dropdown usam a buy box
+quando observada (`buy_box_seller`), senão o `seller` do anúncio. Na Amazon o
+`seller` é sempre "Amazon" e o lojista real só existe na buy box — filtrar por
+"Web Continental" antes não achava as ofertas da Amazon que ele vence.
 
 **Automatizados (saíram do painel, viraram default fixo):**
 
@@ -118,7 +147,8 @@ Usuário escolhe [start_date, end_date]
      └─► query: .gte("data", start_date) AND .lte("data", end_date)
 ```
 
-- Padrão: últimos 30 dias.
+- **Set/2026:** vem do **Período global** (`_page_period()`); a página não tem
+  mais date-picker próprio. Padrão do global: últimos 7 dias.
 - Limite máximo: data de hoje.
 - Quanto maior o intervalo, mais registros são retornados (até o limite de 50.000).
 
@@ -197,13 +227,18 @@ e tabelas mostram sempre o nome canônico, nunca os aliases.
 ### 5. Sellers
 
 ```
-Usuário seleciona ["Midea Brasil", "Magazine Luiza"]
+Usuário seleciona ["Web Continental"]
      │
-     └─► query: .in_("seller", ["Midea Brasil", "Magazine Luiza"])
+     ├─► _expand_sellers → todas as grafias brutas (ContinentalCenter, Webcontinental…,
+     │                     + a variante "<loja>e mais" do Google Shopping)
+     └─► query: or=(buy_box_seller.in.(…), and(buy_box_seller.is.null, seller.in.(…)))
 ```
 
-- Sem expansão de aliases: os valores usados são exatamente os do banco.
-- Opções populadas dos últimos 90 dias (coluna `seller`).
+- **Seller efetivo (Set/2026):** casa pela buy box quando observada, senão pelo
+  `seller` do anúncio — na Amazon o `seller` é sempre "Amazon".
+- Opções = `seller` ∪ `buy_box_seller`, canonizadas por `utils/seller_names.py`
+  (byline de marca "Visite a loja X" não é seller e fica de fora; o sufixo
+  "e mais" do comparador é removido), em ordem sem caixa.
 
 ---
 
@@ -216,7 +251,9 @@ Usuário seleciona ["ar condicionado 12000 btu inverter"]
 ```
 
 - Representa o termo de busca usado durante a coleta.
-- Útil para isolar uma keyword específica ao analisar posicionamento.
+- **Set/2026:** lista agrupada por tipo de busca (🔎/🟦/🥊), sem as vitrines de
+  dealer e com atalhos `▸ Todas as …` que expandem para o grupo inteiro —
+  ver "Keywords — agrupadas por tipo de busca" no topo deste documento.
 
 ---
 

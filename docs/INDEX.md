@@ -71,6 +71,15 @@
 5. Hard rule: one owner per (platform, turno); an orphan platform is billed to
    nobody (that is how dealers went unnoticed)
 
+### "I need to change the dashboard home (Cockpit do Trade) or the global filters"
+1. Load `docs/COCKPIT_TRADE.md` (metric definitions + the three rules: dedup,
+   brand-neutral share, silence is not market change)
+2. Pure metrics: `utils/shelf_insights.py` (tests: `tests/test_shelf_insights.py`)
+3. Keyword taxonomy: `utils/keyword_taxonomy.py` (genérica / marca própria /
+   marca concorrente / vitrine de dealer)
+4. Filter wiring: `docs/DASHBOARD_FILTERS.md` (global filters now apply to
+   every page via `_page_period()` / `_inherit_global()`)
+
 ### "I need to work with PriceTrack data (price source of truth)"
 1. Load `docs/PRICETRACK_INSIGHTS.md` (pipeline + insight/improvement roadmap)
 2. Key files: `pricetrack_api/` (typed API client — see `pricetrack_api/README.md`),

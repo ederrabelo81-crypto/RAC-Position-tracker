@@ -25,8 +25,10 @@ from dotenv import load_dotenv
 from utils.seller_names import (
     normalize_seller_name as _normalize_seller_name,
     seller_key as _seller_key,
+    strip_comparador_suffix as _strip_comparador_suffix,
     variants_for as _seller_variants,
 )
+from utils.seller_surface import COMPARADORES as _COMPARADORES
 
 # ---------------------------------------------------------------------------
 # Bootstrap
@@ -126,6 +128,9 @@ _BRAND_PALETTE = [
 # Todas as cores fixas são mutuamente distintas.
 _BRAND_FIXED: dict[str, str] = {
     "Midea":   "#1a56db",  # azul (marca principal)
+    # Rótulo do grupo no Cockpit (utils/shelf_insights.ROTULO_GRUPO) — mesma
+    # cor da Midea: é a mesma empresa vista como grupo.
+    "Midea Carrier": "#1a56db",
     "Elgin":   "#f97316",  # laranja
     "LG":      "#db2777",  # magenta
     "Gree":    "#059669",  # verde
@@ -163,7 +168,7 @@ def _brand_color_map(values) -> dict:
 def _emphasize_midea_traces(fig) -> None:
     """Make Midea's trace thicker and markers bigger so it stands out."""
     for trace in fig.data:
-        if getattr(trace, "name", None) == _MIDEA_BRAND:
+        if getattr(trace, "name", None) in (_MIDEA_BRAND, "Midea Carrier"):
             if hasattr(trace, "line") and trace.line is not None:
                 trace.line.width = 4.5
             if hasattr(trace, "marker") and trace.marker is not None:
@@ -866,7 +871,12 @@ def _expand_sellers(sellers: list) -> list:
     expanded: set = set()
     for s in sellers:
         for v in (_seller_variants(s) or [s]):
-            expanded.update({v, v.lower(), v.upper()})
+            # A grafia com o sufixo "e mais" é como o Google Shopping gravou
+            # 82% das suas linhas até 30/09/2026 ("Magalue mais") — sem ela o
+            # filtro por "Magazine Luiza" perderia o comparador inteiro.
+            # O sufixo é sempre minúsculo no card — só o nome varia de caixa.
+            for base in (v, v.lower(), v.upper()):
+                expanded.update({base, f"{base}e mais"})
     return sorted(expanded)
 
 
@@ -907,8 +917,14 @@ def _canonical_seller_options(raw_values) -> list:
     As 5 grafias de Web Continental viram uma opção só; o que o usuário
     escolher volta a expandir em `_expand_sellers` na hora da consulta.
     """
-    canon = {_canonical_seller(v) for v in raw_values if v}
-    return sorted(str(c) for c in canon if c)
+    # O sufixo "e mais" do comparador sai também aqui, embora a lista não
+    # carregue a plataforma: conferido em 30/09/2026, 100% das grafias com ele
+    # são do Google Shopping. `_expand_sellers` devolve o sufixo na consulta,
+    # então o filtro continua casando a grafia bruta.
+    canon = {
+        _canonical_seller(_strip_comparador_suffix(v)) for v in raw_values if v
+    }
+    return sorted((str(c) for c in canon if c), key=str.casefold)
 
 
 def _apply_seller_canonical(df: pd.DataFrame) -> pd.DataFrame:
@@ -918,10 +934,49 @@ def _apply_seller_canonical(df: pd.DataFrame) -> pd.DataFrame:
     `_build_record`, e a automação Admin reescreve as antigas — mas o
     histórico frio (Parquet) é imutável e nunca passa por lá.
     """
+    comparador = (
+        df["plataforma"].isin(_COMPARADORES) if "plataforma" in df.columns else None
+    )
     for col in _SELLER_COLS:
         if col in df.columns:
+            if comparador is not None and bool(comparador.any()):
+                # "Magalue mais" → "Magalu" antes do de-para: é o card do Google
+                # Shopping colando "<loja> e mais" (ver utils/seller_names.py).
+                df[col] = df[col].astype(object)
+                df.loc[comparador, col] = df.loc[comparador, col].map(
+                    lambda v: _strip_comparador_suffix(v) if isinstance(v, str) else v
+                )
             df[col] = df[col].map(_canonical_seller)
     return df
+
+
+def _effective_seller(df: pd.DataFrame) -> pd.Series:
+    """Seller que de fato vende a oferta: buy box quando observado, senão `seller`.
+
+    Na Amazon `seller` é sempre "Amazon" (a SERP não imprime "Vendido por") e o
+    vendedor real só existe em `buy_box_seller`, lido no PDP. Filtrar ou
+    agregar por `seller` cru juntava todas as ofertas da Amazon num lojista só.
+    """
+    if "buy_box_seller" in df.columns and "seller" in df.columns:
+        return df["buy_box_seller"].where(df["buy_box_seller"].notna(), df["seller"])
+    if "buy_box_seller" in df.columns:
+        return df["buy_box_seller"]
+    if "seller" in df.columns:
+        return df["seller"]
+    return pd.Series(pd.NA, index=df.index, dtype="object")
+
+
+def _pgrst_in_list(values) -> str:
+    """Lista de valores para `col.in.(...)` dentro de um `or_()` do PostgREST.
+
+    Cada valor vai entre aspas duplas (vírgula, ponto e parêntese dentro do nome
+    quebrariam a lista); aspas internas são escapadas como o PostgREST pede.
+    """
+    itens = []
+    for v in values:
+        texto = str(v).replace("\\", "\\\\").replace('"', '\\"')
+        itens.append(f'"{texto}"')
+    return ",".join(itens)
 
 
 # ---------------------------------------------------------------------------
@@ -1337,13 +1392,17 @@ def _filter_history_coletas(
     _isin("plataforma", _expand_platforms(platforms) if platforms else None)
     _isin("tipo", platform_types)
     _isin("marca", _expand_brands(brands) if brands else None)
-    if sellers and "seller" in out.columns:
+    if sellers and ("seller" in out.columns or "buy_box_seller" in out.columns):
         # O Parquet é IMUTÁVEL — o backfill do Supabase nunca o alcança, então
         # ele guarda a grafia como o marketplace a imprimiu, inclusive as que
         # não estão no mapa. Comparar canonizando os dois lados casa qualquer
-        # variante de caixa/acento/pontuação, não só as listadas.
+        # variante de caixa/acento/pontuação, não só as listadas. Mesmo seller
+        # EFETIVO do `query_coletas` (buy box quando observado).
         alvo = {k for k in map(_seller_match_key, sellers) if k}
-        out = out[out["seller"].map(_seller_match_key).isin(alvo)]
+        efetivo = _effective_seller(out).map(
+            lambda v: _strip_comparador_suffix(v) if isinstance(v, str) else v
+        )
+        out = out[efetivo.map(_seller_match_key).isin(alvo)]
     _isin("keyword", keywords)
     _isin("produto", products)
 
@@ -1744,8 +1803,14 @@ def query_coletas(
             q = q.in_("marca", _expand_brands(brands))
         if sellers:
             # Grafias BRUTAS: as linhas antigas ainda podem estar como
-            # `continentalcenter`/`friopecas` no banco.
-            q = q.in_("seller", _expand_sellers(sellers))
+            # `continentalcenter`/`friopecas` no banco. Casa pelo seller
+            # EFETIVO (buy box quando observado, senão `seller`) — na Amazon o
+            # `seller` é sempre "Amazon" e o lojista real só existe na buy box.
+            _lista = _pgrst_in_list(_expand_sellers(sellers))
+            q = q.or_(
+                f"buy_box_seller.in.({_lista}),"
+                f"and(buy_box_seller.is.null,seller.in.({_lista}))"
+            )
         if keywords:
             q = q.in_("keyword", keywords)
         if products:
@@ -2708,7 +2773,7 @@ def get_filter_options() -> dict:
         while True:
             resp = (
                 client.table("coletas")
-                .select("plataforma, tipo, marca, keyword, seller")
+                .select("plataforma, tipo, marca, keyword, seller, buy_box_seller")
                 .gte("data", since)
                 .range(offset, offset + _SUPABASE_PAGE - 1)
                 .execute()
@@ -2742,7 +2807,7 @@ def get_filter_options() -> dict:
             "platform_types": sorted(df["tipo"].dropna().unique().tolist()) if "tipo" in df.columns else [],
             "brands":         brands_canonical,
             "keywords":       sorted(df["keyword"].dropna().unique().tolist()),
-            "sellers":        _canonical_seller_options(df["seller"].dropna().unique()) if "seller" in df.columns else [],
+            "sellers":        _canonical_seller_options(_seller_option_values(df)),
         }
         # Une com o frio (mesma razão do caminho da RPC acima).
         return _merge_filter_options(db_opts, _filter_options_do_historico())
@@ -2754,6 +2819,20 @@ def get_filter_options() -> dict:
             return do_frio
         st.warning(f"Filter options query failed: {exc}")
         return empty
+
+
+def _seller_option_values(df: pd.DataFrame) -> list:
+    """Grafias brutas que alimentam o dropdown de sellers.
+
+    Une `seller` e `buy_box_seller`: o vendedor da buy box da Amazon só existe
+    na segunda coluna (em `seller` ela grava sempre "Amazon"), então ler só a
+    primeira escondia do filtro todo lojista que só vende lá.
+    """
+    valores: set = set()
+    for col in ("seller", "buy_box_seller"):
+        if col in df.columns:
+            valores.update(str(v) for v in df[col].dropna().unique() if str(v).strip())
+    return sorted(valores)
 
 
 def _merge_filter_options(a: dict, b: dict) -> dict:
@@ -2775,7 +2854,7 @@ def _merge_filter_options(a: dict, b: dict) -> dict:
         return a
     chaves = ("platforms", "platform_types", "brands", "keywords", "sellers")
     return {
-        chave: sorted(set(a.get(chave) or []) | set(b.get(chave) or []))
+        chave: sorted(set(a.get(chave) or []) | set(b.get(chave) or []), key=str.casefold)
         for chave in chaves
     }
 
@@ -2796,7 +2875,7 @@ def _filter_options_do_historico(dias: int = 120) -> dict:
             "coletas",
             start=date.today() - timedelta(days=dias),
             end=date.today(),
-            columns=["plataforma", "tipo", "marca", "keyword", "seller"],
+            columns=["plataforma", "tipo", "marca", "keyword", "seller", "buy_box_seller"],
         )
     except Exception as exc:
         from loguru import logger as _logger
@@ -2820,7 +2899,7 @@ def _filter_options_do_historico(dias: int = 120) -> dict:
         "platform_types": _distintos("tipo"),
         "brands": sorted(marcas),
         "keywords": _distintos("keyword"),
-        "sellers": _canonical_seller_options(_distintos("seller")),
+        "sellers": _canonical_seller_options(_seller_option_values(df)),
     }
 
 
@@ -2939,27 +3018,90 @@ def _save_presets(presets: dict) -> None:
 # Global filter renderer — call inside a `with st.sidebar:` block
 # ---------------------------------------------------------------------------
 
+# Canal = superfície onde a oferta é observada (utils/seller_surface.py). É o
+# recorte que o trade usa de verdade: marketplace (disputa de buy box e de
+# prateleira), loja própria do dealer (vitrine que o lojista controla sozinho)
+# e comparador (Google Shopping, lojas disputando um clique). Antes o painel só
+# oferecia 24 plataformas soltas numa lista e "Tipo Plataforma", que classifica
+# PORTE comercial — Leroy Merlin e WebContinental caíam no mesmo rótulo.
+_CANAL_MARKETPLACE = "Marketplaces"
+_CANAL_LOJA_PROPRIA = "Lojas próprias (dealers)"
+_CANAL_COMPARADOR = "Comparador (Google Shopping)"
+_CANAIS: tuple = (_CANAL_MARKETPLACE, _CANAL_LOJA_PROPRIA, _CANAL_COMPARADOR)
+
+
+def _canal_de(plataforma: str) -> str:
+    """Canal de uma plataforma (nome canônico de `coletas.plataforma`)."""
+    from utils.seller_surface import (
+        SUPERFICIE_COMPARADOR, SUPERFICIE_MARKETPLACE, superficie_de,
+    )
+    sup = superficie_de(plataforma)
+    if sup == SUPERFICIE_MARKETPLACE:
+        return _CANAL_MARKETPLACE
+    if sup == SUPERFICIE_COMPARADOR:
+        return _CANAL_COMPARADOR
+    return _CANAL_LOJA_PROPRIA
+
+
 def _render_global_filters() -> None:
-    """Render persistent global filters in the sidebar."""
+    """Filtros globais da barra lateral — valem para TODAS as páginas.
+
+    Até Set/2026 eles só mandavam no Overview: as demais páginas tinham o
+    próprio Período/Plataformas/Marcas (com janelas padrão de 7, 14 ou 30 dias)
+    e ignoravam o global. Agora o período é único e as listas de Plataformas e
+    Marcas das páginas herdam o global (`_inherit_global`) — cada página pode
+    refinar, mas parte do mesmo recorte.
+
+    O que é técnico (fonte de dados, histórico sem de-para, presets) fica em
+    "⚙️ Avançado": não é decisão de negócio do dia a dia.
+    """
     opts = get_filter_options()
-    with st.expander("🌐 Filtros Globais", expanded=False):
-        st.date_input(
-            "Período",
-            value=(date.today() - timedelta(days=7), date.today()),
-            max_value=date.today(),
-            format="DD/MM/YYYY",
-            key="gf_dates",
-        )
-        st.multiselect(
-            "Plataformas", opts["platforms"],
-            placeholder="Selecione plataformas…",
-            key="gf_platforms",
-        )
-        st.multiselect(
-            "Marcas", opts["brands"],
-            placeholder="Selecione marcas…",
-            key="gf_brands",
-        )
+    st.markdown(
+        "<p style='color:#fbbf24;font-weight:700;margin:0 0 .25rem'>"
+        "🌐 Filtros globais</p>",
+        unsafe_allow_html=True,
+    )
+    st.date_input(
+        "Período",
+        value=(date.today() - timedelta(days=7), date.today()),
+        max_value=date.today(),
+        format="DD/MM/YYYY",
+        key="gf_dates",
+    )
+    st.multiselect(
+        "Canal", list(_CANAIS),
+        placeholder="Todos",
+        key="gf_canais",
+        help=(
+            "**Marketplaces**: Amazon, Mercado Livre, Magalu, Casas Bahia, "
+            "Shopee, Leroy Merlin — onde vários lojistas disputam a mesma "
+            "página (buy box e prateleira).\n\n"
+            "**Lojas próprias**: site do dealer — o lojista controla a vitrine "
+            "sozinho, então não entra em share de buy box.\n\n"
+            "**Comparador**: Google Shopping."
+        ),
+    )
+    canais = list(st.session_state.get("gf_canais", []))
+    plat_opts = [p for p in opts["platforms"] if not canais or _canal_de(p) in canais]
+    # Plataforma fora do canal escolhido sai da seleção antes do widget nascer —
+    # senão o multiselect guardaria um valor que não está mais nas opções.
+    if st.session_state.get("gf_platforms"):
+        st.session_state["gf_platforms"] = [
+            p for p in st.session_state["gf_platforms"] if p in plat_opts
+        ]
+    st.multiselect(
+        "Plataformas", plat_opts,
+        placeholder="Todas" + (" do canal" if canais else ""),
+        key="gf_platforms",
+    )
+    st.multiselect(
+        "Marcas", opts["brands"],
+        placeholder="Todas",
+        key="gf_brands",
+    )
+    st.caption("Valem para todas as páginas. Cada página pode refinar.")
+
+    with st.expander("⚙️ Avançado", expanded=False):
         # Inicializa uma vez (ambas) via session_state em vez de `default=`,
         # para nunca colidir com o valor setado por preset/teste — assim o
         # Streamlit não emite o aviso "default + session_state".
@@ -3005,8 +3147,10 @@ def _render_global_filters() -> None:
                 f"{_ce.strftime('%d/%m/%Y')}** (automático)."
             )
 
-        # Preset save / load
-        st.caption("Presets")
+        # Preset save / load. Gravado em arquivo no servidor: no Streamlit
+        # Cloud ele some a cada reinício do container e é compartilhado por
+        # todos os usuários — por isso mora aqui, e não no bloco principal.
+        st.caption("Presets (salvos no servidor do painel)")
         presets = _load_presets()
         preset_name = st.text_input(
             "Nome do preset",
@@ -3021,6 +3165,7 @@ def _render_global_filters() -> None:
                 presets[preset_name] = {
                     "start":     str(gf[0]) if gf else str(date.today() - timedelta(days=7)),
                     "end":       str(gf[1]) if len(gf) > 1 else str(date.today()),
+                    "canais":    list(st.session_state.get("gf_canais", [])),
                     "platforms": st.session_state.get("gf_platforms", []),
                     "brands":    st.session_state.get("gf_brands", []),
                     "sources":   _gf_sources(),
@@ -3042,6 +3187,8 @@ def _render_global_filters() -> None:
                 p = presets[sel]
                 try:
                     st.session_state["gf_dates"]     = (date.fromisoformat(p["start"]), date.fromisoformat(p["end"]))
+                    # `canais` é novo; preset antigo cai em "todos".
+                    st.session_state["gf_canais"]    = [c for c in p.get("canais", []) if c in _CANAIS]
                     st.session_state["gf_platforms"] = p.get("platforms", [])
                     st.session_state["gf_brands"]    = p.get("brands", [])
                     # `sources` é novo; presets antigos caem no padrão (ambas).
@@ -3049,6 +3196,91 @@ def _render_global_filters() -> None:
                     st.rerun()
                 except Exception:
                     pass
+
+
+def _inherit_global(page_key: str, global_values: list, options: list) -> None:
+    """Faz o multiselect de uma página seguir o filtro global.
+
+    Chame ANTES de criar o widget ``page_key``. Sempre que o global muda, a
+    seleção da página é reescrita com ele (só os valores que existem nas opções
+    da página); enquanto o global não muda, o refino feito na página fica.
+
+    Args:
+        page_key: chave do widget da página (ex.: ``"bb_platforms"``).
+        global_values: valor efetivo do global (ex.: ``_gf_platforms()``).
+        options: opções que o widget da página vai oferecer.
+    """
+    marcador = f"__gf_seed__{page_key}"
+    alvo = [v for v in global_values if v in set(options)]
+    if st.session_state.get(marcador) != alvo:
+        st.session_state[page_key] = alvo
+        st.session_state[marcador] = alvo
+    elif page_key in st.session_state:
+        # Opções encolheram (ex.: janela nova) — descarta o que sumiu.
+        st.session_state[page_key] = [
+            v for v in st.session_state[page_key] if v in set(options)
+        ]
+
+
+def _page_period() -> tuple:
+    """Período das páginas = o Período global (antes cada página tinha o seu).
+
+    Returns:
+        ``(início, fim)`` do filtro global, com a legenda na barra lateral.
+    """
+    start, end = _gf_dates()
+    st.caption(
+        f"📅 {start.strftime('%d/%m/%Y')} → {end.strftime('%d/%m/%Y')} "
+        "· altere no **Período** global"
+    )
+    return start, end
+
+
+def _keyword_categorias() -> dict:
+    """{keyword: categoria} observado — melhora a classificação de keyword.
+
+    Sem banco (ou com o banco restrito), a taxonomia cai no `config.py` e nas
+    heurísticas por texto, que cobrem o mesmo conjunto.
+    """
+    try:
+        from config import KEYWORDS_LIST
+        return {k.term: k.category for k in KEYWORDS_LIST}
+    except Exception:
+        return {}
+
+
+def _keyword_multiselect(opts: dict, key: str, label: str = "Keywords") -> list:
+    """Multiselect de keyword agrupado por tipo de busca; devolve as concretas.
+
+    As vitrines de dealer ("WebContinental", "PoloAr"…) saem da lista — elas
+    não são busca, e o recorte delas é o filtro de Plataforma/Canal. No topo
+    ficam atalhos ("▸ Todas as genéricas") que consolidam o grupo inteiro de
+    uma vez. Cada keyword leva o ícone do tipo: 🔎 genérica, 🟦 marca própria,
+    🥊 marca concorrente.
+
+    Returns:
+        Lista de keywords concretas (atalhos expandidos); vazia = sem filtro.
+    """
+    from utils.keyword_taxonomy import (
+        expand_keyword_selection, format_keyword_option, keyword_options,
+    )
+    cats = _keyword_categorias()
+    opcoes = keyword_options(opts.get("keywords") or [], cats)
+    if key in st.session_state:
+        st.session_state[key] = [v for v in st.session_state[key] if v in set(opcoes)]
+    sel = st.multiselect(
+        label, opcoes,
+        format_func=format_keyword_option,
+        placeholder="Todas as buscas",
+        key=key,
+        help=(
+            "🔎 genérica (sem marca — onde a prateleira é disputada) · "
+            "🟦 marca própria (defesa) · 🥊 marca concorrente (conquista). "
+            "Os atalhos ▸ selecionam o grupo inteiro. Vitrines de dealer são "
+            "filtradas por Plataforma/Canal, não aqui."
+        ),
+    )
+    return expand_keyword_selection(sel, opts.get("keywords") or [], cats)
 
 
 # ---------------------------------------------------------------------------
@@ -3072,8 +3304,27 @@ def _gf_dates() -> tuple:
     return date.today() - timedelta(days=7), date.today()
 
 
+def _gf_canais() -> list:
+    return [c for c in st.session_state.get("gf_canais", []) if c in _CANAIS]
+
+
 def _gf_platforms() -> list:
-    return list(st.session_state.get("gf_platforms", []))
+    """Plataformas efetivas do filtro global (Canal ∩ Plataformas).
+
+    Canal sem plataforma escolhida = todas as plataformas conhecidas daquele
+    canal. Sem canal, vale só a lista de Plataformas (vazia = todas).
+    """
+    sel = list(st.session_state.get("gf_platforms", []))
+    canais = _gf_canais()
+    if not canais:
+        return sel
+    if sel:
+        return [p for p in sel if _canal_de(p) in canais]
+    try:
+        todas = get_filter_options().get("platforms") or []
+    except Exception:
+        todas = []
+    return [p for p in todas if _canal_de(p) in canais]
 
 
 def _gf_brands() -> list:
@@ -3778,23 +4029,22 @@ def page_results():
     with st.sidebar:
         st.subheader("Filters")
 
-        date_range = st.date_input(
-            "Date range",
-            value=(date.today() - timedelta(days=7), date.today()),
-            max_value=date.today(),
-            format="DD/MM/YYYY",
-        )
-        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=7)
-        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+        start_date, end_date = _page_period()
 
         opts = get_filter_options()
 
         sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"])
-        sel_platforms = st.multiselect("Platforms",       opts["platforms"])
-        sel_sellers   = st.multiselect("Sellers",         opts["sellers"])
-        sel_brands    = st.multiselect("Brands",          opts["brands"])
+        _inherit_global("res_platforms", _gf_platforms(), opts["platforms"])
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="res_platforms", placeholder="Todas")
+        sel_sellers   = st.multiselect(
+            "Sellers", opts["sellers"], key="res_sellers", placeholder="Todos",
+            help="Casa pelo vendedor da buy box quando observado (na Amazon o "
+                 "lojista real só existe na buy box); senão, pelo seller do anúncio.",
+        )
+        _inherit_global("res_brands", _gf_brands(), opts["brands"])
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="res_brands", placeholder="Todas")
         sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "results")
-        sel_keywords  = st.multiselect("Keywords",        opts["keywords"])
+        sel_keywords  = _keyword_multiselect(opts, key="res_keywords")
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
             BTU_OPTIONS,
@@ -4183,24 +4433,22 @@ def page_price_evolution():
     with st.sidebar:
         st.subheader("Filters")
 
-        date_range = st.date_input(
-            "Date range",
-            value=(date.today() - timedelta(days=30), date.today()),
-            max_value=date.today(),
-            format="DD/MM/YYYY",
-            key="evo_dates",
-        )
-        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
-        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+        start_date, end_date = _page_period()
 
         opts = get_filter_options()
 
         sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"], key="evo_tipo")
-        sel_brands    = st.multiselect("Brands",    opts["brands"],         key="evo_brands")
+        _inherit_global("evo_brands", _gf_brands(), opts["brands"])
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="evo_brands", placeholder="Todas")
         sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "evo")
-        sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="evo_platforms")
-        sel_sellers   = st.multiselect("Sellers",   opts["sellers"],        key="evo_sellers")
-        sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="evo_keywords")
+        _inherit_global("evo_platforms", _gf_platforms(), opts["platforms"])
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="evo_platforms", placeholder="Todas")
+        sel_sellers   = st.multiselect(
+            "Sellers", opts["sellers"], key="evo_sellers", placeholder="Todos",
+            help="Casa pelo vendedor da buy box quando observado (na Amazon o "
+                 "lojista real só existe na buy box); senão, pelo seller do anúncio.",
+        )
+        sel_keywords  = _keyword_multiselect(opts, key="evo_keywords")
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
             BTU_OPTIONS,
@@ -5736,24 +5984,22 @@ def page_buybox_position():
     with st.sidebar:
         st.subheader("Filters")
 
-        date_range = st.date_input(
-            "Date range",
-            value=(date.today() - timedelta(days=30), date.today()),
-            max_value=date.today(),
-            format="DD/MM/YYYY",
-            key="bb_dates",
-        )
-        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
-        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+        start_date, end_date = _page_period()
 
         opts = get_filter_options()
 
         sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"], key="bb_tipo")
-        sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="bb_platforms")
-        sel_sellers   = st.multiselect("Sellers",   opts["sellers"],        key="bb_sellers")
-        sel_brands    = st.multiselect("Brands",    opts["brands"],         key="bb_brands")
+        _inherit_global("bb_platforms", _gf_platforms(), opts["platforms"])
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="bb_platforms", placeholder="Todas")
+        sel_sellers   = st.multiselect(
+            "Sellers", opts["sellers"], key="bb_sellers", placeholder="Todos",
+            help="Casa pelo vendedor da buy box quando observado (na Amazon o "
+                 "lojista real só existe na buy box); senão, pelo seller do anúncio.",
+        )
+        _inherit_global("bb_brands", _gf_brands(), opts["brands"])
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="bb_brands", placeholder="Todas")
         sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "bb")
-        sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="bb_keywords")
+        sel_keywords  = _keyword_multiselect(opts, key="bb_keywords")
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
             BTU_OPTIONS,
@@ -6058,19 +6304,13 @@ def page_share_of_buybox() -> None:
 
     with st.sidebar:
         st.subheader("Filtros")
-        date_range = st.date_input(
-            "Período",
-            value=(date.today() - timedelta(days=14), date.today()),
-            max_value=date.today(),
-            format="DD/MM/YYYY",
-            key="sbb_dates",
-        )
-        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=14)
-        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+        start_date, end_date = _page_period()
 
         opts = get_filter_options()
-        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="sbb_platforms")
-        sel_brands    = st.multiselect("Marcas", opts["brands"], key="sbb_brands")
+        _inherit_global("sbb_platforms", _gf_platforms(), opts["platforms"])
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="sbb_platforms", placeholder="Todas")
+        _inherit_global("sbb_brands", _gf_brands(), opts["brands"])
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="sbb_brands", placeholder="Todas")
         sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "sbb")
         modo = st.radio(
             "Modo de visualização",
@@ -6341,24 +6581,22 @@ def page_availability():
     with st.sidebar:
         st.subheader("Filters")
 
-        date_range = st.date_input(
-            "Date range",
-            value=(date.today() - timedelta(days=30), date.today()),
-            max_value=date.today(),
-            format="DD/MM/YYYY",
-            key="av_dates",
-        )
-        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
-        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+        start_date, end_date = _page_period()
 
         opts = get_filter_options()
 
         sel_tipo      = st.multiselect("Tipo Plataforma", opts["platform_types"], key="av_tipo")
-        sel_platforms = st.multiselect("Platforms", opts["platforms"],      key="av_platforms")
-        sel_sellers   = st.multiselect("Sellers",   opts["sellers"],        key="av_sellers")
-        sel_brands    = st.multiselect("Brands",    opts["brands"],         key="av_brands")
+        _inherit_global("av_platforms", _gf_platforms(), opts["platforms"])
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="av_platforms", placeholder="Todas")
+        sel_sellers   = st.multiselect(
+            "Sellers", opts["sellers"], key="av_sellers", placeholder="Todos",
+            help="Casa pelo vendedor da buy box quando observado (na Amazon o "
+                 "lojista real só existe na buy box); senão, pelo seller do anúncio.",
+        )
+        _inherit_global("av_brands", _gf_brands(), opts["brands"])
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="av_brands", placeholder="Todas")
         sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "av")
-        sel_keywords  = st.multiselect("Keywords",  opts["keywords"],       key="av_keywords")
+        sel_keywords  = _keyword_multiselect(opts, key="av_keywords")
         sel_btu       = st.multiselect(
             "Capacity (BTU)",
             BTU_OPTIONS,
@@ -6785,19 +7023,13 @@ def page_reputacao() -> None:
 
     with st.sidebar:
         st.subheader("Filtros")
-        date_range = st.date_input(
-            "Período",
-            value=(date.today() - timedelta(days=14), date.today()),
-            max_value=date.today(),
-            format="DD/MM/YYYY",
-            key="rep_dates",
-        )
-        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=14)
-        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+        start_date, end_date = _page_period()
 
         opts = get_filter_options()
-        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="rep_platforms")
-        sel_brands    = st.multiselect("Marcas", opts["brands"], key="rep_brands")
+        _inherit_global("rep_platforms", _gf_platforms(), opts["platforms"])
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="rep_platforms", placeholder="Todas")
+        _inherit_global("rep_brands", _gf_brands(), opts["brands"])
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="rep_brands", placeholder="Todas")
         sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "rep")
         min_cell = st.number_input(
             "Mín. de registros avaliados por célula (heatmap)",
@@ -7154,20 +7386,14 @@ def page_sov_patrocinado() -> None:
 
     with st.sidebar:
         st.subheader("Filtros")
-        date_range = st.date_input(
-            "Período",
-            value=(date.today() - timedelta(days=14), date.today()),
-            max_value=date.today(),
-            format="DD/MM/YYYY",
-            key="sov_dates",
-        )
-        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=14)
-        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+        start_date, end_date = _page_period()
 
         opts = get_filter_options()
-        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="sov_platforms")
-        sel_brands    = st.multiselect("Marcas", opts["brands"], key="sov_brands")
-        sel_keywords  = st.multiselect("Keywords", opts["keywords"], key="sov_keywords")
+        _inherit_global("sov_platforms", _gf_platforms(), opts["platforms"])
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="sov_platforms", placeholder="Todas")
+        _inherit_global("sov_brands", _gf_brands(), opts["brands"])
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="sov_brands", placeholder="Todas")
+        sel_keywords  = _keyword_multiselect(opts, key="sov_keywords")
         load_btn = st.button("🔄 Carregar SoV", type="primary", use_container_width=True)
 
     # Persiste o df carregado em session_state: ligar/desligar o toggle de share
@@ -7755,251 +7981,606 @@ def page_price_compliance() -> None:
 # Page: Overview — Executive landing
 # ---------------------------------------------------------------------------
 
+#: Colunas que o Cockpit usa. Projeção explícita: `select *` numa janela de 8
+#: dias arrastava ~40 colunas × centenas de milhares de linhas só para contar.
+_COCKPIT_COLS = (
+    "id,data,turno,plataforma,tipo,keyword,categoria,marca,produto,"
+    "posicao_organica,posicao_geral,patrocinado,preco,seller,buy_box_seller,"
+    "tipo_seller,estado_match,run_id,created_at"
+)
+
+#: Prateleira lida pelo Cockpit: as 20 primeiras posições orgânicas. O KPI de
+#: share usa o top 10; o preço de vitrine e a buy box usam o top 20.
+_COCKPIT_MAX_POS = 20
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cockpit_data(
+    start_str: str,
+    end_str: str,
+    platforms_tuple: tuple,
+    sources_tuple: tuple = ("coletas", "pricetrack"),
+    sem_depara_flag: bool = True,
+) -> pd.DataFrame:
+    """Base do Cockpit: top 20 orgânico de TODAS as marcas, sem teto de linhas.
+
+    O Overview antigo lia `select *` com teto de 15 mil linhas no banco + 15 mil
+    no histórico: com ~35 mil linhas por dia, "Registros (8d) = 30,000" era o
+    teto, não a contagem, e todo gráfico enxergava ~1 dos 8 dias — escolhido
+    pela ORDEM DE INSERÇÃO (a Amazon, que grava por último, dominava o "Volume
+    por Plataforma"). Aqui a projeção é enxuta e o corte é por posição (top 20),
+    o que cabe o período inteiro.
+
+    Marca NÃO filtra aqui: share de prateleira precisa do denominador inteiro.
+    Estado de-para também não (a função `utils.shelf_insights` tira o NAO_AC).
+
+    Args:
+        start_str / end_str: janela ISO inclusiva.
+        platforms_tuple: plataformas efetivas do filtro global (vazio = todas).
+        sources_tuple: filtro global de Fonte de Dados.
+        sem_depara_flag: inclui histórico ainda sem de-para (filtro global).
+
+    Returns:
+        Linhas de `coletas` (quente + frio) no top 20, com seller canonizado.
+    """
+    if "coletas" not in sources_tuple:
+        return pd.DataFrame()
+    start_d, end_d = date.fromisoformat(start_str), date.fromisoformat(end_str)
+
+    def _frio(ja_presentes: set) -> pd.DataFrame:
+        # Listas explícitas (nunca None): `_filter_history_coletas` cai no
+        # session_state com None, e isto é cacheado.
+        df_f = _history_gap_fill(
+            start_d, end_d, ja_presentes, limit=None,
+            platforms=list(platforms_tuple), estados_match=[],
+            familias_resolvidas=[], skus_resolvidos=[],
+            sem_depara=sem_depara_flag,
+        )
+        if df_f.empty:
+            return df_f
+        pos = pd.to_numeric(df_f.get("posicao_organica"), errors="coerce")
+        return df_f[pos <= _COCKPIT_MAX_POS]
+
+    client = _get_supabase()
+    partes: list = []
+    dias_hot: set = set()
+    if client is not None:
+        def _build_q():
+            q = (
+                client.table("coletas")
+                .select(_COCKPIT_COLS)
+                .gte("data", start_str)
+                .lte("data", end_str)
+                .lte("posicao_organica", _COCKPIT_MAX_POS)
+                .order("data", desc=True)
+                .order("id", desc=True)
+            )
+            if platforms_tuple:
+                q = q.in_("plataforma", _expand_platforms(list(platforms_tuple)))
+            return q
+
+        try:
+            rows: list = []
+            last_data: str | None = None
+            last_id: int | None = None
+            while True:
+                q = _build_q()
+                if last_data is not None and last_id is not None:
+                    q = q.or_(
+                        f"data.lt.{last_data},"
+                        f"and(data.eq.{last_data},id.lt.{last_id})"
+                    )
+                resp = q.limit(_SUPABASE_PAGE).execute()
+                if not resp.data:
+                    break
+                rows.extend(resp.data)
+                if len(resp.data) < _SUPABASE_PAGE:
+                    break
+                last_data = str(resp.data[-1].get("data") or "") or None
+                last_id = resp.data[-1].get("id")
+                if last_data is None or last_id is None:
+                    break
+            if rows:
+                df_hot = pd.DataFrame(rows)
+                df_hot["data"] = pd.to_datetime(df_hot["data"]).dt.date
+                dias_hot = set(df_hot["data"].dropna().unique())
+                partes.append(df_hot)
+        except Exception as exc:
+            # Cota (402) recusa até leitura — o histórico frio cobre o que der.
+            from loguru import logger as _logger
+            _logger.warning(f"[Cockpit] leitura do Supabase falhou: {exc}")
+
+    df_frio = _frio(dias_hot)
+    if not df_frio.empty:
+        partes.append(df_frio)
+    if not partes:
+        return pd.DataFrame()
+    df = pd.concat(partes, ignore_index=True) if len(partes) > 1 else partes[0]
+    if "data" in df.columns:
+        df["data"] = pd.to_datetime(df["data"], errors="coerce").dt.date
+    for col in ("posicao_organica", "posicao_geral"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "preco" in df.columns:
+        df["preco"] = pd.to_numeric(df["preco"], errors="coerce")
+    if "marca" in df.columns and _MARCA_TO_CANONICAL:
+        df["marca"] = df["marca"].map(lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x)
+    if "plataforma" in df.columns:
+        df["plataforma"] = df["plataforma"].map(
+            lambda p: _normalize_platform(p) if isinstance(p, str) else p
+        )
+    return _apply_seller_canonical(df)
+
+
+_NIVEL_ALERTA = {
+    "alta": ("🔴", "#fef2f2", "#b91c1c"),
+    "media": ("🟠", "#fff7ed", "#c2410c"),
+    "positivo": ("🟢", "#ecfdf5", "#047857"),
+    "info": ("⚪", "#f8fafc", "#475569"),
+}
+
+
+def _render_alertas(alertas: list) -> None:
+    """Lista de alertas com ícone + cor (nunca só cor) e texto em tinta neutra."""
+    if not alertas:
+        st.success("Sem mudança relevante de prateleira entre os dois dias comparados.")
+        return
+    html = []
+    for a in alertas[:14]:
+        icone, fundo, borda = _NIVEL_ALERTA.get(a["nivel"], _NIVEL_ALERTA["info"])
+        texto = (str(a["texto"]).replace("&", "&amp;").replace("<", "&lt;")
+                 .replace(">", "&gt;"))
+        html.append(
+            f"<div style='background:{fundo};border-left:4px solid {borda};"
+            f"border-radius:6px;padding:.45rem .75rem;margin:.25rem 0;"
+            f"color:#1e293b;font-size:.92rem'>{icone} {texto}</div>"
+        )
+    st.markdown("".join(html), unsafe_allow_html=True)
+    if len(alertas) > 14:
+        st.caption(f"+{len(alertas) - 14} alerta(s) — veja a aba de cada tema.")
+
+
+def _share_stack_chart(longo: pd.DataFrame, dim: str, titulo: str, top: int = 6):
+    """Barra 100% empilhada: quem ocupa a prateleira em cada `dim`.
+
+    Midea Carrier sempre no primeiro segmento (ancorado à esquerda); as demais
+    marcas em ordem de share total; o resto vira "Outras" (cinza) — mais de 7
+    cores deixaria de ser legível. Rótulo direto só em segmento ≥ 8%.
+    """
+    from utils.shelf_insights import ROTULO_GRUPO
+
+    if longo.empty:
+        return None
+    total_por_marca = longo.groupby("marca")["slots"].sum().sort_values(ascending=False)
+    rivais = [m for m in total_por_marca.index if m != ROTULO_GRUPO][:top]
+    manter = [ROTULO_GRUPO] + rivais
+    df = longo.assign(marca=longo["marca"].where(longo["marca"].isin(manter), "Outras"))
+    df = df.groupby([dim, "marca"], as_index=False).agg(slots=("slots", "sum"), total=("total", "first"))
+    df["share"] = df["slots"] / df["total"]
+    ordem_marcas = [m for m in manter if m in set(df["marca"])] + (
+        ["Outras"] if "Outras" in set(df["marca"]) else []
+    )
+    midea_por_dim = df[df["marca"] == ROTULO_GRUPO].set_index(dim)["share"]
+    ordem_dim = sorted(df[dim].unique(), key=lambda d: -float(midea_por_dim.get(d, 0.0)))
+    cores = _brand_color_map(ordem_marcas)
+    cores["Outras"] = "#cbd5e1"
+    df["rotulo"] = df["share"].map(lambda v: f"{v:.0%}" if v >= 0.08 else "")
+    fig = px.bar(
+        df, y=dim, x="share", color="marca", orientation="h",
+        category_orders={"marca": ordem_marcas, dim: ordem_dim},
+        color_discrete_map=cores, text="rotulo",
+        custom_data=["marca", "slots", "total"],
+        title=titulo,
+        labels={"share": "Share do top 10", dim: "", "marca": "Marca"},
+    )
+    fig.update_traces(
+        marker_line_color="#ffffff", marker_line_width=2,
+        textposition="inside", insidetextanchor="middle",
+        hovertemplate="<b>%{customdata[0]}</b><br>%{y}: %{x:.1%}"
+                      "<br>%{customdata[1]} de %{customdata[2]} posições<extra></extra>",
+    )
+    _apply_chart_style(fig, height=max(300, 46 * len(ordem_dim) + 140), hovermode="closest")
+    fig.update_layout(barmode="stack", legend_title_text="", bargap=0.35)
+    fig.update_xaxes(tickformat=".0%", range=[0, 1], title=None)
+    return fig
+
+
 def page_overview() -> None:
-    st.title("🏠 Overview")
-    st.caption("Visão executiva consolidada do monitoramento de preços e posicionamento.")
+    """🏠 Cockpit do Trade — leitura de prateleira da Midea Carrier no dia.
+
+    Substitui o Overview de contagens (registros, plataformas, marcas, volume
+    por plataforma), que eram métricas do PIPELINE e, pior, calculadas sobre um
+    recorte truncado por teto de linhas. As perguntas agora são de trade:
+    quanto da prateleira neutra é nosso, onde perdemos e para quem, quem vence
+    a buy box das nossas ofertas, e se o preço de vitrine está alinhado.
+    """
+    from utils.keyword_taxonomy import (
+        TIPO_GENERICA, TIPO_MARCA_CONCORRENTE, TIPO_MARCA_PROPRIA, classify_keyword,
+    )
+    from utils.seller_surface import MARKETPLACES
+    from utils.shelf_insights import (
+        ROTULO_GRUPO, build_alerts, buybox_on_brand, comparable_days,
+        coverage_by_turno, dedup_snapshot, keyword_battle, midea_share_by,
+        share_of_shelf, share_trend, shelf_price_by_btu,
+    )
+
+    st.title("🏠 Cockpit do Trade")
+    st.caption(
+        "Prateleira, buy box e preço de vitrine da **Midea Carrier** (Midea, "
+        "Springer, Carrier, Comfee) contra a concorrência — leitura do dia."
+    )
 
     start_date, end_date = _gf_dates()
     sel_platforms = _gf_platforms()
-    sel_brands    = _gf_brands()
-
-    # Context chips
-    plat_label  = ", ".join(sel_platforms[:3]) + ("…" if len(sel_platforms) > 3 else "") if sel_platforms else "Todas"
-    brand_label = ", ".join(sel_brands[:3])    + ("…" if len(sel_brands) > 3 else "")    if sel_brands    else "Todas"
+    sel_brands = _gf_brands()
+    canais = _gf_canais()
+    plat_label = (", ".join(sel_platforms[:3]) + ("…" if len(sel_platforms) > 3 else "")
+                  if sel_platforms else "Todas")
     st.markdown(
-        f"📅 **{start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}** &nbsp;·&nbsp; "
-        f"🛒 {plat_label} &nbsp;·&nbsp; 🏷️ {brand_label}",
+        f"📅 **{start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}**"
+        f" &nbsp;·&nbsp; 🛒 {', '.join(canais) if canais else 'Todos os canais'}"
+        f" &nbsp;·&nbsp; {plat_label}",
         unsafe_allow_html=True,
     )
-    st.divider()
 
-    with st.spinner("Carregando dados…"):
-        # `df` (coletas) é a base para contagens de volume/registros/presença.
-        # `dfp` (precedência PriceTrack) é a fonte de tudo que for **preço**.
-        df  = _overview_data(
-            str(start_date), str(end_date),
-            tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
-            familias_tuple=_gf_familias_key(),
-            skus_resolvidos_tuple=_gf_skus_resolvidos_key(),
+    with st.spinner("Lendo a prateleira do período…"):
+        bruto = _cockpit_data(
+            str(start_date), str(end_date), tuple(sorted(sel_platforms)),
             sources_tuple=_gf_sources_key(),
-            estados_tuple=_gf_estados_key(),
             sem_depara_flag=_gf_historico_sem_depara(),
         )
-        dfp = _price_data(
-            str(start_date), str(end_date),
-            tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
-            familias_tuple=_gf_familias_key(),
-            skus_resolvidos_tuple=_gf_skus_resolvidos_key(),
-            sources_tuple=_gf_sources_key(),
-        )
-
-    if df.empty:
+    if bruto.empty:
         st.info(
-            "Nenhum dado encontrado. Configure os **Filtros Globais** na barra lateral "
-            "e aguarde o carregamento."
+            "Nenhuma coleta de posição no período. Ajuste o **Período** global "
+            "ou confira a fonte em ⚙️ Avançado (o Cockpit lê só as Coletas)."
         )
         return
 
-    # Comparison window
-    compare_on = _gf_compare()
-    df_cmp  = pd.DataFrame()
-    dfp_cmp = pd.DataFrame()
-    if compare_on:
-        cmp_start, cmp_end = _gf_cmp_dates()
-        with st.spinner("Carregando período de comparação…"):
-            df_cmp  = _overview_data(
-                str(cmp_start), str(cmp_end),
-                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
-                familias_tuple=_gf_familias_key(),
-                skus_resolvidos_tuple=_gf_skus_resolvidos_key(),
-                sources_tuple=_gf_sources_key(),
-                estados_tuple=_gf_estados_key(),
-                sem_depara_flag=_gf_historico_sem_depara(),
-            )
-            dfp_cmp = _price_data(
-                str(cmp_start), str(cmp_end),
-                tuple(sorted(sel_platforms)), tuple(sorted(sel_brands)),
-                familias_tuple=_gf_familias_key(),
-                skus_resolvidos_tuple=_gf_skus_resolvidos_key(),
-                sources_tuple=_gf_sources_key(),
-            )
+    base = dedup_snapshot(bruto)
+    dup = len(bruto) - len(base)
+    # Classifica só os pares (keyword, categoria) distintos — ~60 — e mapeia;
+    # linha a linha seriam ~150 mil chamadas numa janela de 8 dias.
+    kw_col = base["keyword"] if "keyword" in base.columns else pd.Series(None, index=base.index)
+    cat_col = base["categoria"] if "categoria" in base.columns else pd.Series(None, index=base.index)
+    pares = pd.DataFrame({"keyword": kw_col, "categoria": cat_col}).astype(object)
+    pares = pares.where(pares.notna(), None)
+    tipos = {
+        (k, c): classify_keyword(k, c)
+        for k, c in pares.drop_duplicates().itertuples(index=False, name=None)
+    }
+    base["tipo_busca"] = [tipos[(k, c)] for k, c in pares.itertuples(index=False, name=None)]
+    cobertura = coverage_by_turno(base)
+    # Turno com coleta parcial (bloqueio/login) sai da comparação nos dois dias:
+    # "silêncio não é mudança de mercado". Ele continua listado nas ressalvas.
+    parciais = set(
+        map(tuple, cobertura.loc[cobertura["parcial"], ["data", "turno", "plataforma"]].values)
+    ) if not cobertura.empty else set()
+    genericas = base[base["tipo_busca"] == TIPO_GENERICA]
+    if parciais:
+        genericas = genericas[[
+            (d, t, p) not in parciais
+            for d, t, p in zip(genericas["data"], genericas["turno"], genericas["plataforma"])
+        ]]
+    ult, ant, meta = comparable_days(genericas)
 
-    # ── KPI Strip ────────────────────────────────────────────────────────────
-    last_date  = df["data"].max() if "data"      in df.columns else None
-    n_records  = len(df)
-    n_platforms = df["plataforma"].nunique() if "plataforma" in df.columns else 0
-    n_brands   = df["marca"].nunique()        if "marca"      in df.columns else 0
-    n_skus     = df["produto"].nunique()      if "produto"    in df.columns else 0
+    if ult.empty:
+        st.warning("O período não tem buscas genéricas coletadas — sem base para share de prateleira.")
+        return
 
-    # Preço sempre do PriceTrack (dfp); contagens do coletas (df).
-    midea_mask = dfp["marca"].str.contains("Midea", case=False, na=False) if ("marca" in dfp.columns and not dfp.empty) else pd.Series(False, index=dfp.index)
-    avg_midea  = dfp.loc[midea_mask, "preco"].mean() if ("preco" in dfp.columns and not dfp.empty) else None
+    # ── KPI strip ───────────────────────────────────────────────────────────
+    def _share(df_):
+        r = midea_share_by(df_, by=())
+        return float(r["share_midea"].iloc[0]) if not r.empty else None
 
-    delta_records = None
-    delta_price   = None
-    if compare_on and not df_cmp.empty:
-        delta_records = f"{n_records - len(df_cmp):+,}"
-    if compare_on and not dfp_cmp.empty:
-        midea_cmp_mask = dfp_cmp["marca"].str.contains("Midea", case=False, na=False) if "marca" in dfp_cmp.columns else pd.Series(False, index=dfp_cmp.index)
-        avg_cmp = dfp_cmp.loc[midea_cmp_mask, "preco"].mean() if "preco" in dfp_cmp.columns else None
-        if avg_midea and avg_cmp and avg_cmp > 0:
-            delta_price = f"{(avg_midea - avg_cmp) / avg_cmp * 100:+.1f}%"
+    def _top3(df_):
+        r = midea_share_by(df_, by=("plataforma", "keyword"))
+        if r.empty:
+            return 0, 0
+        return int((r["melhor_pos_midea"].fillna(99).astype(float) <= 3).sum()), len(r)
 
-    n_days = (end_date - start_date).days + 1
+    sh_u, sh_a = _share(ult), (_share(ant) if not ant.empty else None)
+    t3_u, n_u = _top3(ult)
+    t3_a, n_a = _top3(ant) if not ant.empty else (None, None)
+    rivais_u = share_of_shelf(ult, by=())
+    rivais_u = rivais_u[rivais_u["marca"] != ROTULO_GRUPO]
+    lider = rivais_u.iloc[0] if not rivais_u.empty else None
+    mkt_ult = base[(base["data"] == meta["ultimo"]) & base["plataforma"].isin(MARKETPLACES)]
+    bb_rank, bb_meta = buybox_on_brand(mkt_ult)
+    preco = shelf_price_by_btu(base[base["data"] == meta["ultimo"]])
+    p12 = preco[preco["btu"] == 12000] if not preco.empty else preco
+
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Última Coleta",    last_date.strftime("%d/%m/%Y") if last_date else "—")
-    c2.metric(f"Registros ({n_days}d)", f"{n_records:,}", delta=delta_records)
-    c3.metric("Plataformas",      str(n_platforms))
-    c4.metric("Marcas",           str(n_brands), help=f"{n_skus:,} SKUs únicos")
-    c5.metric("Preço Médio Midea", _fmt_brl(avg_midea) if avg_midea else "—",
-              delta=delta_price, delta_color="inverse")
+    c1.metric(
+        "Share prateleira", f"{sh_u:.1%}" if sh_u is not None else "—",
+        delta=(f"{(sh_u - sh_a) * 100:+.1f} pp" if (sh_u is not None and sh_a is not None) else None),
+        help="Fração das 10 primeiras posições orgânicas das buscas GENÉRICAS "
+             "ocupada pela Midea Carrier, no último dia vs. o anterior (mesmos turnos).",
+    )
+    c2.metric(
+        "Midea no top 3", f"{t3_u}/{n_u}",
+        delta=(f"{t3_u - t3_a:+d}" if t3_a is not None else None),
+        help="Pares plataforma × busca genérica em que a melhor oferta Midea está entre as 3 primeiras.",
+    )
+    c3.metric(
+        "Rival líder", f"{lider['marca']} · {lider['share']:.0%}" if lider is not None else "—",
+        help="Maior marca concorrente na mesma prateleira (top 10 das genéricas).",
+    )
+    if not bb_rank.empty:
+        c4.metric(
+            "Buy box Midea", f"{bb_rank.iloc[0]['seller']}",
+            delta=f"{bb_rank.iloc[0]['share']:.0%} das ofertas", delta_color="off",
+            help=f"Quem mais vence a buy box das ofertas Midea nos marketplaces no último dia. "
+                 f"Buy box observada em {bb_meta['cobertura']:.0%} das {bb_meta['ofertas_midea']} ofertas.",
+        )
+    else:
+        c4.metric("Buy box Midea", "—", help="Sem buy box observada no último dia.")
+    if not p12.empty and pd.notna(p12["indice"].iloc[0]):
+        idx = float(p12["indice"].iloc[0])
+        c5.metric(
+            "Preço 12K (índice)", f"{idx:.0f}",
+            delta=f"{idx - 100:+.0f}% vs rivais", delta_color="inverse",
+            help="Índice = mediana de preço Midea ÷ mediana dos rivais × 100, split "
+                 "hi-wall 12.000 BTU no top 20 do último dia (100 = paridade).",
+        )
+    else:
+        c5.metric("Preço 12K (índice)", "—")
 
-    # ── Comparison strip ─────────────────────────────────────────────────────
-    if compare_on and not df_cmp.empty:
-        cmp_start, cmp_end = _gf_cmp_dates()
-        st.info(
-            f"📊 Comparando **{start_date.strftime('%d/%m')}–{end_date.strftime('%d/%m')}** "
-            f"vs **{cmp_start.strftime('%d/%m')}–{cmp_end.strftime('%d/%m')}** "
-            f"— {n_records:,} vs {len(df_cmp):,} registros"
+    turnos_txt = "; ".join(f"{p}: {', '.join(t)}" for p, t in sorted(meta["turnos"].items()))
+    ult_txt = meta["ultimo"].strftime("%d/%m") if meta["ultimo"] else "—"
+    ant_txt = meta["anterior"].strftime("%d/%m") if meta["anterior"] else "sem dia anterior"
+    dup_txt = f"{dup:,}".replace(",", ".")
+    desc = int(meta.get("buscas_descartadas") or 0)
+    st.caption(
+        f"Base: **{ult_txt}** vs **{ant_txt}**, só nos turnos e nas buscas que os "
+        f"dois dias coletaram em cada plataforma"
+        + (f" ({desc} busca(s) vista(s) em só um dos dias ficaram de fora)" if desc else "")
+        + f". {dup_txt} linha(s) duplicada(s) descartada(s) (o mesmo turno gravado "
+        "por duas runs)."
+    )
+    if turnos_txt:
+        with st.expander("Turnos comparados por plataforma"):
+            st.caption(turnos_txt)
+
+    # ── O que mudou ─────────────────────────────────────────────────────────
+    st.subheader("🚨 O que mudou e pede ação")
+    alertas = build_alerts(ult, ant, cobertura)
+    acao = [a for a in alertas if a["nivel"] != "info"]
+    ressalvas = [a for a in alertas if a["nivel"] == "info"]
+    _render_alertas(acao)
+    if ressalvas:
+        st.caption("Ressalvas de dado: " + " · ".join(f"⚪ {r['texto']}" for r in ressalvas))
+    st.divider()
+
+    (tab_plat, tab_kw, tab_def, tab_evo, tab_bb, tab_preco, tab_cob) = st.tabs([
+        "📊 Prateleira por plataforma", "🔎 Batalha das genéricas",
+        "🛡️ Defesa & conquista", "📈 Evolução", "🏷️ Buy box Midea",
+        "💰 Preço de vitrine", "🩺 Cobertura",
+    ])
+
+    with tab_plat:
+        longo = share_of_shelf(ult, by=("plataforma",))
+        fig = _share_stack_chart(longo, "plataforma", f"Quem ocupa o top 10 das buscas genéricas — {ult_txt}")
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        tab = midea_share_by(ult, by=("plataforma",))
+        tab["vs_lider_pp"] = -tab["gap_lider"] * 100
+        tab = tab.drop(columns="gap_lider")
+        if not ant.empty:
+            prev = midea_share_by(ant, by=("plataforma",))[["plataforma", "share_midea"]]
+            tab = tab.merge(prev.rename(columns={"share_midea": "_a"}), on="plataforma", how="left")
+            tab["delta_pp"] = (tab["share_midea"] - tab["_a"]) * 100
+            tab = tab.drop(columns="_a")
+        st.dataframe(
+            tab.sort_values("share_midea", ascending=False),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "plataforma": "Plataforma",
+                "share_midea": st.column_config.ProgressColumn("Share Midea", format="percent", min_value=0, max_value=1),
+                "delta_pp": st.column_config.NumberColumn("Δ vs dia anterior (pp)", format="%+.1f"),
+                "slots_midea": "Posições Midea", "total": "Posições no top 10",
+                "lider": "Rival líder",
+                "share_lider": st.column_config.ProgressColumn("Share do líder", format="percent", min_value=0, max_value=1),
+                "vs_lider_pp": st.column_config.NumberColumn(
+                    "Midea − líder (pp)", format="%+.1f",
+                    help="Positivo: a Midea tem mais prateleira que o maior rival."),
+                "melhor_pos_midea": st.column_config.NumberColumn("Melhor posição Midea", format="%d"),
+            },
         )
 
+    with tab_kw:
+        st.caption(
+            "Buscas sem marca, todas as plataformas somadas. Ordenadas pela distância "
+            "ao rival líder — o topo é onde a prateleira mais escapa."
+        )
+        batalha = keyword_battle(ult, ant)
+        batalha["vs_lider_pp"] = -batalha["gap_lider"].astype(float) * 100
+        batalha = batalha.drop(columns="gap_lider")
+        st.dataframe(
+            batalha, use_container_width=True, hide_index=True,
+            column_config={
+                "keyword": "Busca",
+                "share_midea": st.column_config.ProgressColumn("Share Midea", format="percent", min_value=0, max_value=1),
+                "delta_pp": st.column_config.NumberColumn("Δ (pp)", format="%+.1f"),
+                "melhor_pos_midea": st.column_config.NumberColumn("Melhor posição", format="%d"),
+                "lider": "Rival líder",
+                "share_lider": st.column_config.ProgressColumn("Share do líder", format="percent", min_value=0, max_value=1),
+                "vs_lider_pp": st.column_config.NumberColumn("Midea − líder (pp)", format="%+.1f"),
+                "plataformas": "Plataformas",
+            },
+        )
+        with st.expander("Por plataforma × busca"):
+            det = midea_share_by(ult, by=("plataforma", "keyword"))
+            det = det.sort_values(["plataforma", "gap_lider"], ascending=[True, False])
+            det["vs_lider_pp"] = -det["gap_lider"].astype(float) * 100
+            st.dataframe(
+                det.drop(columns="gap_lider"),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "plataforma": "Plataforma", "keyword": "Busca",
+                    "share_midea": st.column_config.ProgressColumn("Share Midea", format="percent", min_value=0, max_value=1),
+                    "slots_midea": "Posições Midea", "total": "Posições",
+                    "lider": "Rival líder",
+                    "share_lider": st.column_config.ProgressColumn("Share do líder", format="percent", min_value=0, max_value=1),
+                    "vs_lider_pp": st.column_config.NumberColumn("Midea − líder (pp)", format="%+.1f"),
+                    "melhor_pos_midea": st.column_config.NumberColumn("Melhor posição", format="%d"),
+                },
+            )
+
+    with tab_def:
+        st.caption(
+            "**Defesa**: quando buscam a Midea (\"midea inverter\", \"midea ecomaster\"), "
+            "quanto do top 10 é nosso — o resto é rival interceptando. **Conquista**: "
+            "quando buscam o rival (\"ar condicionado lg\"), quanto a Midea aparece."
+        )
+        dfu = base[base["data"] == meta["ultimo"]]
+        colA, colB = st.columns(2)
+        for col_, tipo, titulo in (
+            (colA, TIPO_MARCA_PROPRIA, "🛡️ Defesa — buscas pela Midea"),
+            (colB, TIPO_MARCA_CONCORRENTE, "⚔️ Conquista — buscas por rivais"),
+        ):
+            with col_:
+                st.markdown(f"**{titulo}**")
+                sub = dfu[dfu["tipo_busca"] == tipo]
+                if sub.empty:
+                    st.info("Sem buscas desse tipo no último dia.")
+                    continue
+                r = midea_share_by(sub, by=("plataforma",)).sort_values("share_midea", ascending=False)
+                st.dataframe(
+                    r[["plataforma", "share_midea", "lider", "share_lider", "melhor_pos_midea"]],
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "plataforma": "Plataforma",
+                        "share_midea": st.column_config.ProgressColumn("Share Midea", format="percent", min_value=0, max_value=1),
+                        "lider": "Rival líder",
+                        "share_lider": st.column_config.ProgressColumn("Share do rival", format="percent", min_value=0, max_value=1),
+                        "melhor_pos_midea": "Melhor posição",
+                    },
+                )
+
+    with tab_evo:
+        rivais_top = [m for m in share_of_shelf(genericas, by=()).query("marca != @ROTULO_GRUPO")["marca"].head(5)]
+        destaque = list(dict.fromkeys(rivais_top + [b for b in sel_brands if b != "Midea"]))
+        serie = share_trend(genericas, marcas=destaque)
+        if serie.empty or serie["data"].nunique() < 2:
+            st.info("É preciso ao menos 2 dias no período para a evolução.")
+        else:
+            serie["data"] = pd.to_datetime(serie["data"])
+            fig = px.line(
+                serie, x="data", y="share", color="marca", markers=True,
+                color_discrete_map=_brand_color_map(serie["marca"]),
+                title="Share do top 10 nas buscas genéricas (média entre plataformas)",
+                labels={"share": "Share do top 10", "data": "", "marca": "Marca"},
+                custom_data=["plataformas"],
+            )
+            fig.update_traces(
+                line=dict(width=2), marker=dict(size=8),
+                hovertemplate="%{fullData.name}: %{y:.1%}<br>%{customdata[0]} plataforma(s)<extra></extra>",
+            )
+            _emphasize_midea_traces(fig)
+            _apply_chart_style(fig, height=380)
+            # Série diária: sem horas no eixo; share começa do zero para a
+            # distância entre as marcas não ser exagerada pelo recorte do eixo.
+            fig.update_xaxes(dtick="D1", tickformat="%d/%m", title=None)
+            fig.update_yaxes(tickformat=".0%", rangemode="tozero")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.caption(
+                "Cada plataforma pesa igual no dia — assim um bloqueio de coleta "
+                "(ex.: Mercado Livre à tarde) não move a linha sem o mercado mudar."
+            )
+
+    with tab_bb:
+        st.caption(
+            f"Ofertas Midea nos marketplaces em {ult_txt}. Buy box observada em "
+            f"**{bb_meta['cobertura']:.0%}** delas ({bb_meta['com_buybox']} de "
+            f"{bb_meta['ofertas_midea']}) — o resto não entra no ranking, em vez de "
+            "virar \"Amazon\"/\"Casas Bahia\" por falta de dado."
+        )
+        if bb_rank.empty:
+            st.info("Nenhuma buy box observada nas ofertas Midea do último dia.")
+        else:
+            top_bb = bb_rank.head(12).iloc[::-1]
+            fig = px.bar(
+                top_bb, x="ofertas", y="seller", orientation="h", text="ofertas",
+                title="Quem vence a buy box das ofertas Midea",
+                labels={"ofertas": "Ofertas com a buy box", "seller": ""},
+                custom_data=["share", "plataformas"],
+                color_discrete_sequence=["#1a56db"],
+            )
+            fig.update_traces(
+                textposition="outside",
+                hovertemplate="<b>%{y}</b><br>%{x} ofertas (%{customdata[0]:.0%})"
+                              "<br>%{customdata[1]}<extra></extra>",
+            )
+            _apply_chart_style(fig, height=max(280, 34 * len(top_bb) + 120), hovermode="closest")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.dataframe(
+                bb_rank, use_container_width=True, hide_index=True,
+                column_config={
+                    "seller": "Seller", "ofertas": "Ofertas",
+                    "share": st.column_config.ProgressColumn("Share", format="percent", min_value=0, max_value=1),
+                    "plataformas": "Plataformas",
+                },
+            )
+        if st.button("→ Share of Buy Box completo", key="ov_goto_sbb"):
+            st.session_state["_nav_page"] = "👑 Share of Buy Box"
+            st.rerun()
+
+    with tab_preco:
+        st.caption(
+            "Mediana do preço que o consumidor VÊ no top 20 (coleta de posição), só "
+            "split hi-wall, no último dia. Índice 100 = paridade com a mediana dos "
+            "rivais. Preço de referência por SKU (PriceTrack) fica em 💰 Preços 9K/12K."
+        )
+        if preco.empty:
+            st.info("Sem preço de vitrine suficiente no último dia.")
+        else:
+            st.dataframe(
+                preco, use_container_width=True, hide_index=True,
+                column_config={
+                    "btu": st.column_config.NumberColumn("BTU", format="%d"),
+                    "mediana_midea": st.column_config.NumberColumn("Mediana Midea", format="R$ %.0f"),
+                    "mediana_rivais": st.column_config.NumberColumn("Mediana rivais", format="R$ %.0f"),
+                    "indice": st.column_config.NumberColumn("Índice (100 = paridade)", format="%.0f"),
+                    "ofertas_midea": "Ofertas Midea", "ofertas_rivais": "Ofertas rivais",
+                },
+            )
+        if st.button("→ Preços 9K/12K (PriceTrack)", key="ov_goto_precos"):
+            st.session_state["_nav_page"] = "💰 Preços 9K/12K"
+            st.rerun()
+
+    with tab_cob:
+        st.caption(
+            "Linhas por turno depois da deduplicação. ⚠️ = menos de 30% do melhor "
+            "turno da plataforma na janela — coleta parcial (bloqueio, login, "
+            "queda), não queda de mercado."
+        )
+        if not cobertura.empty:
+            ultimos = sorted(cobertura["data"].unique())[-3:]
+            cv = cobertura[cobertura["data"].isin(ultimos)].copy()
+            cv["col"] = cv["data"].map(lambda d: d.strftime("%d/%m")) + " " + cv["turno"].astype(str)
+            cv["valor"] = cv.apply(
+                lambda r: f"{'⚠️ ' if r['parcial'] else ''}{int(r['linhas']):,}".replace(",", "."), axis=1
+            )
+            ordem = list(dict.fromkeys(cv.sort_values(["data"])["col"]))
+            grade = cv.pivot_table(index="plataforma", columns="col", values="valor", aggfunc="first")
+            grade = grade.reindex(columns=[c for c in ordem if c in grade.columns]).fillna("—")
+            st.dataframe(grade, use_container_width=True)
+
     st.divider()
-
-    # ── Mini Charts 2 × 2 ────────────────────────────────────────────────────
-    col_l, col_r = st.columns(2)
-
-    # Chart 1 — Price trend by brand
-    with col_l:
-        st.subheader("Tendência de Preço por Marca")
-        df_price = dfp.dropna(subset=["preco", "data", "marca"]) if (not dfp.empty and all(c in dfp.columns for c in ["preco", "data", "marca"])) else pd.DataFrame()
-        if not df_price.empty:
-            try:
-                top_brands = df_price["marca"].value_counts().head(6).index.tolist()
-                trend = (
-                    df_price[df_price["marca"].isin(top_brands)]
-                    .groupby(["data", "marca"])["preco"]
-                    .agg(_mode_price)
-                    .reset_index()
-                    .rename(columns={"preco": "Preço Modal (R$)", "marca": "Marca"})
-                )
-                trend["data"] = pd.to_datetime(trend["data"])
-                if trend.empty or trend["Preço Modal (R$)"].isna().all():
-                    raise ValueError("sem dados válidos após agrupamento")
-                fig1 = px.line(
-                    trend, x="data", y="Preço Modal (R$)", color="Marca",
-                    color_discrete_map=_brand_color_map(trend["Marca"]),
-                    markers=True,
-                    title="Preço Modal por Marca",
-                    labels={"data": "Data"},
-                )
-                fig1.update_traces(line=dict(width=2), marker=dict(size=5))
-                _emphasize_midea_traces(fig1)
-                _apply_chart_style(fig1, height=320)
-                st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
-            except Exception:
-                st.info("Sem dados suficientes para exibir o gráfico de tendência.")
-        else:
-            st.info("Sem dados de preço no período.")
-        if st.button("→ Evolução de Preços", key="ov_goto_price", use_container_width=True):
-            st.session_state["_nav_page"] = "📈 Price Evolution"
-            st.rerun()
-
-    # Chart 2 — Volume by platform
-    with col_r:
-        st.subheader("Volume por Plataforma")
-        if "plataforma" in df.columns:
-            try:
-                vol = (
-                    df.groupby("plataforma", as_index=False).size()
-                    .rename(columns={"size": "Registros", "plataforma": "Plataforma"})
-                    .sort_values("Registros", ascending=False).head(10)
-                )
-                fig2 = px.bar(
-                    vol, x="Plataforma", y="Registros",
-                    color="Plataforma", color_discrete_sequence=_CHART_COLORS,
-                    title="Registros por Plataforma",
-                )
-                _apply_chart_style(fig2, height=320)
-                st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
-            except Exception:
-                st.info("Sem dados suficientes para exibir o gráfico de volume.")
-        else:
-            st.info("Coluna 'plataforma' não disponível.")
-        if st.button("→ Resultados", key="ov_goto_results", use_container_width=True):
-            st.session_state["_nav_page"] = "📊 Results"
-            st.rerun()
-
-    col_l2, col_r2 = st.columns(2)
-
-    # Chart 3 — Brand share (donut)
-    with col_l2:
-        st.subheader("Share de Marcas")
-        if "marca" in df.columns:
-            try:
-                bshare = df.groupby("marca", as_index=False).size().rename(columns={"size": "Registros", "marca": "Marca"})
-                threshold = bshare["Registros"].sum() * 0.02
-                main  = bshare[bshare["Registros"] >= threshold].copy()
-                outros = bshare[bshare["Registros"] < threshold]["Registros"].sum()
-                if outros > 0:
-                    main = pd.concat([main, pd.DataFrame([{"Marca": "Outras", "Registros": outros}])], ignore_index=True)
-                fig3 = px.pie(
-                    main, names="Marca", values="Registros",
-                    color="Marca", color_discrete_map=_brand_color_map(main["Marca"]),
-                    hole=0.45,
-                    title="Distribuição por Marca",
-                )
-                fig3.update_traces(textposition="inside", textinfo="percent+label")
-                _apply_chart_style(fig3, height=320, hovermode="closest")
-                st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
-            except Exception:
-                st.info("Sem dados suficientes para exibir o gráfico de share.")
-        else:
-            st.info("Coluna 'marca' não disponível.")
-        if st.button("→ BuyBox Position", key="ov_goto_buybox", use_container_width=True):
-            st.session_state["_nav_page"] = "🏆 BuyBox Position"
-            st.rerun()
-
-    # Chart 4 — Top movers (latest 2 days)
-    with col_r2:
-        st.subheader("Top Movers (últimas 48h)")
-        req_cols = {"preco", "data", "produto"}
-        if not dfp.empty and req_cols.issubset(dfp.columns):
-            sorted_dates = sorted(dfp["data"].unique(), reverse=True)
-            if len(sorted_dates) >= 2:
-                d_new, d_old = sorted_dates[0], sorted_dates[1]
-                new_med = dfp[dfp["data"] == d_new].dropna(subset=["preco"]).groupby("produto")["preco"].agg(_mode_price)
-                old_med = dfp[dfp["data"] == d_old].dropna(subset=["preco"]).groupby("produto")["preco"].agg(_mode_price)
-                mv = pd.concat([new_med.rename("novo"), old_med.rename("antigo")], axis=1).dropna()
-                mv["delta_pct"] = (mv["novo"] - mv["antigo"]) / mv["antigo"] * 100
-                mv = mv[mv["delta_pct"].abs() >= 1].sort_values("delta_pct").head(10).reset_index()
-                mv["SKU"] = mv["produto"].str[:40]
-                if not mv.empty:
-                    try:
-                        fig4 = px.bar(
-                            mv, x="delta_pct", y="SKU", orientation="h",
-                            color="delta_pct",
-                            color_continuous_scale=["#ef4444", "#fbbf24", "#059669"],
-                            color_continuous_midpoint=0,
-                            title="Variação de Preço (48h)",
-                            labels={"delta_pct": "Variação %"},
-                        )
-                        fig4.update_coloraxes(showscale=False)
-                        _apply_chart_style(fig4, height=320)
-                        st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
-                    except Exception:
-                        st.info("Sem dados suficientes para exibir o gráfico de movers.")
-                else:
-                    st.info("Sem variações significativas nas últimas 48h.")
-            else:
-                st.info("Necessário pelo menos 2 datas para comparar.")
-        else:
-            st.info("Dados de preço/produto não disponíveis.")
-        if st.button("→ Top Movers completo", key="ov_goto_movers", use_container_width=True):
-            st.session_state["_nav_page"] = "🚨 Top Movers"
-            st.rerun()
-
-    st.divider()
-    _csv_download_btn(df, f"rac_overview_{start_date}_{end_date}.csv", key="ov_export")
+    nav1, nav2, nav3 = st.columns(3)
+    if nav1.button("→ BuyBox Position", key="ov_goto_buybox", use_container_width=True):
+        st.session_state["_nav_page"] = "🏆 BuyBox Position"
+        st.rerun()
+    if nav2.button("→ SoV Patrocinado", key="ov_goto_sov", use_container_width=True):
+        st.session_state["_nav_page"] = "📣 SoV Patrocinado"
+        st.rerun()
+    if nav3.button("→ Top Movers de preço", key="ov_goto_movers", use_container_width=True):
+        st.session_state["_nav_page"] = "🚨 Top Movers"
+        st.rerun()
+    _csv_download_btn(
+        base.drop(columns=["tipo_busca"], errors="ignore"),
+        f"rac_cockpit_{start_date}_{end_date}.csv", key="ov_export",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -8231,10 +8812,10 @@ def page_top_movers() -> None:
             cmp_end   = cr[1] if len(cr) > 1 else cmp_end
 
         opts = get_filter_options()
-        sel_platforms = st.multiselect("Plataformas", opts["platforms"],
-                                       default=sel_platforms, key="tm_platforms")
-        sel_brands    = st.multiselect("Marcas", opts["brands"],
-                                       default=sel_brands, key="tm_brands")
+        _inherit_global("tm_platforms", _gf_platforms(), opts["platforms"])
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="tm_platforms", placeholder="Todas")
+        _inherit_global("tm_brands", _gf_brands(), opts["brands"])
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="tm_brands", placeholder="Todas")
         sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "tm")
 
         with st.expander("Refinar — Movers", expanded=True):
@@ -9192,20 +9773,14 @@ def page_market_analytics() -> None:
 
     with st.sidebar:
         st.subheader("Filtros")
-        date_range = st.date_input(
-            "Período",
-            value=(date.today() - timedelta(days=30), date.today()),
-            max_value=date.today(),
-            format="DD/MM/YYYY",
-            key="ma_dates",
-        )
-        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
-        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+        start_date, end_date = _page_period()
 
         opts = get_filter_options()
-        sel_brands    = st.multiselect("Marcas", opts["brands"], key="ma_brands")
+        _inherit_global("ma_brands", _gf_brands(), opts["brands"])
+        sel_brands    = st.multiselect("Marcas", opts["brands"], key="ma_brands", placeholder="Todas")
         sel_familias, sel_skus_resolvidos = _render_familia_sku_filters(sel_brands, "ma")
-        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="ma_platforms")
+        _inherit_global("ma_platforms", _gf_platforms(), opts["platforms"])
+        sel_platforms = st.multiselect("Plataformas", opts["platforms"], key="ma_platforms", placeholder="Todas")
         sel_btu = st.multiselect(
             "Capacidade (BTU)", BTU_OPTIONS,
             format_func=lambda x: f"{int(x):,} BTUs".replace(",", "."),
@@ -9512,17 +10087,10 @@ def page_product_sheet() -> None:
 
     with st.sidebar:
         st.subheader("Filtros")
-        date_range = st.date_input(
-            "Período",
-            value=(date.today() - timedelta(days=30), date.today()),
-            max_value=date.today(),
-            format="DD/MM/YYYY",
-            key="ps_dates",
-        )
-        start_date = date_range[0] if len(date_range) > 0 else date.today() - timedelta(days=30)
-        end_date   = date_range[1] if len(date_range) > 1 else date.today()
+        start_date, end_date = _page_period()
 
         opts = get_filter_options()
+        _inherit_global("ps_brands", _gf_brands(), opts["brands"])
         sel_brands = st.multiselect(
             "Marcas (filtra a lista de SKUs)", opts["brands"], key="ps_brands",
         )
@@ -10154,6 +10722,7 @@ def page_daily_vision() -> None:
 
         opts = get_filter_options()
 
+        _inherit_global("dv_brands", _gf_brands(), opts["brands"])
         sel_brands = st.multiselect(
             "Marcas", opts["brands"], key="dv_brands",
         )
@@ -12069,7 +12638,7 @@ def page_pricetrack_precos() -> None:
 
 
 PAGES = {
-    "🏠 Overview":                 page_overview,
+    "🏠 Cockpit do Trade":         page_overview,
     "📅 Daily Price Vision":       page_daily_vision,
     "🚨 Top Movers":               page_top_movers,
     "📊 Results":                  page_results,
@@ -12094,7 +12663,7 @@ PAGES = {
 
 _NAV_GROUPS: dict[str, list[str]] = {
     "INSIGHTS": [
-        "🏠 Overview",
+        "🏠 Cockpit do Trade",
         "📅 Daily Price Vision",
         "🚨 Top Movers",
         "📊 Results",
@@ -12122,6 +12691,10 @@ _NAV_GROUPS: dict[str, list[str]] = {
     ],
 }
 
+_PAGINAS_COM_COBERTURA: frozenset = frozenset({
+    "🩺 Data Health", "🤖 Automação", "🧬 Família & SKU",
+})
+
 _SECTION_LABEL_CSS = (
     "color:#94a3b8; font-size:0.65rem; font-weight:700; "
     "letter-spacing:0.12em; text-transform:uppercase; "
@@ -12145,11 +12718,11 @@ def _main() -> None:
         st.rerun()
 
     if "_current_page" not in st.session_state:
-        st.session_state["_current_page"] = "🏠 Overview"
+        st.session_state["_current_page"] = "🏠 Cockpit do Trade"
 
     # Guard against stale keys after a code update
     if st.session_state["_current_page"] not in PAGES:
-        st.session_state["_current_page"] = "🏠 Overview"
+        st.session_state["_current_page"] = "🏠 Cockpit do Trade"
 
     with st.sidebar:
         st.markdown("## ❄️ RAC Monitor")
@@ -12191,7 +12764,11 @@ def _main() -> None:
         }[_hist])
         st.caption(f"🕐 {date.today().strftime('%d/%m/%Y')}")
 
-    _render_cobertura_banner()
+    # Cobertura do de-para (MAPEADO/FORA_ESCOPO/NAO_AC/REVISAR) é métrica de
+    # curadoria: ficava no topo de TODAS as páginas, empurrando a leitura de
+    # negócio para baixo. Agora aparece só onde se age sobre ela.
+    if st.session_state["_current_page"] in _PAGINAS_COM_COBERTURA:
+        _render_cobertura_banner()
     PAGES[st.session_state["_current_page"]]()
 
 

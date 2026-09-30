@@ -210,12 +210,13 @@ def test_global_panel_is_lean() -> None:
     """No Overview (que só usa os filtros globais) a sidebar deve conter
     apenas os recortes transversais; os widgets de catálogo saíram do global."""
     at = AppTest.from_file(APP_FILE)
-    at.session_state["_current_page"] = "🏠 Overview"
+    at.session_state["_current_page"] = "🏠 Cockpit do Trade"
     at.run(timeout=RUN_TIMEOUT)
-    assert not at.exception, f"Overview raised: {list(at.exception)}"
+    assert not at.exception, f"Cockpit raised: {list(at.exception)}"
 
     labels = {ms.label for ms in at.multiselect}
     assert "Fonte de Dados" in labels, f"faltou Fonte de Dados; tem {labels}"
+    assert "Canal" in labels, labels
     assert "Plataformas" in labels, labels
     assert "Marcas" in labels, labels
     # Removidos do painel global (continuam por página, não aqui):

@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple
@@ -153,9 +152,16 @@ def cmd_stats(args: argparse.Namespace) -> int:
 # import-csv
 # ---------------------------------------------------------------------------
 def _derive_run_id(csv_path: Path) -> str:
-    """run_id determinístico pelo nome do arquivo (reimportar é idempotente)."""
-    namespace = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-    return str(uuid.uuid5(namespace, csv_path.name))
+    """run_id do CSV: o da coleta (arquivo ``.run_id`` ao lado), senão UUID5.
+
+    Com o id da coleta, a partição reimportada cai na MESMA chave
+    (``data=…__run-<id>``) que o `main.py` já gravou, em vez de criar uma
+    segunda cópia do turno no histórico — ver `utils/run_sidecar.py`.
+    Reimportar continua idempotente nos dois casos.
+    """
+    from utils.run_sidecar import resolve_run_id
+
+    return resolve_run_id(csv_path)[0]
 
 
 def cmd_import_csv(args: argparse.Namespace) -> int:
