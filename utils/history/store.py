@@ -373,6 +373,7 @@ class HistoryStore:
         columns: Optional[Sequence[str]] = None,
         partition_column: Optional[str] = None,
         descending: bool = False,
+        skip_days: Optional[Iterable[date]] = None,
     ):
         """Itera o histórico **um dia por vez**, materializando um dia na RAM.
 
@@ -394,6 +395,10 @@ class HistoryStore:
                 antigo — a mesma ordem do keyset ``data desc`` do Supabase, o
                 que deixa o chamador parar cedo quando já juntou linhas
                 suficientes sem ler os dias mais velhos.
+            skip_days: Dias a **não** ler — pulados ANTES de `_read_keys`, então
+                suas partições nunca são baixadas nem materializadas. É como o
+                gap-fill descarta a janela quente (que o Supabase já entregou)
+                sem pagar a leitura dela em toda interação do dashboard.
 
         Yields:
             ``(day, DataFrame)`` para cada dia que tem partição, na ordem
@@ -403,16 +408,24 @@ class HistoryStore:
         keys = self.keys_in_range(dataset, start, end)
         if not keys:
             return
+        skip = set(skip_days) if skip_days else set()
         por_dia: Dict[date, List[str]] = {}
         for key in keys:
             parsed = parse_key(key)
             if not parsed:
                 continue
-            por_dia.setdefault(parsed["day"], []).append(key)
+            dia = parsed["day"]
+            if dia in skip:
+                continue
+            por_dia.setdefault(dia, []).append(key)
         for day in sorted(por_dia, reverse=descending):
             frame = self._read_keys(por_dia[day], columns, partition_column)
             if not frame.empty:
                 yield day, frame
+            # Solta a referência do dia atual antes de materializar o próximo:
+            # sem isto o `frame` anterior sobrevive à leitura seguinte e dois
+            # dias coexistiriam na RAM, furando o teto de "um dia por vez".
+            del frame
 
     def _read_keys(
         self,

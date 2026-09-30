@@ -1434,6 +1434,7 @@ def _filter_history_coletas(
     btu_filter: list[str] | None = None,
     product_types: list[str] | None = None,
     max_position: int | None = None,
+    max_organic_position: int | None = None,
     familias_resolvidas: list[str] | None = None,
     skus_resolvidos: list[str] | None = None,
     estados_match: list[str] | None = None,
@@ -1495,6 +1496,15 @@ def _filter_history_coletas(
     if max_position is not None and "posicao_geral" in out.columns:
         pos = pd.to_numeric(out["posicao_geral"], errors="coerce")
         out = out[pos <= max_position]
+
+    # Corte por posição ORGÂNICA (coluna distinta de `posicao_geral`): é o que
+    # o Cockpit usa (`.lte("posicao_organica", …)` no lado quente). Aplicá-lo
+    # aqui, por dia, é o que impede o caminho frio `limit=None` de acumular a
+    # janela inteira em RAM antes do recorte — o mesmo modo de falha que este
+    # PR corrige, mas escondido no caller que não passa `limit`.
+    if max_organic_position is not None and "posicao_organica" in out.columns:
+        pos_org = pd.to_numeric(out["posicao_organica"], errors="coerce")
+        out = out[pos_org <= max_organic_position]
 
     def _any_contains(col: str, patterns: list[str]) -> None:
         """Mantém linhas cuja coluna casa com QUALQUER padrão (like OR)."""
@@ -1766,15 +1776,15 @@ def _history_gap_fill(
         # sequer ler os dias mais antigos.
         partes: list[pd.DataFrame] = []
         total = 0
+        # `skip_days=ja_presentes`: os dias que o Supabase já entregou (janela
+        # quente) são pulados DENTRO de `read_days`, antes da leitura — suas
+        # partições nunca são baixadas nem materializadas. Equivale ao antigo
+        # `~df["data"].isin(ja_presentes)`, sem pagar a leitura do dia.
         for dia, df_dia in store.read_days(
             "coletas", start=start_date, end=end_date,
             partition_column=_COL_PARTICAO, descending=True,
+            skip_days=ja_presentes,
         ):
-            # O Supabase já entregou este dia (janela quente): pula sem
-            # processar — equivale ao antigo `~df["data"].isin(ja_presentes)`,
-            # só que sem ler/materializar o dia.
-            if ja_presentes and dia in ja_presentes:
-                continue
             df_dia = _dedup_particoes_historico(df_dia)
             df_dia = _resolver_depara_historico(df_dia)
             df_dia = _filter_history_coletas(df_dia, **filtros)
@@ -8439,11 +8449,15 @@ def _cockpit_data(
     def _frio(ja_presentes: set) -> pd.DataFrame:
         # Listas explícitas (nunca None): `_filter_history_coletas` cai no
         # session_state com None, e isto é cacheado.
+        # `max_organic_position` aplica o mesmo top-20 do lado quente DENTRO do
+        # gap-fill, dia a dia: sem ele, `limit=None` acumularia a janela inteira
+        # (todas as posições) na RAM antes deste recorte — o OOM que este PR
+        # combate, só que no caminho que não passa `limit`.
         df_f = _history_gap_fill(
             start_d, end_d, ja_presentes, limit=None,
             platforms=list(platforms_tuple), estados_match=[],
             familias_resolvidas=[], skus_resolvidos=[],
-            sem_depara=sem_depara_flag,
+            sem_depara=sem_depara_flag, max_organic_position=_COCKPIT_MAX_POS,
         )
         if df_f.empty:
             return df_f

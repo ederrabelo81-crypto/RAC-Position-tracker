@@ -238,6 +238,53 @@ class TestReadDays:
         assert "_p" in frame.columns
         assert frame["_p"].iloc[0].startswith("coletas/data=2026-09-01")
 
+    def test_le_preguicoso_um_dia_por_vez(self, store, monkeypatch):
+        """A garantia anti-OOM: puxar um dia NÃO pode ler os outros.
+
+        Sem isto, uma implementação que lesse o intervalo inteiro de uma vez e
+        só então rendesse dia a dia passaria nos testes de conteúdo — e traria
+        de volta exatamente o pico de memória que o fix elimina. Um espião em
+        `_read_keys` prova a leitura sob demanda."""
+        for dia in ("2026-09-01", "2026-09-02", "2026-09-03"):
+            store.write_records([_row(dia)], dataset=DATASET_COLETAS)
+        chamadas: list = []
+        original = store._read_keys
+
+        def _spy(keys, columns, partition_column):
+            chamadas.append(tuple(keys))
+            return original(keys, columns, partition_column)
+
+        monkeypatch.setattr(store, "_read_keys", _spy)
+
+        gen = store.read_days(DATASET_COLETAS)
+        next(gen)
+        assert len(chamadas) == 1, "puxar 1 dia leu mais de um dia"
+        next(gen)
+        assert len(chamadas) == 2
+        list(gen)
+        assert len(chamadas) == 3
+
+    def test_skip_days_nao_le_o_dia(self, store, monkeypatch):
+        """`skip_days` pula ANTES de `_read_keys` — o dia nunca é materializado."""
+        for dia in ("2026-09-01", "2026-09-02", "2026-09-03"):
+            store.write_records([_row(dia)], dataset=DATASET_COLETAS)
+        lidos: list = []
+        original = store._read_keys
+
+        def _spy(keys, columns, partition_column):
+            lidos.append(tuple(keys))
+            return original(keys, columns, partition_column)
+
+        monkeypatch.setattr(store, "_read_keys", _spy)
+
+        dias = list(store.read_days(
+            DATASET_COLETAS, skip_days={date(2026, 9, 2)}
+        ))
+        assert [d for d, _ in dias] == [date(2026, 9, 1), date(2026, 9, 3)]
+        # O dia pulado não gerou nenhuma leitura de partição.
+        lidos_flat = [k for grupo in lidos for k in grupo]
+        assert not any("2026-09-02" in k for k in lidos_flat)
+
     def test_colunas_extras_passam(self, store):
         """Colunas que o banco ganhou depois (de-para) não exigem migração."""
         store.write_day(
