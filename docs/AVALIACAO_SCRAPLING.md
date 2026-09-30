@@ -28,7 +28,8 @@ Três camadas independentes:
    linhas não compensa.
 3. **O anti-bot é outro.** O `StealthyFetcher` foi calibrado para Cloudflare
    Turnstile. Nossos bloqueios são Akamai (Magalu, Casas Bahia, Leroy), a
-   PerimeterX da Fast Shop e o captcha da Amazon, e a causa muda por
+   PerimeterX da Fast Shop, o captcha da Amazon e o anti-bot da Shopee (403
+   com sessão vencida), e a causa muda por
    plataforma: no Magalu o Akamai inspeciona o fingerprint TLS (JA3/JA4), que
    o `curl_cffi` já resolve; em Shopee e Casas Bahia pesa o **IP de
    datacenter** (ver `docs/learnings/anti-bot-strategies.md`). Nenhum dos dois
