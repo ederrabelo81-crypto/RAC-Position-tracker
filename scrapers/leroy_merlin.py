@@ -37,11 +37,14 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
 from utils.leroy_sellers import (
+    LEROY_CANONICAL,
     SELLER_LABEL_PATTERN,
     LeroySellerCache,
+    extract_buybox_winner,
     extract_seller_from_pdp,
     is_leroy_self,
 )
+from utils.seller_names import normalize_seller_name, seller_key
 from utils.text import parse_price, parse_rating, parse_review_count, now_brt
 
 _ITEMS_PER_PAGE = 24
@@ -85,6 +88,23 @@ _PDP_MAX_INTERVAL = float(os.environ.get("LEROY_PDP_MAX_INTERVAL", "3.5") or 3.5
 # Piso de tamanho para considerar a resposta um PDP de verdade. Em produção o
 # PDP mediu 339 KB e o challenge 3 KB — 20 KB fica folgadamente entre os dois.
 _PDP_MIN_BYTES = int(os.environ.get("LEROY_PDP_MIN_BYTES", "20000") or 20000)
+
+# --- Buy box por produto (Set/2026) -----------------------------------------
+# O índice não diz quem vence a buy box: a oferta 1P da Leroy nem aparece em
+# `marketplaceSellers`, e com 2+ sellers listados nada indica o vencedor. Só o
+# PDP mostra ("Vendido e entregue por X"). Por isso cada produto com oferta de
+# marketplace tem o PDP aberto **a cada execução** — o vencedor é observação
+# do turno, não atributo do produto (mesma regra da Amazon: sem cache
+# persistente, senão a série congelaria no vencedor da 1ª leitura).
+# Custo medido em 29–30/09/2026: ~130 produtos distintos por turno.
+_BUYBOX_PDP_ENABLED = os.environ.get("LEROY_BUYBOX_PDP", "1") not in ("0", "false", "False")
+_BUYBOX_MAX_PER_RUN = int(os.environ.get("LEROY_BUYBOX_MAX_PER_RUN", "200") or 200)
+# PDPs seguidos sem rótulo de vendedor = bloqueio ou layout novo, não produto
+# fora do ar. Aborta a passada em vez de varrer a lista inteira à toa.
+_BUYBOX_MAX_FALHAS_SEGUIDAS = 5
+# PDPs via requests que chegam íntegros mas sem o rótulo (shell sem hidratar)
+# antes de desistir do caminho leve para a buy box e ir direto ao browser.
+_BUYBOX_REQUESTS_SEM_ROTULO_MAX = 3
 
 # Tempo máximo esperando o bloco de seller hidratar no browser.
 _PDP_HYDRATE_TIMEOUT = float(os.environ.get("LEROY_PDP_HYDRATE_TIMEOUT", "10000") or 10000)
@@ -224,6 +244,13 @@ class LeroyMerlinScraper(BaseScraper):
         # produto — no mesmo run, inclusive (`_pdp_retry_ids`).
         self._pdp_urls_leroy_buybox: set[str] = set()
         self._pdp_retry_ids: set[str] = set()
+        # Buy box por produto — estado da EXECUÇÃO, nunca persistido.
+        self._buybox_pdp_enabled = _BUYBOX_PDP_ENABLED
+        self._buybox_budget = _BUYBOX_MAX_PER_RUN
+        self._buybox_lidos: Dict[str, Optional[str]] = {}  # URL → vencedor
+        self._buybox_falhas_seguidas = 0
+        self._buybox_abortado = False
+        self._buybox_requests_sem_rotulo = 0
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -236,6 +263,11 @@ class LeroyMerlinScraper(BaseScraper):
             "resolved_via_inline_hit": 0,
             "resolved_via_pdp": 0,
             "pdp_leroy_na_buybox": 0,     # PDP mostrou a Leroy, não o seller pendente
+            "buybox_pdp_abertos": 0,      # PDPs abertos pela passada de buy box
+            "buybox_leroy": 0,            # produto 3P-listado com a Leroy vencendo
+            "buybox_3p": 0,               # vencedor 3P lido no PDP
+            "buybox_sem_leitura": 0,      # precisava de PDP e ficou sem vencedor
+            "resolved_via_buybox_pdp": 0, # seller ID aprendido pelo vencedor
             "resolved_via_scalar_fields": 0,
             "pdp_fetch_attempts": 0,
             "pdp_fetch_failures": 0,
@@ -551,6 +583,11 @@ class LeroyMerlinScraper(BaseScraper):
             # ficaria 7 dias sem nova tentativa — o oposto do pretendido.
             if self._looks_like_pdp(html):
                 pagina_chegou = True
+            # O PDP já baixado também diz quem vence a buy box do produto — a
+            # passada de buy box não precisa reabri-lo neste run.
+            vencedor = extract_buybox_winner(html)
+            if vencedor:
+                self._buybox_lidos.setdefault(product_url, vencedor)
             candidate = extract_seller_from_pdp(html, seller_id)
             if candidate and not is_leroy_self(candidate):
                 name = candidate
@@ -851,9 +888,214 @@ class LeroyMerlinScraper(BaseScraper):
         marketplace — 10 dígitos começando por "1" (1 ponto). Em 29–30/09/2026
         nenhum dos 201 produtos vendidos só pela Leroy tinha código assim.
         """
-        pid = str(hit.get("objectID") or "")
-        codigo_marketplace = len(pid) == 10 and pid.startswith("1")
+        codigo_marketplace = LeroyMerlinScraper._codigo_marketplace(hit)
         return (2 if info.get("qtd_sellers") == 1 else 0) + int(codigo_marketplace)
+
+    @staticmethod
+    def _codigo_marketplace(hit: dict) -> bool:
+        """Código de catálogo criado no marketplace (10 dígitos, começa por "1").
+
+        Em 29–30/09/2026 nenhum dos 201 produtos vendidos só pela Leroy tinha
+        código assim: nesses produtos a Leroy não vende.
+        """
+        pid = str(hit.get("objectID") or "")
+        return len(pid) == 10 and pid.startswith("1")
+
+    @staticmethod
+    def _marketplace_ids(hit: dict) -> List[str]:
+        """IDs de seller listados em `marketplaceSellers`, em qualquer formato."""
+        ms = hit.get("marketplaceSellers")
+        if isinstance(ms, dict):
+            return [str(k) for k in ms]
+        ids: List[str] = []
+        for item in ms if isinstance(ms, list) else []:
+            if isinstance(item, str):
+                ids.append(item)
+            elif isinstance(item, dict):
+                sid = item.get("sellerId") or item.get("seller_id")
+                if sid:
+                    ids.append(str(sid))
+        return ids
+
+    def _known_name(self, seller_id: Optional[str]) -> Optional[str]:
+        """Nome já conhecido do ID, sem rede e sem mexer nas métricas."""
+        if not seller_id:
+            return None
+        return (
+            LEROY_SELLER_ID_MAP.get(seller_id)
+            or self._seller_cache.get(seller_id)
+            or self._dynamic_seller_cache.get(seller_id)
+        )
+
+    @staticmethod
+    def _mesmo_seller(a: Optional[str], b: Optional[str]) -> bool:
+        """Compara nomes de seller pela chave canônica (caixa, acento, grafia)."""
+        if not a or not b:
+            return False
+        return seller_key(normalize_seller_name(a) or a) == seller_key(
+            normalize_seller_name(b) or b
+        )
+
+    # ------------------------------------------------------------------
+    # Buy box por produto
+    # ------------------------------------------------------------------
+
+    def _precisa_buybox_pdp(self, hit: dict, info: Dict[str, Any]) -> bool:
+        """
+        Indica se o vencedor da buy box do produto só pode vir do PDP.
+
+        Produto sem `marketplaceSellers` é 1P e não precisa. Produto de código de
+        marketplace com um único seller listado também não: a Leroy não vende
+        ali, então a buy box é necessariamente desse seller. O resto — catálogo
+        da Leroy com 3P listado, ou 2+ sellers — é ambíguo.
+        """
+        if info.get("tipo_seller") != "3P":
+            return False
+        return not (info.get("qtd_sellers") == 1 and self._codigo_marketplace(hit))
+
+    def _fetch_buybox_winner(self, url: str) -> Optional[str]:
+        """
+        Baixa o PDP e devolve o vencedor da buy box.
+
+        Tenta ``requests`` e cai para o browser, que espera o rótulo hidratar.
+        Se o caminho leve chega íntegro mas sem rótulo várias vezes seguidas
+        (shell sem hidratação), ele é pulado no resto da execução — senão cada
+        produto pagaria dois fetches.
+
+        Args:
+            url: URL absoluta do PDP.
+
+        Returns:
+            Nome do vencedor (``"Leroy Merlin"`` para a própria Leroy) ou None.
+        """
+        strategies = []
+        if (
+            self._pdp_requests_strikes < 3
+            and self._buybox_requests_sem_rotulo < _BUYBOX_REQUESTS_SEM_ROTULO_MAX
+        ):
+            strategies.append(("requests", self._fetch_pdp_requests))
+        strategies.append(("browser", self._fetch_pdp_browser))
+
+        for caminho, fetch in strategies:
+            html = fetch(url)
+            if not html:
+                continue
+            vencedor = extract_buybox_winner(html)
+            if vencedor:
+                if caminho == "requests":
+                    self._buybox_requests_sem_rotulo = 0
+                return vencedor
+            if caminho == "requests" and self._looks_like_pdp(html):
+                self._buybox_requests_sem_rotulo += 1
+                if self._buybox_requests_sem_rotulo == _BUYBOX_REQUESTS_SEM_ROTULO_MAX:
+                    logger.info(
+                        f"[{self.platform_name}] PDP via requests chega sem o "
+                        "rótulo de vendedor — buy box segue só pelo browser."
+                    )
+        return None
+
+    def _aplicar_vencedor(self, hit: dict, info: Dict[str, Any], vencedor: str) -> None:
+        """
+        Grava o vencedor da buy box lido no PDP na classificação do hit.
+
+        - **Leroy:** a oferta 1P não está em `marketplaceSellers`; o produto vira
+          1P, sem ``seller_id`` de marketplace, e a Leroy entra na contagem de
+          sellers.
+        - **3P com um único ID listado:** o vencedor É esse ID — e o nome, se
+          ainda desconhecido, vai para o cache (resolução sem PDP extra).
+        - **3P com 2+ IDs:** o ``seller_id`` só é mantido quando algum ID listado
+          já é conhecido por esse nome; senão fica None, em vez de atribuir a
+          oferta ao ID errado.
+        """
+        info["_buybox_pdp"] = True
+        if is_leroy_self(vencedor):
+            self._seller_metrics["buybox_leroy"] += 1
+            qtd = info.get("qtd_sellers")
+            info.update(
+                seller=LEROY_CANONICAL,
+                seller_id=None,
+                tipo_seller="1P",
+                qtd_sellers=qtd + 1 if isinstance(qtd, int) else None,
+            )
+            return
+
+        self._seller_metrics["buybox_3p"] += 1
+        ids = self._marketplace_ids(hit)
+        sid = info.get("seller_id")
+        if len(ids) == 1 and sid == ids[0]:
+            if not self._known_name(sid):
+                self._seller_cache.put(sid, vencedor)
+                self._dynamic_seller_cache[sid] = vencedor
+                self._seller_metrics["resolved_via_buybox_pdp"] += 1
+                logger.info(
+                    f"[{self.platform_name}] Seller resolvido pela buy box: "
+                    f"{sid} → {vencedor}"
+                )
+            info.update(seller=vencedor, tipo_seller="3P")
+            return
+
+        dono = next(
+            (i for i in ids if self._mesmo_seller(self._known_name(i), vencedor)),
+            None,
+        )
+        info.update(seller=vencedor, seller_id=dono, tipo_seller="3P")
+
+    def _resolve_buybox_por_produto(
+        self,
+        hits: List[Dict],
+        seller_info: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Abre o PDP de cada produto ambíguo e grava o vencedor da buy box.
+
+        Cache só por execução (URL repetida entre keywords custa um PDP). Sem
+        leitura — bloqueio, orçamento esgotado ou passada abortada — o hit fica
+        com a classificação do índice, como antes.
+
+        Args:
+            hits: hits da página, na ordem de ``seller_info``.
+            seller_info: classificação de cada hit; alterada no lugar.
+        """
+        if not self._buybox_pdp_enabled:
+            return
+
+        for hit, info in zip(hits, seller_info):
+            if not self._precisa_buybox_pdp(hit, info):
+                continue
+            url = self._extract_algolia_url(hit)
+            if not url:
+                continue
+
+            if url in self._buybox_lidos:
+                vencedor = self._buybox_lidos[url]
+            elif self._buybox_abortado or self._buybox_budget <= 0:
+                self._seller_metrics["buybox_sem_leitura"] += 1
+                continue
+            else:
+                self._buybox_budget -= 1
+                self._seller_metrics["buybox_pdp_abertos"] += 1
+                vencedor = self._fetch_buybox_winner(url)
+                self._buybox_lidos[url] = vencedor
+                if vencedor:
+                    self._buybox_falhas_seguidas = 0
+                else:
+                    self._buybox_falhas_seguidas += 1
+                    if self._buybox_falhas_seguidas >= _BUYBOX_MAX_FALHAS_SEGUIDAS:
+                        logger.error(
+                            f"[{self.platform_name}] {self._buybox_falhas_seguidas} "
+                            "PDPs seguidos sem o rótulo de vendedor — bloqueio ou "
+                            "layout novo. Buy box por produto abortada neste run; "
+                            "os itens restantes ficam com a classificação do índice."
+                        )
+                        self._buybox_abortado = True
+                self._random_delay(min_s=_PDP_MIN_INTERVAL, max_s=_PDP_MAX_INTERVAL)
+
+            if vencedor:
+                self._aplicar_vencedor(hit, info, vencedor)
+            else:
+                self._seller_metrics["buybox_sem_leitura"] += 1
+
+        self._seller_cache.save()
 
     @staticmethod
     def _tipo_for(seller: str) -> str:
@@ -921,26 +1163,42 @@ class LeroyMerlinScraper(BaseScraper):
         # misturando produtos do PDP no resultado da busca.
         hits = list(hits)
 
-        # --- Passada 1: classifica sellers e junta os IDs pendentes ---
-        # Trabalhar por ID único (e não por produto) é o que torna a resolução
-        # via PDP barata: dezenas de hits colapsam em poucos IDs novos.
-        seller_info: List[Dict[str, Any]] = []
+        # --- Passada 1: classifica sellers pelo índice (custo zero) ---
+        seller_info: List[Dict[str, Any]] = [
+            self._classify_hit_seller(hit) for hit in hits
+        ]
+
+        # --- Passada 2: vencedor da buy box por produto (PDP) ---
+        # Vem antes da resolução de nome: cada vencedor 3P de um produto com
+        # um único ID listado já ensina o nome desse ID, sem PDP extra.
+        self._resolve_buybox_por_produto(hits, seller_info)
+
+        # IDs ainda sem nome, agrupados por ID único: é o que torna a resolução
+        # de nome barata — dezenas de hits colapsam em poucos IDs novos.
         pending: Dict[str, str] = {}
         rank: Dict[str, int] = {}
-        for hit in hits:
-            info = self._classify_hit_seller(hit)
-            seller_info.append(info)
+        for hit, info in zip(hits, seller_info):
             sid = info.get("seller_id")
             if info.get("seller") is None and sid:
+                aprendido = self._known_name(sid)
+                if aprendido:
+                    info["seller"] = aprendido
+                    info["tipo_seller"] = self._tipo_for(aprendido)
+                    continue
                 url = self._extract_algolia_url(hit)
-                if not url or url in self._pdp_urls_leroy_buybox:
+                if (
+                    not url
+                    or url in self._pdp_urls_leroy_buybox
+                    # A passada de buy box já viu a Leroy vencendo aqui.
+                    or is_leroy_self(self._buybox_lidos.get(url))
+                ):
                     continue
                 r = self._pdp_url_rank(info, hit)
                 if sid not in pending or r > rank[sid]:
                     pending[sid] = url
                     rank[sid] = r
 
-        # --- Passada 2: resolve os pendentes abrindo 1 PDP por seller novo ---
+        # --- Passada 3: resolve os pendentes abrindo 1 PDP por seller novo ---
         if pending:
             logger.debug(
                 f"[{self.platform_name}] {len(pending)} seller(s) pendente(s) "
@@ -952,6 +1210,17 @@ class LeroyMerlinScraper(BaseScraper):
                 if info.get("seller") is None and sid in resolved:
                     info["seller"] = resolved[sid]
                     info["tipo_seller"] = self._tipo_for(resolved[sid])
+
+            # O PDP aberto para descobrir um nome também mostrou o vencedor
+            # daquele produto: vale para o hit, mesmo que a passada de buy box
+            # não o tenha lido (orçamento, abort).
+            if self._buybox_pdp_enabled:
+                for hit, info in zip(hits, seller_info):
+                    if info.get("_buybox_pdp") or not self._precisa_buybox_pdp(hit, info):
+                        continue
+                    vencedor = self._buybox_lidos.get(self._extract_algolia_url(hit) or "")
+                    if vencedor:
+                        self._aplicar_vencedor(hit, info, vencedor)
 
         records = []
 
