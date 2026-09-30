@@ -371,6 +371,57 @@ para **todas** as páginas (`docs/DASHBOARD_FILTERS.md`).
 
 ---
 
+## Série de preço = uma fonte (Set/2026) 🆕
+
+**O que aconteceu (30/09/2026):** a "Tendência de Preço por Marca" mostrava a
+Philco caindo de ~R$ 13 mil para ~R$ 2 mil no último dia. Não houve mercado
+por trás: `query_price_evolution_data` aplicava a precedência do PriceTrack
+**por (data, SKU)**, e `pricetrack_daily` não tinha 25, 26 e 29/09 — esses
+dias vinham das coletas (oferta na SERP, outro mix). A linha trocava de fonte
+no meio. E a série da marca misturava 9K a 60K, portátil e cassete.
+
+**Módulo:** `utils/price_series.py` (puro, `tests/test_price_series.py`) —
+`single_source_per_series`, `capacity_btu`, `fora_hiwall_mask`, legenda de
+cobertura. Gráfico de série pede `query_price_evolution_data(...,
+dedup_sku_day=False)` e escolhe a fonte por série; o Price Evolution monta tudo
+em `_evo_build_series` (sem Streamlit, testado em
+`tests/test_price_evolution_merge.py`).
+
+**Regras duras:**
+1. **Uma série = uma fonte, na janela inteira.** O PriceTrack fica com a série
+   enquanto cobrir ≥ metade dos dias que a Coletas cobre; senão, a fonte com
+   mais dias. A outra fonte sai de TODOS os dias da série.
+2. **A outra fonte nunca tapa buraco.** Dia sem a fonte da série fica em
+   branco e é listado na legenda ("Philco (PriceTrack) sem 25–26/09, 29/09").
+   Marcador ● PriceTrack · ◇ Coletas em todo ponto; `Fonte` no hover.
+3. **"Mais dias vence" puro não serve:** o último dia de toda janela que
+   termina hoje não tem PriceTrack até o import D-1 (06:00 BRT do dia seguinte) — a regra pura
+   passaria TODAS as séries para as coletas durante o dia.
+4. **Preço por marca/plataforma só no mesmo BTU e só split hi-wall.** Price
+   Evolution em Brand/Platform tem seletor de capacidade (padrão 12.000 BTU,
+   ou "uma linha por BTU") e "só split hi-wall" ligado. Capacidade: catálogo
+   pelo SKU, senão o título (`shelf_insights.extract_btu`).
+5. **Delta entre janelas leva `source` na chave** (Email Digest, Price
+   Anomalies): PriceTrack num dia contra coletas no outro mede a troca de
+   fonte, não o preço.
+
+6. **"vs ontem" do 📅 Daily Price Vision só na mesma fonte**
+   (`_dv_delta_vs_ontem`). Até 30/09/2026 a chave omitia `Source` de
+   propósito, para a célula não ficar sem seta quando o PriceTrack atrasa — e
+   hoje PriceTrack × ontem Coletas virava seta falsa. Agora a célula cujo
+   ontem só existe na outra fonte mostra **⇄ outra fonte** (sem delta, sem
+   sumir em silêncio). O KPI **Piso geral** compara com ontem na mesma fonte
+   do piso de hoje E nos marketplaces que essa fonte cobre hoje
+   (`_dv_floor_prev`): com o PriceTrack faltando ontem, as coletas cobriam
+   marketplaces que hoje são do PriceTrack, e o piso mediria a troca de mix.
+
+Onde vale: 📈 Price Evolution, 📊 Market Analytics (o mapa de faixas é UMA
+série), 🗂️ Ficha do Produto (uma linha por marketplace), o comparador (uma
+linha por SKU) e o "vs ontem" do 📅 Daily Price Vision. `_price_data`
+(Digest/Anomalies) segue com a precedência por dia — não desenha série.
+
+---
+
 ## Banco intercambiável — a cota do Supabase estourou (Set/2026) 🆕
 
 > **⚠️ Revertido em 22/09/2026 — leia antes de agir nesta seção.** A janela
@@ -768,6 +819,7 @@ rac-position-tracker/
 │   ├── seller_names.py          # 🆕 De-para canônico de seller (buy box)
 │   ├── keyword_taxonomy.py      # 🆕 Tipo de busca: genérica / marca própria / concorrente / dealer
 │   ├── shelf_insights.py        # 🆕 Métricas puras do Cockpit do Trade (share, buy box, alertas)
+│   ├── price_series.py          # 🆕 Série de preço = uma fonte (PT × coletas) + recorte BTU/hi-wall
 │   ├── run_sidecar.py           # 🆕 run_id viaja com o CSV (fim da gravação dupla)
 │   ├── admin_automation.py      # Motor da automação ADMIN (zero interação)
 │   └── n8n_notify.py            # Telegram notifications (API direta)

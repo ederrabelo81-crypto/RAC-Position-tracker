@@ -278,3 +278,182 @@ class TestNoFilterStillSkips:
         df, meta = app.query_price_evolution_data(_DAYS[0], _DAYS[-1])
         assert meta["coletas_rows"] == 0, "coletas não deveriam ser consultadas sem filtro"
         assert _sources(df).get("pricetrack", 0) > 0
+
+
+# ---------------------------------------------------------------------------
+# Uma série, uma fonte (30/09/2026) — o caso Philco
+#
+# `pricetrack_daily` sem 25, 26 e 29/09/2026: a precedência por (data, SKU)
+# deixava as coletas preencherem esses dias e a série da Philco "caía" de
+# ~R$ 13 mil para ~R$ 2 mil sem o mercado mexer. O gráfico agora pede as duas
+# fontes sem a precedência (`dedup_sku_day=False`) e `_evo_build_series`
+# escolhe UMA fonte por série.
+# ---------------------------------------------------------------------------
+
+_SEP = [date(2026, 9, x) for x in range(22, 31)]
+_PT_GAPS = {date(2026, 9, 25), date(2026, 9, 26), date(2026, 9, 29)}
+_PT_DAYS = [d for d in _SEP if d not in _PT_GAPS]
+
+
+@pytest.fixture
+def philco(monkeypatch):
+    """PT falha em 25, 26 e 29/09 e cobre o split 12K da Philco e um portátil
+    de 12K (a categoria do PriceTrack é todo "AR CONDICIONADO"); as coletas
+    têm todos os dias do split 12K e de um 9K que o PriceTrack não cobre."""
+    pt_rows = []
+    pt_produtos = [
+        ("PH-12K", "SPLIT PHILCO 12000 BTU FRIO INVERTER", 2400.0),
+        ("PH-PORT12", "AR CONDICIONADO PORTATIL PHILCO 12000 BTU FRIO", 2100.0),
+    ]
+    for d in _PT_DAYS:
+        for sku, title, piso in pt_produtos:
+            pt_rows.append({
+                "id": len(pt_rows) + 1, "collection_date": d, "turno": "Diário",
+                "brand": "PHILCO", "sku": sku, "title": title,
+                "marketplace": "MERCADO LIVRE", "seller": "Loja Philco",
+                "min_price": piso, "avg_price": piso + 200,
+                "mode_price": piso + 150, "max_price": piso + 400,
+            })
+    col_rows = []
+    produtos = [
+        ("PH-12K", "Ar Condicionado Philco 12000 BTUs Inverter Frio", 1900.0),
+        ("PH-9K", "Ar Condicionado Philco 9000 BTUs Inverter Frio", 1500.0),
+    ]
+    i = 0
+    for d in _SEP:
+        for sku, nome, preco in produtos:
+            i += 1
+            col_rows.append({
+                "id": 5000 + i, "data": d, "turno": "Abertura",
+                "plataforma": "Amazon", "tipo": "Marketplace", "marca": "Philco",
+                "seller": "AmazonBR", "keyword": "ar condicionado",
+                "produto": nome, "preco": preco, "posicao_geral": 1,
+                "posicao_organica": 1, "posicao_patrocinada": None,
+                "estado_match": "MAPEADO",
+                "familia_resolvida": None, "sku_resolvido": sku,
+                "voltagem_resolvida": "220V", "run_id": None,
+                "created_at": f"{d}T09:00:00",
+            })
+    fake = _FakeClient({"pricetrack_daily": pd.DataFrame(pt_rows),
+                        "coletas": pd.DataFrame(col_rows),
+                        "produtos_catalogo": pd.DataFrame(),
+                        "produtos_depara_nome": pd.DataFrame()})
+    monkeypatch.setattr(app, "_get_supabase", lambda: fake)
+    yield
+
+
+def _load(dedup: bool) -> pd.DataFrame:
+    df, _ = app.query_price_evolution_data(
+        _SEP[0], _SEP[-1], brands=["Philco"], dedup_sku_day=dedup)
+    return df
+
+
+def _opts(group_by: str, **kw) -> "app._EvoOptions":
+    return app._EvoOptions(group_by=group_by,
+                           metric=app._PRICE_METRICS["Buy Box (menor preço)"], **kw)
+
+
+@pytest.mark.usefixtures("philco")
+class TestUmaFontePorSerie:
+    def test_precedencia_por_dia_troca_a_fonte_da_serie(self):
+        """Reprodução: com a precedência por (data, SKU), o MESMO SKU vem do
+        PriceTrack num dia e das coletas no outro — por isso nenhum gráfico
+        de série usa mais esse modo."""
+        df = _load(dedup=True)
+        por_dia = (df[df["sku"] == "PH-12K"].groupby("data")["source"]
+                   .agg(lambda s: set(s)))
+        assert all(por_dia[d] == {"pricetrack"} for d in _PT_DAYS)
+        assert all(por_dia[d] == {"coletas"} for d in _PT_GAPS)
+
+    def test_sem_precedencia_as_duas_fontes_chegam_inteiras(self):
+        df = _load(dedup=False)
+        sk = df[df["sku"] == "PH-12K"]
+        assert set(sk.loc[sk["source"] == "coletas", "data"]) == set(_SEP)
+        assert set(sk.loc[sk["source"] == "pricetrack", "data"]) == set(_PT_DAYS)
+
+    def test_serie_por_sku_nao_troca_de_fonte(self):
+        evo = app._evo_build_series(_load(dedup=False), _opts("Product"))
+        agg = evo.agg
+        ph12 = agg[agg["series"].str.endswith("PH-12K")]
+        assert set(ph12["fonte"]) == {"pricetrack"}
+        assert set(ph12["value"]) == {2400.0}, "a linha mudou só porque a fonte mudou"
+        # Dia sem PriceTrack é lacuna — nunca preenchido pelas coletas.
+        assert set(ph12["data"].dt.date) == set(_PT_DAYS)
+        # SKU que só as coletas cobrem segue inteiro, nas coletas.
+        ph9 = agg[agg["series"].str.endswith("PH-9K")]
+        assert set(ph9["fonte"]) == {"coletas"} and len(ph9) == len(_SEP)
+        # Cada ponto sabe a fonte (hover/legenda).
+        assert set(agg["fonte_label"]) == {"PriceTrack", "Coletas"}
+
+    def test_serie_por_marca_no_mesmo_btu_e_uma_fonte(self):
+        """Caso Philco: a série por marca (12.000 BTU, padrão) fica no
+        PriceTrack; 25, 26 e 29/09 ficam em branco e a legenda diz isso."""
+        evo = app._evo_build_series(_load(dedup=False), _opts("Brand"))
+        assert evo.empty_reason == ""
+        philco_pts = evo.agg[evo.agg["series"] == "Philco"]
+        assert set(philco_pts["fonte"]) == {"pricetrack"}
+        assert philco_pts["value"].nunique() == 1
+        assert set(philco_pts["data"].dt.date) == set(_PT_DAYS)
+        rep = evo.report.set_index("series").loc["Philco"]
+        assert rep["fonte"] == "pricetrack"
+        assert set(rep["datas_descartadas"]) == _PT_GAPS
+        # O 9K e o portátil não entram na série de 12.000 BTU.
+        assert evo.removed_capacity == len(_SEP)
+        assert evo.removed_format == len(_PT_DAYS)
+
+    def test_uma_linha_por_btu(self):
+        evo = app._evo_build_series(
+            _load(dedup=False), _opts("Brand", capacity=app._EVO_CAP_EACH))
+        fontes = evo.agg.groupby("series")["fonte"].unique().map(list).to_dict()
+        assert fontes == {"Philco · 12.000 BTU": ["pricetrack"],
+                          "Philco · 9.000 BTU": ["coletas"]}
+
+    def test_capacidade_sem_linha_avisa_escopo(self):
+        evo = app._evo_build_series(
+            _load(dedup=False), _opts("Brand", capacity="60000"))
+        assert evo.empty_reason == "scope"
+
+    def test_hiwall_desligado_mantem_portatil(self):
+        """Sem o recorte hi-wall o portátil (mais barato) vira o piso da
+        marca — é o número que o recorte existe para não mostrar."""
+        evo = app._evo_build_series(
+            _load(dedup=False), _opts("Brand", hiwall_only=False))
+        assert evo.removed_format == 0
+        assert set(evo.agg.loc[evo.agg["series"] == "Philco", "value"]) == {2100.0}
+
+    def test_default_da_capacidade_e_12000(self):
+        assert app._EvoOptions(group_by="Brand", metric={}).capacity == "12000"
+
+
+class TestEscopoEFonteNaSaida:
+    def test_excluir_google_vale_com_guarda_desligada(self):
+        """"Excluir Google Shopping" é escopo, não parte da guarda "Dados limpos"."""
+        df = pd.DataFrame([
+            {"data": date(2026, 9, d), "source": "coletas", "sku": "S",
+             "marca": "Midea", "plataforma": plat,
+             "produto": "Split Midea 12000 BTUs", "preco": 2000.0}
+            for d in (1, 2) for plat in ("Google Shopping", "Amazon")])
+        evo = app._evo_build_series(
+            df, _opts("Product", clean=False, exclude_google=True))
+        assert evo.removed_google == 2
+        assert set(evo.work["plataforma"]) == {"Amazon"}
+
+    def test_emails_dizem_a_fonte_do_delta(self):
+        """O delta é por fonte: o e-mail precisa dizer qual, senão o mesmo
+        produto pode aparecer duas vezes sem distinção."""
+        shown = pd.DataFrame([{
+            "produto": "P", "marca": "Midea", "plataforma": "Amazon",
+            "source": "coletas", "price_today": 2100.0, "price_prev": 2000.0,
+            "delta_pct": 5.0}])
+        html, text = app._build_anomaly_email(
+            date(2026, 9, 30), date(2026, 9, 29), 1.0, shown)
+        assert "Fonte" in html and "Coletas" in html
+        assert "/ Coletas]" in text
+        ups = pd.DataFrame([{
+            "produto": "P", "source": "pricetrack", "preco_anterior": 2000.0,
+            "preco_atual": 2200.0, "delta_pct": 10.0}])
+        html, text = app._build_digest_email(
+            date(2026, 9, 22), date(2026, 9, 29), 1, {"P": "Midea"},
+            ups, pd.DataFrame(), pd.Series(dtype=int), 10)
+        assert "Fonte" in html and "PriceTrack" in html
+        assert "[PriceTrack]" in text

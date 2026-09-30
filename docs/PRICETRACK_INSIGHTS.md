@@ -101,6 +101,13 @@ estoque no canal; explosão de sellers desconhecidos sinaliza mercado cinza.
 1. **PriceTrack = preço; coletas = contexto.** Nunca reintroduzir preço de
    scraping onde houver PT para o mesmo `(data, sku)` — a precedência de
    28/05/2026 em `query_price_evolution_data()` é regra de arquitetura.
+   **Refinada em 30/09/2026 para SÉRIES no tempo:** a precedência por dia
+   fazia a série trocar de fonte nos dias sem PT (Philco R$ 13 mil → R$ 2 mil
+   em 25, 26 e 29/09). Gráfico de série usa `dedup_sku_day=False` e
+   `utils.price_series.single_source_per_series`: o PT fica com a série
+   enquanto cobrir ≥ metade dos dias da Coletas, e a Coletas nunca tapa
+   buraco do PT — dia sem PT vira lacuna declarada. Ver CLAUDE.md, "Série de
+   preço = uma fonte".
 2. **Todo insight novo entra pelo catálogo** (`catalogo` + `produtos_depara_nome`):
    se o SKU não resolve, o cruzamento PT×coletas não existe. Manter a fila
    REVISAR perto de zero (auto-resolver + página 🧬) é pré-requisito dos

@@ -79,6 +79,9 @@ query_price_evolution_data()  (merge PriceTrack-precede-coletas) herda os dois a
         • só coletas    → preço 100% das coletas Python
         • só pricetrack → preço 100% do PriceTrack
         • ambas         → merge com precedência por (data, SKU) — como hoje
+        • ambas + dedup_sku_day=False (todo gráfico de SÉRIE no tempo) → as
+          duas fontes inteiras; cada série escolhe UMA fonte
+          (utils.price_series.single_source_per_series, 30/09/2026)
 ```
 
 Funções com `@st.cache_data` cujo resultado depende da fonte recebem
@@ -407,14 +410,20 @@ Filtros não selecionados são simplesmente omitidos da consulta — sem efeito.
 
 **Fluxo interno:**
 ```
-query_price_evolution_data → cache em session_state["evo_df"]
-   → _metric_basis(df, métrica)            (min_price/avg_price no PT; preco nas coletas)
-   → group_by Product ⇒ descarta sku nulo  (mata a linha-fantasma de nome)
-   → guarda "Dados limpos" (placeholder + implausível <R$1.000 + outlier 1,5×)
-   → groupby(["data", série]).agg(value=métrica, n=size)
-   → flag congelada (nunique==1 & dias≥10) ⇒ linha tracejada
-   → Tab Chart: px.line  |  Tab Summary: stats por série  |  Tab Detail: df bruto
-Trocar métrica/guarda re-renderiza do cache — NÃO refaz a query nem mexe nos filtros.
+query_price_evolution_data(dedup_sku_day=False) → cache em session_state["evo_df"]
+   → _evo_build_series(df, _EvoOptions)    (sem Streamlit; testado)
+      → _metric_basis(df, métrica)         (min_price/avg_price no PT; preco nas coletas)
+      → group_by Product ⇒ descarta sku nulo  (mata a linha-fantasma de nome)
+      → Brand/Platform ⇒ só o BTU escolhido (padrão 12.000) e só split hi-wall
+      → UMA fonte por série (utils/price_series.py) — PT enquanto cobrir ≥ metade
+        dos dias da Coletas; a outra fonte nunca tapa buraco
+      → guarda "Dados limpos" (placeholder + implausível <R$1.000 + outlier 1,5×)
+      → groupby(["data", série]).agg(value=métrica, n=size, fonte=first)
+      → flag congelada (nunique==1 & dias≥10) ⇒ linha tracejada
+   → Tab Chart: px.line (● PriceTrack · ◇ Coletas, Fonte no hover, legenda de
+     dias em branco, quadro "Fonte de cada série")
+   → Tab Summary: stats por série + Fonte  |  Tab Detail: df bruto (as duas fontes)
+Trocar métrica/guarda/capacidade re-renderiza do cache — NÃO refaz a query nem mexe nos filtros.
 ```
 
 ---
