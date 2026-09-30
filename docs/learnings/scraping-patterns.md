@@ -119,3 +119,30 @@ Detalhes que importam:
 - Knobs: `LEROY_PDP_RESOLVE=0` desliga, `LEROY_PDP_MAX_PER_RUN` (padrão 40) limita.
 - Diagnóstico: `python scripts/leroy_seller_probe.py --scan "ar condicionado lg"`
   lista os IDs de uma busca e marca quais ainda são desconhecidos.
+
+### Buy box por produto (Set/2026)
+
+Nome do seller e vencedor da buy box são perguntas diferentes. Evidência de
+30/09/2026 (item 3962339062): `marketplaceSellers == [um 3P]`, e o PDP mostra
+"Vendido e entregue por LEROY MERLIN". **A oferta 1P da Leroy não aparece em
+`marketplaceSellers`.** Ter 3P listado não quer dizer que a buy box é 3P, e com
+2+ sellers o índice também não diz quem vence.
+
+- `_resolve_buybox_por_produto` abre o PDP de cada produto **ambíguo**, a cada
+  execução, sem cache persistente (o vencedor é observação do turno). Ambíguo =
+  tem `marketplaceSellers`, exceto código de marketplace (10 dígitos começando
+  por "1") com um único seller: ali a Leroy não vende (0 de 201 produtos 1P em
+  29–30/09 tinham esse código) e a buy box é do único 3P.
+- O vencedor sai só do **rótulo** (`extract_buybox_winner`): texto do DOM
+  hidratado, depois o payload do App Router. JSON de ofertas lista todos os
+  sellers e não diz quem venceu.
+- Leroy vence → linha 1P, `seller_id` None, `Qtd Sellers` + 1. 3P com um único
+  ID listado → o vencedor é esse ID, e o nome vai para o cache de graça. 3P com
+  2+ IDs → `seller_id` só se algum ID listado já tem esse nome; senão None.
+- Sem leitura (bloqueio, orçamento, abort) → fica a classificação do índice.
+  Cinco PDPs seguidos sem rótulo abortam a passada no run. O caminho `requests`
+  é abandonado depois de 3 PDPs íntegros sem rótulo (shell sem hidratar).
+- Knobs: `LEROY_BUYBOX_PDP=0` desliga, `LEROY_BUYBOX_MAX_PER_RUN` (padrão 200).
+  Custo: ~130 PDPs por turno, com o mesmo espaçamento da resolução de nome.
+- Métricas no log de cada keyword: `buybox_pdp_abertos`, `buybox_leroy`,
+  `buybox_3p`, `buybox_sem_leitura`, `resolved_via_buybox_pdp`.

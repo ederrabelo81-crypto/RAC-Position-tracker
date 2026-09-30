@@ -176,6 +176,9 @@ def scraper(tmp_path):
     """Scraper com cache isolado — nenhum teste toca data/leroy_sellers.json."""
     s = LeroyMerlinScraper()
     s._seller_cache = LeroySellerCache(path=tmp_path / "cache.json")
+    # A buy box por produto abre um PDP por hit: desligada por padrão aqui para
+    # nenhum teste ir à rede; `TestBuyBoxPorProduto` liga explicitamente.
+    s._buybox_pdp_enabled = False
     return s
 
 
@@ -1248,3 +1251,263 @@ class TestTextoDeInterfaceNaoEhSeller:
         assert cache.get(SELLER_ID) == "Central Ar"
         assert cache.save() is True  # a limpeza é persistida
         assert LeroySellerCache(path=path).get("5f61118b7dc9a636d40113a2") is None
+
+
+def _pdp_vendido_por(nome: str) -> str:
+    """PDP hidratado, acima de `_PDP_MIN_BYTES`, com o rótulo do bloco de compra."""
+    return ("<html><body>" + "<p>x</p>" * 3_000 +
+            f"<div><span>Vendido e entregue por</span> <b>{nome}</b></div>"
+            "<p>Conheça mais formas de pagamento</p></body></html>")
+
+
+class TestExtractBuyboxWinner:
+    def test_leroy_vira_nome_canonico(self):
+        from utils.leroy_sellers import extract_buybox_winner
+        assert extract_buybox_winner(_pdp_vendido_por("LEROY MERLIN")) == "Leroy Merlin"
+
+    def test_vencedor_3p(self):
+        from utils.leroy_sellers import extract_buybox_winner
+        assert extract_buybox_winner(_pdp_vendido_por("Frio Peças")) == "Frio Peças"
+
+    def test_rotulo_no_payload_do_app_router(self):
+        from utils.leroy_sellers import extract_buybox_winner
+        chunk = json.dumps("Vendido e entregue por Central Ar\n")
+        html = f"<html><body><script>self.__next_f.push([1,{chunk}])</script></body></html>"
+        assert extract_buybox_winner(html) == "Central Ar"
+
+    def test_json_de_ofertas_nao_e_vencedor(self):
+        """Array de ofertas lista todos os sellers; não diz quem venceu."""
+        from utils.leroy_sellers import extract_buybox_winner
+        assert extract_buybox_winner(_pdp_next_data(SELLER_ID, "Frio Total")) is None
+
+    def test_sem_rotulo_e_none(self):
+        from utils.leroy_sellers import extract_buybox_winner
+        assert extract_buybox_winner("<html><body>shell</body></html>") is None
+        assert extract_buybox_winner("") is None
+
+
+class TestBuyBoxPorProduto:
+    """
+    Vencedor da buy box lido no PDP de cada produto ambíguo. Caso do print de
+    30/09/2026: item 3962339062 com um único 3P listado e a Leroy vencendo.
+    """
+
+    OUTRO_ID = "5be5eb765cb50968730358f4"
+
+    @pytest.fixture
+    def bb(self, scraper, monkeypatch):
+        scraper._buybox_pdp_enabled = True
+        scraper._buybox_budget = 50
+        monkeypatch.setattr(scraper, "_random_delay", lambda **kw: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
+        scraper.abertos = []
+        return scraper
+
+    def _pdps(self, bb, monkeypatch, por_url):
+        def fetch(url):
+            bb.abertos.append(url)
+            return por_url.get(url.rsplit("/", 1)[-1])
+        monkeypatch.setattr(bb, "_fetch_pdp_requests", fetch)
+
+    @staticmethod
+    def _hit(pid, sellers, url):
+        return {"name": f"Ar Condicionado {pid}", "objectID": pid,
+                "marketplaceSellers": sellers, "url": url}
+
+    def _parse(self, bb, hits):
+        return bb._parse_algolia_hits(hits, "ar condicionado", {}, 0)
+
+    def test_caso_do_print_leroy_vence_com_3p_listado(self, bb, monkeypatch):
+        bb._seller_cache.put(SELLER_ID, "Frio Total")
+        self._pdps(bb, monkeypatch, {"elgin": _pdp_vendido_por("LEROY MERLIN")})
+
+        rec = self._parse(bb, [self._hit("3962339062", [SELLER_ID], "/elgin")])[0]
+
+        assert rec["Seller / Vendedor"] == "Leroy Merlin"
+        assert rec["Buy Box Seller"] == "Leroy Merlin"
+        assert rec["Tipo Seller"] == "1P"
+        assert rec["Qtd Sellers"] == 2          # o 3P listado + a Leroy
+        assert rec["ID Seller"] is None
+        # o nome do 3P não é contaminado pela vitória da Leroy
+        assert bb._seller_cache.get(SELLER_ID) == "Frio Total"
+
+    def test_vencedor_3p_com_id_unico_ensina_o_nome(self, bb, monkeypatch):
+        self._pdps(bb, monkeypatch, {"p1": _pdp_vendido_por("Refri Center")})
+
+        rec = self._parse(bb, [self._hit("3900000001", [SELLER_ID], "/p1")])[0]
+
+        assert rec["Seller / Vendedor"] == "Refri Center"
+        assert rec["Tipo Seller"] == "3P"
+        assert rec["ID Seller"] == SELLER_ID
+        assert bb._seller_cache.get(SELLER_ID) == "Refri Center"
+        assert bb._seller_metrics["resolved_via_buybox_pdp"] == 1
+
+    def test_nome_aprendido_vale_para_os_outros_hits_da_pagina(self, bb, monkeypatch):
+        """Hit de código de marketplace com seller único não abre PDP, mas herda o nome."""
+        self._pdps(bb, monkeypatch, {"p1": _pdp_vendido_por("Refri Center")})
+
+        recs = self._parse(bb, [
+            self._hit("3900000001", [SELLER_ID], "/p1"),
+            self._hit("1500000009", [SELLER_ID], "/p2"),
+        ])
+
+        assert [r["Seller / Vendedor"] for r in recs] == ["Refri Center"] * 2
+        assert len(bb.abertos) == 1
+
+    def test_varios_ids_vencedor_conhecido_mantem_o_id_certo(self, bb, monkeypatch):
+        bb._seller_cache.put(SELLER_ID, "Frio Total")
+        bb._seller_cache.put(self.OUTRO_ID, "Frio Peças")
+        self._pdps(bb, monkeypatch, {"p1": _pdp_vendido_por("FRIO PEÇAS")})
+
+        rec = self._parse(bb, [self._hit("3900000001", [SELLER_ID, self.OUTRO_ID], "/p1")])[0]
+
+        assert rec["ID Seller"] == self.OUTRO_ID
+        assert rec["Tipo Seller"] == "3P"
+
+    def test_varios_ids_vencedor_desconhecido_nao_chuta_o_id(self, bb, monkeypatch):
+        self._pdps(bb, monkeypatch, {"p1": _pdp_vendido_por("Loja Nova")})
+
+        rec = self._parse(bb, [self._hit("3900000001", [SELLER_ID, self.OUTRO_ID], "/p1")])[0]
+
+        assert rec["Buy Box Seller"] == "Loja Nova"
+        assert rec["ID Seller"] is None
+        # com 2+ IDs, o nome não é atribuído a nenhum deles no cache
+        assert bb._seller_cache.get(SELLER_ID) is None
+
+    def test_codigo_de_marketplace_com_seller_unico_nao_abre_pdp(self, bb, monkeypatch):
+        bb._seller_cache.put(SELLER_ID, "Frio Total")
+        self._pdps(bb, monkeypatch, {})
+
+        rec = self._parse(bb, [self._hit("1500000001", [SELLER_ID], "/p1")])[0]
+
+        assert bb.abertos == []
+        assert rec["Seller / Vendedor"] == "Frio Total"
+
+    def test_produto_1p_nao_abre_pdp(self, bb, monkeypatch):
+        self._pdps(bb, monkeypatch, {})
+        self._parse(bb, [{"name": "Split", "objectID": "3900000001", "url": "/p1"}])
+        assert bb.abertos == []
+
+    def test_mesma_url_no_run_abre_um_pdp_so(self, bb, monkeypatch):
+        self._pdps(bb, monkeypatch, {"p1": _pdp_vendido_por("LEROY MERLIN")})
+        hit = self._hit("3900000001", [SELLER_ID, self.OUTRO_ID], "/p1")
+
+        self._parse(bb, [hit])
+        rec = self._parse(bb, [hit])[0]
+
+        assert len(bb.abertos) == 1
+        assert rec["Tipo Seller"] == "1P"
+
+    def test_sem_leitura_fica_a_classificacao_do_indice(self, bb, monkeypatch):
+        bb._seller_cache.put(SELLER_ID, "Frio Total")
+        self._pdps(bb, monkeypatch, {})
+
+        rec = self._parse(bb, [self._hit("3900000001", [SELLER_ID], "/p1")])[0]
+
+        assert rec["Seller / Vendedor"] == "Frio Total"
+        assert rec["Tipo Seller"] == "3P"
+        assert bb._seller_metrics["buybox_sem_leitura"] == 1
+
+    def test_aborta_depois_de_falhas_seguidas(self, bb, monkeypatch):
+        self._pdps(bb, monkeypatch, {})
+        hits = [self._hit(f"39000000{i:02d}", [SELLER_ID, self.OUTRO_ID], f"/p{i}")
+                for i in range(10)]
+
+        self._parse(bb, hits)
+
+        assert bb._seller_metrics["buybox_pdp_abertos"] == 5
+        assert bb._buybox_abortado is True
+
+    def test_orcamento_limita_os_pdps(self, bb, monkeypatch):
+        bb._buybox_budget = 2
+        self._pdps(bb, monkeypatch, {f"p{i}": _pdp_vendido_por("LEROY MERLIN") for i in range(4)})
+        hits = [self._hit(f"39000000{i:02d}", [SELLER_ID, self.OUTRO_ID], f"/p{i}")
+                for i in range(4)]
+
+        monkeypatch.setattr(bb, "_resolve_pending_sellers", lambda pending: {})
+
+        recs = self._parse(bb, hits)
+
+        assert len(bb.abertos) == 2
+        assert [r["Tipo Seller"] for r in recs] == ["1P", "1P", "3P", "3P"]
+
+    def test_pdp_da_resolucao_de_nome_decide_o_produto_fora_do_orcamento(
+        self, bb, monkeypatch
+    ):
+        """Orçamento de buy box zerado, mas o PDP da resolução de nome mostrou o vencedor."""
+        bb._buybox_budget = 0
+        self._pdps(bb, monkeypatch, {"p1": _pdp_vendido_por("LEROY MERLIN")})
+
+        rec = self._parse(bb, [self._hit("3900000001", [SELLER_ID], "/p1")])[0]
+
+        assert rec["Tipo Seller"] == "1P"
+        assert rec["Seller / Vendedor"] == "Leroy Merlin"
+
+    def test_requests_sem_rotulo_vai_para_o_browser(self, bb, monkeypatch):
+        shell = "<html><body>" + "<p>x</p>" * 3_000 + "</body></html>"
+        chamadas = {"requests": 0, "browser": 0}
+
+        def via_requests(url):
+            chamadas["requests"] += 1
+            return shell
+
+        def via_browser(url):
+            chamadas["browser"] += 1
+            return _pdp_vendido_por("LEROY MERLIN")
+
+        monkeypatch.setattr(bb, "_fetch_pdp_requests", via_requests)
+        monkeypatch.setattr(bb, "_fetch_pdp_browser", via_browser)
+        hits = [self._hit(f"39000000{i:02d}", [SELLER_ID, self.OUTRO_ID], f"/p{i}")
+                for i in range(5)]
+
+        recs = self._parse(bb, hits)
+
+        assert all(r["Tipo Seller"] == "1P" for r in recs)
+        assert chamadas["browser"] == 5
+        # depois de 3 shells sem rótulo o caminho leve é pulado
+        assert chamadas["requests"] == 3
+
+    def test_pdp_da_resolucao_de_nome_alimenta_a_buy_box(self, scraper, monkeypatch):
+        """PDP baixado para descobrir um nome já diz quem vence aquele produto."""
+        monkeypatch.setattr(
+            scraper, "_fetch_pdp_requests", lambda url: _pdp_vendido_por("LEROY MERLIN")
+        )
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
+
+        scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/a")
+
+        assert scraper._buybox_lidos["https://exemplo/a"] == "Leroy Merlin"
+
+
+class TestBuyBoxSemPdpDuplicado:
+    """Revisão do PR: um PDP por URL no run, e leitura boa substitui falha."""
+    def test_falha_na_buy_box_nao_reabre_a_mesma_url_na_resolucao_de_nome(
+        self, scraper, monkeypatch
+    ):
+        scraper._buybox_pdp_enabled = True
+        abertos = []
+        monkeypatch.setattr(scraper, "_random_delay", lambda **kw: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
+        monkeypatch.setattr(
+            scraper, "_fetch_pdp_requests", lambda url: abertos.append(url) or None
+        )
+
+        scraper._parse_algolia_hits(
+            [{"name": "Split", "objectID": "3900000001",
+              "marketplaceSellers": [SELLER_ID], "url": "/p1"}],
+            "ar condicionado", {}, 0,
+        )
+
+        assert len(abertos) == 1
+
+    def test_leitura_boa_substitui_falha_anterior(self, scraper, monkeypatch):
+        url = "https://exemplo/a"
+        scraper._buybox_lidos[url] = None
+        monkeypatch.setattr(
+            scraper, "_fetch_pdp_requests", lambda u: _pdp_vendido_por("LEROY MERLIN")
+        )
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda u: None)
+
+        scraper._resolve_via_pdp(SELLER_ID, url)
+
+        assert scraper._buybox_lidos[url] == "Leroy Merlin"

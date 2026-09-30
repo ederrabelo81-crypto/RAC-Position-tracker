@@ -483,6 +483,52 @@ def _from_text(html: str) -> Optional[str]:
     return None
 
 
+# Nome canônico do sortimento próprio — o mesmo que o scraper grava quando o
+# hit não tem `marketplaceSellers`.
+LEROY_CANONICAL = "Leroy Merlin"
+
+
+def extract_buybox_winner(html: str) -> Optional[str]:
+    """
+    Vencedor da buy box de um PDP: o nome sob "Vendido e entregue por".
+
+    Diferente de `extract_seller_from_pdp`, que procura o nome de um seller ID
+    específico (e por isso descarta a própria Leroy), aqui a pergunta é **quem
+    vende a oferta principal** — e a resposta pode ser a Leroy. A oferta 1P da
+    Leroy não aparece em `marketplaceSellers`, então um produto com um 3P
+    listado pode ter a Leroy vencendo (item 3962339062, 30/09/2026).
+
+    Só lê o rótulo, nunca os JSONs de ofertas: um array de ofertas lista todos
+    os sellers, não diz quem venceu. Ordem: texto do DOM (HTML hidratado),
+    depois o payload do App Router. A primeira ocorrência do rótulo é a do
+    bloco de compra, que vem antes da seção de outras ofertas.
+
+    Args:
+        html: HTML do PDP (idealmente já hidratado pelo browser).
+
+    Returns:
+        Nome do vencedor — ``"Leroy Merlin"`` quando é a própria Leroy — ou
+        None quando o rótulo não está no HTML (shell não hidratado, bloqueio).
+    """
+    if not html:
+        return None
+    try:
+        name = _from_text(html)
+    except Exception as exc:  # HTML corrompido não pode derrubar a coleta
+        logger.debug(f"[LeroySellers] Falha ao ler o rótulo do PDP: {exc}")
+        name = None
+    if not name:
+        try:
+            match = _PDP_LABEL_RE.search(next_flight_text(html))
+        except Exception as exc:
+            logger.debug(f"[LeroySellers] Falha ao ler o payload do App Router: {exc}")
+            match = None
+        name = clean_seller_name(match.group(1)) if match else None
+    if not name:
+        return None
+    return LEROY_CANONICAL if is_leroy_self(name) else name
+
+
 def extract_seller_with_layer(
     html: str,
     seller_id: Optional[str] = None,

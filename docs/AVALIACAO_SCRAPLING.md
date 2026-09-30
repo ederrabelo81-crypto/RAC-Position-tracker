@@ -95,14 +95,15 @@ Conferido no Supabase (28–30/09/2026):
    O cache em disco é revalidado ao carregar, então o nome inválido sai e o ID
    volta a ser resolvido.
 
-**Não corrigido (a buy box por produto), e é o que o print pede:** mesmo com o
-nome do 3P resolvido, a linha do item do print gravaria o 3P como buy box,
-quando quem vence é a Leroy. O índice não diz quem ganha a buy box, só o PDP.
-A correção é a mesma da Amazon: abrir o PDP **por produto** (não por seller)
-quando o produto é de catálogo da Leroy e tem `marketplaceSellers`, e gravar o
-vencedor observado. São ~150 produtos distintos por turno, com o mesmo teto e
-o mesmo espaçamento do resolver atual. De quebra, o PDP dá o preço da buy box
-no lugar de `averagePromotionalPrice`.
+**Buy box por produto (implementado em seguida):** resolver o nome não bastava.
+A linha do print gravaria o 3P como buy box, quando quem vence é a Leroy, e o
+índice não diz quem ganha. Agora cada produto ambíguo tem o PDP aberto **a cada
+execução** e o vencedor lido no rótulo "Vendido e entregue por" é gravado, como
+na Amazon (sem cache persistente: é observação do turno). Ambíguo = tem
+`marketplaceSellers` e não é "código de marketplace com um único seller", caso
+em que a buy box é necessariamente desse seller. São ~130 PDPs por turno
+(medido em 29–30/09/2026). Detalhes em `docs/learnings/scraping-patterns.md`.
+O preço da buy box no PDP ficou de fora: segue `averagePromotionalPrice`.
 
 **Outras pendências:**
 
