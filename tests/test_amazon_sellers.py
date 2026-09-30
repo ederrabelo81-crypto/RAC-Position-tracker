@@ -91,6 +91,26 @@ class TestExtractSellerFromPdp:
         assert extract_seller_from_pdp("") is None
 
 
+class TestBylineDeMarcaNaoEVendedor:
+    """`#bylineInfo` é o link da loja da MARCA — gravava "Visite a loja PHILCO"
+    como vencedor da buy box quando o bloco de compra não carregava."""
+
+    def test_pdp_so_com_byline_nao_tem_vendedor(self):
+        html = '<div id="bylineInfo"><a>Visite a loja PHILCO</a></div>'
+        assert extract_seller_from_pdp(html) is None
+
+    def test_byline_nao_sobrepoe_o_vendedor_real(self):
+        html = (
+            '<div id="bylineInfo"><a>Marca: TCL</a></div>'
+            '<div id="merchant-info">Vendido por Frigelar</div>'
+        )
+        assert extract_seller_from_pdp(html) == "Frigelar"
+
+    def test_clean_rejeita_byline(self):
+        assert clean_seller_name("Visite a loja LG") is None
+        assert clean_seller_name("Marca: Haier") is None
+
+
 class TestCleanSellerName:
     def test_remove_prefixo_e_espacos(self):
         assert clean_seller_name("  Vendido por:  LojaX  ") == "LojaX"

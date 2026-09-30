@@ -37,10 +37,76 @@ from typing import Dict, List, Optional
 __all__ = [
     "SELLER_GROUPS",
     "normalize_seller_name",
+    "strip_comparador_suffix",
+    "is_brand_byline",
     "seller_key",
     "variants_for",
     "canonical_names",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Ruído de captura — texto que veio no lugar do seller e NÃO é um lojista
+# ---------------------------------------------------------------------------
+# Byline de MARCA da Amazon ("Visite a loja PHILCO", "Marca: TCL"): é o link da
+# loja do fabricante no topo do PDP, não o vendedor da buy box. Chegou à base
+# porque o fallback do PDP lia `#bylineInfo` quando o bloco de compra não
+# carregava (conferido em 30/09/2026: 21 grafias, ~560 linhas em 2 dias).
+# Tratar como seller transferiria buy box para a marca — o vendedor real
+# simplesmente não foi observado, e o campo fica vazio.
+_RE_BYLINE_MARCA = re.compile(r"^(?:visite\s+a\s+loja|marca\s*:)", re.IGNORECASE)
+
+# Sufixo "e mais" do Google Shopping: o card mostra "<loja> e mais" quando há
+# outras lojas ofertando o mesmo produto, em dois <span> que o
+# `get_text(strip=True)` colava sem espaço — "Magalue mais", "Frigelare mais".
+# Conferido em 30/09/2026: 82% das linhas do Google Shopping (131 grafias) e
+# ZERO fora dele. Minúsculo de propósito: "Compre Mais" (loja real, "M" maiúsculo)
+# não casa. Um seller minúsculo terminado em " e mais" fora do comparador seria
+# cortado — por isso a função é separada de `normalize_seller_name` e quem a
+# chama decide pelo contexto (plataforma = comparador).
+_RE_COMPARADOR_E_MAIS = re.compile(r"\s*e mais$")
+
+
+def is_brand_byline(raw: Optional[str]) -> bool:
+    """True quando o texto é o byline de marca da Amazon, não um vendedor.
+
+    Args:
+        raw: texto capturado no lugar do seller.
+
+    Returns:
+        True para "Visite a loja X" / "Marca: X".
+
+    Example:
+        >>> is_brand_byline("Visite a loja PHILCO")
+        True
+        >>> is_brand_byline("Loja Electrolux")
+        False
+    """
+    if not raw:
+        return False
+    return bool(_RE_BYLINE_MARCA.match(" ".join(str(raw).split())))
+
+
+def strip_comparador_suffix(raw: Optional[str]) -> Optional[str]:
+    """Remove o sufixo "e mais" que o Google Shopping cola no nome da loja.
+
+    Args:
+        raw: seller como veio do card do comparador.
+
+    Returns:
+        O nome sem o sufixo; None se não sobrar nada.
+
+    Example:
+        >>> strip_comparador_suffix("Magalue mais")
+        'Magalu'
+        >>> strip_comparador_suffix("Compre Mais")
+        'Compre Mais'
+    """
+    if raw is None:
+        return None
+    text = " ".join(str(raw).split())
+    text = _RE_COMPARADOR_E_MAIS.sub("", text).strip()
+    return text or None
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +328,9 @@ def normalize_seller_name(raw: Optional[str]) -> Optional[str]:
         raw: nome como veio da coleta (`Buy Box Seller` / `Seller / Vendedor`).
 
     Returns:
-        Nome canônico, o nome original limpo, ou None quando não há nome.
+        Nome canônico, o nome original limpo, ou None quando não há nome —
+        inclusive quando o texto é o byline de marca da Amazon
+        ("Visite a loja X"), que não é vendedor.
 
     Example:
         >>> normalize_seller_name("continentalcenter")
@@ -276,6 +344,10 @@ def normalize_seller_name(raw: Optional[str]) -> Optional[str]:
 
     cleaned = " ".join(str(raw).replace("®", " ").replace("™", " ").split())
     if not cleaned:
+        return None
+
+    if is_brand_byline(cleaned):
+        # Link da loja da MARCA, não vendedor — ver `_RE_BYLINE_MARCA`.
         return None
 
     key = seller_key(cleaned)

@@ -42,6 +42,8 @@ from typing import Any, Dict, Optional
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from utils.seller_names import is_brand_byline
+
 # Raiz do repositório — o cache vive em data/ para sobreviver entre execuções.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CACHE_PATH = _REPO_ROOT / "data" / "amazon_sellers.json"
@@ -89,14 +91,19 @@ _RE_FULFILLMENT = re.compile(
 )
 
 #: Seletores do bloco de compra do PDP, do mais específico ao mais genérico.
+#:
+#: `#bylineInfo` ficou FORA de propósito (30/09/2026): é o link da loja da
+#: MARCA no topo do PDP ("Visite a loja PHILCO", "Marca: TCL"), não o vendedor.
+#: Como último seletor ele só entrava quando o bloco de compra não carregava —
+#: exatamente o caso em que a buy box não foi observada — e gravava a marca
+#: como vencedora (~560 linhas em 2 dias). Sem vendedor visível, o campo fica
+#: vazio; o fallback por texto ("Vendido por") abaixo continua valendo.
 _PDP_SELLER_SELECTORS = (
     "#sellerProfileTriggerId",
     "#merchant-info a",
     "#merchant-info",
     "#tabular-buybox .tabular-buybox-text[tabular-attribute-name='Vendido por']",
     "#tabular-buybox .tabular-buybox-text",
-    "[data-feature-name='bylineInfo'] a",
-    "#bylineInfo",
 )
 
 
@@ -147,6 +154,11 @@ def clean_seller_name(raw: Any) -> Optional[str]:
     if not text or len(text) > 80:
         return None
     if re.fullmatch(r"[\d\s.,R$%]+", text):
+        return None
+    # Byline de marca ("Visite a loja X") não é vendedor — ver
+    # `_PDP_SELLER_SELECTORS`. Barrado aqui também porque o texto pode chegar
+    # por outro caminho (cache antigo, layout novo).
+    if is_brand_byline(text):
         return None
     return text
 

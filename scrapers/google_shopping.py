@@ -37,6 +37,7 @@ from config import MAX_PAGES, LOGS_DIR, PAGE_TIMEOUT
 from scrapers.base import BaseScraper
 from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
 from utils.brands import extract_brand
+from utils.seller_names import strip_comparador_suffix
 from utils.text import parse_price, parse_rating, parse_review_count
 
 # ---------------------------------------------------------------------------
@@ -511,11 +512,18 @@ class GoogleShoppingScraper(BaseScraper):
 
     @staticmethod
     def _extract_seller(item: Tag) -> Optional[str]:
-        """Extrai nome do vendedor/loja do card."""
+        """Extrai nome do vendedor/loja do card.
+
+        O card escreve "<loja> e mais" em dois ``<span>`` quando outras lojas
+        ofertam o mesmo produto; ``get_text(strip=True)`` sem separador colava
+        os dois ("Magalue mais") e o de-para de seller nunca reconhecia a loja
+        — 82% das linhas do comparador ficaram assim até 30/09/2026. O sufixo
+        sai aqui; o número de lojas já vem de ``_extract_merchants_count``.
+        """
         for seller_sel in _SELECTORS["seller_candidates"]:
             seller_el = item.select_one(seller_sel)
             if seller_el:
-                seller = seller_el.get_text(strip=True)
+                seller = strip_comparador_suffix(seller_el.get_text(" ", strip=True))
                 if (seller
                     and len(seller) > 2
                     and len(seller) < 100
