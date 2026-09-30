@@ -328,3 +328,91 @@ class TestGapFill:
 
         monkeypatch.setattr("utils.history.get_store", _explode)
         assert app._history_gap_fill(date(2026, 3, 1), date(2026, 3, 31), set()).empty
+
+
+class TestJanelaCurtaDosDropdowns:
+    """Regressão de 30/09/2026: tela em branco depois do deploy.
+
+    A barra lateral lia 120 dias do histórico do Drive para montar os
+    dropdowns; num container novo (cache vazio) cada partição era baixada uma
+    a uma antes de qualquer coisa aparecer — mais de 5 minutos em branco.
+    """
+
+    class _StoreEspiao:
+        def __init__(self):
+            self.inicios = []
+
+        def read(self, dataset, start=None, end=None, columns=None, **_kw):
+            self.inicios.append((start, end))
+            return pd.DataFrame()
+
+    def test_opcoes_de_filtro_leem_no_maximo_14_dias(self, monkeypatch):
+        espiao = self._StoreEspiao()
+        monkeypatch.setattr(app, "_history_store", lambda: espiao)
+        app._filter_options_do_historico()
+        (inicio, fim), = espiao.inicios
+        assert (fim - inicio).days <= 14
+
+    def test_lista_de_skus_le_no_maximo_14_dias(self, monkeypatch):
+        espiao = self._StoreEspiao()
+        monkeypatch.setattr(app, "_history_store", lambda: espiao)
+
+
+        class _ClienteQueFalha:
+            def table(self, *_a, **_k):
+                raise RuntimeError("banco fora")
+
+        monkeypatch.setattr(app, "_get_supabase", lambda: _ClienteQueFalha())
+        app.get_sku_options.clear()
+        try:
+            app.get_sku_options()
+            # O banco falha e a função segue para o histórico frio — é essa
+            # leitura que tem que respeitar a janela curta.
+            (inicio, fim), = espiao.inicios
+            assert (fim - inicio).days <= 14
+        finally:
+            # O resultado vazio do dublê não pode vazar em cache para os
+            # próximos testes do mesmo processo.
+            app.get_sku_options.clear()
+
+    def test_periodo_longo_inclui_o_trecho_antigo(self, monkeypatch):
+        """Seller/SKU que só aparece num período antigo continua selecionável."""
+        from datetime import timedelta
+        espiao = self._StoreEspiao()
+        monkeypatch.setattr(app, "_history_store", lambda: espiao)
+        monkeypatch.setattr(app, "_get_supabase", lambda: None)
+        hoje = date.today()
+        app.st.session_state["gf_dates"] = (hoje - timedelta(days=60), hoje)
+        app.get_filter_options.clear()
+        try:
+            app.get_filter_options()
+            inicios = sorted(i for i, _ in espiao.inicios)
+            assert inicios[0] == hoje - timedelta(days=60)
+            assert len(espiao.inicios) == 2  # últimos 14 dias + trecho antigo
+        finally:
+            app.get_filter_options.clear()
+            app.st.session_state.pop("gf_dates", None)
+
+    def test_janelas_do_periodo_padrao_sao_so_os_14_dias(self):
+        from datetime import timedelta
+        hoje = date.today()
+        janelas = app._janelas_historico_opcoes(hoje - timedelta(days=7), hoje)
+        assert janelas == ((hoje - timedelta(days=14), hoje),)
+
+    def test_janelas_de_periodo_antigo_nao_se_sobrepoem(self):
+        from datetime import timedelta
+        hoje = date.today()
+        ini, fim = hoje - timedelta(days=90), hoje - timedelta(days=60)
+        base, antigo = app._janelas_historico_opcoes(ini, fim)
+        assert base == (hoje - timedelta(days=14), hoje)
+        assert antigo == (ini, fim)
+
+    def test_janelas_de_periodo_que_cruza_o_corte(self):
+        from datetime import timedelta
+        hoje = date.today()
+        base, antigo = app._janelas_historico_opcoes(hoje - timedelta(days=30), hoje)
+        assert antigo == (hoje - timedelta(days=30), hoje - timedelta(days=15))
+        assert antigo[1] < base[0]
+
+    def test_constante_documenta_o_limite(self):
+        assert app._HISTORICO_OPCOES_DIAS <= 14
