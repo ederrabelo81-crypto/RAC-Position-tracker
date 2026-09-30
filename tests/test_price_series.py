@@ -100,6 +100,27 @@ class TestUmaFontePorSerie:
         _, rep = single_source_per_series(df, ["marca"])
         assert rep.iloc[0]["fonte"] == "pricetrack"
 
+    def test_exatamente_metade_fica_no_pricetrack(self):
+        """Fronteira da regra: PT 4 dias × Coletas 8 → PT (4 ≥ 0,5 × 8)."""
+        df = pd.DataFrame(
+            _rows("X", "pricetrack", range(1, 5), 1.0)
+            + _rows("X", "coletas", range(1, 9), 2.0))
+        assert pick_series_sources(df, ["marca"])["fonte"].iloc[0] == "pricetrack"
+        abaixo = pd.DataFrame(
+            _rows("X", "pricetrack", range(1, 4), 1.0)
+            + _rows("X", "coletas", range(1, 9), 2.0))
+        assert pick_series_sources(abaixo, ["marca"])["fonte"].iloc[0] == "coletas"
+
+    def test_fonte_desconhecida_nunca_vence_fonte_conhecida(self):
+        sem = [{"data": d(x), "marca": "X", "source": None, "preco": 9.0} for x in range(1, 8)]
+        df = pd.DataFrame(_rows("X", "pricetrack", [1], 1.0) + sem)
+        kept, rep = single_source_per_series(df, ["marca"])
+        assert rep["fonte"].iloc[0] == "pricetrack"
+        assert set(kept["source"]) == {"pricetrack"}
+        assert rep["fontes_descartadas"].iloc[0] == ("desconhecida",)
+        so_sem = pd.DataFrame(sem)
+        assert pick_series_sources(so_sem, ["marca"])["fonte"].iloc[0] == "desconhecida"
+
     def test_limiar_configuravel(self):
         df = pd.DataFrame(
             _rows("X", "pricetrack", [1, 2, 3], 1.0)
@@ -216,6 +237,13 @@ class TestCapacidade:
         assert out.tolist()[:3] == [18000, 12000, 24000]
         assert pd.isna(out.iloc[3])
         assert str(out.dtype) == "Int64"
+
+    def test_catalogo_com_milhar_brasileiro(self):
+        """"12.000" do catálogo é 12000 BTU, não 12 (pd.to_numeric daria 12.0)."""
+        df = pd.DataFrame({"sku": ["A", "B", "C", "D"], "produto": [None] * 4})
+        out = capacity_btu(df, {"A": "12.000", "B": 9000.0, "C": "18000", "D": "?"})
+        assert out.tolist()[:3] == [12000, 9000, 18000]
+        assert pd.isna(out.iloc[3])
 
     def test_titulo_do_pricetrack_quando_produto_nao_diz(self):
         df = pd.DataFrame({"sku": ["S"], "produto": ["AR SPLIT MIDEA"],

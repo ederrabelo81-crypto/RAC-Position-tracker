@@ -395,7 +395,7 @@ em `_evo_build_series` (sem Streamlit, testado em
    branco e é listado na legenda ("Philco (PriceTrack) sem 25–26/09, 29/09").
    Marcador ● PriceTrack · ◇ Coletas em todo ponto; `Fonte` no hover.
 3. **"Mais dias vence" puro não serve:** o último dia de toda janela que
-   termina hoje não tem PriceTrack até o import intra-dia/D-1 — a regra pura
+   termina hoje não tem PriceTrack até o import D-1 (06:00 BRT do dia seguinte) — a regra pura
    passaria TODAS as séries para as coletas durante o dia.
 4. **Preço por marca/plataforma só no mesmo BTU e só split hi-wall.** Price
    Evolution em Brand/Platform tem seletor de capacidade (padrão 12.000 BTU,

@@ -423,3 +423,37 @@ class TestUmaFontePorSerie:
 
     def test_default_da_capacidade_e_12000(self):
         assert app._EvoOptions(group_by="Brand", metric={}).capacity == "12000"
+
+
+class TestEscopoEFonteNaSaida:
+    def test_excluir_google_vale_com_guarda_desligada(self):
+        """"Excluir Google Shopping" é escopo, não parte da guarda "Dados limpos"."""
+        df = pd.DataFrame([
+            {"data": date(2026, 9, d), "source": "coletas", "sku": "S",
+             "marca": "Midea", "plataforma": plat,
+             "produto": "Split Midea 12000 BTUs", "preco": 2000.0}
+            for d in (1, 2) for plat in ("Google Shopping", "Amazon")])
+        evo = app._evo_build_series(
+            df, _opts("Product", clean=False, exclude_google=True))
+        assert evo.removed_google == 2
+        assert set(evo.work["plataforma"]) == {"Amazon"}
+
+    def test_emails_dizem_a_fonte_do_delta(self):
+        """O delta é por fonte: o e-mail precisa dizer qual, senão o mesmo
+        produto pode aparecer duas vezes sem distinção."""
+        shown = pd.DataFrame([{
+            "produto": "P", "marca": "Midea", "plataforma": "Amazon",
+            "source": "coletas", "price_today": 2100.0, "price_prev": 2000.0,
+            "delta_pct": 5.0}])
+        html, text = app._build_anomaly_email(
+            date(2026, 9, 30), date(2026, 9, 29), 1.0, shown)
+        assert "Fonte" in html and "Coletas" in html
+        assert "/ Coletas]" in text
+        ups = pd.DataFrame([{
+            "produto": "P", "source": "pricetrack", "preco_anterior": 2000.0,
+            "preco_atual": 2200.0, "delta_pct": 10.0}])
+        html, text = app._build_digest_email(
+            date(2026, 9, 22), date(2026, 9, 29), 1, {"P": "Midea"},
+            ups, pd.DataFrame(), pd.Series(dtype=int), 10)
+        assert "Fonte" in html and "PriceTrack" in html
+        assert "[PriceTrack]" in text

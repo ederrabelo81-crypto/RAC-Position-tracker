@@ -460,6 +460,7 @@ agg = df.groupby(["data", "marca"])["preco"].agg(_mode_price)  # dia sem PT sai 
 ✅ **Certo**
 ```python
 df, _ = query_price_evolution_data(inicio, fim, brands=..., dedup_sku_day=False)
+df["btu"] = capacity_btu(df, sku_to_btu)                       # catálogo por SKU, senão título
 df, rep = single_source_per_series(df, ["marca", "btu"])       # utils/price_series.py
 ```
 

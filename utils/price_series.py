@@ -21,9 +21,10 @@ Regras que valem para toda série de preço do dashboard:
    preço do projeto) fica com a série enquanto cobrir ao menos METADE dos dias
    que a Coletas cobre; abaixo disso a série passa para a fonte que cobre mais
    dias. Por que não "mais dias vence" puro: o último dia de toda janela que
-   termina hoje não tem PriceTrack até o import intra-dia/D-1, e as coletas
-   têm — a regra pura passaria TODAS as séries para as coletas durante o dia e
-   de volta ao PriceTrack à noite, o mesmo degrau que isto existe para matar.
+   termina hoje não tem PriceTrack até o import D-1 (06:00 BRT do dia
+   seguinte), e as coletas têm — a regra pura passaria TODAS as séries para
+   as coletas durante o dia e de volta ao PriceTrack na manhã seguinte, o
+   mesmo degrau que isto existe para matar.
 2. **A outra fonte nunca tapa buraco.** Dia sem a fonte escolhida fica em
    branco no gráfico e é listado na legenda de cobertura: silêncio da fonte
    não é mudança de mercado.
@@ -34,6 +35,8 @@ Regras que valem para toda série de preço do dashboard:
 """
 from __future__ import annotations
 
+import math
+import re
 from datetime import date
 from typing import Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -165,10 +168,16 @@ def _choose(stats: pd.DataFrame, prefer: str, min_prefer_share: float) -> pd.Ser
     A preferida fica com a série se aparecer e cobrir ao menos
     `min_prefer_share` dos dias da melhor outra fonte; senão vence a fonte com
     mais dias (empate entre as outras → ordem alfabética, determinística).
+    Linha sem fonte (`_SEM_FONTE`) nunca vence uma série que tenha fonte
+    conhecida — só fica com a série quando não há outra.
     """
     piv = stats.pivot(index="_sid", columns="_src", values="dias").fillna(0)
-    piv = piv.reindex(sorted(piv.columns), axis=1)
+    known = sorted(c for c in piv.columns if c != _SEM_FONTE)
+    if not known:
+        return pd.Series(_SEM_FONTE, index=piv.index, dtype="object")
+    piv = piv[known]
     best = piv.idxmax(axis=1)  # 1ª coluna no empate → alfabética
+    best = best.where(piv.max(axis=1) > 0, _SEM_FONTE)
     if prefer not in piv.columns:
         return best
     pref_days = piv[prefer]
@@ -323,9 +332,33 @@ def coverage_caption(
     return "; ".join(parts)
 
 
+_BTU_MILHAR_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})+")
+
+
+def _btu_value(value: object) -> Optional[int]:
+    """BTU do catálogo como inteiro: ``12000``, ``12000.0``, ``"12000"`` e
+    ``"12.000"`` (milhar brasileiro) → 12000; vazio/ilegível → None.
+
+    `pd.to_numeric("12.000")` daria 12.0 — o produto sairia como "12 BTU" e
+    sumiria do recorte de 12.000 BTU sem aviso nenhum.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if _BTU_MILHAR_RE.fullmatch(s):
+            return int(re.sub(r"[.,]", "", s))
+        value = s
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(round(num)) if math.isfinite(num) else None
+
+
 def capacity_btu(
     df: pd.DataFrame,
-    sku_to_btu: Optional[Mapping[str, int]] = None,
+    sku_to_btu: Optional[Mapping[str, object]] = None,
     *,
     sku_col: str = "sku",
     text_cols: Sequence[str] = ("produto", "title"),
@@ -344,8 +377,9 @@ def capacity_btu(
         return out
     if sku_to_btu and sku_col in df.columns:
         sk = df[sku_col].astype("string").str.strip()
-        mapped = sk.map(lambda s: sku_to_btu.get(s) if isinstance(s, str) else None)
-        out = pd.to_numeric(mapped, errors="coerce").round().astype("Int64")
+        mapped = sk.map(
+            lambda s: _btu_value(sku_to_btu.get(s)) if isinstance(s, str) else None)
+        out = pd.Series(pd.array(mapped.tolist(), dtype="Int64"), index=df.index)
     for col in text_cols:
         missing = out.isna()
         if not missing.any():

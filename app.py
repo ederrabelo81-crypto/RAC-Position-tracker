@@ -1030,8 +1030,9 @@ def _catalog_capacity() -> tuple[dict, set]:
     skus = cat["sku"].astype(str).str.strip()
     btu_map: dict = {}
     if "capacidade_btu" in cat.columns:
-        btu = pd.to_numeric(cat["capacidade_btu"], errors="coerce")
-        btu_map = {k: int(v) for k, v in zip(skus, btu) if pd.notna(v)}
+        # Valor cru: `capacity_btu` converte (inclusive "12.000" com milhar
+        # brasileiro, que `pd.to_numeric` leria como 12).
+        btu_map = {k: v for k, v in zip(skus, cat["capacidade_btu"]) if pd.notna(v)}
     return btu_map, set(skus)
 
 
@@ -1057,7 +1058,8 @@ def _mark_trace_sources(fig, fonte_by_name: dict) -> None:
     (`utils.price_series.single_source_per_series`).
     """
     for tr in fig.data:
-        tr.marker.symbol = _SOURCE_SYMBOLS.get(fonte_by_name.get(tr.name), "circle")
+        # Fonte desconhecida nunca herda o círculo do PriceTrack.
+        tr.marker.symbol = _SOURCE_SYMBOLS.get(fonte_by_name.get(tr.name), "x")
 
 
 def _source_coverage_md(
@@ -4688,7 +4690,8 @@ def _evo_build_series(
         out.empty_reason = "no_price"
         return out
 
-    if opts.clean and opts.exclude_google:
+    # Independe da guarda "Dados limpos": é escopo pedido pelo usuário.
+    if opts.exclude_google:
         g_mask = (
             (work["source"].astype("string") == "coletas")
             & work["plataforma"].astype("string").str.contains(
@@ -5053,11 +5056,15 @@ def page_price_evolution():
         st.warning("No records with price data in this range.")
         return
     if evo.empty_reason == "scope":
+        cap_txt = ("com BTU identificável" if evo_cap == _EVO_CAP_EACH
+                   else f"em **{_format_btu(evo_cap)}**")
         st.warning(
-            f"Nenhuma linha de preço em **{_format_btu(evo_cap)}**"
+            f"Nenhuma linha de preço {cap_txt}"
             + (" (split hi-wall)" if evo_hiwall else "")
             + " no recorte carregado. Troque a **Capacidade da série** na barra "
-              "lateral ou escolha **Uma linha por BTU**.")
+              "lateral"
+            + (" ou escolha **Uma linha por BTU**." if evo_cap != _EVO_CAP_EACH
+               else " ou desligue **Só split hi-wall**."))
         return
     if evo.empty_reason == "clean":
         st.warning("All rows were filtered out by the data-quality guard. "
@@ -5131,7 +5138,10 @@ def page_price_evolution():
             elif clean_on:
                 st.caption("🧹 Dados limpos: nenhum ponto removido.")
             else:
-                st.caption("⚠️ Guarda **desligada** — placeholders e outliers visíveis.")
+                st.caption(
+                    "⚠️ Guarda **desligada** — placeholders e outliers visíveis."
+                    + (f" Google Shopping: {removed_google} ponto(s) fora."
+                       if removed_google else ""))
 
         for _m in coverage_msgs:
             st.warning(_m)
@@ -9602,11 +9612,17 @@ def page_top_movers() -> None:
     )
 
 
+def _email_fonte(row: pd.Series) -> str:
+    """Fonte da linha no e-mail: o delta é por fonte, e o mesmo produto pode
+    aparecer uma vez por fonte."""
+    return _source_label(row["source"]) if "source" in row.index else "—"
+
+
 def _build_digest_email(window_start, window_end, buybox_pos, brand_map,
                         ups, downs, bb_by_brand, n_records):
     """Build (html, text) for the weekly digest e-mail."""
-    headers = ["Product", "Brand", "Prev", "Now", "Δ %"]
-    align = ["left", "left", "right", "right", "right"]
+    headers = ["Product", "Brand", "Fonte", "Prev", "Now", "Δ %"]
+    align = ["left", "left", "left", "right", "right", "right"]
 
     def _mover_rows(df, up):
         color = "#059669" if up else "#dc2626"
@@ -9616,6 +9632,7 @@ def _build_digest_email(window_start, window_end, buybox_pos, brand_map,
             rows.append([
                 _esc(str(r["produto"])[:60]),
                 _esc(brand_map.get(r["produto"], "—")),
+                _esc(_email_fonte(r)),
                 _esc(_fmt_brl(r["preco_anterior"])),
                 _esc(_fmt_brl(r["preco_atual"])),
                 f'<span style="color:{color};font-weight:700;">'
@@ -9664,6 +9681,7 @@ def _build_digest_email(window_start, window_end, buybox_pos, brand_map,
         lines.append(label)
         for _, r in df.iterrows():
             lines.append(f"  {r['delta_pct']:+.1f}%  {str(r['produto'])[:60]}"
+                         f"  [{_email_fonte(r)}]"
                          f"  {_fmt_brl(r['preco_anterior'])} -> "
                          f"{_fmt_brl(r['preco_atual'])}")
         lines.append("")
@@ -9679,9 +9697,9 @@ def _build_anomaly_email(target_day, prev_day, threshold, shown):
     inc = shown[shown["delta_pct"] > 0].sort_values("delta_pct",
                                                     ascending=False)
     dec = shown[shown["delta_pct"] < 0].sort_values("delta_pct")
-    headers = ["Product", "Brand", "Platform", str(prev_day),
+    headers = ["Product", "Brand", "Platform", "Fonte", str(prev_day),
                str(target_day), "Δ"]
-    align = ["left", "left", "left", "right", "right", "right"]
+    align = ["left", "left", "left", "left", "right", "right", "right"]
 
     def _rows(df, up):
         color = "#059669" if up else "#dc2626"
@@ -9692,6 +9710,7 @@ def _build_anomaly_email(target_day, prev_day, threshold, shown):
                 _esc(str(r["produto"])[:55]),
                 _esc(r.get("marca", "—")),
                 _esc(r.get("plataforma", "—")),
+                _esc(_email_fonte(r)),
                 _esc(_fmt_brl(r["price_prev"])),
                 _esc(_fmt_brl(r["price_today"])),
                 f'<span style="color:{color};font-weight:700;">'
@@ -9733,7 +9752,8 @@ def _build_anomaly_email(target_day, prev_day, threshold, shown):
         for _, r in df.iterrows():
             lines.append(
                 f"  {r['delta_pct']:+.1f}%  {str(r['produto'])[:55]}  "
-                f"[{r.get('marca', '—')} / {r.get('plataforma', '—')}]  "
+                f"[{r.get('marca', '—')} / {r.get('plataforma', '—')} / "
+                f"{_email_fonte(r)}]  "
                 f"{_fmt_brl(r['price_prev'])} -> {_fmt_brl(r['price_today'])}"
             )
         lines.append("")
@@ -10394,12 +10414,14 @@ def _render_product_sheet(produto: str, start_date: date, end_date: date) -> Non
     spec_cols[3].metric("Voltagem", volt_val)
 
     # --- Contadores ---
+    # Sobre as linhas que o gráfico desenha (uma fonte por marketplace): o
+    # `df` bruto traz as duas fontes e contaria o mesmo dia duas vezes.
     cnt_cols = st.columns(4)
-    cnt_cols[0].metric("Registros de preço", f"{len(df):,}")
-    cnt_cols[1].metric("Marketplaces", int(df["plataforma"].nunique()))
+    cnt_cols[0].metric("Registros de preço", f"{len(df_price):,}")
+    cnt_cols[1].metric("Marketplaces", int(df_price["plataforma"].nunique()))
     cnt_cols[2].metric(
         "Sellers",
-        int(df["seller"].nunique()) if "seller" in df.columns else 0,
+        int(df_price["seller"].nunique()) if "seller" in df_price.columns else 0,
     )
     cnt_cols[3].metric(
         "Preço Moda",
@@ -10543,11 +10565,13 @@ def _render_comparator(produtos: tuple, start_date: date, end_date: date) -> Non
 
     # --- Resumo comparativo + diferença percentual ---
     summary = (
-        df_price.groupby("produto_serie")["preco"]
-        .agg(menor="min", moda=_mode_price, maior="max")
+        df_price.groupby("produto_serie")
+        .agg(fonte=("source", "first"), menor=("preco", "min"),
+             moda=("preco", _mode_price), maior=("preco", "max"))
         .reset_index()
         .rename(columns={"produto_serie": "produto"})
     )
+    summary["fonte"] = summary["fonte"].map(_source_label)
     cheapest = summary["menor"].min()
     summary["dif_%_vs_menor"] = (
         (summary["menor"] - cheapest) / cheapest * 100
@@ -10558,6 +10582,7 @@ def _render_comparator(produtos: tuple, start_date: date, end_date: date) -> Non
         summary, use_container_width=True, hide_index=True,
         column_config={
             "produto":        st.column_config.TextColumn("Produto"),
+            "fonte":          st.column_config.TextColumn("Fonte"),
             "menor":          st.column_config.NumberColumn("Menor", format="R$ %.2f"),
             "moda":           st.column_config.NumberColumn("Moda", format="R$ %.2f"),
             "maior":          st.column_config.NumberColumn("Maior", format="R$ %.2f"),
