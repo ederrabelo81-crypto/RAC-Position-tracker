@@ -746,3 +746,23 @@ class TestFiltroACNaEscrita:
         df = store.read(DATASET_COLETAS)
         assert len(df) == 1
         assert "Midea" in df.iloc[0]["produto"]
+
+
+class TestProjecaoTolerante:
+    """Partição antiga sem coluna nova não pode sumir da leitura (30/09/2026)."""
+
+    def test_coluna_ausente_vira_nula_em_vez_de_derrubar_o_dia(self, tmp_path):
+        from datetime import date as _date
+        from utils.history import HistoryStore, LocalBackend
+
+        store = HistoryStore(LocalBackend(tmp_path / "h"))
+        hoje = _date.today()
+        store.write_records(
+            [{"data": hoje.isoformat(), "plataforma": "Amazon", "seller": "Loja X"}],
+            dataset="coletas",
+        )
+        df = store.read("coletas", hoje, hoje, columns=["plataforma", "seller", "coluna_nova"])
+        assert len(df) == 1
+        assert list(df.columns) == ["plataforma", "seller", "coluna_nova"]
+        assert df["coluna_nova"].isna().all()
+        assert store.last_read_errors == []
