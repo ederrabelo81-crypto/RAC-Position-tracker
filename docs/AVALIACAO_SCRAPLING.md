@@ -28,8 +28,11 @@ Três camadas independentes:
    linhas não compensa.
 3. **O anti-bot é outro.** O `StealthyFetcher` foi calibrado para Cloudflare
    Turnstile. Nossos bloqueios são Akamai (Magalu, Casas Bahia, Leroy), a
-   PerimeterX da Fast Shop e o captcha da Amazon, e a causa raiz é o **IP de
-   datacenter**, não o fingerprint (ver `docs/learnings/anti-bot-strategies.md`).
+   PerimeterX da Fast Shop e o captcha da Amazon, e a causa muda por
+   plataforma: no Magalu o Akamai inspeciona o fingerprint TLS (JA3/JA4), que
+   o `curl_cffi` já resolve; em Shopee e Casas Bahia pesa o **IP de
+   datacenter** (ver `docs/learnings/anti-bot-strategies.md`). Nenhum dos dois
+   casos pede o stealth de Cloudflare.
 4. **O seletor adaptativo resolve um problema que já contornamos.** As fontes
    principais são JSON (Algolia, VTEX IS, `_next/data`, API v4). E um seletor
    que se "recupera" sozinho depois de um redesign pode devolver outro elemento
@@ -56,43 +59,60 @@ disputa a buy box, em vez de só o vencedor. Precisa ser validado no Actions
 (cookies e taxa de captcha) antes de substituir o PDP. Não foi possível testar
 a partir do ambiente desta análise, que bloqueia a saída de rede para a Amazon.
 
-## 4. Leroy Merlin: o que o print mostrou (corrigido neste PR)
+## 4. Leroy Merlin: o que o print mostrou
 
 Caso: item 3962339062 (Elgin Eco Inverter III 12K). No PDP aparece "Vendido e
 entregue por LEROY MERLIN". Na coleta aparece `3P (não identificado)`.
 
-Conferido no Supabase (29/09/2026):
+Conferido no Supabase (28–30/09/2026):
 
 - ~**34%** das linhas da Leroy (~1,1 mil/dia) saem como `3P (não
   identificado)`, e isso vem de apenas **12 a 14 seller IDs**.
-- O item do print tem `5be5eb765cb50968730358f5` como **seller único** no
-  índice (`qtd_sellers = 1`). Esse ID aparece em 25 produtos de 7 marcas. É a
-  **própria Leroy como seller do marketplace**.
-- O resolver descartava a resposta "Leroy Merlin" do PDP ("3P não pode ser a
-  Leroy"), julgava a falha definitiva e punha o ID em quarentena por 7 dias.
-  Resultado: ~200 linhas/dia de 1P gravadas como 3P, inflando o 3P no share.
+- O item do print tem um único ID em `marketplaceSellers`
+  (`5be5eb765cb50968730358f5`), mas **esse ID é um lojista 3P, não a Leroy**.
+  Os produtos que a Leroy vende sozinha (sem `marketplaceSellers`) nunca têm
+  código de 10 dígitos começando por "1" (0 de 201). Esse ID tem 36 produtos
+  assim, e a distribuição de códigos dele é igual à dos demais 3P.
+- Conclusão: **a oferta própria da Leroy não aparece em `marketplaceSellers`**.
+  No item do print a Leroy vende junto com o 3P e ganha a buy box. A coleta
+  trata "tem `marketplaceSellers`" como "buy box é 3P", e isso está errado.
+- O resolver abria justamente esse tipo de PDP para descobrir o nome do 3P, lia
+  "LEROY MERLIN", julgava a falha definitiva e punha o ID 7 dias em quarentena.
+  Por isso os mesmos IDs nunca se resolvem.
 - O seller `5f61118b7dc9a636d40113a2` estava gravado como **"Saiba mais"**
   (texto de link da tela), em 39 linhas/dia.
 
-**Correção:**
+**Corrigido neste PR (a resolução do nome):**
 
-1. O ID da Leroy entra no mapa estático e é classificado como **1P**.
-2. Quando o ID é o **único** seller do produto e o PDP diz "Leroy Merlin", o ID
-   é identificado como a Leroy (1P) e vai para o cache. Com dois ou mais
-   sellers, a resposta continua sendo tratada como ambígua.
-3. Na passada de PDP, prefere-se a URL de um produto em que o ID é seller único.
-4. `clean_seller_name` rejeita texto de interface ("Saiba mais", "Conheça…").
+1. PDP que mostra a Leroy na buy box é **inconclusivo**: não vira nome, a
+   falha é transitória e a URL não é repetida. O seller é tentado de novo por
+   outro produto, inclusive no mesmo run.
+2. Para abrir o PDP, prefere-se um produto em que o ID é o único seller e cujo
+   código é de catálogo de marketplace (10 dígitos começando por "1"), onde a
+   Leroy não vende.
+3. `clean_seller_name` rejeita texto de interface ("Saiba mais", "Conheça…").
    O cache em disco é revalidado ao carregar, então o nome inválido sai e o ID
    volta a ser resolvido.
 
-**Pendências (fora deste PR):**
+**Não corrigido (a buy box por produto), e é o que o print pede:** mesmo com o
+nome do 3P resolvido, a linha do item do print gravaria o 3P como buy box,
+quando quem vence é a Leroy. O índice não diz quem ganha a buy box, só o PDP.
+A correção é a mesma da Amazon: abrir o PDP **por produto** (não por seller)
+quando o produto é de catálogo da Leroy e tem `marketplaceSellers`, e gravar o
+vencedor observado. São ~150 produtos distintos por turno, com o mesmo teto e
+o mesmo espaçamento do resolver atual. De quebra, o PDP dá o preço da buy box
+no lugar de `averagePromotionalPrice`.
 
-- **`5d449157e6c3b40792552a05`**: ~620 linhas/dia, 47 produtos, 10 marcas,
-  quase sempre seller único. O padrão é o mesmo do ID da Leroy. Depois do
-  deploy, rode `python scripts/leroy_seller_probe.py --clear-quarantine` no PC
-  coletor para a próxima coleta tentar o PDP de novo.
+**Outras pendências:**
+
+- **Quarentena antiga no PC coletor:** o cache de lá tem esses IDs em
+  quarentena definitiva gravada pela versão anterior. Depois do deploy, rode
+  `python scripts/leroy_seller_probe.py --clear-quarantine`. O comando libera
+  **todos** os IDs em quarentena, não só estes, e a próxima coleta tenta o PDP
+  de todos eles (dentro do teto `LEROY_PDP_MAX_PER_RUN`).
 - **Preço:** a coleta lê `averagePromotionalPrice`, uma **média** do índice.
   No item do print ficou em R$ 2.290,53 nos quatro turnos, contra R$ 2.339,00
-  à vista no PDP. O preço da buy box precisa vir do PDP (ideia D).
+  à vista no PDP.
 - **Buy box com 2+ sellers:** hoje se assume que o primeiro item de
-  `marketplaceSellers` é o vencedor. Isso nunca foi validado contra o PDP.
+  `marketplaceSellers` é o vencedor. Isso nunca foi validado contra o PDP e,
+  pelo que o print mostra, pode nem ser um 3P.
