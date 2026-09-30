@@ -285,6 +285,19 @@ class TestReadDays:
         lidos_flat = [k for grupo in lidos for k in grupo]
         assert not any("2026-09-02" in k for k in lidos_flat)
 
+    def test_skip_days_aceita_iterable_nao_set(self, store):
+        """`skip_days` é `Iterable[date]`: um pandas Series com >1 elemento
+        (cujo `bool()` levanta "ambiguous") tem de ser aceito sem estourar."""
+        import pandas as pd
+
+        for dia in ("2026-09-01", "2026-09-02", "2026-09-03"):
+            store.write_records([_row(dia)], dataset=DATASET_COLETAS)
+        # Série de 2 elementos: `bool(serie)` levantaria ValueError — é o que o
+        # antigo `if skip_days` fazia.
+        serie = pd.Series([date(2026, 9, 1), date(2026, 9, 3)])
+        dias = list(store.read_days(DATASET_COLETAS, skip_days=serie))
+        assert [d for d, _ in dias] == [date(2026, 9, 2)]
+
     def test_colunas_extras_passam(self, store):
         """Colunas que o banco ganhou depois (de-para) não exigem migração."""
         store.write_day(

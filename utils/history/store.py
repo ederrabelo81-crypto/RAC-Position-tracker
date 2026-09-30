@@ -408,7 +408,9 @@ class HistoryStore:
         keys = self.keys_in_range(dataset, start, end)
         if not keys:
             return
-        skip = set(skip_days) if skip_days else set()
+        # `is not None` (não truthiness): `skip_days` é declarado `Iterable`, e
+        # `bool()` de um pandas Series / ndarray levanta ValueError ("ambiguous").
+        skip = set(skip_days) if skip_days is not None else set()
         por_dia: Dict[date, List[str]] = {}
         for key in keys:
             parsed = parse_key(key)
