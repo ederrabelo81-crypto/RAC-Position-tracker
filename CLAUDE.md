@@ -405,13 +405,20 @@ em `_evo_build_series` (sem Streamlit, testado em
    Anomalies): PriceTrack num dia contra coletas no outro mede a troca de
    fonte, não o preço.
 
+6. **"vs ontem" do 📅 Daily Price Vision só na mesma fonte**
+   (`_dv_delta_vs_ontem`). Até 30/09/2026 a chave omitia `Source` de
+   propósito, para a célula não ficar sem seta quando o PriceTrack atrasa — e
+   hoje PriceTrack × ontem Coletas virava seta falsa. Agora a célula cujo
+   ontem só existe na outra fonte mostra **⇄ outra fonte** (sem delta, sem
+   sumir em silêncio). O KPI **Piso geral** compara com ontem na mesma fonte
+   do piso de hoje E nos marketplaces que essa fonte cobre hoje
+   (`_dv_floor_prev`): com o PriceTrack faltando ontem, as coletas cobriam
+   marketplaces que hoje são do PriceTrack, e o piso mediria a troca de mix.
+
 Onde vale: 📈 Price Evolution, 📊 Market Analytics (o mapa de faixas é UMA
-série), 🗂️ Ficha do Produto (uma linha por marketplace) e o comparador (uma
-linha por SKU). `_price_data` (Digest/Anomalies) segue com a precedência por
-dia — não desenha série. **Fora do escopo, de propósito:** o 📅 Daily Price
-Vision tem merge próprio, mostra a coluna `Source` em cada linha e compara o
-"vs ontem" SEM a fonte na chave (decisão documentada no código, para não perder
-o delta quando o PriceTrack atrasa).
+série), 🗂️ Ficha do Produto (uma linha por marketplace), o comparador (uma
+linha por SKU) e o "vs ontem" do 📅 Daily Price Vision. `_price_data`
+(Digest/Anomalies) segue com a precedência por dia — não desenha série.
 
 ---
 

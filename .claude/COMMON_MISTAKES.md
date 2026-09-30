@@ -475,10 +475,14 @@ PriceTrack enquanto cobrir ≥ metade dos dias da Coletas; senão a fonte com ma
 dias). A outra fonte NUNCA tapa buraco — dia sem a fonte da série fica em
 branco e é listado na legenda. Preço por marca/plataforma só no mesmo BTU e
 só split hi-wall (`capacity_btu`, `fora_hiwall_mask`). Delta entre janelas
-(Digest, Anomalies) leva `source` na chave. "Mais dias vence" puro NÃO serve:
+(Digest, Anomalies) e o "vs ontem" do Daily Price Vision levam a fonte na
+chave — célula cujo ontem só existe na outra fonte mostra "⇄ outra fonte",
+e o Piso geral compara só a mesma fonte nos mesmos marketplaces
+(`_dv_delta_vs_ontem`, `_dv_floor_prev`). "Mais dias vence" puro NÃO serve:
 o último dia de toda janela que termina hoje não tem PriceTrack até o import,
 e a regra passaria todas as séries para as coletas durante o dia.
 **Files:** `utils/price_series.py`; `app.py` `query_price_evolution_data(dedup_sku_day=)`,
 `_evo_build_series()`, `page_market_analytics()`, `_render_product_sheet()`,
-`_render_comparator()`; `tests/test_price_series.py`,
-`tests/test_price_evolution_merge.py`
+`_render_comparator()`, `_dv_delta_vs_ontem()`, `_dv_floor_prev()`;
+`tests/test_price_series.py`, `tests/test_price_evolution_merge.py`,
+`tests/test_daily_vision_delta.py`

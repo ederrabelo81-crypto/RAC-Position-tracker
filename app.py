@@ -10753,6 +10753,7 @@ _DV_CSS = """<style>
 .dv-delta { display:block; font-size:10px; font-weight:500; color:#475569; margin-top:2px; }
 .dv-delta.down { color:#16a34a; }
 .dv-delta.up { color:#dc2626; }
+.dv-delta.xsrc { color:#94a3b8; font-style:italic; }
 .dv-win { background:#d1fae5; border-left:3px solid #10b981; }
 .dv-win .dv-price { color:#065f46; font-weight:700; }
 .dv-match { background:#ecfdf5; }
@@ -10889,6 +10890,10 @@ class _DVContext:
     delta_str: str | None         # "R$ 73,64" (módulo, já formatado)
     pct_str: str | None           # "-4,6%"
     sel_grupo: str                # modo de agrupamento (rótulo do radio)
+    # True onde ontem só tem preço da OUTRA fonte (sem delta — ver
+    # `_dv_delta_vs_ontem`); None = nenhuma célula nessa situação.
+    xsrc_matrix: pd.DataFrame | None = None
+    floor_note: str | None = None  # por que o Piso geral saiu sem delta
 
 
 def _dv_build_html(ctx: _DVContext) -> str:
@@ -10939,7 +10944,10 @@ def _dv_build_html(ctx: _DVContext) -> str:
         )
     else:
         status_cls = ""
-        delta_line = '<div class="dv-kpi-delta">sem base de ontem</div>'
+        delta_line = (
+            f'<div class="dv-kpi-delta">'
+            f'{_esc(ctx.floor_note or "sem base de ontem")}</div>'
+        )
     kpi_cards.append(
         f'<div class="dv-kpi {status_cls}"><div class="dv-kpi-label">'
         f'Piso geral</div><div class="dv-kpi-value">{piso_val}</div>'
@@ -11030,6 +11038,13 @@ def _dv_build_html(ctx: _DVContext) -> str:
                 delta_html = (
                     f'<span class="dv-delta {d_cls}">{d_arrow} {d_amt}</span>'
                 )
+            elif (ctx.xsrc_matrix is not None and plat in ctx.xsrc_matrix.columns
+                  and bool(ctx.xsrc_matrix.loc[idx, plat])):
+                delta_html = (
+                    '<span class="dv-delta xsrc" title="Ontem este recorte só '
+                    'tem preço da outra fonte — comparar mediria a troca de '
+                    'fonte, não o preço.">⇄ outra fonte</span>'
+                )
             cells.append(
                 f'<td class="num{cell_cls}"><span class="dv-price">'
                 f'{_fmt_brl(v)}</span>{delta_html}</td>'
@@ -11076,7 +11091,8 @@ def _dv_build_html(ctx: _DVContext) -> str:
         'marketplace vencedor da linha</span>'
         '<span class="dv-legi"><span class="dv-sw" '
         'style="background:#ecfdf5;"></span> dentro de 2% do piso (match)</span>'
-        '<span class="dv-legi">▼ ▲ delta vs ontem (mesmo MP/marca)</span>'
+        '<span class="dv-legi">▼ ▲ delta vs ontem (mesmo MP, marca e fonte)</span>'
+        '<span class="dv-legi">⇄ ontem só na outra fonte — sem delta</span>'
         '<span class="dv-legi">Gap = piso vs 2º colocado</span>'
         '</div>'
     )
@@ -11085,6 +11101,119 @@ def _dv_build_html(ctx: _DVContext) -> str:
         f'{_DV_CSS}<div class="dv-root">{kpis_html}{table_html}'
         f'{legend_html}</div>'
     )
+
+
+# Colunas do pivot do Daily Vision → colunas cruas de `df_window`.
+_DV_DISPLAY_TO_RAW = {
+    "Source":      "source_label",
+    "Turno":       "periodo",
+    "Marca":       "marca",
+    "Capacidade":  "capacidade",
+    "SKU":         "sku_disp",
+}
+
+
+def _dv_prev_prices(
+    pivot: pd.DataFrame, df_window: pd.DataFrame, join_cols: list[str],
+) -> pd.DataFrame:
+    """Menor preço de ONTEM (``Data`` da linha − 1) por marketplace, por linha
+    do pivot, casando só as dimensões `join_cols`."""
+    raw = [_DV_DISPLAY_TO_RAW[c] for c in join_cols]
+    agg = (
+        df_window.groupby(["data"] + raw + ["plataforma"], dropna=False)["preco"]
+        .min()
+        .unstack("plataforma")
+        .reset_index()
+    )
+    for plat in _DAILY_VISION_PLATFORMS:
+        if plat not in agg.columns:
+            agg[plat] = pd.NA
+    agg["data"] = pd.to_datetime(agg["data"], errors="coerce").dt.date
+    agg = agg.rename(columns={"data": "Data", **dict(zip(raw, join_cols))})
+    # "Ontem" é POR LINHA (`row.Data - 1 dia`), não um `prev_day` fixo: em
+    # ranges com vários dias cada linha compara com o próprio dia anterior.
+    prev = pivot[["Data"] + join_cols].copy()
+    prev["_pos"] = prev.index
+    prev["Data"] = (
+        pd.to_datetime(prev["Data"], errors="coerce").dt.date - timedelta(days=1)
+    )
+    merged = prev.merge(
+        agg[["Data"] + join_cols + _DAILY_VISION_PLATFORMS],
+        on=["Data"] + join_cols, how="left",
+    ).set_index("_pos")
+    return merged.reindex(pivot.index)
+
+
+def _dv_delta_vs_ontem(
+    pivot: pd.DataFrame, df_window: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Delta vs ontem por (linha do pivot × marketplace), só na MESMA fonte.
+
+    Até 30/09/2026 a chave omitia `Source` de propósito, para a célula não
+    ficar sem seta quando o PriceTrack atrasa. O custo: hoje PriceTrack contra
+    ontem Coletas (outra medida, outro mix) virava uma seta de "variação" que
+    media a troca de fonte, não o preço. Agora a seta só compara a mesma
+    fonte; onde ontem só existe na outra fonte, a célula diz isso
+    (`outra_fonte`) em vez de sumir em silêncio.
+
+    Returns:
+        ``(delta, outra_fonte)`` — `delta` = hoje − ontem da mesma fonte (NaN
+        sem base); `outra_fonte` = True onde há preço hoje, a mesma fonte não
+        tem ontem e a outra tem.
+    """
+    delta = pd.DataFrame(
+        index=pivot.index, columns=_DAILY_VISION_PLATFORMS, dtype=float)
+    outra = pd.DataFrame(
+        False, index=pivot.index, columns=_DAILY_VISION_PLATFORMS)
+    dims = [c for c in ["Turno", "Marca", "Capacidade", "SKU"] if c in pivot.columns]
+    if df_window.empty or not dims or "Source" not in pivot.columns:
+        return delta, outra
+    same = _dv_prev_prices(pivot, df_window, ["Source"] + dims)
+    any_src = _dv_prev_prices(pivot, df_window, dims)
+    for plat in _DAILY_VISION_PLATFORMS:
+        curr = pd.to_numeric(pivot[plat], errors="coerce")
+        p_same = pd.to_numeric(same[plat], errors="coerce")
+        p_any = pd.to_numeric(any_src[plat], errors="coerce")
+        delta[plat] = curr - p_same
+        outra[plat] = curr.notna() & p_same.isna() & p_any.notna()
+    return delta, outra
+
+
+def _dv_floor_prev(
+    fonte: str | None, plataformas: set, ontem: pd.DataFrame,
+) -> tuple[float | None, str | None]:
+    """Piso de ontem para o KPI "Piso geral": MESMA fonte, MESMOS marketplaces.
+
+    A fonte é a do piso de hoje (linha campeã) e os marketplaces são os que
+    essa fonte cobre hoje. Os dois recortes importam: com o PriceTrack
+    faltando ontem, as coletas cobriram ontem marketplaces que hoje são do
+    PriceTrack — comparar o piso das coletas de hoje com o de ontem mediria
+    essa troca, não o preço.
+
+    Args:
+        fonte: rótulo da fonte do piso de hoje ("PriceTrack"/"Coletas").
+        plataformas: marketplaces com preço dessa fonte hoje.
+        ontem: linhas de `df_window` do dia anterior.
+
+    Returns:
+        ``(piso_ontem, nota)`` — `piso_ontem` é None sem base comparável;
+        `nota` diz por quê, para o card não mostrar uma variação falsa.
+    """
+    if not fonte or ontem.empty or "source_label" not in ontem.columns:
+        return None, None
+    precos = pd.to_numeric(ontem["preco"], errors="coerce")
+    com_preco = ontem[precos.notna()].assign(_p=precos[precos.notna()])
+    mesma = com_preco[com_preco["source_label"] == fonte]
+    base = mesma[mesma["plataforma"].isin(plataformas)]
+    if not base.empty:
+        return float(base["_p"].min()), None
+    if not mesma.empty:
+        return None, (f"ontem {fonte} só em outros marketplaces — sem delta")
+    outras = sorted(set(com_preco["source_label"].dropna().astype(str)))
+    if outras:
+        return None, (f"ontem só em {', '.join(outras)} — outra fonte, "
+                      f"sem delta (hoje: {fonte})")
+    return None, None
 
 
 def page_daily_vision() -> None:
@@ -11097,7 +11226,10 @@ def page_daily_vision() -> None:
         "autoridade: existindo qualquer linha PT no recorte (data, marca, "
         "capacidade, período), as coletas do mesmo recorte são suprimidas. "
         "No modo **SKU (detalhado)** as coletas continuam preenchendo "
-        "(data, SKU, período, plataforma) onde o PriceTrack não cobre."
+        "(data, SKU, período, plataforma) onde o PriceTrack não cobre. "
+        "O **vs ontem** (setas e Piso geral) só compara a **mesma fonte** — "
+        "o Piso geral, também nos mesmos marketplaces: ⇄ marca a célula cujo "
+        "ontem só existe na outra fonte."
     )
 
     with st.sidebar:
@@ -11554,102 +11686,40 @@ def page_daily_vision() -> None:
 
     # ── KPIs ──────────────────────────────────────────────────────────────
     # Delta vs período anterior: comparamos o piso do recorte atual com o
-    # piso do mesmo recorte de FILTROS no dia anterior a `start_date`. Se
-    # `start_date == end_date`, o "anterior" é o dia D-1. `df_window`
-    # cobre [D-1, end_date] depois do split feito na carga.
-    window_data_dates = pd.to_datetime(
-        df_window["data"], errors="coerce",
-    ).dt.date
-    prev_mask = window_data_dates == prev_day
-    prev_min = pd.to_numeric(
-        df_window.loc[prev_mask, "preco"], errors="coerce",
-    ).dropna().min()
+    # piso do mesmo recorte de FILTROS no dia anterior a `start_date`, NA
+    # MESMA FONTE do piso de hoje (a da linha campeã) e nos marketplaces que
+    # essa fonte cobre hoje. Se `start_date == end_date`, o "anterior" é o dia
+    # D-1. `df_window` cobre [D-1, end_date] depois do split feito na carga.
     current_min = float(row_min.min()) if row_min.notna().any() else None
+    fonte_piso = (
+        str(pivot.loc[champion_idx, "Source"])
+        if champion_idx is not None else None
+    )
+    plats_fonte = set()
+    if fonte_piso is not None:
+        linhas_fonte = price_matrix[pivot["Source"].astype(str) == fonte_piso]
+        plats_fonte = set(linhas_fonte.columns[linhas_fonte.notna().any(axis=0)])
+    ontem_rows = df_window[
+        pd.to_datetime(df_window["data"], errors="coerce").dt.date == prev_day]
+    prev_min, floor_note = _dv_floor_prev(fonte_piso, plats_fonte, ontem_rows)
     # `delta_v` (sinalizado), `delta_str` ("R$ x" formatado) e `pct_str`
     # ("-4,6%") alimentam o card "Piso geral" no HTML mais abaixo. Queda do
     # piso (delta_v < 0) é boa notícia p/ o consumidor → card/seta verdes.
     delta_v: float | None = None
     delta_str: str | None = None
     pct_str: str | None = None
-    if pd.notna(prev_min) and current_min is not None:
-        delta_v = current_min - float(prev_min)
+    if prev_min is not None and current_min is not None:
+        delta_v = current_min - prev_min
         delta_str = f"R$ {abs(delta_v):,.2f}".replace(
             ",", "X").replace(".", ",").replace("X", ".")
-        if float(prev_min) > 0:
-            pct_str = f"{delta_v / float(prev_min) * 100:+.1f}%".replace(".", ",")
+        if prev_min > 0:
+            pct_str = f"{delta_v / prev_min * 100:+.1f}%".replace(".", ",")
 
     # ── Delta vs ontem por (linha do pivot × marketplace) ────────────────
-    # Reaproveita `df_window` (que cobre [start_date - 1, end_date]) para
-    # calcular o preço-mínimo do dia ANTERIOR nas mesmas dimensões do
-    # pivot atual. O delta vira parte do label da célula (ex.:
-    # ``"R$ 1.738,17  ▼ R$ 41"``). Quando não há dado de ontem para
-    # comparar, a célula sai só com o preço atual (sem seta).
-    #
-    # IMPORTANTE: o "ontem" é POR LINHA — `row.Data - 1 dia`, NÃO um
-    # `prev_day` fixo. Em ranges com múltiplos dias o pivot tem linhas
-    # de várias datas e cada uma compara com seu próprio dia anterior.
-    #
-    # `Source` é DELIBERADAMENTE OMITIDA da chave (e do groupby): se
-    # hoje é PriceTrack e ontem só tem Coletas (ou vice-versa, comum
-    # quando a ingestão do PT atrasa um dia), exigir match de Source
-    # quebra o merge silenciosamente e a célula sai sem delta apesar
-    # de termos o preço de ontem. Sem Source, basta casar
-    # (Data, Turno, Marca, [Capacidade, SKU]).
-    join_cols = [
-        c for c in ["Turno", "Marca", "Capacidade", "SKU"]
-        if c in pivot.columns
-    ]
-    _display_to_raw = {
-        "Turno":       "periodo",
-        "Marca":       "marca",
-        "Capacidade":  "capacidade",
-        "SKU":         "sku_disp",
-    }
-    delta_matrix = pd.DataFrame(
-        index=pivot.index, columns=_DAILY_VISION_PLATFORMS, dtype=float,
-    )
-    if not df_window.empty and join_cols:
-        raw_key_cols = [_display_to_raw[c] for c in join_cols]
-        # Agrega a janela inteira por (data, dims SEM source, plataforma)
-        # → min(preco). Colapsar Source no `min` é seguro: se hoje e
-        # ontem tiverem fontes diferentes para o mesmo recorte, o piso
-        # ainda representa o melhor preço daquele dia/MP.
-        window_agg = (
-            df_window.groupby(
-                ["data"] + raw_key_cols + ["plataforma"], dropna=False,
-            )["preco"]
-            .min()
-            .unstack("plataforma")
-            .reset_index()
-        )
-        for plat in _DAILY_VISION_PLATFORMS:
-            if plat not in window_agg.columns:
-                window_agg[plat] = pd.NA
-        window_agg["data"] = pd.to_datetime(
-            window_agg["data"], errors="coerce",
-        ).dt.date
-        window_agg = window_agg.rename(
-            columns={"data": "Data",
-                     **dict(zip(raw_key_cols, join_cols))}
-        )
-        # `pivot_prev` carrega `Data = row.Data - 1 dia` para fazer o
-        # merge bater com o dia anterior de CADA linha do pivot.
-        pivot_prev = pivot[["Data"] + join_cols].copy()
-        pivot_prev["_pos"] = pivot_prev.index
-        pivot_prev["Data"] = (
-            pd.to_datetime(pivot_prev["Data"], errors="coerce").dt.date
-            - timedelta(days=1)
-        )
-        merged = pivot_prev.merge(
-            window_agg[["Data"] + join_cols + _DAILY_VISION_PLATFORMS],
-            on=["Data"] + join_cols, how="left",
-        ).set_index("_pos")
-        for plat in _DAILY_VISION_PLATFORMS:
-            curr = pd.to_numeric(pivot[plat], errors="coerce")
-            prev = pd.to_numeric(merged[plat], errors="coerce").reindex(
-                pivot.index
-            )
-            delta_matrix[plat] = curr - prev
+    # Só compara a MESMA fonte (`_dv_delta_vs_ontem`): hoje PriceTrack contra
+    # ontem Coletas mediria a troca de fonte, não o preço. A célula cujo
+    # ontem só existe na outra fonte recebe "⇄ outra fonte" em vez da seta.
+    delta_matrix, xsrc_matrix = _dv_delta_vs_ontem(pivot, df_window)
 
     # ── Render HTML (mockup "Daily Price Vision") ────────────────────────
     # KPIs + tabela + legenda são montados como HTML por `_dv_build_html`
@@ -11668,6 +11738,8 @@ def page_daily_vision() -> None:
         delta_str=delta_str,
         pct_str=pct_str,
         sel_grupo=sel_grupo,
+        xsrc_matrix=xsrc_matrix,
+        floor_note=floor_note,
     )))
 
     if n_guarded:
