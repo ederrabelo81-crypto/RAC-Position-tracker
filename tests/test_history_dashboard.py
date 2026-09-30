@@ -328,3 +328,47 @@ class TestGapFill:
 
         monkeypatch.setattr("utils.history.get_store", _explode)
         assert app._history_gap_fill(date(2026, 3, 1), date(2026, 3, 31), set()).empty
+
+
+class TestJanelaCurtaDosDropdowns:
+    """Regressão de 30/09/2026: tela em branco depois do deploy.
+
+    A barra lateral lia 120 dias do histórico do Drive para montar os
+    dropdowns; num container novo (cache vazio) cada partição era baixada uma
+    a uma antes de qualquer coisa aparecer — mais de 5 minutos em branco.
+    """
+
+    class _StoreEspiao:
+        def __init__(self):
+            self.inicios = []
+
+        def read(self, dataset, start=None, end=None, columns=None, **_kw):
+            self.inicios.append((start, end))
+            return pd.DataFrame()
+
+    def test_opcoes_de_filtro_leem_no_maximo_14_dias(self, monkeypatch):
+        espiao = self._StoreEspiao()
+        monkeypatch.setattr(app, "_history_store", lambda: espiao)
+        app._filter_options_do_historico()
+        (inicio, fim), = espiao.inicios
+        assert (fim - inicio).days <= 14
+
+    def test_lista_de_skus_le_no_maximo_14_dias(self, monkeypatch):
+        espiao = self._StoreEspiao()
+        monkeypatch.setattr(app, "_history_store", lambda: espiao)
+
+
+        class _ClienteQueFalha:
+            def table(self, *_a, **_k):
+                raise RuntimeError("banco fora")
+
+        monkeypatch.setattr(app, "_get_supabase", lambda: _ClienteQueFalha())
+        app.get_sku_options.clear()
+        app.get_sku_options()
+        # O banco falha e a função segue para o histórico frio — é essa leitura
+        # que tem que respeitar a janela curta.
+        (inicio, fim), = espiao.inicios
+        assert (fim - inicio).days <= 14
+
+    def test_constante_documenta_o_limite(self):
+        assert app._HISTORICO_OPCOES_DIAS <= 14

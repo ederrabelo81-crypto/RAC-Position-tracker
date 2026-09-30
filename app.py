@@ -2859,12 +2859,27 @@ def _merge_filter_options(a: dict, b: dict) -> dict:
     }
 
 
-def _filter_options_do_historico(dias: int = 120) -> dict:
+#: Janela do histórico frio (Drive) que alimenta os DROPDOWNS (opções de
+#: filtro e lista de SKUs) — não os dados das páginas, que leem o período pedido.
+#:
+#: Era 120 dias. Em 30/09/2026 o painel ficou em branco depois de um deploy: o
+#: Streamlit Cloud recriou o container, o cache local do Drive zerou e a barra
+#: lateral passou a baixar UMA A UMA as partições Parquet de 120 dias (várias
+#: por dia) antes de desenhar qualquer coisa — mais de 5 minutos com a tela
+#: vazia (logs da API: a RPC de opções respondeu 200 em segundos e nenhuma
+#: consulta de página chegou depois). Os valores de plataforma, marca, keyword e
+#: seller são estáveis: 14 dias cobrem o que o painel mostra, e as partições
+#: desses dias são as mesmas que as páginas já leem no período padrão.
+_HISTORICO_OPCOES_DIAS = 14
+
+
+def _filter_options_do_historico(dias: int = _HISTORICO_OPCOES_DIAS) -> dict:
     """Opções dos dropdowns derivadas do histórico frio (Parquet).
 
     Args:
-        dias: Janela a varrer. Maior que a do banco (30d) porque o histórico é
-            justamente onde ficam os períodos antigos.
+        dias: Janela a varrer. Curta de propósito (`_HISTORICO_OPCOES_DIAS`):
+            no primeiro acesso após um deploy cada partição do período é
+            baixada do Drive antes de a barra lateral aparecer.
 
     Returns:
         Dicionário no mesmo formato de `get_filter_options`, ou ``{}`` quando
@@ -2966,7 +2981,9 @@ def get_sku_options(
     # dado principal (query_coletas) já é híbrido, então o usuário precisa poder
     # selecioná-los. Mesmos filtros (marca/BTU/tipo) aplicados ao frio.
     try:
-        since_d = date.today() - timedelta(days=30)
+        # Mesma janela curta dos dropdowns (`_HISTORICO_OPCOES_DIAS`): cada dia
+        # a mais é mais partição baixada do Drive num container recém-criado.
+        since_d = date.today() - timedelta(days=_HISTORICO_OPCOES_DIAS)
         df_frio = _history_store().read(
             "coletas", start=since_d, end=date.today(), columns=["produto", "marca"]
         )
@@ -3055,12 +3072,15 @@ def _render_global_filters() -> None:
     O que é técnico (fonte de dados, histórico sem de-para, presets) fica em
     "⚙️ Avançado": não é decisão de negócio do dia a dia.
     """
-    opts = get_filter_options()
     st.markdown(
         "<p style='color:#fbbf24;font-weight:700;margin:0 0 .25rem'>"
         "🌐 Filtros globais</p>",
         unsafe_allow_html=True,
     )
+    # No primeiro acesso depois de um deploy as opções vêm do histórico do
+    # Drive ainda sem cache — sem o aviso a tela fica em branco e parece travada.
+    with st.spinner("Carregando filtros (histórico do Drive)…"):
+        opts = get_filter_options()
     st.date_input(
         "Período",
         value=(date.today() - timedelta(days=7), date.today()),
