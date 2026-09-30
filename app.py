@@ -1756,10 +1756,34 @@ def _history_gap_fill(
         return pd.DataFrame()
     try:
         store = _history_store()
-        df = store.read(
+        # Varredura dia a dia, do mais recente ao mais antigo: nunca segura
+        # mais de um dia de partições cruas na RAM. Ler o mês inteiro de uma
+        # vez (`store.read`) concatenava ~1 milhão de linhas de TODAS as colunas
+        # ANTES de qualquer filtro e derrubava o processo no Streamlit Cloud
+        # (1 GB) — o healthz caía com "connection reset by peer" ao escolher um
+        # intervalo longo como 01–30/09. Aqui cada dia é filtrado cedo e, com
+        # `data desc`, a varredura para assim que junta `limit` linhas, sem
+        # sequer ler os dias mais antigos.
+        partes: list[pd.DataFrame] = []
+        total = 0
+        for dia, df_dia in store.read_days(
             "coletas", start=start_date, end=end_date,
-            partition_column=_COL_PARTICAO,
-        )
+            partition_column=_COL_PARTICAO, descending=True,
+        ):
+            # O Supabase já entregou este dia (janela quente): pula sem
+            # processar — equivale ao antigo `~df["data"].isin(ja_presentes)`,
+            # só que sem ler/materializar o dia.
+            if ja_presentes and dia in ja_presentes:
+                continue
+            df_dia = _dedup_particoes_historico(df_dia)
+            df_dia = _resolver_depara_historico(df_dia)
+            df_dia = _filter_history_coletas(df_dia, **filtros)
+            if df_dia.empty:
+                continue
+            partes.append(df_dia)
+            total += len(df_dia)
+            if limit is not None and total >= limit:
+                break
         _avisar_particoes_ilegiveis(store)
     except Exception as exc:
         # app.py não usa loguru no escopo global — import local para não
@@ -1776,18 +1800,10 @@ def _history_gap_fill(
         )
         return pd.DataFrame()
 
-    if df.empty:
-        return df
-    if ja_presentes and "data" in df.columns:
-        df = df[~df["data"].isin(ja_presentes)]
-    if df.empty:
-        return df
+    if not partes:
+        return pd.DataFrame()
 
-    df = _dedup_particoes_historico(df)
-    df = _resolver_depara_historico(df)
-    df = _filter_history_coletas(df, **filtros)
-    if df.empty:
-        return df
+    df = pd.concat(partes, ignore_index=True)
     # Marca a procedência (por linha): permite ao painel avisar que parte dos
     # números vem do histórico frio, e quanto disso o de-para não conhece.
     if "estado_match" in df.columns:
@@ -1801,9 +1817,8 @@ def _history_gap_fill(
             lambda x: _MARCA_TO_CANONICAL.get(x, x) if x else x
         )
     if limit is not None and len(df) > limit:
-        # Mantém os dias mais recentes, como o keyset do Supabase (data desc).
-        if "data" in df.columns:
-            df = df.sort_values("data", ascending=False, kind="stable")
+        # A varredura é `data desc`, então cortar o excedente do último dia
+        # lido mantém os dias mais recentes — igual ao keyset do Supabase.
         df = df.head(limit)
     return df
 

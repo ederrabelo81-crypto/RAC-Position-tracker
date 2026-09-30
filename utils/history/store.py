@@ -363,7 +363,69 @@ class HistoryStore:
         keys = self.keys_in_range(dataset, start, end)
         if not keys:
             return pd.DataFrame()
+        return self._read_keys(keys, columns, partition_column)
 
+    def read_days(
+        self,
+        dataset: str = DATASET_COLETAS,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+        columns: Optional[Sequence[str]] = None,
+        partition_column: Optional[str] = None,
+        descending: bool = False,
+    ):
+        """Itera o histórico **um dia por vez**, materializando um dia na RAM.
+
+        Lê o mesmo conteúdo de :meth:`read`, mas nunca segura mais de um dia de
+        partições em memória ao mesmo tempo. É o que permite varrer um mês
+        inteiro no Streamlit Cloud (~1 GB de RAM) sem estourar: ler Setembro
+        inteiro de uma vez com :meth:`read` concatena ~1 milhão de linhas de
+        todas as colunas antes de qualquer filtro e derruba o processo
+        (o healthz cai com "connection reset by peer"). Consumido dia a dia,
+        o chamador filtra cedo e descarta o que não usa.
+
+        `keys_in_range` é chamado **uma única vez** (uma listagem do backend, não
+        uma por dia) e o resultado é agrupado por dia. Erros de partição
+        ilegível acumulam em ``self.last_read_errors`` ao longo de toda a
+        varredura, como em :meth:`read`.
+
+        Args:
+            descending: Se ``True``, itera do dia mais recente para o mais
+                antigo — a mesma ordem do keyset ``data desc`` do Supabase, o
+                que deixa o chamador parar cedo quando já juntou linhas
+                suficientes sem ler os dias mais velhos.
+
+        Yields:
+            ``(day, DataFrame)`` para cada dia que tem partição, na ordem
+            pedida. Dias sem linha legível são pulados.
+        """
+        self.last_read_errors = []
+        keys = self.keys_in_range(dataset, start, end)
+        if not keys:
+            return
+        por_dia: Dict[date, List[str]] = {}
+        for key in keys:
+            parsed = parse_key(key)
+            if not parsed:
+                continue
+            por_dia.setdefault(parsed["day"], []).append(key)
+        for day in sorted(por_dia, reverse=descending):
+            frame = self._read_keys(por_dia[day], columns, partition_column)
+            if not frame.empty:
+                yield day, frame
+
+    def _read_keys(
+        self,
+        keys: Sequence[str],
+        columns: Optional[Sequence[str]],
+        partition_column: Optional[str],
+    ) -> pd.DataFrame:
+        """Lê e concatena um conjunto de partições já resolvidas.
+
+        Não zera ``self.last_read_errors`` — quem chama (``read`` /
+        ``read_days``) o faz no início da varredura, para que os erros de
+        várias chamadas por dia acumulem.
+        """
         _require_pyarrow()
         import pyarrow.parquet as pq
 

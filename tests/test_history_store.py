@@ -170,6 +170,74 @@ class TestWriteRead:
         assert len(keys) == 1
         assert len(store.read(DATASET_COLETAS)) == 1
 
+
+# ---------------------------------------------------------------------------
+# Leitura dia a dia (memory-safe): read_days
+# ---------------------------------------------------------------------------
+class TestReadDays:
+    """`read_days` materializa um dia por vez — é o que impede o OOM do
+    Streamlit Cloud ao varrer um mês inteiro."""
+
+    def test_itera_um_dia_por_vez(self, store):
+        for dia in ("2026-09-01", "2026-09-02", "2026-09-03"):
+            store.write_records([_row(dia), _row(dia)], dataset=DATASET_COLETAS)
+        dias = list(store.read_days(DATASET_COLETAS))
+        assert [d for d, _ in dias] == [
+            date(2026, 9, 1), date(2026, 9, 2), date(2026, 9, 3),
+        ]
+        # Cada iteração traz SÓ as linhas daquele dia, nunca o mês inteiro.
+        for dia, frame in dias:
+            assert len(frame) == 2
+            assert set(frame["data"]) == {dia}
+
+    def test_descending_do_mais_recente_ao_mais_antigo(self, store):
+        for dia in ("2026-09-01", "2026-09-02", "2026-09-03"):
+            store.write_records([_row(dia)], dataset=DATASET_COLETAS)
+        dias = [d for d, _ in store.read_days(DATASET_COLETAS, descending=True)]
+        assert dias == [date(2026, 9, 3), date(2026, 9, 2), date(2026, 9, 1)]
+
+    def test_recorta_intervalo(self, store):
+        for dia in ("2026-08-30", "2026-09-01", "2026-09-02"):
+            store.write_records([_row(dia)], dataset=DATASET_COLETAS)
+        dias = [
+            d for d, _ in store.read_days(
+                DATASET_COLETAS, start=date(2026, 9, 1), end=date(2026, 9, 2)
+            )
+        ]
+        assert dias == [date(2026, 9, 1), date(2026, 9, 2)]
+
+    def test_uniao_bate_com_read(self, store):
+        for dia in ("2026-09-01", "2026-09-02", "2026-09-03"):
+            store.write_records([_row(dia), _row(dia)], dataset=DATASET_COLETAS)
+        via_read = len(store.read(DATASET_COLETAS))
+        via_dias = sum(len(f) for _, f in store.read_days(DATASET_COLETAS))
+        assert via_dias == via_read == 6
+
+    def test_intervalo_vazio_nao_itera(self, store):
+        store.write_records([_row("2026-09-01")], dataset=DATASET_COLETAS)
+        dias = list(store.read_days(
+            DATASET_COLETAS, start=date(2026, 12, 1), end=date(2026, 12, 31)
+        ))
+        assert dias == []
+
+    def test_erros_acumulam_ao_longo_da_varredura(self, store):
+        """Uma partição ilegível num dia não pode zerar os erros do outro:
+        `read_days` reseta `last_read_errors` uma vez no começo e acumula."""
+        store.write_records([_row("2026-09-01")], dataset=DATASET_COLETAS)
+        store.write_records([_row("2026-09-02")], dataset=DATASET_COLETAS)
+        for dia in ("09-01", "09-02"):
+            alvo = [k for k in store.keys_in_range(DATASET_COLETAS) if dia in k][0]
+            store.backend.put(alvo, b"nao e parquet")
+        # Consumir todo o gerador para disparar as leituras.
+        list(store.read_days(DATASET_COLETAS))
+        assert len(store.last_read_errors) == 2
+
+    def test_partition_column_marca_a_origem(self, store):
+        store.write_records([_row("2026-09-01")], dataset=DATASET_COLETAS)
+        _, frame = next(store.read_days(DATASET_COLETAS, partition_column="_p"))
+        assert "_p" in frame.columns
+        assert frame["_p"].iloc[0].startswith("coletas/data=2026-09-01")
+
     def test_colunas_extras_passam(self, store):
         """Colunas que o banco ganhou depois (de-para) não exigem migração."""
         store.write_day(
