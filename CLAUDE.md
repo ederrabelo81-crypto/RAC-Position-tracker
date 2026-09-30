@@ -5,7 +5,7 @@
 > **Stack:** Python 3.10+, Playwright, curl_cffi, BeautifulSoup, Pandas, Supabase, Streamlit  
 > **Sub-projeto:** `magalu_shopee/` — Node.js/TypeScript + Puppeteer (Shopee — fallback)  
 > **Status:** ✅ Production | PC Coletor (Windows, IP residencial) + GitHub Actions (backup)  
-> **Versão:** v5.2 (Set/2026) | **Última atualização:** 06 de Setembro de 2026
+> **Versão:** v5.5 (Set/2026) | **Última atualização:** 30 de Setembro de 2026
 
 ---
 
@@ -317,6 +317,57 @@ agora cobra a ausência. Requer `SUPABASE_KEY` service_role no `.env` do PC (a
 chave `anon` grava nada em silêncio).
 
 ---
+
+---
+
+## Cockpit do Trade + filtros globais únicos (Set/2026) 🆕
+
+**O que mudou no `app.py`:** a página inicial virou **🏠 Cockpit do Trade**
+(definições em `docs/COCKPIT_TRADE.md`) e os filtros globais passaram a valer
+para **todas** as páginas (`docs/DASHBOARD_FILTERS.md`).
+
+**Por quê (validado contra o banco em 30/09/2026):**
+- O Overview antigo lia com teto de 15 mil linhas no banco + 15 mil no
+  histórico — "Registros (8d) = 30,000" era o teto; com ~35 mil linhas/dia,
+  todo gráfico via ~1 dia, escolhido pela ordem de inserção.
+- **Cada turno do PC coletor entrava DUAS vezes em `coletas`**: o `main.py`
+  grava com run_id UUID4 e o reforço `upload_csv.py` do
+  `collect_local_authenticated.bat` regravava o mesmo CSV com run_id UUID5 (do
+  nome do arquivo). Como `run_id` está na chave única, o upsert não
+  deduplicava. Corrigido na origem por `utils/run_sidecar.py` (o `main.py`
+  grava `<csv>.run_id`; quem reenvia reusa). **As linhas já duplicadas no banco
+  e no Parquet continuam lá** — quem lê precisa deduplicar
+  (`utils.shelf_insights.dedup_snapshot` ou `_filter_latest_run`).
+- O filtro "Keywords" misturava buscas genéricas, buscas de marca e 17
+  **vitrines de dealer** (`keyword = 'WebContinental'`, `categoria = 'Dealers'`).
+- Os filtros globais só valiam no Overview; as outras 10 páginas tinham o
+  próprio Período (7/14/30 dias) e ignoravam o global.
+- Google Shopping gravava 82% dos sellers como "`<loja>e mais`" ("Magalue
+  mais") e o fallback do PDP da Amazon gravava o byline da marca ("Visite a
+  loja PHILCO") como vencedor da buy box.
+
+**Módulos novos (puros, testados):**
+- `utils/keyword_taxonomy.py` — tipo de busca: Genérica (batalha) / Marca
+  própria (defesa) / Marca concorrente (conquista) / Vitrine de dealer.
+- `utils/shelf_insights.py` — dedup, share de prateleira, batalha por keyword,
+  buy box das ofertas Midea, preço de vitrine por BTU, cobertura e alertas.
+- `utils/run_sidecar.py` — run_id que viaja com o CSV.
+
+**Regras duras:**
+1. **Share de prateleira só em busca genérica** (`BRAND_NEUTRAL_CATEGORIES`).
+   Busca de marca tem leitura própria (defesa/conquista), nunca soma no KPI.
+2. **Comparação entre dias só nos mesmos turnos E nas mesmas buscas** por
+   plataforma (`comparable_days`); turno com coleta parcial (< 30% do melhor
+   turno da plataforma) sai e vira ressalva — silêncio não é mercado.
+3. **Buy box das ofertas Midea só com `buy_box_seller` observado.** O `seller`
+   é placeholder em Amazon ("Amazon") e Casas Bahia sem buy box ("Casas
+   Bahia"); oferta sem buy box entra na cobertura, não no ranking.
+4. **Filtro de seller casa pelo seller efetivo** (`buy_box_seller`, senão
+   `seller`) — em `query_coletas` e no espelho do histórico.
+5. **Página nova com Período/Plataformas/Marcas:** use `_page_period()` e
+   `_inherit_global(...)`, nunca um date-picker próprio; keyword via
+   `_keyword_multiselect(opts, key=...)`.
+6. **Marca não filtra share** no Cockpit — o denominador precisa de todas.
 
 ---
 
@@ -665,7 +716,7 @@ See `.claude/COMMON_MISTAKES.md` for critical examples:
 rac-position-tracker/
 ├── config.py                    # Central configuration: keywords, platforms, brands
 ├── main.py                      # CLI entry point, orchestration, CSV export
-├── app.py                       # Streamlit dashboard (20 pages + CI with Claude)
+├── app.py                       # Streamlit dashboard (home = 🏠 Cockpit do Trade + 20 páginas)
 ├── diagnostico.py               # Debug utilities
 ├── requirements.txt             # Python dependencies
 │
@@ -715,6 +766,9 @@ rac-position-tracker/
 │   ├── supabase_client.py       # Upload, cleanup, maintenance
 │   ├── amazon_sellers.py        # 🆕 Cache de sellers Amazon (PDP)
 │   ├── seller_names.py          # 🆕 De-para canônico de seller (buy box)
+│   ├── keyword_taxonomy.py      # 🆕 Tipo de busca: genérica / marca própria / concorrente / dealer
+│   ├── shelf_insights.py        # 🆕 Métricas puras do Cockpit do Trade (share, buy box, alertas)
+│   ├── run_sidecar.py           # 🆕 run_id viaja com o CSV (fim da gravação dupla)
 │   ├── admin_automation.py      # Motor da automação ADMIN (zero interação)
 │   └── n8n_notify.py            # Telegram notifications (API direta)
 │
@@ -1504,8 +1558,9 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 
 ---
 
-*Last updated: September 23, 2026 (v5.4)*  
-*Latest changes (23/09/2026): correção pós-incidente — a janela quente voltou do Aiven para o **Supabase** em 22/09/2026 (`docs/RETORNO_SUPABASE.md`, `RAC_HOT_WINDOW_DAYS=2`), mas `docs/briefing_diario_prompt.md` e `docs/BRIEFING_LOCAL_SETUP.md` continuaram exigindo/documentando um conector Postgres apontado pra **Aiven** — o PASSO 0 chegava a proibir explicitamente o Supabase. Efeito: o conector local, se apontado (por essas instruções) pra Aiven, lê um banco congelado desde a virada (sem coleta nova) e reproduz o mesmo padrão de falso "outage" do incidente de 12–17/09. Corrigido: todos os pontos de `briefing_diario_prompt.md` que citavam "Aiven" como origem de dado (PASSO 0, 3, 5, 6, 7.3) agora dizem Supabase; `BRIEFING_LOCAL_SETUP.md` §1 reescrita para apontar o conector `postgres` pro **Session Pooler do Supabase** (conexão direta, sobrevive a uma restrição de cota na API REST — `docs/RETORNO_SUPABASE.md` §5.1) em vez da Aiven; comentários de `scripts/run_briefing_diario.bat` e `scripts/setup_briefing_scheduler.ps1` idem. Nova seção "Banco intercambiável" acima recebeu um aviso de reversão no topo, para não ser lida como estado atual. Também confirmado nesta sessão: o projeto Supabase (`ailbsczkrympslpjwwko`) segue com `status=ACTIVE_HEALTHY` e a conexão Postgres direta respondendo normalmente (banco em 125 MB, bem abaixo dos 500 MB) mesmo com o painel mostrando PostgREST/Auth "Unhealthy" e o banner "Services restricted" — condizente com a nota de `RETORNO_SUPABASE.md` §5.1 de que a reavaliação da cota pela plataforma leva minutos a algumas horas após o banco encolher, e não há ação de API/dashboard disponível para acelerá-la; se persistir muitas horas com o banco pequeno, checar Organization Settings → Billing para uma restrição distinta (billing), não de tamanho.*
+*Last updated: September 30, 2026 (v5.5)*  
+*Latest changes (30/09/2026): validação do dashboard contra o banco — o Overview virou **🏠 Cockpit do Trade** (share de prateleira da Midea Carrier nas buscas genéricas, batalha por keyword, defesa/conquista de marca, buy box das ofertas Midea, preço de vitrine por BTU, alertas e cobertura; `docs/COCKPIT_TRADE.md`), filtros globais passaram a valer para todas as páginas (Período único + Canal novo + herança de Plataformas/Marcas), keywords agrupadas por tipo de busca sem as vitrines de dealer, filtro de seller pelo seller efetivo (buy box), limpeza do sufixo "e mais" do Google Shopping e do byline de marca da Amazon, e fim da gravação dupla de cada turno do PC coletor (`utils/run_sidecar.py`). Ver a seção "Cockpit do Trade + filtros globais únicos".*  
+*Anterior (23/09/2026): correção pós-incidente — a janela quente voltou do Aiven para o **Supabase** em 22/09/2026 (`docs/RETORNO_SUPABASE.md`, `RAC_HOT_WINDOW_DAYS=2`), mas `docs/briefing_diario_prompt.md` e `docs/BRIEFING_LOCAL_SETUP.md` continuaram exigindo/documentando um conector Postgres apontado pra **Aiven** — o PASSO 0 chegava a proibir explicitamente o Supabase. Efeito: o conector local, se apontado (por essas instruções) pra Aiven, lê um banco congelado desde a virada (sem coleta nova) e reproduz o mesmo padrão de falso "outage" do incidente de 12–17/09. Corrigido: todos os pontos de `briefing_diario_prompt.md` que citavam "Aiven" como origem de dado (PASSO 0, 3, 5, 6, 7.3) agora dizem Supabase; `BRIEFING_LOCAL_SETUP.md` §1 reescrita para apontar o conector `postgres` pro **Session Pooler do Supabase** (conexão direta, sobrevive a uma restrição de cota na API REST — `docs/RETORNO_SUPABASE.md` §5.1) em vez da Aiven; comentários de `scripts/run_briefing_diario.bat` e `scripts/setup_briefing_scheduler.ps1` idem. Nova seção "Banco intercambiável" acima recebeu um aviso de reversão no topo, para não ser lida como estado atual. Também confirmado nesta sessão: o projeto Supabase (`ailbsczkrympslpjwwko`) segue com `status=ACTIVE_HEALTHY` e a conexão Postgres direta respondendo normalmente (banco em 125 MB, bem abaixo dos 500 MB) mesmo com o painel mostrando PostgREST/Auth "Unhealthy" e o banner "Services restricted" — condizente com a nota de `RETORNO_SUPABASE.md` §5.1 de que a reavaliação da cota pela plataforma leva minutos a algumas horas após o banco encolher, e não há ação de API/dashboard disponível para acelerá-la; se persistir muitas horas com o banco pequeno, checar Organization Settings → Billing para uma restrição distinta (billing), não de tamanho.*
 *Anterior (18/09/2026, 2): o briefing diário v2 completo foi movido para rodar **localmente** (Claude Code CLI headless no PC coletor) porque o Cowork/claude.ai não tem conector MCP Postgres genérico para o Aiven (só serviços com OAuth publicado no diretório, tipo Supabase/Neon). Novo `docs/briefing_diario_prompt.md` (prompt versionado, com as correções de schema já aplicadas), `scripts/run_briefing_diario.bat` + `scripts/setup_briefing_scheduler.ps1` (tarefa `RAC_Briefing_0700`, 07:00 BRT), `docs/BRIEFING_LOCAL_SETUP.md` (setup único: conector Postgres/Aiven read-only, conector Notion via OAuth, GitHub Pages). O painel deixou de ser Artifact da claude.ai (ferramenta ausente no Claude Code CLI) e virou página estática em `docs/painel/index.html`, publicada via GitHub Pages a cada push do próprio briefing.*
 *Anterior (18/09/2026): nova seção "Briefing/resumo diário — nunca consultar o banco de memória" — documenta o incidente de 12–17/09/2026 (tarefa agendada `painel-trade-rac-7h` publicou "outage total" no Notion 3 dias seguidos porque consultava um schema de `pricetrack_daily` inventado contra o projeto Supabase antigo, já descontinuado pela migração Aiven) e fixa a regra dura: nunca escrever SQL de schema de memória, sempre passar por `utils/db.py`/`briefing_gate.py`/`pricetrack_capacity_audit.py`, `pipeline_heartbeat` usa `job_id` (não `job_name`), e sem conector Postgres/Aiven configurado o resultado é reportar o bloqueio, nunca fabricar diagnóstico.*
 *Anterior (06/09/2026): documentado o **Track Position Seller** (`seller_app/`) — app novo, separado do dashboard interno, publicado em Fase 1 do spin-off (`docs/TRACK_POSITION_SELLER.md`). Fato com sujeito seller em `seller_offer_daily` (migrações 016/017), 5 abas de insight, chave `anon` só-leitura + RLS. Nova seção "Track Position Seller — painel do lojista" abaixo.*

@@ -471,6 +471,45 @@ section[data-testid="stSidebar"] .stButton > button div {
     color: inherit !important;
 }
 
+/* Sidebar buttons and expander headers have a LIGHT background, but the
+   blanket "sidebar text is white" rules above (`span:not([aria-hidden])`,
+   `div[data-testid]`, `p`) also reach the label nested inside them — the
+   label rendered white-on-white and only the emoji showed ("🌐" with no
+   "Filtros Globais", "💾" with no "Salvar preset"). These selectors are more
+   specific than the blanket ones on purpose. */
+section[data-testid="stSidebar"] button[data-testid^="stBaseButton-secondary"] {
+    background: #ffffff !important;
+    color: #1e293b !important;
+    border-color: #e2e8f0 !important;
+}
+section[data-testid="stSidebar"] button[data-testid^="stBaseButton"] div[data-testid],
+section[data-testid="stSidebar"] button[data-testid^="stBaseButton"] p,
+section[data-testid="stSidebar"] button[data-testid^="stBaseButton"] span {
+    color: inherit !important;
+    text-shadow: none !important;
+}
+section[data-testid="stSidebar"] button[data-testid^="stBaseButton-secondary"]:hover {
+    color: #1a56db !important;
+    background: #eff6ff !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] details {
+    border-color: rgba(255, 255, 255, 0.18) !important;
+    background: rgba(255, 255, 255, 0.04) !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+    background: #f8fafc !important;
+    color: #0f172a !important;
+    border-radius: 8px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary div[data-testid],
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary p,
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary span,
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary svg {
+    color: #0f172a !important;
+    fill: #0f172a !important;
+    text-shadow: none !important;
+}
+
 /* Page link specific styling */
 section[data-testid="stSidebar"] nav a[href],
 section[data-testid="stSidebar"] [data-testid="stSidebarNavLink"] {

@@ -257,7 +257,9 @@ class TestHelpersDoDashboard:
             "Webcontinental", "continentalcenter", "Webcontinental ES",
             "friopecas", "Friopeças", None, "", "mgshopgra",
         ])
-        assert opcoes == ["Frio Peças", "Web Continental", "mgshopgra"]
+        # Ordem sem caixa (30/09/2026): antes o "mgshopgra" minúsculo ia para o
+        # fim da lista, depois de todo nome capitalizado.
+        assert opcoes == ["Frio Peças", "mgshopgra", "Web Continental"]
 
     def test_roundtrip_dropdown_para_banco(self):
         """Toda opção do dropdown reexpande para grafias que voltam a ela."""
@@ -265,7 +267,10 @@ class TestHelpersDoDashboard:
             ["Webcontinental", "friopecas", "frigelar2", "Centralar.com"]
         ):
             for bruta in app._expand_sellers([canonical]):
-                assert app._canonical_seller(bruta) == canonical
+                # A grafia "<loja>e mais" é do comparador: o painel tira o
+                # sufixo antes do de-para (`_apply_seller_canonical`).
+                limpa = app._strip_comparador_suffix(bruta)
+                assert app._canonical_seller(limpa) == canonical
 
 
 class TestFiltroDoHistoricoFrio:
@@ -323,3 +328,119 @@ class TestExpansaoParaOBanco:
         brutas = app._expand_sellers(["Frio Peças"])
         assert "FRIOPECAS" in brutas and "friopecas" in brutas
         assert "Frio Peças" in brutas
+
+
+class TestRuidoDeCaptura:
+    """Texto capturado no lugar do seller que NÃO é lojista (30/09/2026).
+
+    Grafias reais da base: o Google Shopping colava "e mais" no nome da loja
+    em 82% das linhas, e o fallback do PDP da Amazon lia o byline da MARCA.
+    """
+
+    @pytest.mark.parametrize("raw,esperado", [
+        ("Magalue mais", "Magalu"),
+        ("Leroy Merline mais", "Leroy Merlin"),
+        ("Amazon.com.br - Sellere mais", "Amazon.com.br - Seller"),
+        ("KaBuM!e mais", "KaBuM!"),
+        ("Shopeee mais", "Shopee"),
+        ("Loja Daikin e mais", "Loja Daikin"),
+    ])
+    def test_sufixo_do_comparador_sai(self, raw, esperado):
+        from utils.seller_names import strip_comparador_suffix
+        assert strip_comparador_suffix(raw) == esperado
+
+    @pytest.mark.parametrize("raw", ["Compre Mais", "Frigelar", "Leroy Merlin"])
+    def test_nome_legitimo_passa_intacto(self, raw):
+        from utils.seller_names import strip_comparador_suffix
+        assert strip_comparador_suffix(raw) == raw
+
+    def test_sufixo_sozinho_vira_none(self):
+        from utils.seller_names import strip_comparador_suffix
+        assert strip_comparador_suffix("e mais") is None
+        assert strip_comparador_suffix(None) is None
+
+    def test_sufixo_removido_cai_no_grupo_canonico(self):
+        from utils.seller_names import strip_comparador_suffix
+        assert normalize_seller_name(strip_comparador_suffix("Frigelare mais")) == "Frigelar"
+        assert normalize_seller_name(strip_comparador_suffix("Clima Rioe mais")) == "Clima Rio"
+
+    @pytest.mark.parametrize("raw", [
+        "Visite a loja PHILCO", "Visite a loja LG", "Marca: TCL", "Marca: SPRINGER",
+    ])
+    def test_byline_de_marca_nao_e_seller(self, raw):
+        assert normalize_seller_name(raw) is None
+
+    def test_loja_oficial_de_marca_continua_seller(self):
+        """"Loja Electrolux" É um vendedor (a loja oficial vende) — só o byline
+        "Visite a loja X" é link de marca."""
+        assert normalize_seller_name("Loja Electrolux") == "Loja Electrolux"
+
+
+class TestSellerEfetivoNoPainel:
+    """Na Amazon `seller` é sempre "Amazon"; o lojista real está na buy box."""
+
+    def test_filtro_do_historico_casa_pela_buy_box(self):
+        df = pd.DataFrame({
+            "plataforma": ["Amazon", "Amazon", "Magalu"],
+            "seller": ["Amazon", "Amazon", "Web Continental"],
+            "buy_box_seller": ["Web Continental", "Frigelar", None],
+            "data": [None] * 3,
+        })
+        out = app._filter_history_coletas(df, sellers=["Web Continental"])
+        assert out["buy_box_seller"].tolist()[0] == "Web Continental"
+        assert len(out) == 2  # Amazon via buy box + Magalu via seller
+
+    def test_filtro_do_historico_casa_grafia_do_comparador(self):
+        df = pd.DataFrame({
+            "plataforma": ["Google Shopping"], "seller": ["Magalue mais"],
+            "buy_box_seller": ["Magalue mais"], "data": [None],
+        })
+        out = app._filter_history_coletas(df, sellers=["Magazine Luiza"])
+        assert len(out) == 1
+
+    def test_expansao_inclui_grafia_com_sufixo(self):
+        brutas = app._expand_sellers(["Magazine Luiza"])
+        assert "Magalue mais" in brutas
+
+    def test_canonizacao_limpa_so_o_comparador(self):
+        df = pd.DataFrame({
+            "plataforma": ["Google Shopping", "Magalu"],
+            "seller": ["Frigelare mais", "Frigelar"],
+            "buy_box_seller": ["Frigelare mais", None],
+        })
+        out = app._apply_seller_canonical(df)
+        assert out["seller"].tolist() == ["Frigelar", "Frigelar"]
+        assert out["buy_box_seller"].tolist()[0] == "Frigelar"
+
+    def test_opcoes_unem_seller_e_buy_box(self):
+        df = pd.DataFrame({
+            "seller": ["Amazon", "Amazon"],
+            "buy_box_seller": ["Refricril Ar Condicionados", "Visite a loja LG"],
+        })
+        opcoes = app._canonical_seller_options(app._seller_option_values(df))
+        assert "Refricril Ar Condicionados" in opcoes
+        assert "Amazon" in opcoes
+        assert not any("Visite a loja" in o for o in opcoes)
+
+    def test_lista_postgrest_escapa_aspas_e_virgula(self):
+        assert app._pgrst_in_list(['A, B', 'C "D"']) == '"A, B","C \\"D\\""'
+
+
+class TestExtracaoDoComparador:
+    """Origem do "Magalue mais": dois <span> colados sem separador."""
+
+    def test_card_com_e_mais_sai_limpo(self):
+        from bs4 import BeautifulSoup
+        from scrapers.google_shopping import GoogleShoppingScraper
+
+        html = '<div><div class="n7emVc"><span>Magalu</span><span>e mais</span></div></div>'
+        item = BeautifulSoup(html, "html.parser").div
+        assert GoogleShoppingScraper._extract_seller(item) == "Magalu"
+
+    def test_card_sem_sufixo_intacto(self):
+        from bs4 import BeautifulSoup
+        from scrapers.google_shopping import GoogleShoppingScraper
+
+        html = '<div><div class="n7emVc">Frigelar</div></div>'
+        item = BeautifulSoup(html, "html.parser").div
+        assert GoogleShoppingScraper._extract_seller(item) == "Frigelar"
