@@ -17,6 +17,9 @@
 2. Check `.claude/COMMON_MISTAKES.md` item #5
 3. Key files: `scrapers/base.py`, `scrapers/magalu.py`
 
+### "I want to speed up PDP reads / evaluate a scraping library"
+1. Load `docs/AVALIACAO_SCRAPLING.md` (Scrapling: what to adapt, why not a dependency; Amazon AOD; Leroy seller)
+
 ### "I need to add or configure a dealer"
 1. Load `docs/learnings/dealer-configs.md` (~600 tokens)
 2. Key file: `scrapers/dealers.py` DEALER_CONFIGS

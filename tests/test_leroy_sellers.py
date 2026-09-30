@@ -1125,3 +1125,101 @@ class TestQuarentenaLegada:
         cache = LeroySellerCache(path=tmp_path / "c.json", retry_days=7)
         cache.mark_failed(SELLER_ID, transient=False)
         assert cache.should_retry(SELLER_ID) is False
+
+
+class TestLeroyComoSellerDoMarketplace:
+    """
+    A Leroy também é seller do próprio marketplace, com ObjectId como qualquer
+    lojista. Evidência (30/09/2026): o item 3962339062 tem
+    ``5be5eb765cb50968730358f5`` como seller ÚNICO no índice e o PDP mostra
+    "Vendido e entregue por LEROY MERLIN" — e a coleta gravava
+    "3P (não identificado)".
+    """
+
+    LEROY_ID = "5be5eb765cb50968730358f5"
+    PDP_1P = ("<html><body>" + "<p>x</p>" * 3_000 +
+              "<p>Vendido e entregue por LEROY MERLIN</p></body></html>")
+
+    def test_id_da_leroy_no_mapa_estatico_vira_1p(self, scraper):
+        info = scraper._classify_hit_seller({
+            "name": "Ar Condicionado Elgin", "marketplaceSellers": [self.LEROY_ID],
+        })
+        assert info["seller"] == "Leroy Merlin"
+        assert info["tipo_seller"] == "1P"
+
+    def test_cache_que_aponta_para_a_leroy_vira_1p(self, scraper):
+        scraper._seller_cache.put(SELLER_ID, "Leroy Merlin")
+        info = scraper._classify_hit_seller({
+            "name": "Ar Condicionado", "marketplaceSellers": [SELLER_ID],
+        })
+        assert info["tipo_seller"] == "1P"
+
+    def test_seller_unico_resolvido_como_leroy_pelo_pdp(self, scraper, monkeypatch):
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: self.PDP_1P)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
+        monkeypatch.setattr(scraper, "_random_delay", lambda **kw: None)
+
+        records = scraper._parse_algolia_hits(
+            [{"name": "Ar Condicionado Split 12000", "marketplaceSellers": [SELLER_ID],
+              "url": "/produto_1"}],
+            "ar condicionado", {}, 0,
+        )
+
+        assert records[0]["Seller / Vendedor"] == "Leroy Merlin"
+        assert records[0]["Tipo Seller"] == "1P"
+        assert scraper._seller_cache.get(SELLER_ID) == "Leroy Merlin"
+        assert scraper._seller_metrics["resolved_as_leroy_self"] == 1
+
+    def test_com_varios_sellers_a_leroy_no_pdp_segue_ambigua(self, scraper, monkeypatch):
+        """Com 2+ sellers o PDP pode estar mostrando outra oferta: não identifica o ID."""
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: self.PDP_1P)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: self.PDP_1P)
+        monkeypatch.setattr(scraper, "_random_delay", lambda **kw: None)
+
+        records = scraper._parse_algolia_hits(
+            [{"name": "Ar Condicionado Split 12000",
+              "marketplaceSellers": [SELLER_ID, "outro_id"], "url": "/produto_1"}],
+            "ar condicionado", {}, 0,
+        )
+
+        assert records[0]["Seller / Vendedor"] == UNRESOLVED_SELLER
+        assert scraper._seller_cache.get(SELLER_ID) is None
+
+    def test_prefere_url_de_produto_com_seller_unico(self, scraper, monkeypatch):
+        vistos = []
+        monkeypatch.setattr(
+            scraper, "_resolve_pending_sellers",
+            lambda pending: vistos.append(dict(pending)) or {},
+        )
+        scraper._parse_algolia_hits(
+            [
+                {"name": "Split A", "marketplaceSellers": [SELLER_ID, "x"], "url": "/multi"},
+                {"name": "Split B", "marketplaceSellers": [SELLER_ID], "url": "/unico"},
+            ],
+            "ar condicionado", {}, 0,
+        )
+        assert vistos[0][SELLER_ID].endswith("/unico")
+        assert SELLER_ID in scraper._pdp_sole_ids
+
+
+class TestTextoDeInterfaceNaoEhSeller:
+    def test_saiba_mais_rejeitado(self):
+        assert clean_seller_name("Saiba mais") is None
+        assert clean_seller_name("Conheça mais formas de pagamento") is None
+
+    def test_nome_real_com_palavra_parecida_passa(self):
+        assert clean_seller_name("Detalhes Refrigeração") == "Detalhes Refrigeração"
+        assert clean_seller_name("Mais Ar") == "Mais Ar"
+
+    def test_cache_em_disco_descarta_nome_invalido(self, tmp_path):
+        path = tmp_path / "c.json"
+        path.write_text(json.dumps({"sellers": {
+            "5f61118b7dc9a636d40113a2": "Saiba mais",
+            SELLER_ID: "Central Ar",
+        }}), encoding="utf-8")
+
+        cache = LeroySellerCache(path=path)
+
+        assert cache.get("5f61118b7dc9a636d40113a2") is None
+        assert cache.get(SELLER_ID) == "Central Ar"
+        assert cache.save() is True  # a limpeza é persistida

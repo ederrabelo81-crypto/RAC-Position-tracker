@@ -52,7 +52,18 @@ _ITEMS_PER_PAGE = 24
 # de escrita, mas este mapa continua valendo para correções manuais.
 LEROY_SELLER_ID_MAP: dict[str, str] = {
     "6353074400c2dc08ca5a2114": "Elgin",
+    # A própria Leroy como seller do marketplace. Conferido em 30/09/2026: o
+    # item 3962339062 (Elgin Eco Inverter III 12K) tem este ID como seller
+    # ÚNICO em `marketplaceSellers` e o PDP mostra "Vendido e entregue por
+    # LEROY MERLIN". O resolver descartava a resposta ("3P não pode ser a
+    # Leroy") e o ID ia para quarentena: ~200 linhas/dia gravadas como
+    # "3P (não identificado)" quando eram 1P, inflando o 3P no share.
+    "5be5eb765cb50968730358f5": "Leroy Merlin",
 }
+
+# Nome canônico do sortimento próprio — o mesmo que o caminho sem
+# `marketplaceSellers` grava, para 1P não aparecer em duas grafias.
+LEROY_SELF_SELLER = "Leroy Merlin"
 
 # Sentinela usada quando nem o cache nem o PDP identificam o lojista.
 UNRESOLVED_SELLER = "3P (não identificado)"
@@ -216,6 +227,11 @@ class LeroyMerlinScraper(BaseScraper):
         # IDs já tentados nesta execução — impede queimar as tentativas
         # transitórias de um seller em várias páginas do mesmo run.
         self._pdp_attempted_this_run: set[str] = set()
+        # IDs cuja URL pendente é de um produto onde ele é o ÚNICO seller do
+        # índice. Só nesses a resposta "Vendido por LEROY MERLIN" do PDP prova
+        # que o ID é a própria Leroy — com 2+ sellers, o vencedor do PDP pode
+        # ser outra oferta. Preenchido a cada página em `_parse_algolia_hits`.
+        self._pdp_sole_ids: set[str] = set()
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -227,6 +243,7 @@ class LeroyMerlinScraper(BaseScraper):
             "resolved_via_dynamic_cache": 0,
             "resolved_via_inline_hit": 0,
             "resolved_via_pdp": 0,
+            "resolved_as_leroy_self": 0,  # ID de marketplace que é a Leroy
             "resolved_via_scalar_fields": 0,
             "pdp_fetch_attempts": 0,
             "pdp_fetch_failures": 0,
@@ -536,10 +553,17 @@ class LeroyMerlinScraper(BaseScraper):
             if self._looks_like_pdp(html):
                 pagina_chegou = True
             candidate = extract_seller_from_pdp(html, seller_id)
-            # Produto marcado como 3P no Algolia não pode resolver para a
-            # própria Leroy — sinal de PDP genérico/errado, melhor descartar.
             if candidate and not is_leroy_self(candidate):
                 name = candidate
+                break
+            # A Leroy também é seller do próprio marketplace, com ObjectId
+            # como qualquer lojista. Quando o ID é o único seller do produto,
+            # "Vendido e entregue por LEROY MERLIN" identifica o ID. Com 2+
+            # sellers a resposta é ambígua (o PDP pode mostrar outra oferta) e
+            # segue descartada.
+            if candidate and seller_id in self._pdp_sole_ids:
+                name = LEROY_SELF_SELLER
+                self._seller_metrics["resolved_as_leroy_self"] += 1
                 break
 
         if not name:
@@ -737,7 +761,7 @@ class LeroyMerlinScraper(BaseScraper):
                         "seller": cached,
                         "seller_id": first,
                         "qtd_sellers": qtd_sellers,
-                        "tipo_seller": "3P",
+                        "tipo_seller": self._tipo_for(cached),
                     }
 
                 # Layer 4: inline `sellers` / `installmentsBySeller`
@@ -807,6 +831,11 @@ class LeroyMerlinScraper(BaseScraper):
             "tipo_seller": "3P",
         }
 
+    @staticmethod
+    def _tipo_for(seller: str) -> str:
+        """1P quando o seller resolvido é a própria Leroy, 3P caso contrário."""
+        return "1P" if is_leroy_self(seller) else "3P"
+
     def _resolve_pending_sellers(
         self,
         pending: Dict[str, str],
@@ -873,14 +902,22 @@ class LeroyMerlinScraper(BaseScraper):
         # via PDP barata: dezenas de hits colapsam em poucos IDs novos.
         seller_info: List[Dict[str, Any]] = []
         pending: Dict[str, str] = {}
+        self._pdp_sole_ids = set()
         for hit in hits:
             info = self._classify_hit_seller(hit)
             seller_info.append(info)
             sid = info.get("seller_id")
-            if info.get("seller") is None and sid and sid not in pending:
+            if info.get("seller") is None and sid:
                 url = self._extract_algolia_url(hit)
-                if url:
+                if not url:
+                    continue
+                # Prefere um produto em que o ID é o único seller: só ali a
+                # resposta do PDP identifica o ID sem ambiguidade.
+                sole = info.get("qtd_sellers") == 1
+                if sid not in pending or (sole and sid not in self._pdp_sole_ids):
                     pending[sid] = url
+                    if sole:
+                        self._pdp_sole_ids.add(sid)
 
         # --- Passada 2: resolve os pendentes abrindo 1 PDP por seller novo ---
         if pending:
@@ -893,6 +930,7 @@ class LeroyMerlinScraper(BaseScraper):
                 sid = info.get("seller_id")
                 if info.get("seller") is None and sid in resolved:
                     info["seller"] = resolved[sid]
+                    info["tipo_seller"] = self._tipo_for(resolved[sid])
 
         records = []
 
