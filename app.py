@@ -2734,16 +2734,33 @@ def query_price_evolution_data(
     return df, meta
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
 def get_filter_options() -> dict:
-    """Fetch distinct values for filter dropdowns (last 30 days), paginated."""
+    """Opções dos dropdowns (banco + histórico frio do Período global).
+
+    Casca sem cache: lê o Período global e delega à função cacheada, para a
+    janela do histórico entrar na CHAVE de cache (ler session_state dentro da
+    função cacheada devolveria opções de outro período).
+    """
+    inicio, fim = _gf_dates()
+    return _get_filter_options_cached(_janelas_historico_opcoes(inicio, fim))
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_filter_options_cached(hist_janelas: tuple = ()) -> dict:
+    """Fetch distinct values for filter dropdowns (last 30 days), paginated.
+
+    Args:
+        hist_janelas: Janelas ``(início, fim)`` do histórico frio a unir às
+            opções do banco (`_janelas_historico_opcoes`). Vazio = só os
+            últimos `_HISTORICO_OPCOES_DIAS` dias.
+    """
     empty = {"platforms": [], "platform_types": [], "brands": [], "keywords": [], "sellers": []}
     client = _get_supabase()
     if client is None:
         # Sem banco, as opções saem do histórico frio — senão os dropdowns da
         # barra lateral ficam vazios e o usuário não consegue nem filtrar os
         # dados que ESTÃO no Drive.
-        return _filter_options_do_historico() or empty
+        return _filter_options_do_historico(hist_janelas) or empty
     # Caminho rápido: RPC server-side com DISTINCT (evita timeout em ~261k linhas)
     try:
         rpc = client.rpc("get_filter_options_fast", {"window_days": 30}).execute()
@@ -2763,7 +2780,7 @@ def get_filter_options() -> dict:
             # continuarem oferecendo todo o período — a via de dados principal
             # (_overview_data) já costura frio+quente, mas de nada serve poder
             # filtrar por uma marca/seller que o dropdown não lista.
-            return _merge_filter_options(db_opts, _filter_options_do_historico())
+            return _merge_filter_options(db_opts, _filter_options_do_historico(hist_janelas))
     except Exception:
         pass  # cai no fallback paginado abaixo
     try:
@@ -2810,11 +2827,11 @@ def get_filter_options() -> dict:
             "sellers":        _canonical_seller_options(_seller_option_values(df)),
         }
         # Une com o frio (mesma razão do caminho da RPC acima).
-        return _merge_filter_options(db_opts, _filter_options_do_historico())
+        return _merge_filter_options(db_opts, _filter_options_do_historico(hist_janelas))
     except Exception as exc:
         # Cota estourada (402) derruba até leitura — cai no histórico antes de
         # desistir, para a barra lateral continuar utilizável.
-        do_frio = _filter_options_do_historico()
+        do_frio = _filter_options_do_historico(hist_janelas)
         if do_frio:
             return do_frio
         st.warning(f"Filter options query failed: {exc}")
@@ -2873,25 +2890,55 @@ def _merge_filter_options(a: dict, b: dict) -> dict:
 _HISTORICO_OPCOES_DIAS = 14
 
 
-def _filter_options_do_historico(dias: int = _HISTORICO_OPCOES_DIAS) -> dict:
+def _janelas_historico_opcoes(inicio: date, fim: date) -> tuple:
+    """Janelas do histórico frio que alimentam os dropdowns.
+
+    Sempre os últimos `_HISTORICO_OPCOES_DIAS` dias (o período padrão cabe
+    neles) e, se o Período global começa antes disso, também o trecho pedido.
+    Assim um seller/SKU que só aparece num período antigo continua
+    selecionável, e um período longo só baixa partições que a própria página
+    já vai ler — o primeiro acesso no período padrão segue leve.
+
+    Args:
+        inicio: Início do Período global.
+        fim: Fim do Período global.
+
+    Returns:
+        Tupla de ``(início, fim)`` (hashable — entra na chave de cache).
+    """
+    hoje = date.today()
+    base_ini = hoje - timedelta(days=_HISTORICO_OPCOES_DIAS)
+    janelas = [(base_ini, hoje)]
+    if inicio < base_ini:
+        janelas.append((inicio, min(fim, base_ini - timedelta(days=1))))
+    return tuple(janelas)
+
+
+def _filter_options_do_historico(janelas: tuple = ()) -> dict:
     """Opções dos dropdowns derivadas do histórico frio (Parquet).
 
     Args:
-        dias: Janela a varrer. Curta de propósito (`_HISTORICO_OPCOES_DIAS`):
-            no primeiro acesso após um deploy cada partição do período é
-            baixada do Drive antes de a barra lateral aparecer.
+        janelas: ``(início, fim)`` a varrer (`_janelas_historico_opcoes`).
+            Vazio = só os últimos `_HISTORICO_OPCOES_DIAS` dias — curto de
+            propósito: no primeiro acesso após um deploy cada partição do
+            período é baixada do Drive antes de a barra lateral aparecer.
 
     Returns:
         Dicionário no mesmo formato de `get_filter_options`, ou ``{}`` quando
         não há histórico — o chamador decide o fallback.
     """
+    janelas = tuple(janelas) or _janelas_historico_opcoes(date.today(), date.today())
     try:
-        df = _history_store().read(
-            "coletas",
-            start=date.today() - timedelta(days=dias),
-            end=date.today(),
-            columns=["plataforma", "tipo", "marca", "keyword", "seller", "buy_box_seller"],
-        )
+        store = _history_store()
+        partes = [
+            store.read(
+                "coletas", start=ini, end=fim_j,
+                columns=["plataforma", "tipo", "marca", "keyword", "seller", "buy_box_seller"],
+            )
+            for ini, fim_j in janelas
+        ]
+        partes = [p for p in partes if not p.empty]
+        df = pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
     except Exception as exc:
         from loguru import logger as _logger
         _logger.warning(f"[Dashboard] opções de filtro do histórico falharam: {exc}")
@@ -2918,11 +2965,28 @@ def _filter_options_do_historico(dias: int = _HISTORICO_OPCOES_DIAS) -> dict:
     }
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
 def get_sku_options(
     brands: tuple = (),
     btu_filter: tuple = (),
     product_types: tuple = (),
+) -> list:
+    """Lista de SKUs do dropdown — o histórico frio acompanha o Período global.
+
+    Casca sem cache pela mesma razão de `get_filter_options`: a janela do
+    histórico precisa entrar na chave de cache.
+    """
+    inicio, fim = _gf_dates()
+    return _get_sku_options_cached(
+        brands, btu_filter, product_types, _janelas_historico_opcoes(inicio, fim)
+    )
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_sku_options_cached(
+    brands: tuple = (),
+    btu_filter: tuple = (),
+    product_types: tuple = (),
+    hist_janelas: tuple = (),
 ) -> list:
     """Fetch distinct product names (last 30 days), paginated past the 1000-row cap."""
     client = _get_supabase()
@@ -2981,12 +3045,16 @@ def get_sku_options(
     # dado principal (query_coletas) já é híbrido, então o usuário precisa poder
     # selecioná-los. Mesmos filtros (marca/BTU/tipo) aplicados ao frio.
     try:
-        # Mesma janela curta dos dropdowns (`_HISTORICO_OPCOES_DIAS`): cada dia
+        # Mesmas janelas dos dropdowns (`_janelas_historico_opcoes`): cada dia
         # a mais é mais partição baixada do Drive num container recém-criado.
-        since_d = date.today() - timedelta(days=_HISTORICO_OPCOES_DIAS)
-        df_frio = _history_store().read(
-            "coletas", start=since_d, end=date.today(), columns=["produto", "marca"]
-        )
+        store = _history_store()
+        janelas = tuple(hist_janelas) or _janelas_historico_opcoes(date.today(), date.today())
+        partes = [
+            store.read("coletas", start=ini, end=fim_j, columns=["produto", "marca"])
+            for ini, fim_j in janelas
+        ]
+        partes = [p for p in partes if not p.empty]
+        df_frio = pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
         if not df_frio.empty:
             df_frio = _filter_history_coletas(
                 df_frio,
@@ -3003,6 +3071,11 @@ def get_sku_options(
         _logger.warning(f"[Dashboard] produtos do histórico frio falharam: {exc}")
 
     return sorted(produtos)
+
+
+# As cascas públicas mantêm o `.clear()` que os chamadores já usam.
+get_filter_options.clear = _get_filter_options_cached.clear
+get_sku_options.clear = _get_sku_options_cached.clear
 
 
 # ---------------------------------------------------------------------------
