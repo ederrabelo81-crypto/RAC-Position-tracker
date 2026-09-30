@@ -1477,3 +1477,37 @@ class TestBuyBoxPorProduto:
         scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/a")
 
         assert scraper._buybox_lidos["https://exemplo/a"] == "Leroy Merlin"
+
+
+class TestBuyBoxSemPdpDuplicado:
+    """Revisão do PR: um PDP por URL no run, e leitura boa substitui falha."""
+    def test_falha_na_buy_box_nao_reabre_a_mesma_url_na_resolucao_de_nome(
+        self, scraper, monkeypatch
+    ):
+        scraper._buybox_pdp_enabled = True
+        abertos = []
+        monkeypatch.setattr(scraper, "_random_delay", lambda **kw: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
+        monkeypatch.setattr(
+            scraper, "_fetch_pdp_requests", lambda url: abertos.append(url) or None
+        )
+
+        scraper._parse_algolia_hits(
+            [{"name": "Split", "objectID": "3900000001",
+              "marketplaceSellers": [SELLER_ID], "url": "/p1"}],
+            "ar condicionado", {}, 0,
+        )
+
+        assert len(abertos) == 1
+
+    def test_leitura_boa_substitui_falha_anterior(self, scraper, monkeypatch):
+        url = "https://exemplo/a"
+        scraper._buybox_lidos[url] = None
+        monkeypatch.setattr(
+            scraper, "_fetch_pdp_requests", lambda u: _pdp_vendido_por("LEROY MERLIN")
+        )
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda u: None)
+
+        scraper._resolve_via_pdp(SELLER_ID, url)
+
+        assert scraper._buybox_lidos[url] == "Leroy Merlin"

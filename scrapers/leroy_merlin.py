@@ -586,8 +586,10 @@ class LeroyMerlinScraper(BaseScraper):
             # O PDP já baixado também diz quem vence a buy box do produto — a
             # passada de buy box não precisa reabri-lo neste run.
             vencedor = extract_buybox_winner(html)
-            if vencedor:
-                self._buybox_lidos.setdefault(product_url, vencedor)
+            # Substitui também um None (leitura de buy box que falhou antes):
+            # leitura boa sempre vence a falha.
+            if vencedor and self._buybox_lidos.get(product_url) is None:
+                self._buybox_lidos[product_url] = vencedor
             candidate = extract_seller_from_pdp(html, seller_id)
             if candidate and not is_leroy_self(candidate):
                 name = candidate
@@ -1189,8 +1191,10 @@ class LeroyMerlinScraper(BaseScraper):
                 if (
                     not url
                     or url in self._pdp_urls_leroy_buybox
-                    # A passada de buy box já viu a Leroy vencendo aqui.
-                    or is_leroy_self(self._buybox_lidos.get(url))
+                    # A passada de buy box já baixou este PDP no run: ou mostrou
+                    # a Leroy (não diz o nome do 3P), ou falhou — reabrir só
+                    # dobraria o custo e as falhas contadas num trecho bloqueado.
+                    or url in self._buybox_lidos
                 ):
                     continue
                 r = self._pdp_url_rank(info, hit)
