@@ -112,6 +112,17 @@ _NAME_BLOCKLIST_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Texto de interface que o rótulo "Vendido e entregue por" pode arrastar quando
+# o nome do lojista vem num elemento separado (link/tooltip). Em produção
+# (29/09/2026) o seller 5f61118b7dc9a636d40113a2 foi gravado como "Saiba mais"
+# em 39 linhas/dia — um nome de loja inventado pela tela, não pelo dado.
+_UI_TEXT_RE = re.compile(
+    r"^(?:saiba\s+mais|ver\s+mais|veja\s+mais|mais\s+detalhes|detalhes|"
+    r"conhe[cç]a\b.*|clique\s+aqui|ver\s+lojas?|outras?\s+lojas?|"
+    r"mais\s+informa[cç](?:[aã]o|[oõ]es))$",
+    re.IGNORECASE,
+)
+
 _MAX_NAME_LEN = 60
 
 
@@ -146,6 +157,8 @@ def clean_seller_name(raw: Any) -> Optional[str]:
     if re.fullmatch(r"[0-9a-f]{24}", name, re.IGNORECASE) or name.isdigit():
         return None
     if _NAME_BLOCKLIST_RE.search(name):
+        return None
+    if _UI_TEXT_RE.match(name):
         return None
     return name
 
@@ -604,9 +617,21 @@ class LeroySellerCache:
 
         sellers = data.get("sellers")
         if isinstance(sellers, dict):
-            self._sellers = {
-                str(k): str(v) for k, v in sellers.items() if k and v
-            }
+            # Revalida o que está em disco: um nome aceito por uma versão antiga
+            # do filtro ("Saiba mais") ficaria no cache para sempre — o ID nunca
+            # voltaria ao PDP. Descartado aqui, ele volta a ser resolvido.
+            for k, v in sellers.items():
+                if not k or not v:
+                    continue
+                clean = clean_seller_name(str(v))
+                if clean:
+                    self._sellers[str(k)] = clean
+                else:
+                    logger.warning(
+                        f"[LeroySellers] Nome inválido descartado do cache: "
+                        f"{k} → {v!r} (volta a ser resolvido via PDP)"
+                    )
+                    self._dirty = True
         unresolved = data.get("unresolved")
         if isinstance(unresolved, dict):
             self._unresolved = {

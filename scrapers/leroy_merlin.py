@@ -216,6 +216,14 @@ class LeroyMerlinScraper(BaseScraper):
         # IDs já tentados nesta execução — impede queimar as tentativas
         # transitórias de um seller em várias páginas do mesmo run.
         self._pdp_attempted_this_run: set[str] = set()
+        # A oferta própria da Leroy NÃO entra em `marketplaceSellers`: um
+        # produto com `marketplaceSellers == [X]` pode ter a Leroy vendendo
+        # junto e ganhando a buy box (item 3962339062, 30/09/2026). O PDP desse
+        # produto diz "LEROY MERLIN" e não revela o nome de X. A URL fica
+        # marcada para não ser repetida, e X volta a ser tentado por outro
+        # produto — no mesmo run, inclusive (`_pdp_retry_ids`).
+        self._pdp_urls_leroy_buybox: set[str] = set()
+        self._pdp_retry_ids: set[str] = set()
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -227,6 +235,7 @@ class LeroyMerlinScraper(BaseScraper):
             "resolved_via_dynamic_cache": 0,
             "resolved_via_inline_hit": 0,
             "resolved_via_pdp": 0,
+            "pdp_leroy_na_buybox": 0,     # PDP mostrou a Leroy, não o seller pendente
             "resolved_via_scalar_fields": 0,
             "pdp_fetch_attempts": 0,
             "pdp_fetch_failures": 0,
@@ -505,12 +514,18 @@ class LeroyMerlinScraper(BaseScraper):
         # várias páginas/keywords, e sem esta trava um run bloqueado gastaria as
         # 3 tentativas transitórias de uma vez, jogando o seller na quarentena
         # de 7 dias — exatamente o que a classificação transitória evita.
-        if seller_id in self._pdp_attempted_this_run:
+        if (
+            seller_id in self._pdp_attempted_this_run
+            and seller_id not in self._pdp_retry_ids
+        ):
+            return None
+        if product_url in self._pdp_urls_leroy_buybox:
             return None
         if not self._seller_cache.should_retry(seller_id):
             return None
 
         self._pdp_attempted_this_run.add(seller_id)
+        self._pdp_retry_ids.discard(seller_id)
         self._pdp_budget -= 1
         self._seller_metrics["pdp_fetch_attempts"] += 1
 
@@ -525,6 +540,7 @@ class LeroyMerlinScraper(BaseScraper):
 
         name: Optional[str] = None
         pagina_chegou = False
+        leroy_na_buybox = False
         for fetch in strategies:
             html = fetch(product_url)
             if not html:
@@ -536,11 +552,28 @@ class LeroyMerlinScraper(BaseScraper):
             if self._looks_like_pdp(html):
                 pagina_chegou = True
             candidate = extract_seller_from_pdp(html, seller_id)
-            # Produto marcado como 3P no Algolia não pode resolver para a
-            # própria Leroy — sinal de PDP genérico/errado, melhor descartar.
             if candidate and not is_leroy_self(candidate):
                 name = candidate
                 break
+            if candidate:
+                # A Leroy venceu a buy box deste produto: a página chegou e é
+                # legível, mas não diz o nome do seller pendente. O browser
+                # mostraria o mesmo — não vale o segundo fetch.
+                leroy_na_buybox = True
+                break
+
+        if not name and leroy_na_buybox:
+            # Inconclusivo, não definitivo: com quarentena de 7 dias o seller
+            # nunca seria tentado por um produto em que a Leroy não vende.
+            self._seller_metrics["pdp_leroy_na_buybox"] += 1
+            self._pdp_urls_leroy_buybox.add(product_url)
+            self._pdp_retry_ids.add(seller_id)
+            self._seller_cache.mark_failed(seller_id, product_url, transient=True)
+            logger.debug(
+                f"[{self.platform_name}] PDP de {seller_id} mostrou a Leroy na "
+                f"buy box — seller segue pendente: {product_url[:80]}"
+            )
+            return None
 
         if not name:
             self._seller_metrics["pdp_fetch_failures"] += 1
@@ -737,7 +770,7 @@ class LeroyMerlinScraper(BaseScraper):
                         "seller": cached,
                         "seller_id": first,
                         "qtd_sellers": qtd_sellers,
-                        "tipo_seller": "3P",
+                        "tipo_seller": self._tipo_for(cached),
                     }
 
                 # Layer 4: inline `sellers` / `installmentsBySeller`
@@ -807,6 +840,26 @@ class LeroyMerlinScraper(BaseScraper):
             "tipo_seller": "3P",
         }
 
+    @staticmethod
+    def _pdp_url_rank(info: Dict[str, Any], hit: dict) -> int:
+        """
+        Quão bom um produto é para revelar o nome do seller no PDP.
+
+        O PDP só mostra o vencedor da buy box, e a Leroy pode estar vendendo o
+        mesmo produto sem aparecer em `marketplaceSellers`. Melhor candidato:
+        o seller é o único do índice (2 pontos) e o código é de catálogo de
+        marketplace — 10 dígitos começando por "1" (1 ponto). Em 29–30/09/2026
+        nenhum dos 201 produtos vendidos só pela Leroy tinha código assim.
+        """
+        pid = str(hit.get("objectID") or "")
+        codigo_marketplace = len(pid) == 10 and pid.startswith("1")
+        return (2 if info.get("qtd_sellers") == 1 else 0) + int(codigo_marketplace)
+
+    @staticmethod
+    def _tipo_for(seller: str) -> str:
+        """1P quando o seller resolvido é a própria Leroy, 3P caso contrário."""
+        return "1P" if is_leroy_self(seller) else "3P"
+
     def _resolve_pending_sellers(
         self,
         pending: Dict[str, str],
@@ -873,14 +926,19 @@ class LeroyMerlinScraper(BaseScraper):
         # via PDP barata: dezenas de hits colapsam em poucos IDs novos.
         seller_info: List[Dict[str, Any]] = []
         pending: Dict[str, str] = {}
+        rank: Dict[str, int] = {}
         for hit in hits:
             info = self._classify_hit_seller(hit)
             seller_info.append(info)
             sid = info.get("seller_id")
-            if info.get("seller") is None and sid and sid not in pending:
+            if info.get("seller") is None and sid:
                 url = self._extract_algolia_url(hit)
-                if url:
+                if not url or url in self._pdp_urls_leroy_buybox:
+                    continue
+                r = self._pdp_url_rank(info, hit)
+                if sid not in pending or r > rank[sid]:
                     pending[sid] = url
+                    rank[sid] = r
 
         # --- Passada 2: resolve os pendentes abrindo 1 PDP por seller novo ---
         if pending:
@@ -893,6 +951,7 @@ class LeroyMerlinScraper(BaseScraper):
                 sid = info.get("seller_id")
                 if info.get("seller") is None and sid in resolved:
                     info["seller"] = resolved[sid]
+                    info["tipo_seller"] = self._tipo_for(resolved[sid])
 
         records = []
 

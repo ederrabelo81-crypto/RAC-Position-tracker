@@ -1125,3 +1125,126 @@ class TestQuarentenaLegada:
         cache = LeroySellerCache(path=tmp_path / "c.json", retry_days=7)
         cache.mark_failed(SELLER_ID, transient=False)
         assert cache.should_retry(SELLER_ID) is False
+
+
+class TestLeroyNaBuyBoxNaoIdentificaOSeller:
+    """
+    A oferta própria da Leroy não entra em `marketplaceSellers`. Um produto com
+    `marketplaceSellers == [X]` pode ter a Leroy vendendo junto e vencendo a buy
+    box (item 3962339062, 30/09/2026): o PDP diz "LEROY MERLIN" e não revela X.
+    Esse PDP é inconclusivo — nem nome para X, nem quarentena definitiva.
+    """
+
+    PDP_1P = ("<html><body>" + "<p>x</p>" * 3_000 +
+              "<p>Vendido e entregue por LEROY MERLIN</p></body></html>")
+    PDP_3P = ("<html><body>" + "<p>x</p>" * 3_000 +
+              "<p>Vendido e entregue por Frio Total</p></body></html>")
+
+    def test_leroy_na_buybox_nao_vira_nome_do_seller(self, scraper, monkeypatch):
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: self.PDP_1P)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: self.PDP_1P)
+
+        assert scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/a") is None
+        assert scraper._seller_cache.get(SELLER_ID) is None
+        assert scraper._seller_metrics["pdp_leroy_na_buybox"] == 1
+
+    def test_leroy_na_buybox_e_transitorio(self, scraper, monkeypatch):
+        """Página íntegra, mas sem o dado pedido: não merece 7 dias de quarentena."""
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: self.PDP_1P)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: self.PDP_1P)
+
+        scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/a")
+
+        assert scraper._seller_cache.should_retry(SELLER_ID) is True
+        assert scraper._seller_metrics["pdp_fetch_failures"] == 0
+
+    def test_outro_produto_no_mesmo_run_resolve(self, scraper, monkeypatch):
+        pdps = {"https://exemplo/a": self.PDP_1P, "https://exemplo/b": self.PDP_3P}
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: pdps[url])
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
+
+        assert scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/a") is None
+        # a mesma URL não é repetida…
+        assert scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/a") is None
+        assert scraper._seller_metrics["pdp_fetch_attempts"] == 1
+        # …mas outro produto do mesmo seller é tentado no mesmo run
+        assert scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/b") == "Frio Total"
+
+    def test_falha_comum_continua_uma_tentativa_por_run(self, scraper, monkeypatch):
+        """A reabertura no run vale só para o caso Leroy-na-buy-box."""
+        monkeypatch.setattr(scraper, "_fetch_pdp_requests", lambda url: None)
+        monkeypatch.setattr(scraper, "_fetch_pdp_browser", lambda url: None)
+
+        scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/a")
+        scraper._resolve_via_pdp(SELLER_ID, "https://exemplo/b")
+
+        assert scraper._seller_metrics["pdp_fetch_attempts"] == 1
+
+    def test_produto_ja_visto_com_leroy_na_buybox_nao_volta_a_pendente(
+        self, scraper, monkeypatch
+    ):
+        vistos = []
+        monkeypatch.setattr(
+            scraper, "_resolve_pending_sellers",
+            lambda pending: vistos.append(dict(pending)) or {},
+        )
+        url_a = scraper._extract_algolia_url({"url": "/a"})
+        scraper._pdp_urls_leroy_buybox.add(url_a)
+        scraper._parse_algolia_hits(
+            [
+                {"name": "Split A", "marketplaceSellers": [SELLER_ID], "url": "/a"},
+                {"name": "Split B", "marketplaceSellers": [SELLER_ID, "x"], "url": "/b"},
+            ],
+            "ar condicionado", {}, 0,
+        )
+        assert vistos[0][SELLER_ID].endswith("/b")
+
+    def test_prefere_seller_unico_em_codigo_de_marketplace(self, scraper, monkeypatch):
+        vistos = []
+        monkeypatch.setattr(
+            scraper, "_resolve_pending_sellers",
+            lambda pending: vistos.append(dict(pending)) or {},
+        )
+        scraper._parse_algolia_hits(
+            [
+                {"name": "Split A", "objectID": "1500000001",
+                 "marketplaceSellers": [SELLER_ID, "x"], "url": "/multi"},
+                {"name": "Split B", "objectID": "3962339062",
+                 "marketplaceSellers": [SELLER_ID], "url": "/catalogo_leroy"},
+                {"name": "Split C", "objectID": "1500000002",
+                 "marketplaceSellers": [SELLER_ID], "url": "/so_marketplace"},
+            ],
+            "ar condicionado", {}, 0,
+        )
+        assert vistos[0][SELLER_ID].endswith("/so_marketplace")
+
+    def test_cache_editado_a_mao_para_leroy_vira_1p(self, scraper):
+        scraper._seller_cache.put(SELLER_ID, "Leroy Merlin")
+        info = scraper._classify_hit_seller({
+            "name": "Ar Condicionado", "marketplaceSellers": [SELLER_ID],
+        })
+        assert info["tipo_seller"] == "1P"
+
+
+class TestTextoDeInterfaceNaoEhSeller:
+    def test_saiba_mais_rejeitado(self):
+        assert clean_seller_name("Saiba mais") is None
+        assert clean_seller_name("Conheça mais formas de pagamento") is None
+
+    def test_nome_real_com_palavra_parecida_passa(self):
+        assert clean_seller_name("Detalhes Refrigeração") == "Detalhes Refrigeração"
+        assert clean_seller_name("Mais Ar") == "Mais Ar"
+
+    def test_cache_em_disco_descarta_nome_invalido(self, tmp_path):
+        path = tmp_path / "c.json"
+        path.write_text(json.dumps({"sellers": {
+            "5f61118b7dc9a636d40113a2": "Saiba mais",
+            SELLER_ID: "Central Ar",
+        }}), encoding="utf-8")
+
+        cache = LeroySellerCache(path=path)
+
+        assert cache.get("5f61118b7dc9a636d40113a2") is None
+        assert cache.get(SELLER_ID) == "Central Ar"
+        assert cache.save() is True  # a limpeza é persistida
+        assert LeroySellerCache(path=path).get("5f61118b7dc9a636d40113a2") is None
