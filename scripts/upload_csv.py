@@ -14,7 +14,6 @@ então re-importar o mesmo CSV é sempre idempotente (duplicatas ignoradas).
 
 import argparse
 import sys
-import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -29,9 +28,18 @@ from utils.supabase_client import upload_to_supabase, log_auditoria_run
 
 
 def _derive_run_id(csv_path: Path) -> str:
-    """Gera UUID v5 determinístico a partir do nome do arquivo."""
-    namespace = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # URL namespace
-    return str(uuid.uuid5(namespace, csv_path.name))
+    """run_id do CSV: o da coleta que o gerou, senão UUID5 do nome do arquivo.
+
+    O `main.py` grava ``<csv>.run_id`` ao lado do CSV. Reusar esse id faz o
+    reenvio (o "reforço" do .bat de coleta) cair na MESMA chave única e só
+    completar o que faltou; derivar um id novo duplicava o turno inteiro —
+    ver `utils/run_sidecar.py`.
+    """
+    from utils.run_sidecar import resolve_run_id
+
+    run_id, origem = resolve_run_id(csv_path)
+    logger.info(f"run_id ({origem}): {run_id}")
+    return run_id
 
 
 def _load_csv(csv_path: Path) -> list[dict]:
@@ -137,7 +145,6 @@ def main() -> None:
             run_id = args.run_id
         else:
             run_id = _derive_run_id(csv_path)
-            logger.info(f"run_id derivado do arquivo: {run_id}")
 
         ok = upload_csv(csv_path, run_id=run_id, dry_run=args.dry_run)
         results.append((str(csv_path), ok))

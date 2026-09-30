@@ -690,6 +690,12 @@ def main() -> int:
         csv_path: Optional[Path] = None
         try:
             csv_path = _export_csv(all_records, args.output_dir)
+            # O run_id viaja com o CSV: quem reenviar este arquivo
+            # (upload_csv.py no .bat de coleta) reusa a MESMA run e o upsert
+            # só completa o que faltou — antes cada reenvio derivava outro
+            # run_id e duplicava o turno inteiro no banco (utils/run_sidecar.py).
+            from utils.run_sidecar import write_run_id as _write_run_id
+            _write_run_id(csv_path, RUN_ID)
             logger.success(
                 f"\nColeta finalizada! {len(all_records)} registros totais.\n"
                 f"Arquivo: {csv_path}"
