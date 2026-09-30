@@ -29,6 +29,17 @@ from utils.seller_names import (
     variants_for as _seller_variants,
 )
 from utils.seller_surface import COMPARADORES as _COMPARADORES
+from utils.price_series import (
+    SOURCE_SYMBOLS as _SOURCE_SYMBOLS,
+    capacity_btu as _capacity_btu,
+    coverage_caption as _coverage_caption,
+    days_by_source as _days_by_source,
+    format_btu as _format_btu,
+    format_day_list as _format_day_list,
+    fora_hiwall_mask as _fora_hiwall_mask,
+    single_source_per_series as _single_source_per_series,
+    source_label as _source_label,
+)
 
 # ---------------------------------------------------------------------------
 # Bootstrap
@@ -737,6 +748,9 @@ def _get_supabase():
 
 BTU_OPTIONS = ["9000", "12000", "18000", "24000", "36000", "48000", "60000"]
 
+# Opção do seletor de capacidade do Price Evolution: uma série por BTU.
+_EVO_CAP_EACH = "Uma linha por BTU"
+
 # ---------------------------------------------------------------------------
 # Product Type filter — patterns to match inside the normalized produto string
 # (Tipo + Forma combined, since both live in the produto column after
@@ -1002,6 +1016,76 @@ def get_catalogo() -> pd.DataFrame:
         return pd.DataFrame(resp.data or [])
     except Exception:
         return pd.DataFrame()
+
+
+def _catalog_capacity() -> tuple[dict, set]:
+    """``({sku: BTU}, {SKUs do catálogo})`` para o recorte de capacidade.
+
+    O catálogo é só RAC High Wall, então SKU dele é hi-wall por construção —
+    o título do anúncio só decide capacidade/formato onde o SKU não resolve.
+    """
+    cat = get_catalogo()
+    if cat.empty or "sku" not in cat.columns:
+        return {}, set()
+    skus = cat["sku"].astype(str).str.strip()
+    btu_map: dict = {}
+    if "capacidade_btu" in cat.columns:
+        btu = pd.to_numeric(cat["capacidade_btu"], errors="coerce")
+        btu_map = {k: int(v) for k, v in zip(skus, btu) if pd.notna(v)}
+    return btu_map, set(skus)
+
+
+# Regra "uma série, uma fonte" (utils/price_series.py), dita igual em toda
+# página que desenha preço ao longo do tempo.
+_SERIES_SOURCE_RULE = (
+    "Cada linha usa **uma fonte só** (● PriceTrack · ◇ Coletas): o PriceTrack "
+    "fica com a série enquanto cobrir ao menos metade dos dias que a Coletas "
+    "cobre; senão, vale a fonte com mais dias. A outra fonte **nunca** "
+    "preenche os dias que faltam — dia sem a fonte da série fica em branco."
+)
+
+
+def _with_source(df: pd.DataFrame) -> pd.DataFrame:
+    """Garante a coluna `source` (linha sem ela veio das coletas)."""
+    return df if "source" in df.columns else df.assign(source="coletas")
+
+
+def _mark_trace_sources(fig, fonte_by_name: dict) -> None:
+    """Marcador de cada traço pela fonte da série (● PriceTrack · ◇ Coletas).
+
+    Vale para gráficos em que cada traço é UMA série de fonte única
+    (`utils.price_series.single_source_per_series`).
+    """
+    for tr in fig.data:
+        tr.marker.symbol = _SOURCE_SYMBOLS.get(fonte_by_name.get(tr.name), "circle")
+
+
+def _source_coverage_md(
+    df_all: pd.DataFrame,
+    report: pd.DataFrame,
+    label_col: str | None = None,
+) -> str:
+    """Legenda de cobertura: dias de cada fonte, séries por fonte e lacunas.
+
+    Args:
+        df_all: tudo o que foi carregado (as duas fontes, antes da escolha).
+        report: relatório de `single_source_per_series`.
+        label_col: coluna do relatório com o nome legível da série.
+    """
+    parts: list[str] = []
+    by_src = _days_by_source(df_all)
+    if by_src:
+        ordem = sorted(by_src, key=lambda k: (k != "pricetrack", k))
+        parts.append("**Dias por fonte** — " + " · ".join(
+            f"{_source_label(k)}: {_format_day_list(by_src[k])}" for k in ordem))
+    if report is not None and not report.empty:
+        cont = report["fonte"].value_counts()
+        parts.append("**Séries por fonte** — " + " · ".join(
+            f"{_source_label(k)}: {int(n)}" for k, n in cont.items()))
+        gaps = _coverage_caption(report, label_col)
+        if gaps:
+            parts.append("**Em branco** (só a outra fonte tinha o dia): " + gaps)
+    return "  \n".join(parts)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -2608,6 +2692,7 @@ def query_price_evolution_data(
     familias_resolvidas: list[str] | None = None,
     skus_resolvidos: list[str] | None = None,
     limit: int = 50000,
+    dedup_sku_day: bool = True,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Combined source for the Price Evolution page.
@@ -2626,6 +2711,15 @@ def query_price_evolution_data(
     cobria 12-28/05, derrubava todas as 278k linhas de coletas do
     período, escondendo produtos que pricetrack não cobre (ex.: o item
     Ecomaster Quente/Frio que ainda está em REVISAR no de-para).
+
+    `dedup_sku_day=False` (usado por TODO gráfico de série temporal de preço)
+    devolve as duas fontes sem a precedência por (data, SKU). A precedência
+    por dia faz a série trocar de fonte no meio: nos dias sem PriceTrack
+    (25, 26 e 29/09/2026 no incidente da Philco, R$ 13 mil → R$ 2 mil) o
+    ponto sai das coletas — outra medida e outro mix — e a linha se mexe sem
+    o mercado mexer. Quem desenha série escolhe UMA fonte por série com
+    `utils.price_series.single_source_per_series`; para isso precisa das
+    linhas das coletas que a precedência descartaria.
 
     Returns (df, meta) where meta has counts for the info banner.
     """
@@ -2709,7 +2803,8 @@ def query_price_evolution_data(
 
     # Precedência por (data, sku_resolvido): pricetrack vence.
     # Linhas de coletas sem sku_resolvido ficam (NULL ≠ qualquer SKU).
-    if pt_pairs and not df_col.empty and "sku_resolvido" in df_col.columns:
+    if (dedup_sku_day and pt_pairs and not df_col.empty
+            and "sku_resolvido" in df_col.columns):
         skup = df_col["sku_resolvido"].astype("string").fillna("")
         keys = list(zip(df_col["data"], skup))
         mask_dup = pd.Series(
@@ -4426,6 +4521,185 @@ def _render_evo_compare_sources(df: pd.DataFrame, params: dict,
                 "Confira o filtro **Fonte de Dados** no topo.")
 
 
+@dataclass
+class _EvoOptions:
+    """Como o Price Evolution monta as séries (tudo que re-renderiza do cache)."""
+
+    group_by: str                      # "Product" | "Brand" | "Platform"
+    metric: dict                       # entrada de `_PRICE_METRICS`
+    capacity: str = "12000"            # BTU da comparação ou `_EVO_CAP_EACH`
+    hiwall_only: bool = True
+    clean: bool = True
+    exclude_google: bool = False
+
+
+@dataclass
+class _EvoSeries:
+    """Resultado de `_evo_build_series` — o que o gráfico, o resumo e a
+    legenda de cobertura leem."""
+
+    work: pd.DataFrame                 # linhas que viram ponto (uma fonte por série)
+    agg: pd.DataFrame                  # (data, série) → value, n, fonte, series_disp
+    report: pd.DataFrame               # fonte por série + coluna "series"
+    frozen: set
+    removed_google: int = 0
+    removed_clean: int = 0
+    removed_capacity: int = 0          # outra capacidade
+    removed_no_btu: int = 0            # BTU não identificável
+    removed_format: int = 0            # portátil/janela/cassete/…
+    empty_reason: str = ""             # "", "no_price", "scope" ou "clean"
+
+
+def _evo_build_series(
+    df: pd.DataFrame,
+    opts: _EvoOptions,
+    catalog: tuple[dict, set] = ({}, set()),
+) -> _EvoSeries:
+    """Séries do Price Evolution: uma fonte por série, mesmo BTU por marca.
+
+    Sem Streamlit — `tests/test_price_evolution_merge.py` roda exatamente o
+    que a página desenha.
+
+    Ordem (cada passo pela razão ao lado):
+      1. Google Shopping sai (escopo pedido pelo usuário);
+      2. Brand/Platform: fica só o BTU escolhido e o split hi-wall — a moda de
+         uma marca entre 9K e 60K muda com o mix, não com o preço;
+      3. UMA fonte por série (`utils.price_series`) — antes da guarda, para a
+         mediana do outlier ser a da própria fonte;
+      4. guarda de placeholder/implausível/outlier;
+      5. agregação por (data, série), carregando a fonte.
+
+    Args:
+        df: saída de `query_price_evolution_data(..., dedup_sku_day=False)`.
+        opts: agrupamento, métrica, capacidade e guardas.
+        catalog: ``({sku: BTU}, {SKUs hi-wall})`` de `_catalog_capacity`.
+    """
+    series_col = {"Brand": "marca", "Platform": "plataforma",
+                  "Product": "sku"}[opts.group_by]
+    empty = pd.DataFrame()
+    out = _EvoSeries(work=empty, agg=empty, report=empty, frozen=set())
+
+    work = df.dropna(subset=["data"]).copy()
+    work["_basis"] = _metric_basis(work, opts.metric["pt_col"])
+    work = work.dropna(subset=["_basis"])
+    # Agrupar por SKU descarta linhas sem sku_resolvido (estado REVISAR / nulo):
+    # ~46% das coletas. Mantê-las criava séries-fantasma por nome de título
+    # (ex.: "Ecomaster Pro" do Google Shopping, sku nulo).
+    if opts.group_by == "Product":
+        _sk = work["sku"].astype("string").str.strip()
+        work = work[_sk.fillna("") != ""]
+    work = work[work[series_col].notna()]
+    if "source" not in work.columns:
+        work = work.assign(source="coletas")
+    if work.empty:
+        out.empty_reason = "no_price"
+        return out
+
+    if opts.clean and opts.exclude_google:
+        g_mask = (
+            (work["source"].astype("string") == "coletas")
+            & work["plataforma"].astype("string").str.contains(
+                "google", case=False, na=False)
+        )
+        out.removed_google = int(g_mask.sum())
+        work = work[~g_mask]
+
+    series_cols = [series_col]
+    if opts.group_by != "Product" and not work.empty:
+        sku_to_btu, hiwall_skus = catalog
+        work["btu"] = _capacity_btu(work, sku_to_btu)
+        if opts.hiwall_only:
+            fora = _fora_hiwall_mask(work, hiwall_skus=hiwall_skus or None)
+            out.removed_format = int(fora.sum())
+            work = work[~fora]
+        sem_btu = work["btu"].isna()
+        out.removed_no_btu = int(sem_btu.sum())
+        work = work[~sem_btu]
+        if opts.capacity == _EVO_CAP_EACH:
+            series_cols.append("btu")
+        else:
+            outra = work["btu"] != int(opts.capacity)
+            out.removed_capacity = int(outra.sum())
+            work = work[~outra]
+    if work.empty:
+        out.empty_reason = "scope"
+        return out
+
+    work, report = _single_source_per_series(work, series_cols)
+
+    if opts.clean:
+        ph = work["_basis"].map(_is_placeholder_price)
+        # Outlier é relativo à mediana do **próprio SKU** (não do grupo do
+        # gráfico): um grupo de marca junta SKUs de preços diferentes, e uma
+        # mediana de grupo cortaria preços legítimos. Linhas sem SKU caem na
+        # coluna de agrupamento.
+        if "sku" in work.columns:
+            med_key = work["sku"].astype("string").str.strip()
+            med_key = med_key.where(
+                med_key.fillna("") != "", work[series_col].astype("string"))
+        else:
+            med_key = work[series_col].astype("string")
+        med = work.groupby(med_key)["_basis"].transform("median")
+        outlier = (work["_basis"] > 1.5 * med) & med.notna()
+        implausible = work["_basis"].map(_is_implausible_price)
+        drop_mask = ph | implausible | outlier
+        out.removed_clean = int(drop_mask.sum())
+        work = work[~drop_mask]
+    if work.empty:
+        out.empty_reason = "clean"
+        return out
+
+    # Rótulo amigável da série (Product = nome representativo + código do SKU).
+    if opts.group_by == "Product":
+        name_src = work.dropna(subset=["produto"])
+        rep = (
+            name_src.groupby("sku")["produto"].agg(
+                lambda s: s.mode().iat[0] if not s.mode().empty else s.iat[0])
+            if not name_src.empty else pd.Series(dtype="object")
+        )
+
+        def _label(frame: pd.DataFrame) -> pd.Series:
+            def _one(sku_code) -> str:
+                nm = rep.get(sku_code)
+                if isinstance(nm, str) and nm.strip() and nm.strip() != str(sku_code):
+                    short = (nm[:46] + "…") if len(nm) > 47 else nm
+                    return f"{short} · {sku_code}"
+                return str(sku_code)
+            return frame["sku"].map(_one)
+    else:
+        def _label(frame: pd.DataFrame) -> pd.Series:
+            lbl = frame[series_col].astype(str)
+            if "btu" in series_cols:
+                lbl = lbl + " · " + frame["btu"].map(_format_btu)
+            return lbl
+
+    work = work.assign(series=_label(work))
+    report = report.assign(series=_label(report)) if not report.empty else report
+
+    agg = (
+        work.groupby(["data", "series"])
+        .agg(value=("_basis", opts.metric["agg"]),
+             n=("_basis", "size"),
+             fonte=("source", "first"))
+        .reset_index()
+    )
+    agg["fonte_label"] = agg["fonte"].map(_source_label)
+
+    # ── Flag de série CONGELADA (estática) ────────────────────────────────────
+    # 1 único valor diário em ≥10 dias ⇒ pode ser MAP real OU coleta travada.
+    freeze = agg.groupby("series").agg(
+        distinct=("value", "nunique"), n_days=("value", "size"))
+    out.frozen = set(
+        freeze[(freeze["distinct"] <= 1) & (freeze["n_days"] >= 10)].index)
+    agg["frozen"] = agg["series"].isin(out.frozen)
+    agg["series_disp"] = agg.apply(
+        lambda r: ("⚠️ " + r["series"]) if r["frozen"] else r["series"], axis=1)
+    agg["data"] = pd.to_datetime(agg["data"])
+
+    out.work, out.agg, out.report = work, agg, report
+    return out
+
+
 def page_price_evolution():
     st.title("📈 Price Evolution")
     st.caption("Track price changes over time by product or brand.")
@@ -4487,6 +4761,29 @@ def page_price_evolution():
             key="evo_group_by",
             help="**Product** agrupa por SKU do catálogo (não por nome) — "
                  "variações de título do mesmo produto viram uma única série.",
+        )
+        # Preço por marca/plataforma só compara no mesmo BTU e formato: a moda
+        # de uma marca entre 9K e 60K, com portátil e cassete no meio, muda com
+        # o mix, não com o preço. Um SKU já tem capacidade única — por isso o
+        # controle só vale para Brand/Platform.
+        _cap_opts = BTU_OPTIONS + [_EVO_CAP_EACH]
+        evo_cap = st.selectbox(
+            "Capacidade da série (Brand/Platform)",
+            _cap_opts,
+            index=_cap_opts.index("12000"),
+            format_func=lambda x: (x if x == _EVO_CAP_EACH
+                                   else f"{int(x):,} BTUs".replace(",", ".")),
+            key="evo_cap",
+            disabled=group_by == "Product",
+            help="Uma marca só se compara no mesmo BTU. **Uma linha por BTU** "
+                 "separa cada capacidade em série própria. Linhas sem BTU "
+                 "identificável (catálogo ou título) saem do gráfico.",
+        )
+        evo_hiwall = st.checkbox(
+            "Só split hi-wall", value=True, key="evo_hiwall",
+            disabled=group_by == "Product",
+            help="Tira portátil, janela, cassete, piso-teto e multi-split — "
+                 "no mesmo BTU custam outra coisa.",
         )
 
         st.divider()
@@ -4558,6 +4855,9 @@ def page_price_evolution():
                 familias_resolvidas=sel_familias or None,
                 skus_resolvidos=sel_skus_resolvidos or None,
                 limit=50000,
+                # Uma fonte por série é escolhida abaixo; a precedência por
+                # (data, SKU) faria a série trocar de fonte no meio.
+                dedup_sku_day=False,
             )
         if modo_evo == "Snapshot oficial (último run)":
             df_loaded = _filter_latest_run(df_loaded)
@@ -4589,16 +4889,16 @@ def page_price_evolution():
         st.warning("No price data found for the selected filters.")
         return
 
-    # Banner de transparência: PriceTrack tem precedência por (data, SKU).
+    # Banner de transparência: o que cada fonte trouxe. A escolha de fonte é
+    # POR SÉRIE (abaixo), não por dia — a legenda do gráfico diz qual venceu.
     if evo_meta.get("pricetrack_rows", 0) > 0:
         st.info(
-            f"📥 **PriceTrack** cobrindo {evo_meta['pricetrack_dates']} "
-            f"data(s) e {evo_meta.get('pricetrack_skus', 0)} SKU(s) do catálogo "
+            f"📥 **PriceTrack**: {evo_meta['pricetrack_dates']} data(s), "
+            f"{evo_meta.get('pricetrack_skus', 0)} SKU(s) do catálogo "
             f"({evo_meta['pricetrack_rows']:,} linhas) · "
-            f"**Coletas** preenchendo SKUs/datas não cobertos "
-            f"({evo_meta['coletas_dates']} data(s), "
-            f"{evo_meta['coletas_rows']:,} linhas)."
-            .replace(",", ".")
+            f"**Coletas**: {evo_meta['coletas_dates']} data(s) "
+            f"({evo_meta['coletas_rows']:,} linhas).".replace(",", ".")
+            + " " + _SERIES_SOURCE_RULE
         )
     elif (sel_skus or sel_skus_resolvidos or sel_familias) and \
          evo_meta.get("pricetrack_rows", 0) == 0:
@@ -4642,99 +4942,57 @@ def page_price_evolution():
     st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
-    # ── Métrica de preço + chave de agrupamento por SKU ──────────────────────
+    # ── Métrica de preço + séries (uma fonte por série, mesmo BTU por marca) ─
     metric_cfg = _PRICE_METRICS.get(price_metric, _PRICE_METRICS["Buy Box (menor preço)"])
     series_col = {"Brand": "marca", "Platform": "plataforma", "Product": "sku"}[group_by]
     if series_col not in df.columns:
         st.warning(f"Column '{series_col}' not available in data.")
         return
 
-    work = df.dropna(subset=["data"]).copy()
-    work["_basis"] = _metric_basis(work, metric_cfg["pt_col"])
-    work = work.dropna(subset=["_basis"])
-    # Agrupar por SKU descarta linhas sem sku_resolvido (estado REVISAR / nulo):
-    # ~46% das coletas. Mantê-las criava séries-fantasma por nome de título
-    # (ex.: "Ecomaster Pro" do Google Shopping, sku nulo).
-    if group_by == "Product":
-        _sk = work["sku"].astype("string").str.strip()
-        work = work[_sk.fillna("") != ""]
-    work = work[work[series_col].notna()]
-    if work.empty:
+    evo = _evo_build_series(
+        df,
+        _EvoOptions(group_by=group_by, metric=metric_cfg, capacity=evo_cap,
+                    hiwall_only=evo_hiwall, clean=clean_on,
+                    exclude_google=excl_google),
+        catalog=_catalog_capacity() if group_by != "Product" else ({}, set()),
+    )
+    if evo.empty_reason == "no_price":
         st.warning("No records with price data in this range.")
         return
-
-    # ── Guarda de qualidade ("Dados limpos") ─────────────────────────────────
-    removed_google = removed_clean = 0
-    if clean_on:
-        if excl_google:
-            g_mask = (
-                (work["source"].astype("string") == "coletas")
-                & work["plataforma"].astype("string").str.contains(
-                    "google", case=False, na=False)
-            )
-            removed_google = int(g_mask.sum())
-            work = work[~g_mask]
-        if not work.empty:
-            ph = work["_basis"].map(_is_placeholder_price)
-            # Outlier é relativo à mediana do **próprio SKU** (não do grupo do
-            # gráfico): em Brand/Platform um grupo mistura SKUs de 9k a 60k BTUs,
-            # e uma mediana de grupo cortaria preços legítimos. Linhas sem SKU
-            # (views Brand/Platform) caem na coluna de agrupamento.
-            if "sku" in work.columns:
-                med_key = work["sku"].astype("string").str.strip()
-                med_key = med_key.where(
-                    med_key.fillna("") != "", work[series_col].astype("string"))
-            else:
-                med_key = work[series_col].astype("string")
-            med = work.groupby(med_key)["_basis"].transform("median")
-            outlier = (work["_basis"] > 1.5 * med) & med.notna()
-            implausible = work["_basis"].map(_is_implausible_price)
-            drop_mask = ph | implausible | outlier
-            removed_clean = int(drop_mask.sum())
-            work = work[~drop_mask]
-    removed_total = removed_google + removed_clean
-    if work.empty:
+    if evo.empty_reason == "scope":
+        st.warning(
+            f"Nenhuma linha de preço em **{_format_btu(evo_cap)}**"
+            + (" (split hi-wall)" if evo_hiwall else "")
+            + " no recorte carregado. Troque a **Capacidade da série** na barra "
+              "lateral ou escolha **Uma linha por BTU**.")
+        return
+    if evo.empty_reason == "clean":
         st.warning("All rows were filtered out by the data-quality guard. "
                    "Disable **Dados limpos** to inspect the raw series.")
         return
+    work, agg, frozen = evo.work, evo.agg, evo.frozen
+    removed_google, removed_clean = evo.removed_google, evo.removed_clean
+    removed_total = removed_google + removed_clean
 
-    # ── Agregação por (data, série) ──────────────────────────────────────────
-    agg = (
-        work.groupby(["data", series_col])
-        .agg(value=("_basis", metric_cfg["agg"]),
-             n=("_basis", "size"))
-        .reset_index()
-    )
-
-    # Rótulo amigável da série (Product = nome representativo + código do SKU).
-    if group_by == "Product":
-        name_src = work.dropna(subset=["produto"])
-        rep = (
-            name_src.groupby("sku")["produto"].agg(
-                lambda s: s.mode().iat[0] if not s.mode().empty else s.iat[0])
-            if not name_src.empty else pd.Series(dtype="object")
+    # Legenda do recorte comparável (Brand/Platform).
+    scope_note = ""
+    if group_by != "Product":
+        cap_txt = ("uma linha por BTU" if evo_cap == _EVO_CAP_EACH
+                   else f"**{_format_btu(evo_cap)}**")
+        fora: list[str] = []
+        for n, what in ((evo.removed_capacity, "de outra capacidade"),
+                        (evo.removed_no_btu, "sem BTU identificável"),
+                        (evo.removed_format, "de portátil/janela/cassete/piso-teto")):
+            if n:
+                fora.append(f"{n:,}".replace(",", ".") + f" {what}")
+        scope_note = (
+            f"📏 Comparação em {cap_txt}"
+            + (", só split hi-wall" if evo_hiwall else "")
+            + (" — fora do gráfico (linhas): " + ", ".join(fora) + "." if fora
+               else ".")
+            + " Preço de marca só se compara no mesmo BTU e formato: a moda "
+              "entre 9K e 60K muda com o mix, não com o preço."
         )
-
-        def _series_label(sku_code) -> str:
-            nm = rep.get(sku_code)
-            if isinstance(nm, str) and nm.strip():
-                short = (nm[:46] + "…") if len(nm) > 47 else nm
-                return f"{short} · {sku_code}"
-            return str(sku_code)
-
-        agg["series"] = agg["sku"].map(_series_label)
-    else:
-        agg["series"] = agg[series_col].astype(str)
-
-    # ── Flag de série CONGELADA (estática) ────────────────────────────────────
-    # 1 único valor diário em ≥10 dias ⇒ pode ser MAP real OU coleta travada.
-    freeze = agg.groupby("series").agg(
-        distinct=("value", "nunique"), n_days=("value", "size"))
-    frozen = set(freeze[(freeze["distinct"] <= 1) & (freeze["n_days"] >= 10)].index)
-    agg["frozen"] = agg["series"].isin(frozen)
-    agg["series_disp"] = agg.apply(
-        lambda r: ("⚠️ " + r["series"]) if r["frozen"] else r["series"], axis=1)
-    agg["data"] = pd.to_datetime(agg["data"])
 
     # ── Banners de cobertura ──────────────────────────────────────────────────
     coverage_msgs: list[str] = []
@@ -4798,20 +5056,24 @@ def page_price_evolution():
                 color="series_disp",
                 color_discrete_map=_cmap,
                 markers=True,
-                custom_data=["n", "series"],
+                custom_data=["n", "series", "fonte_label"],
                 title=f"{metric_cfg['title']} by "
                       f"{'SKU' if group_by == 'Product' else group_by}",
                 labels={"data": "Date", "value": metric_cfg["ylabel"],
-                        "series_disp": group_by},
+                        "series_disp": f"{group_by} (● PriceTrack · ◇ Coletas)"},
             )
             fig.update_traces(
                 line=dict(width=2.5), marker=dict(size=6),
                 hovertemplate=(
                     "<b>%{customdata[1]}</b><br>%{x|%d/%m/%Y}<br>"
                     + metric_cfg["ylabel"] + ": R$ %{y:.2f}<br>"
+                    "Fonte: %{customdata[2]}<br>"
                     "ofertas no dia (n): %{customdata[0]}<extra></extra>"),
             )
-            # Série congelada → linha tracejada.
+            # Cada série tem UMA fonte (utils/price_series.py): o marcador diz
+            # qual, sem depender do hover. Série congelada → linha tracejada.
+            _mark_trace_sources(
+                fig, agg.groupby("series_disp")["fonte"].first().to_dict())
             for tr in fig.data:
                 if isinstance(tr.name, str) and tr.name.startswith("⚠️"):
                     tr.line.dash = "dash"
@@ -4819,25 +5081,50 @@ def page_price_evolution():
             _apply_chart_style(fig, height=460)
             st.plotly_chart(fig, use_container_width=True)
 
+            st.caption(_SERIES_SOURCE_RULE)
+            cov_md = _source_coverage_md(df, evo.report, label_col="series")
+            if cov_md:
+                st.caption(cov_md)
+            if scope_note:
+                st.caption(scope_note)
+            if not evo.report.empty:
+                with st.expander("Fonte de cada série"):
+                    rep_tbl = evo.report.assign(
+                        Fonte=evo.report["fonte"].map(_source_label),
+                        **{"Dias em branco": evo.report["datas_descartadas"]
+                           .map(_format_day_list)},
+                    ).rename(columns={
+                        "series": group_by,
+                        "dias_fonte": "Dias com dado",
+                        "dias_descartados": "Dias só na outra fonte",
+                    })
+                    st.dataframe(
+                        rep_tbl[[group_by, "Fonte", "Dias com dado",
+                                 "Dias só na outra fonte", "Dias em branco"]]
+                        .sort_values([group_by]),
+                        use_container_width=True, hide_index=True)
+
     # ── Tab 2: Price Summary ─────────────────────────────────────────────────
     with tab_summary:
         st.subheader(f"Price summary — base: {metric_cfg['short']}")
         summary = (
             work
-            .groupby(series_col)["_basis"]
+            .groupby("series")
             .agg(
-                Count="count",
-                Min="min",
-                Mode=_mode_price,
-                Median="median",
-                Max="max",
-                Avg="mean",
+                Fonte=("source", "first"),
+                Count=("_basis", "count"),
+                Min=("_basis", "min"),
+                Mode=("_basis", _mode_price),
+                Median=("_basis", "median"),
+                Max=("_basis", "max"),
+                Avg=("_basis", "mean"),
             )
             .round(2)
             .reset_index()
-            .rename(columns={series_col: group_by})
+            .rename(columns={"series": group_by})
             .sort_values("Min", ascending=True)
         )
+        summary["Fonte"] = summary["Fonte"].map(_source_label)
         _summary_styled = (
             _style_midea_df(summary, brand_col=group_by)
             if group_by == "Brand" else summary
@@ -4850,6 +5137,10 @@ def page_price_evolution():
     # ── Tab 3: Detail ────────────────────────────────────────────────────────
     with tab_detail:
         st.subheader("All records")
+        st.caption(
+            "Tudo o que foi carregado, das **duas** fontes (coluna `source`). "
+            "O gráfico usa uma fonte por série — ver **Fonte de cada série** "
+            "na aba do gráfico.")
         display_cols = [
             c for c in [
                 "data", "source", "turno", "plataforma", "marca", "sku",
@@ -9429,16 +9720,19 @@ def page_email_digest() -> None:
         return
 
     # ── Top movers — modal price per SKU, current vs previous window ──────
+    # A fonte entra na chave: um "mover" nunca compara a moda do PriceTrack
+    # numa janela com a das coletas na outra — isso mede a troca de fonte,
+    # não o preço.
     ups = downs = pd.DataFrame()
     if not dfp_prev.empty and {"preco", "produto"}.issubset(dfp_cur.columns):
-        cur_agg = (dfp_cur.dropna(subset=["preco", "produto"])
-                   .groupby("produto")["preco"]
+        cur_agg = (_with_source(dfp_cur).dropna(subset=["preco", "produto"])
+                   .groupby(["source", "produto"])["preco"]
                    .agg(preco_atual=_mode_price, obs_atual="count").reset_index())
-        prev_agg = (dfp_prev.dropna(subset=["preco", "produto"])
-                    .groupby("produto")["preco"]
+        prev_agg = (_with_source(dfp_prev).dropna(subset=["preco", "produto"])
+                    .groupby(["source", "produto"])["preco"]
                     .agg(preco_anterior=_mode_price, obs_anterior="count")
                     .reset_index())
-        movers = cur_agg.merge(prev_agg, on="produto", how="inner")
+        movers = cur_agg.merge(prev_agg, on=["source", "produto"], how="inner")
         movers = movers[(movers["obs_atual"] >= min_records)
                         & (movers["obs_anterior"] >= min_records)
                         & (movers["preco_anterior"] > 0)]
@@ -9487,9 +9781,10 @@ def page_email_digest() -> None:
     def _fmt_movers(df):
         out = df.copy()
         out.insert(0, "Brand", out["produto"].map(brand_map).fillna("—"))
-        out = out[["produto", "Brand", "preco_anterior", "preco_atual",
+        out["Fonte"] = out["source"].map(_source_label)
+        out = out[["produto", "Brand", "Fonte", "preco_anterior", "preco_atual",
                    "delta_abs", "delta_pct"]]
-        out.columns = ["Product / SKU", "Brand", "Prev (R$)", "Now (R$)",
+        out.columns = ["Product / SKU", "Brand", "Fonte", "Prev (R$)", "Now (R$)",
                        "Δ R$", "Δ %"]
         return out
 
@@ -9585,22 +9880,24 @@ def page_price_anomalies() -> None:
                                familias_tuple=_fam_k, skus_resolvidos_tuple=_sku_k,
                                sources_tuple=_src_k)
 
+    # A fonte entra na chave: dia com PriceTrack contra dia só com coletas
+    # mediria a troca de fonte (outra medida, outro mix), não uma anomalia.
     def _agg(df):
         if df.empty or not {"preco", "produto"}.issubset(df.columns):
             return pd.DataFrame()
-        d = df.dropna(subset=["preco", "produto"]).copy()
+        d = _with_source(df).dropna(subset=["preco", "produto"]).copy()
         for col in ("marca", "plataforma"):
             if col not in d.columns:
                 d[col] = "—"
             d[col] = d[col].fillna("—")
-        return (d.groupby(["produto", "marca", "plataforma"])["preco"]
+        return (d.groupby(["source", "produto", "marca", "plataforma"])["preco"]
                 .agg(price="mean", n="count").reset_index())
 
     cur, prv = _agg(df_today), _agg(df_prev)
 
     anomalies = pd.DataFrame()
     if not cur.empty and not prv.empty:
-        merged = cur.merge(prv, on=["produto", "marca", "plataforma"],
+        merged = cur.merge(prv, on=["source", "produto", "marca", "plataforma"],
                            suffixes=("_today", "_prev"))
         merged = merged[merged["price_prev"] > 0].copy()
         merged["delta_abs"] = merged["price_today"] - merged["price_prev"]
@@ -9637,9 +9934,11 @@ def page_price_anomalies() -> None:
     shown = shown.sort_values("delta_pct", key=lambda s: s.abs(),
                               ascending=False).reset_index(drop=True)
 
-    disp = shown[["produto", "marca", "plataforma", "price_today", "n_today",
-                  "price_prev", "n_prev", "delta_abs", "delta_pct"]].copy()
-    disp.columns = ["Product", "Brand", "Platform", f"Price {target_day}",
+    disp = shown[["produto", "marca", "plataforma", "source", "price_today",
+                  "n_today", "price_prev", "n_prev", "delta_abs",
+                  "delta_pct"]].copy()
+    disp["source"] = disp["source"].map(_source_label)
+    disp.columns = ["Product", "Brand", "Platform", "Fonte", f"Price {target_day}",
                     "n today", f"Price {prev_day}", "n prev", "Δ R$", "Δ %"]
     st.dataframe(
         disp, use_container_width=True, height=440, hide_index=True,
@@ -9739,12 +10038,12 @@ def _query_products_history(
     products: tuple, start_str: str, end_str: str,
     sources_tuple: tuple = ("coletas", "pricetrack"),
 ) -> pd.DataFrame:
-    """Histórico de preço por SKU (cacheado), com precedência PriceTrack.
+    """Histórico de preço por SKU (cacheado), das duas fontes.
 
-    Fonte é `query_price_evolution_data`: o PriceTrack é a verdade de preço
-    por (data, SKU) e as coletas Python só preenchem produtos/datas que o
-    PriceTrack ainda não cobre. A ficha do produto e o comparador são
-    centrados em preço, então toda a página segue a regra de preço.
+    Fonte é `query_price_evolution_data` SEM a precedência por (data, SKU):
+    a ficha e o comparador desenham séries no tempo, e cada série escolhe UMA
+    fonte (`utils.price_series.single_source_per_series`) — a precedência por
+    dia faria a linha trocar de fonte nos dias sem PriceTrack.
 
     `sources_tuple` entra apenas como discriminador da chave de cache; o
     recorte de fonte acontece nas funções-folha chamadas por
@@ -9758,6 +10057,7 @@ def _query_products_history(
         date.fromisoformat(end_str),
         products=list(products),
         limit=50000,
+        dedup_sku_day=False,
     )
     return df
 
@@ -9768,7 +10068,8 @@ def _query_products_history(
 
 def page_market_analytics() -> None:
     st.title("📊 Market Analytics")
-    st.caption("Distribuição de preços (fonte: PriceTrack, fallback coletas) e "
+    st.caption("Distribuição de preços (uma fonte só na janela: PriceTrack, ou "
+               "Coletas quando o PriceTrack cobre menos da metade dos dias) e "
                "presença por marketplace (volume de ofertas das coletas) ao longo do tempo.")
 
     with st.sidebar:
@@ -9811,7 +10112,8 @@ def page_market_analytics() -> None:
             skus_resolvidos=sel_skus_resolvidos or None,
             limit=50000,
         )
-        # `dfp` (precedência PriceTrack) → distribuição de **preços**.
+        # `dfp` (as duas fontes, sem a precedência por dia) → distribuição de
+        # **preços**; a fonte única da janela é escolhida na aba.
         dfp, _ = query_price_evolution_data(
             start_date, end_date,
             platforms=sel_platforms or None,
@@ -9820,6 +10122,7 @@ def page_market_analytics() -> None:
             familias_resolvidas=sel_familias or None,
             skus_resolvidos=sel_skus_resolvidos or None,
             limit=50000,
+            dedup_sku_day=False,
         )
 
     if modo.startswith("Snapshot"):
@@ -9847,13 +10150,20 @@ def page_market_analytics() -> None:
         ["💰 Distribuição de Preços", "🏪 Presença por Marketplace"]
     )
 
-    # ── 5.2 Distribuição de preços por faixa (preço do PriceTrack) ───────────
+    # ── 5.2 Distribuição de preços por faixa (UMA fonte na janela) ───────────
     with tab_dist:
         df_price = dfp.dropna(subset=["preco", "data"]) if not dfp.empty else pd.DataFrame(columns=["preco", "data"])
         df_price = df_price[df_price["preco"] > 0]
+        df_price_all = df_price
+        # O mapa inteiro é UMA série: o PriceTrack agrega por seller/SKU/dia e
+        # as coletas contam ofertas na SERP — um dia de cada fonte muda a
+        # distribuição sem o mercado mudar.
+        df_price, dist_report = _single_source_per_series(df_price, [])
         if df_price.empty:
             st.warning("Sem dados de preço no período.")
         else:
+            fonte_dist = (_source_label(dist_report["fonte"].iloc[0])
+                          if not dist_report.empty else "—")
             fine_edges  = list(range(1500, 2501, 50))
             fine_labels = [f"{a}-{b}" for a, b in zip(fine_edges[:-1], fine_edges[1:])]
             bins   = [0] + fine_edges + [3000, 3500, 4000, 5000, 1e12]
@@ -9881,10 +10191,27 @@ def page_market_analytics() -> None:
                 color_continuous_scale="Blues",
                 aspect="auto",
                 text_auto=".0f",
-                title="Distribuição de ofertas por faixa de preço (% por dia)",
+                title=("Distribuição de ofertas por faixa de preço (% por dia)"
+                       f" — fonte: {fonte_dist}"),
             )
             _apply_chart_style(fig, height=820, hovermode="closest")
             st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                f"Fonte do mapa inteiro: **{fonte_dist}**. O mapa usa uma fonte "
+                "só na janela — o PriceTrack enquanto cobrir ao menos metade dos "
+                "dias que a Coletas cobre. Dia sem essa fonte fica fora do mapa; "
+                "a outra fonte **nunca** o preenche (outra medida, outro mix).")
+            cov_md = _source_coverage_md(df_price_all, dist_report)
+            if cov_md:
+                st.caption(cov_md)
+            n_btu = (df_price["btu"].dropna().nunique()
+                     if "btu" in df_price.columns else 0)
+            if not sel_btu and n_btu > 1:
+                st.caption(
+                    f"📏 A distribuição mistura **{n_btu} capacidades** — "
+                    "9K e 24K caem em faixas diferentes por serem produtos "
+                    "diferentes, não por preço. Filtre **Capacidade (BTU)** "
+                    "para ler a faixa de um mesmo produto.")
 
             st.markdown("**Contagem absoluta de ofertas por faixa**")
             disp = pivot.reset_index()
@@ -9943,8 +10270,15 @@ def _render_product_sheet(produto: str, start_date: date, end_date: date) -> Non
         return
 
     df = _enrich_specs(df)
+    if "source" not in df.columns:
+        df = df.assign(source="coletas")
     df_price = df.dropna(subset=["preco"])
     df_price = df_price[df_price["preco"] > 0]
+    # Uma linha por marketplace, e cada linha com UMA fonte: sem isto o
+    # marketplace trocava de PriceTrack para Coletas nos dias sem PriceTrack e
+    # a linha se mexia sem o mercado mexer.
+    df_price_all = df_price
+    df_price, sheet_report = _single_source_per_series(df_price, ["plataforma"])
 
     st.subheader(produto)
 
@@ -9986,17 +10320,30 @@ def _render_product_sheet(produto: str, start_date: date, end_date: date) -> Non
     st.divider()
 
     # --- Evolução de preço por marketplace ---
-    agg = (df_price.groupby(["data", "plataforma"])["preco"]
-           .agg(_mode_price).reset_index())
+    agg = (df_price.groupby(["data", "plataforma"])
+           .agg(preco=("preco", _mode_price), fonte=("source", "first"))
+           .reset_index())
+    agg["fonte_label"] = agg["fonte"].map(_source_label)
     agg["data"] = pd.to_datetime(agg["data"])
     fig = px.line(
         agg, x="data", y="preco", color="plataforma", markers=True,
+        custom_data=["fonte_label"],
         title="Evolução de preço por marketplace (moda diária)",
-        labels={"data": "Data", "preco": "Preço (R$)", "plataforma": "Plataforma"},
+        labels={"data": "Data", "preco": "Preço (R$)",
+                "plataforma": "Plataforma (● PriceTrack · ◇ Coletas)"},
     )
-    fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
+    fig.update_traces(
+        line=dict(width=2.5), marker=dict(size=6),
+        hovertemplate=("<b>%{fullData.name}</b><br>%{x|%d/%m/%Y}<br>"
+                       "Preço: R$ %{y:.2f}<br>Fonte: %{customdata[0]}"
+                       "<extra></extra>"))
+    _mark_trace_sources(fig, agg.groupby("plataforma")["fonte"].first().to_dict())
     _apply_chart_style(fig, height=420)
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(_SERIES_SOURCE_RULE)
+    cov_md = _source_coverage_md(df_price_all, sheet_report, label_col="plataforma")
+    if cov_md:
+        st.caption(cov_md)
 
     # --- Sellers por marketplace ---
     if "seller" in df_price.columns:
@@ -10005,17 +10352,20 @@ def _render_product_sheet(produto: str, start_date: date, end_date: date) -> Non
             df_price.sort_values("data")
             .groupby(["plataforma", "seller"], as_index=False)
             .agg(
+                fonte=("source", "first"),
                 ultimo_preco=("preco", "last"),
                 menor_preco=("preco", "min"),
                 coletas=("preco", "count"),
             )
             .sort_values("ultimo_preco")
         )
+        sellers["fonte"] = sellers["fonte"].map(_source_label)
         st.dataframe(
             sellers, use_container_width=True, hide_index=True,
             column_config={
                 "plataforma":   st.column_config.TextColumn("Marketplace"),
                 "seller":       st.column_config.TextColumn("Seller"),
+                "fonte":        st.column_config.TextColumn("Fonte"),
                 "ultimo_preco": st.column_config.NumberColumn("Último preço", format="R$ %.2f"),
                 "menor_preco":  st.column_config.NumberColumn("Menor preço", format="R$ %.2f"),
                 "coletas":      st.column_config.NumberColumn("Coletas"),
@@ -10035,22 +10385,63 @@ def _render_comparator(produtos: tuple, start_date: date, end_date: date) -> Non
     if df_price.empty:
         st.warning("Sem dados de preço para os produtos selecionados.")
         return
+    if "source" not in df_price.columns:
+        df_price = df_price.assign(source="coletas")
+
+    # Série = SKU do catálogo quando resolvido (PriceTrack e coletas do mesmo
+    # produto são UMA série, com UMA fonte); sem SKU, o nome coletado.
+    sku = (df_price["sku"].astype("string").str.strip()
+           if "sku" in df_price.columns
+           else pd.Series(pd.NA, index=df_price.index, dtype="string"))
+    tem_sku = sku.fillna("") != ""
+    df_price = df_price.assign(
+        _serie=sku.where(tem_sku, df_price["produto"].astype("string")),
+        _tem_sku=tem_sku,
+    )
+    df_price_all = df_price
+    df_price, cmp_report = _single_source_per_series(df_price, ["_serie"])
+    nome = df_price.groupby("_serie")["produto"].agg(
+        lambda s: s.mode().iat[0] if not s.mode().empty else s.iat[0])
+    sku_keys = set(df_price_all.loc[df_price_all["_tem_sku"], "_serie"])
+
+    def _cmp_label(serie) -> str:
+        n = str(nome.get(serie, serie))
+        return f"{n} · {serie}" if serie in sku_keys and n != str(serie) else n
+
+    df_price = df_price.assign(produto_serie=df_price["_serie"].map(_cmp_label))
+    cmp_report = cmp_report.assign(
+        produto_serie=cmp_report["_serie"].map(_cmp_label))
 
     # --- Evolução sobreposta ---
-    agg = (df_price.groupby(["data", "produto"])["preco"]
-           .agg(_mode_price).reset_index())
+    agg = (df_price.groupby(["data", "produto_serie"])
+           .agg(preco=("preco", _mode_price), fonte=("source", "first"))
+           .reset_index())
+    agg["fonte_label"] = agg["fonte"].map(_source_label)
     agg["data"] = pd.to_datetime(agg["data"])
     fig = px.line(
-        agg, x="data", y="preco", color="produto", markers=True,
+        agg, x="data", y="preco", color="produto_serie", markers=True,
+        custom_data=["fonte_label"],
         title="Evolução de preço comparada (moda diária)",
-        labels={"data": "Data", "preco": "Preço (R$)", "produto": "Produto"},
+        labels={"data": "Data", "preco": "Preço (R$)",
+                "produto_serie": "Produto (● PriceTrack · ◇ Coletas)"},
     )
-    fig.update_traces(line=dict(width=2.5), marker=dict(size=6))
+    fig.update_traces(
+        line=dict(width=2.5), marker=dict(size=6),
+        hovertemplate=("<b>%{fullData.name}</b><br>%{x|%d/%m/%Y}<br>"
+                       "Preço: R$ %{y:.2f}<br>Fonte: %{customdata[0]}"
+                       "<extra></extra>"))
+    _mark_trace_sources(
+        fig, agg.groupby("produto_serie")["fonte"].first().to_dict())
     _apply_chart_style(fig, height=460)
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(_SERIES_SOURCE_RULE)
+    cov_md = _source_coverage_md(df_price_all, cmp_report, label_col="produto_serie")
+    if cov_md:
+        st.caption(cov_md)
 
     # --- Menor preço por marketplace ---
-    pivot = df_price.groupby(["produto", "plataforma"])["preco"].min().unstack()
+    pivot = df_price.groupby(["produto_serie", "plataforma"])["preco"].min().unstack()
+    pivot.index.name = "produto"
     st.markdown("**Menor preço por marketplace**")
     st.dataframe(
         pivot.style.format("R$ {:.2f}", na_rep="—"),
@@ -10059,9 +10450,10 @@ def _render_comparator(produtos: tuple, start_date: date, end_date: date) -> Non
 
     # --- Resumo comparativo + diferença percentual ---
     summary = (
-        df_price.groupby("produto")["preco"]
+        df_price.groupby("produto_serie")["preco"]
         .agg(menor="min", moda=_mode_price, maior="max")
         .reset_index()
+        .rename(columns={"produto_serie": "produto"})
     )
     cheapest = summary["menor"].min()
     summary["dif_%_vs_menor"] = (

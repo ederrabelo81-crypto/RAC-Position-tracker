@@ -448,3 +448,37 @@ climatizador) FICA na base para o portão de escopo denunciar.
 **Files:** `bestsellers/models.py` `classificar_tipo()`,
 `bestsellers/sources/magalu.py` `_filtrar_populacao()`,
 `scrapers/magalu.py` `_is_sponsored()`, `_clean_dom_title()`
+
+## 26. Costurar PriceTrack e coletas na mesma série de preço (30/09/2026)
+
+❌ **Errado — até 30/09/2026**
+```python
+df, _ = query_price_evolution_data(inicio, fim, brands=...)   # precedência por (data, SKU)
+agg = df.groupby(["data", "marca"])["preco"].agg(_mode_price)  # dia sem PT sai das coletas
+```
+
+✅ **Certo**
+```python
+df, _ = query_price_evolution_data(inicio, fim, brands=..., dedup_sku_day=False)
+df, rep = single_source_per_series(df, ["marca", "btu"])       # utils/price_series.py
+```
+
+**Why:** a precedência por (data, SKU) é por DIA. Em 25, 26 e 29/09/2026 o
+`pricetrack_daily` não tinha linha e esses dias vieram das coletas — outra
+medida (oferta na SERP, não piso/moda por seller) e outro mix. A série "preço
+por marca" da Philco caiu de ~R$ 13 mil para ~R$ 2 mil no último dia sem o
+mercado mexer. E "Philco" misturava 9K a 60K, portátil e cassete: a moda muda
+com o mix, não com o preço.
+
+**Regra dura:** série de preço no tempo = UMA fonte na janela inteira (o
+PriceTrack enquanto cobrir ≥ metade dos dias da Coletas; senão a fonte com mais
+dias). A outra fonte NUNCA tapa buraco — dia sem a fonte da série fica em
+branco e é listado na legenda. Preço por marca/plataforma só no mesmo BTU e
+só split hi-wall (`capacity_btu`, `fora_hiwall_mask`). Delta entre janelas
+(Digest, Anomalies) leva `source` na chave. "Mais dias vence" puro NÃO serve:
+o último dia de toda janela que termina hoje não tem PriceTrack até o import,
+e a regra passaria todas as séries para as coletas durante o dia.
+**Files:** `utils/price_series.py`; `app.py` `query_price_evolution_data(dedup_sku_day=)`,
+`_evo_build_series()`, `page_market_analytics()`, `_render_product_sheet()`,
+`_render_comparator()`; `tests/test_price_series.py`,
+`tests/test_price_evolution_merge.py`

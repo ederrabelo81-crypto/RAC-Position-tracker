@@ -51,6 +51,7 @@ __all__ = [
     "keyword_battle",
     "buybox_on_brand",
     "extract_btu",
+    "is_fora_hiwall",
     "shelf_price_by_btu",
     "coverage_by_turno",
     "build_alerts",
@@ -483,6 +484,16 @@ def extract_btu(produto: object) -> Optional[int]:
     if m.group(3):
         return int(m.group(3))
     return int(m.group(1)) * 1000 + int(m.group(2))
+
+
+def is_fora_hiwall(produto: object) -> bool:
+    """True se o nome indica um formato que não compete com o split hi-wall.
+
+    Portátil, janela, cassete, piso-teto e multi-split no mesmo BTU custam
+    outra coisa: misturá-los numa mediana/moda de preço por marca muda o número
+    sem o mercado mudar.
+    """
+    return isinstance(produto, str) and bool(_RE_FORA_HIWALL.search(produto))
 
 
 def shelf_price_by_btu(df: pd.DataFrame, btus: Sequence[int] = _BTUS_VITRINE) -> pd.DataFrame:
