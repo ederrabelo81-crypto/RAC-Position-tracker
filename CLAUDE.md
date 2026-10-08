@@ -296,7 +296,9 @@ instância num lojista (uso: instância dedicada por tenant); ausente, abre
 seletor livre entre todos os sellers com dado na janela (uso: demo
 compartilhada). **Regra dura:** `SELLER` é comparado **literalmente** contra
 `seller_canonical`, e a canonização aposenta grafias (`Comprebel` → `Bel
-Micro`, `GoCompras` → `Denteck` em 05/09/2026) — secret na grafia velha faz o
+Micro`, `GoCompras` → `Denteck` em 05/09/2026; `Clima Rio - Ar Condicionado` →
+`Clima Rio`, `Refricril Refrigeração`/`Refricril Ar Condicionados` → `Refricril`
+e +70 grafias de lojas oficiais/slugs em 08/10/2026) — secret na grafia velha faz o
 PostgREST devolver `[]` com HTTP 200 e o painel parece vazio sem erro nenhum;
 o próprio app detecta esse caso e avisa na tela.
 

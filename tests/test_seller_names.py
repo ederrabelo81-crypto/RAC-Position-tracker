@@ -67,7 +67,8 @@ class TestGruposConfirmados:
     def test_web_continental(self, raw):
         assert normalize_seller_name(raw) == "Web Continental"
 
-    @pytest.mark.parametrize("raw", ["Clima Rio", "ClimaRio", "climario"])
+    @pytest.mark.parametrize("raw", ["Clima Rio", "ClimaRio", "climario",
+                                     "Clima Rio - Ar Condicionado"])
     def test_clima_rio(self, raw):
         assert normalize_seller_name(raw) == "Clima Rio"
 
@@ -104,7 +105,17 @@ class TestGruposConfirmados:
         ("carrefouroficial", "Carrefour"), ("gazinshop", "Gazin"),
         ("loja-ultrafeu", "Ultrafeu"), ("lojatclsemp", "TCL SEMP"),
         ("lgelectronicsdobrasil", "LG"),
-        ("refricrilrefrigeracaoepecas", "Refricril Refrigeração"),
+        ("refricrilrefrigeracaoepecas", "Refricril"),
+        ("Refricril Refrigeração", "Refricril"),
+        ("Refricril Ar Condicionados", "Refricril"),
+        ("Belmicro.Shop", "Bel Micro"), ("belmicro.com.br", "Bel Micro"),
+        ("Webcontinental Climatização", "Web Continental"),
+        ("daikinbrasil", "Daikin"), ("mideacarrier", "Midea"),
+        ("Midea Store", "Midea"), ("consul", "Consul"),
+        ("Consul - Loja Oficial", "Consul"), ("philcooficial", "Philco"),
+        ("Samsung Loja Oficial", "Samsung"), ("LG Electronics Brasil", "LG"),
+        ("arprixdistribuidora", "ARPRIX DISTRIBUIDORA"),
+        ("Tudão Tech Ltda", "Tudão Tech"), ("kabum", "KaBuM!"),
         ("electrolux", "Electrolux"), ("samsung", "Samsung"),
     ])
     def test_demais_grupos(self, raw, esperado):
@@ -116,7 +127,7 @@ class TestSellerDesconhecidoPassa:
 
     @pytest.mark.parametrize("raw", [
         "mgshopgra", "Turum", "Domus", "GHOX", "mg777",
-        "multiloja", "Tudão Tech Ltda", "Loja da Ferramenta",
+        "multiloja", "Loja da Ferramenta",
     ])
     def test_passa_inalterado(self, raw):
         assert normalize_seller_name(raw) == raw
@@ -373,7 +384,7 @@ class TestRuidoDeCaptura:
     def test_loja_oficial_de_marca_continua_seller(self):
         """"Loja Electrolux" É um vendedor (a loja oficial vende) — só o byline
         "Visite a loja X" é link de marca."""
-        assert normalize_seller_name("Loja Electrolux") == "Loja Electrolux"
+        assert normalize_seller_name("Loja Electrolux") == "Electrolux"
 
 
 class TestSellerEfetivoNoPainel:
@@ -418,7 +429,7 @@ class TestSellerEfetivoNoPainel:
             "buy_box_seller": ["Refricril Ar Condicionados", "Visite a loja LG"],
         })
         opcoes = app._canonical_seller_options(app._seller_option_values(df))
-        assert "Refricril Ar Condicionados" in opcoes
+        assert "Refricril" in opcoes
         assert "Amazon" in opcoes
         assert not any("Visite a loja" in o for o in opcoes)
 
@@ -444,3 +455,18 @@ class TestExtracaoDoComparador:
         html = '<div><div class="n7emVc">Frigelar</div></div>'
         item = BeautifulSoup(html, "html.parser").div
         assert GoogleShoppingScraper._extract_seller(item) == "Frigelar"
+
+
+class TestVarreduraOutubro:
+    """Identidades que a varredura de 08/10/2026 deixou de fora de propósito."""
+
+    @pytest.mark.parametrize("raw", [
+        "Webco Prime", "Amazon.com.br - Seller", "Amazon Global",
+        "LG Importados", "LCG ELETRO FILIAL SC", "Eletrozema", "CLIMAMIX",
+        "engage-info", "Adias Solar",
+    ])
+    def test_nao_confirmados_passam(self, raw):
+        assert normalize_seller_name(raw) == raw
+
+    def test_bela_magazine_nao_e_magalu(self):
+        assert normalize_seller_name("belamagazine") == "Bela Magazine"

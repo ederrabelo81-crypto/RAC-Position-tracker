@@ -221,7 +221,7 @@ class TestShopeeParser:
         itens = fonte._parse(brutos, offset=0)
         assert len(itens) == 2
         assert itens[0].preco == 1799.0
-        assert itens[0].seller == "Midea Oficial"
+        assert itens[0].seller == "Midea"  # canonizado (seller_names)
         assert itens[0].sku_plataforma == "900_1"
         assert itens[0].rating == 4.8
         assert itens[0].reviews == 321
@@ -281,7 +281,7 @@ class TestShopeeParser:
         item = itens[0]
         assert item.titulo == "Ar Condicionado Split Inverter Midea 12000 BTUs Frio"
         assert item.preco == 1799.0
-        assert item.seller == "Midea Oficial"
+        assert item.seller == "Midea"  # canonizado (seller_names)
         assert item.sku_plataforma == "1009975506_58260116699"
         assert item.vendidos == 948.0
         assert item.base_vendidos == "mes"
@@ -1155,7 +1155,7 @@ class TestShopeeCamposSensiveis:
             "shop_data": {"shop_name": "Midea Oficial"},
         }
         item = fonte._parse([{"item_basic": payload}], offset=0)[0]
-        assert item.seller == "Midea Oficial"
+        assert item.seller == "Midea"  # canonizado (seller_names)
 
     def test_modo_browser_local_nao_usa_a_sessao_http(self, fonte):
         """Com RAC_LOCAL_CHROME o scraper não cria `_session`: chamar
