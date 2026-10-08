@@ -120,6 +120,10 @@ SELLER_GROUPS: Dict[str, List[str]] = {
     # ── Dealers de climatização ─────────────────────────────────────────────
     "Clima Rio": [
         "Clima Rio", "ClimaRio", "Climario",
+        # Nome da loja na Shopee — mesma loja, identidade confirmada pelo
+        # mantenedor em 08/10/2026 (aparecia como seller próprio desde
+        # 27/09/2026, fatiando a caixa da Clima Rio na Shopee).
+        "Clima Rio - Ar Condicionado",
     ],
     "Frio Peças": [
         "Frio Peças", "Friopeças", "FrioPecas",
@@ -135,9 +139,12 @@ SELLER_GROUPS: Dict[str, List[str]] = {
         "Webcontinental Marketplace", "lojawebcontinentalmarketplace",
         # ContinentalCenter é a segunda conta do grupo no Mercado Livre.
         "ContinentalCenter",
+        # Varredura de 08/10/2026 (identidade confirmada pelo mantenedor):
+        # contas da Shopee ("Webco Prime" confirmado em 08/10/2026).
+        "Webcontinental Climatização", "Webco Prime",
     ],
     "Engage Eletro": [
-        "Engage Eletro", "EngageEletro",
+        "Engage Eletro", "EngageEletro", "engage-info",
         # sufixo `ful` = conta de fulfillment do ML (mesmo lojista)
         "engageeletroful",
     ],
@@ -154,6 +161,9 @@ SELLER_GROUPS: Dict[str, List[str]] = {
         # identidade confirmada pelo mantenedor em 05/09/2026 (antes vivia
         # como grupo canônico próprio "Comprebel", fragmentando a caixa).
         "Comprebel", "comprebel2",
+        # Varredura de 08/10/2026 (identidade confirmada pelo mantenedor):
+        # conta da Amazon e domínio que o comparador mostra.
+        "Belmicro.Shop", "belmicro.com.br",
     ],
     "Denteck": [
         "Denteck", "Denteck Ar Condicionado",
@@ -176,13 +186,18 @@ SELLER_GROUPS: Dict[str, List[str]] = {
         "Ar Certo", "ArCerto", "ar-certo",
     ],
     "Polo Ar": [
-        "Polo Ar", "PoloAr",
+        "Polo Ar", "PoloAr", "POLO AR INDUSTRIA LTDA",
     ],
-    "Refricril Refrigeração": [
-        "Refricril Refrigeração", "refricrilrefrigeracaoepecas",
+    "Refricril": [
+        # Até 08/10/2026 o canônico era "Refricril Refrigeração" e a conta da
+        # Amazon ("Refricril Ar Condicionados") ficava fora — o mesmo lojista
+        # aparecia como 3 sellers. Unificado a pedido do mantenedor.
+        "Refricril", "Refricril Refrigeração", "refricrilrefrigeracaoepecas",
+        "Refricril Ar Condicionados",
     ],
     "Norte Refrigeração": [
         "Norte Refrigeração", "NorteRefrigeracao",
+        "norterefrigeracaolojaoficial",
     ],
     "Ferreira Costa": [
         "Ferreira Costa", "FerreiraCosta",
@@ -192,10 +207,10 @@ SELLER_GROUPS: Dict[str, List[str]] = {
 
     # ── Varejo generalista ──────────────────────────────────────────────────
     "A.Dias": [
-        "A.Dias", "A Dias", "ADias",
+        "A.Dias", "A Dias", "ADias", "Adias Solar",
     ],
     "Fast Shop": [
-        "Fast Shop", "fastshop2",
+        "Fast Shop", "fastshop2", "Fast Shop Oficial", "Fast Shop Loja Oficial",
     ],
     "Bagatoli": [
         "Bagatoli", "bagatolionline", "bagatolishop",
@@ -207,10 +222,10 @@ SELLER_GROUPS: Dict[str, List[str]] = {
         "Lojas Colombo", "lojascolombooficial",
     ],
     "Angeloni": [
-        "Angeloni", "angeloni2",
+        "Angeloni", "angeloni2", "angeloni.com.br",
     ],
     "Gazin": [
-        "Gazin", "gazinshop",
+        "Gazin", "gazinshop", "Gazin Oficial", "Loja Gazin",
     ],
     "E-Fácil": [
         "E-Fácil", "Efácil", "Efácil Oficial",
@@ -221,26 +236,147 @@ SELLER_GROUPS: Dict[str, List[str]] = {
     "Carrefour": [
         "Carrefour", "carrefouroficial",
     ],
+    "Casas Bahia": [
+        "Casas Bahia", "Casas Bahia Oficial",
+    ],
     "Magazine Luiza": [
         "Magazine Luiza", "magazineluiza", "Magalu",
     ],
     "Mercado Livre": [
-        "Mercado Livre",
+        "Mercado Livre", "mercadolivre.com.br",
+    ],
+    "Amazon": [
+        # "- Seller" (comparador) e "Amazon Global" (cross-border) agrupados
+        # por decisão do mantenedor em 08/10/2026.
+        "Amazon", "Amazon.com.br", "Amazon.com.br - Retail",
+        "Amazon.com.br - Seller", "Amazon Global",
+    ],
+    "Shopee": [
+        "Shopee", "shopee.com.br",
+    ],
+    "KaBuM!": [
+        "KaBuM!", "Kabum",
+    ],
+    "Lojas Koerich": [
+        "Lojas Koerich", "Koerich",
+    ],
+    "Lojas Benoit": [
+        "Lojas Benoit", "LojasBenoit",
+    ],
+    "Lojas Guaibim": [
+        "Lojas Guaibim", "lojasguaibim1",
+    ],
+    "Lojas Unilar": [
+        "Lojas Unilar", "Lojas Unilar LTDA",
+    ],
+    "Le biscuit": [
+        "Le biscuit", "lojaslebiscuit",
+    ],
+    "Casa & Video": [
+        "Casa & Video", "casa-e-video",
+    ],
+    "Casa do Pica-Pau": [
+        "Casa do Pica-Pau", "casadopica-pau",
+    ],
+    "taQi": [
+        "taQi", "taQi Oficial", "lojastaqi",
+    ],
+    "ibyte": [
+        "ibyte", "lojaibyte",
+    ],
+    "Compra Turbo": [
+        "Compra Turbo", "Compra Turbo Oficial",
+    ],
+    "Tudão Tech": [
+        "Tudão Tech", "Tudão Tech Ltda",
+    ],
+    "APA MÓVEIS": [
+        "APA MÓVEIS", "apamoveis.com.br",
+    ],
+    "VOLIX STORE": [
+        "VOLIX STORE", "volixstore",
+    ],
+    "LCG ELETRO COM": [
+        # filial SC = mesmo grupo (mantenedor, 08/10/2026), como Webcontinental ES.
+        "LCG ELETRO COM", "LCG ELETRO", "LCG ELETRO FILIAL SC",
+    ],
+    "Refriparts": [
+        "Refriparts",
+    ],
+    "Copafer": [
+        "Copafer",
+    ],
+    "Bela Magazine": [
+        # NÃO é Magazine Luiza — ver COMMON_MISTAKES §23.
+        "Bela Magazine",
+    ],
+    "ARPRIX DISTRIBUIDORA": [
+        "ARPRIX DISTRIBUIDORA",
+    ],
+    "MERCADO IMPORTSSM": [
+        "MERCADO IMPORTSSM",
+    ],
+    "TOTAL AR": [
+        "TOTAL AR",
+    ],
+    "Eletrozema": [
+        # Lojas Zema = Eletrozema (loja própria) — confirmado em 08/10/2026.
+        "Eletrozema", "Zema", "lojaszema", "Zema Oficial",
+    ],
+    "Excellence Home": [
+        "Excellence Home", "Excellence Home Shop", "excellenceshop",
+    ],
+    "EasyTech": [
+        "EasyTech", "EasyTech DF",
+    ],
+    "Login": [
+        "Login", "Login Informática",
+    ],
+    "HQ": [
+        "HQ", "hqeletro.com.br",
+    ],
+    "zShops": [
+        "zShops", "Zshops A Loja de Tudo",
     ],
 
     # ── Lojas oficiais de marca (1P do fabricante) ──────────────────────────
     # Contam como seller na buy box e sofrem a mesma fragmentação de caixa.
+    # Varredura de 08/10/2026: a mesma loja oficial aparece como "Oficial",
+    # "Loja X", slug da Magalu ou domínio no comparador.
     "Electrolux": [
-        "Electrolux",
+        "Electrolux", "Loja Electrolux",
     ],
     "Samsung": [
-        "Samsung",
+        "Samsung", "Samsung Loja Oficial", "Samsung Brasil", "shop.samsung.com/br",
     ],
     "LG": [
-        "LG", "lgelectronicsdobrasil",
+        # "LG Importados" agrupado por decisão do mantenedor (08/10/2026).
+        "LG", "LG Importados", "lgelectronicsdobrasil", "LG Electronics Brasil",
+        "LG Electronics Oficial", "LG Oficial",
     ],
     "TCL SEMP": [
-        "TCL SEMP", "lojatclsemp",
+        "TCL SEMP", "lojatclsemp", "TCL", "Loja TCL",
+    ],
+    "Midea": [
+        "Midea", "Midea Store", "Midea Oficial", "Midea Brasil", "mideacarrier",
+    ],
+    "Daikin": [
+        "Daikin", "daikinbrasil", "Loja Daikin",
+    ],
+    "Consul": [
+        "Consul", "Consul Oficial", "Consul - Oficial", "Consul - Loja Oficial",
+    ],
+    "Philco": [
+        "Philco", "Philco Oficial", "philcooficial",
+    ],
+    "Britânia": [
+        "Britânia", "britaniaoficial",
+    ],
+    "Rheem": [
+        "Rheem", "RHEEM DO BRASIL",
+    ],
+    "Komeco": [
+        "Komeco", "lojakomeco", "Loja Komeco",
     ],
 }
 
