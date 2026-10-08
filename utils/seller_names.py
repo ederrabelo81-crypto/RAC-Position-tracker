@@ -140,11 +140,11 @@ SELLER_GROUPS: Dict[str, List[str]] = {
         # ContinentalCenter é a segunda conta do grupo no Mercado Livre.
         "ContinentalCenter",
         # Varredura de 08/10/2026 (identidade confirmada pelo mantenedor):
-        # loja da Shopee. "Webco Prime" NÃO entra: identidade não confirmada.
-        "Webcontinental Climatização",
+        # contas da Shopee ("Webco Prime" confirmado em 08/10/2026).
+        "Webcontinental Climatização", "Webco Prime",
     ],
     "Engage Eletro": [
-        "Engage Eletro", "EngageEletro",
+        "Engage Eletro", "EngageEletro", "engage-info",
         # sufixo `ful` = conta de fulfillment do ML (mesmo lojista)
         "engageeletroful",
     ],
@@ -207,7 +207,7 @@ SELLER_GROUPS: Dict[str, List[str]] = {
 
     # ── Varejo generalista ──────────────────────────────────────────────────
     "A.Dias": [
-        "A.Dias", "A Dias", "ADias",
+        "A.Dias", "A Dias", "ADias", "Adias Solar",
     ],
     "Fast Shop": [
         "Fast Shop", "fastshop2", "Fast Shop Oficial", "Fast Shop Loja Oficial",
@@ -246,9 +246,10 @@ SELLER_GROUPS: Dict[str, List[str]] = {
         "Mercado Livre", "mercadolivre.com.br",
     ],
     "Amazon": [
-        # "Amazon.com.br - Seller" e "Amazon Global" NÃO entram: no comparador
-        # o primeiro é loja 3P anunciando via Amazon, o segundo é cross-border.
+        # "- Seller" (comparador) e "Amazon Global" (cross-border) agrupados
+        # por decisão do mantenedor em 08/10/2026.
         "Amazon", "Amazon.com.br", "Amazon.com.br - Retail",
+        "Amazon.com.br - Seller", "Amazon Global",
     ],
     "Shopee": [
         "Shopee", "shopee.com.br",
@@ -296,8 +297,8 @@ SELLER_GROUPS: Dict[str, List[str]] = {
         "VOLIX STORE", "volixstore",
     ],
     "LCG ELETRO COM": [
-        # "LCG ELETRO FILIAL SC" fica de fora até o mantenedor confirmar.
-        "LCG ELETRO COM", "LCG ELETRO",
+        # filial SC = mesmo grupo (mantenedor, 08/10/2026), como Webcontinental ES.
+        "LCG ELETRO COM", "LCG ELETRO", "LCG ELETRO FILIAL SC",
     ],
     "Refriparts": [
         "Refriparts",
@@ -318,9 +319,24 @@ SELLER_GROUPS: Dict[str, List[str]] = {
     "TOTAL AR": [
         "TOTAL AR",
     ],
-    "Zema": [
-        # Relação com "Eletrozema" (loja própria) não confirmada — separado.
-        "Zema", "lojaszema", "Zema Oficial",
+    "Eletrozema": [
+        # Lojas Zema = Eletrozema (loja própria) — confirmado em 08/10/2026.
+        "Eletrozema", "Zema", "lojaszema", "Zema Oficial",
+    ],
+    "Excellence Home": [
+        "Excellence Home", "Excellence Home Shop", "excellenceshop",
+    ],
+    "EasyTech": [
+        "EasyTech", "EasyTech DF",
+    ],
+    "Login": [
+        "Login", "Login Informática",
+    ],
+    "HQ": [
+        "HQ", "hqeletro.com.br",
+    ],
+    "zShops": [
+        "zShops", "Zshops A Loja de Tudo",
     ],
 
     # ── Lojas oficiais de marca (1P do fabricante) ──────────────────────────
@@ -334,8 +350,8 @@ SELLER_GROUPS: Dict[str, List[str]] = {
         "Samsung", "Samsung Loja Oficial", "Samsung Brasil", "shop.samsung.com/br",
     ],
     "LG": [
-        # "LG Importados" NÃO entra: revendedor, não a loja da marca.
-        "LG", "lgelectronicsdobrasil", "LG Electronics Brasil",
+        # "LG Importados" agrupado por decisão do mantenedor (08/10/2026).
+        "LG", "LG Importados", "lgelectronicsdobrasil", "LG Electronics Brasil",
         "LG Electronics Oficial", "LG Oficial",
     ],
     "TCL SEMP": [

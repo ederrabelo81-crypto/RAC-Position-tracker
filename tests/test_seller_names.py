@@ -458,15 +458,25 @@ class TestExtracaoDoComparador:
 
 
 class TestVarreduraOutubro:
-    """Identidades que a varredura de 08/10/2026 deixou de fora de propósito."""
+    """Varredura de 08/10/2026 — pares confirmados pelo mantenedor."""
 
-    @pytest.mark.parametrize("raw", [
-        "Webco Prime", "Amazon.com.br - Seller", "Amazon Global",
-        "LG Importados", "LCG ELETRO FILIAL SC", "Eletrozema", "CLIMAMIX",
-        "engage-info", "Adias Solar",
+    @pytest.mark.parametrize("raw, esperado", [
+        ("Webco Prime", "Web Continental"),
+        ("Amazon.com.br - Seller", "Amazon"), ("Amazon Global", "Amazon"),
+        ("Zema", "Eletrozema"), ("lojaszema", "Eletrozema"),
+        ("engage-info", "Engage Eletro"),
+        ("LCG ELETRO FILIAL SC", "LCG ELETRO COM"),
+        ("Adias Solar", "A.Dias"), ("LG Importados", "LG"),
+        ("excellenceshop", "Excellence Home"),
+        ("Excellence Home Shop", "Excellence Home"),
+        ("EasyTech DF", "EasyTech"), ("Login Informática", "Login"),
+        ("hqeletro.com.br", "HQ"), ("Zshops A Loja de Tudo", "zShops"),
     ])
-    def test_nao_confirmados_passam(self, raw):
-        assert normalize_seller_name(raw) == raw
+    def test_pares_confirmados(self, raw, esperado):
+        assert normalize_seller_name(raw) == esperado
+
+    def test_climamix_continua_separado(self):
+        assert normalize_seller_name("CLIMAMIX") == "CLIMAMIX"
 
     def test_bela_magazine_nao_e_magalu(self):
         assert normalize_seller_name("belamagazine") == "Bela Magazine"
