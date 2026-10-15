@@ -153,7 +153,7 @@ ontem**?", via `scripts/briefing_gate.py`.
 | Mecanismo | Pergunta | Quando | O que dispara |
 |---|---|---|---|
 | `daily_status_check.py` (watchdog.yml) | **O dado chegou?** | 20:30 | Telegram PASS/FAIL por plataforma |
-| `pipeline_watch.py` (pipeline_guard.yml) | **Quem prometeu rodar e não rodou?** | 06:35, 12:35, 22:35 | Telegram acionável + issue de degradação crônica |
+| `pipeline_watch.py` (pipeline_guard.yml) | **Quem prometeu rodar e não rodou?** | 06:35, 12:35, 22:35 | Telegram acionável + issue de degradação crônica (zerada ou volume degradado) |
 | `briefing_gate.py` | **O dado é de ontem mesmo?** | 06:35 (e sob demanda) | Bloqueia/carimba a publicação |
 
 O segundo existe porque os outros dois não conseguem ver ausência de execução:
@@ -194,11 +194,13 @@ Três detalhes que parecem miudeza e não são:
 | Situação | O que acontece sozinho | O que exige humano |
 |---|---|---|
 | PriceTrack D-1 ausente às 06:35 | Reimporta na hora (`briefing_gate --curar`) e revalida antes das 07:00 | — |
-| Plataforma volta a coletar | A issue crônica é **fechada** automaticamente | — |
+| Plataforma volta a coletar | A issue `[pipeline] <plataforma> sem dado há dias` é **fechada** automaticamente | — |
+| Plataforma sai de `quedas_volume` (volume normal de novo) | A issue `[pipeline] <plataforma> com volume degradado` é **fechada** automaticamente. Histerese: abre no limiar crônico (≥ 3 dias), mas enquanto a plataforma seguir em `quedas_volume` — mesmo com a sequência abaixo de 3 dias — fica aberta. Só fecha se a checagem de volume rodou e leu batidas (`quedas_volume_avaliadas`); checagem que falhou, livro-razão vazio ou `--sem-queda-volume` não fecham nada | — |
 | Import falhou nos 3 degraus | Escada + guardião já tentaram 4 vezes; alerta nomeia o erro | Chave da API / cota |
 | Plataforma zerada 1–2 dias | Entra no relatório como aviso | — |
-| Plataforma zerada **≥ 3 dias** | Abre (ou atualiza) **issue no GitHub** com a contagem | Consertar o scraper |
-| Plataforma **DEGRADADA** (< 20% da mediana do turno em ≥ 2 turnos no dia) | Alerta no Telegram com turnos, mediana e o diagnóstico do scraper (`ML: x/y kw ok, ...`); ≥ 3 dias seguidos → exit 1 | Consertar o scraper / destravar o bloqueio |
+| Plataforma zerada **≥ 3 dias** | Abre (ou atualiza) a **issue no GitHub** `[pipeline] <plataforma> sem dado há dias` com a contagem | Consertar o scraper |
+| Plataforma **DEGRADADA** (< 20% da mediana do turno em ≥ 2 turnos no dia) | Alerta no Telegram com turnos, mediana e o diagnóstico do scraper (`ML: x/y kw ok, ...`) | — |
+| Plataforma **DEGRADADA ≥ 3 dias** seguidos | exit 1 + abre (ou atualiza) a issue `[pipeline] <plataforma> com volume degradado` com turnos, % da mediana e `evidencia` | Consertar o scraper / destravar o bloqueio |
 | PC coletor desligado | Um alerta de `EXECUTOR_OFFLINE`, não N de plataforma caída | Ligar o notebook |
 | Import do PriceTrack não disparou | Re-dispatch automático **se** houver `RAC_GH_PAT` | Sem PAT, disparo manual |
 

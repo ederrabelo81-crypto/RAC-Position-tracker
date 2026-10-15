@@ -356,6 +356,15 @@ jobs:
       # ruído; uma issue aberta uma vez, com a contagem atualizada, é trabalho
       # rastreável — e some sozinha quando o defeito é corrigido.
       #
+      # Duas famílias de issue, cada uma com o seu sinal e o seu sufixo:
+      #   "[pipeline] <plat> sem dado há dias"      ← .degradacoes[]   (zerada)
+      #   "[pipeline] <plat> com volume degradado"  ← .quedas_volume[] (< 20% da
+      #                                                mediana em ≥ 2 turnos)
+      # A reconciliação fecha cada issue só quando o sinal DA SUA família some.
+      # Sem isso, uma issue de volume seria lida como "plataforma que voltou a
+      # coletar" (não está em .degradacoes) e fechada a cada run. Título com
+      # "[pipeline]" fora das duas famílias não é tocado.
+      #
       # A extração usa `jq` (presente no runner) de propósito: um heredoc de
       # Python aqui dentro precisaria terminar na coluna 0 e quebraria o bloco
       # YAML deste `run`.
@@ -369,24 +378,56 @@ jobs:
             echo "Sem status para avaliar."
             exit 0
           fi
+          SUFIXO_ZERADA=" sem dado há dias"
+          SUFIXO_VOLUME=" com volume degradado"
           CRONICAS=$(jq -r '.degradacoes[]? | select(.cronica) | "\(.plataforma)|\(.dias_zerada)|\(.job)"' logs/pipeline_status.json)
+          PLATS_ZERADAS=$(printf '%s\n' "$CRONICAS" | cut -d'|' -f1)
+          # Histerese: a issue de volume ABRE no limiar crônico (≥ 3 dias), mas
+          # só FECHA quando a plataforma sai de `quedas_volume` — degradada há
+          # menos dias ainda é degradada, e fechar/reabrir a cada oscilação da
+          # contagem é o ruído que este passo existe para evitar.
+          PLATS_VOLUME=$(jq -r '.quedas_volume[]? | .plataforma' logs/pipeline_status.json)
+          # Checagem de volume que falhou (ou `--sem-queda-volume`) devolve
+          # lista vazia — que NÃO é "volume normal". Sem a chave (status
+          # antigo), idem: na dúvida, issue de volume não fecha.
+          VOLUME_AVALIADO=$(jq -r '.quedas_volume_avaliadas // false' logs/pipeline_status.json)
           HOJE=$(date -u +%F)
 
-          # Reconciliação: fecha as issues de plataformas que voltaram. Uma
-          # issue que sobrevive à recuperação é ruído com aparência de
-          # trabalho — em pouco tempo ninguém confia na lista de abertas, que
-          # é o mesmo fim do alerta diário que este mecanismo substituiu.
-          ABERTAS=$(gh issue list --state open --search '"[pipeline]" in:title' \
+          # Reconciliação: fecha as issues cujo sinal sumiu. Uma issue que
+          # sobrevive à recuperação é ruído com aparência de trabalho — em
+          # pouco tempo ninguém confia na lista de abertas, que é o mesmo fim
+          # do alerta diário que este mecanismo substituiu.
+          ABERTAS=$(gh issue list --state open --limit 200 --search '"[pipeline]" in:title' \
                     --json number,title --jq '.[] | "\(.number)|\(.title)"')
           echo "$ABERTAS" | while IFS='|' read -r NUM TITULO_ABERTO; do
             [ -z "$NUM" ] && continue
-            PLAT_ABERTA=$(printf '%s' "$TITULO_ABERTO" | sed -e 's/^\[pipeline\] //' -e 's/ sem dado há dias$//')
-            if printf '%s\n' "$CRONICAS" | cut -d'|' -f1 | grep -qxF "$PLAT_ABERTA"; then
-              continue   # ainda crônica: a issue segue aberta e recebe update
+            case "$TITULO_ABERTO" in
+              "[pipeline] "*"$SUFIXO_ZERADA")
+                PLAT_ABERTA=${TITULO_ABERTO#"[pipeline] "}
+                PLAT_ABERTA=${PLAT_ABERTA%"$SUFIXO_ZERADA"}
+                ATIVAS=$PLATS_ZERADAS
+                MOTIVO="$PLAT_ABERTA voltou a gravar linhas em \`coletas\`."
+                ;;
+              "[pipeline] "*"$SUFIXO_VOLUME")
+                PLAT_ABERTA=${TITULO_ABERTO#"[pipeline] "}
+                PLAT_ABERTA=${PLAT_ABERTA%"$SUFIXO_VOLUME"}
+                if [ "$VOLUME_AVALIADO" != "true" ]; then
+                  echo "Mantendo #$NUM — checagem de volume não foi avaliada neste run"
+                  continue
+                fi
+                ATIVAS=$PLATS_VOLUME
+                MOTIVO="$PLAT_ABERTA saiu de \`quedas_volume\`: o volume voltou ao normal (ou zerou de vez, caso em que a issue \"sem dado há dias\" assume)."
+                ;;
+              *)
+                continue   # outra issue com "[pipeline]" no título: não é nossa
+                ;;
+            esac
+            if printf '%s\n' "$ATIVAS" | grep -qxF "$PLAT_ABERTA"; then
+              continue   # sinal ainda ativo: a issue segue aberta e recebe update
             fi
-            echo "Fechando #$NUM — $PLAT_ABERTA voltou a coletar"
+            echo "Fechando #$NUM — $TITULO_ABERTO"
             FECHAMENTO=$(printf '%s\n' \
-              "$PLAT_ABERTA voltou a gravar linhas em \`coletas\`." \
+              "$MOTIVO" \
               "Fechada automaticamente por \`pipeline_guard.yml\` em $HOJE." \
               "" \
               "---" \
@@ -394,13 +435,27 @@ jobs:
             gh issue close "$NUM" --reason completed --comment "$FECHAMENTO"
           done
 
+          # Abre ou comenta. O título exato é comparado com `--arg`, nunca
+          # interpolado no filtro do jq (nome de plataforma com aspas quebraria).
+          abrir_ou_atualizar() {
+            TITULO=$1
+            CORPO=$2
+            EXISTENTE=$(gh issue list --state open --limit 200 --search "$TITULO in:title" --json number,title \
+                        | jq -r --arg t "$TITULO" '.[] | select(.title == $t) | .number' | head -1)
+            if [ -n "$EXISTENTE" ]; then
+              echo "Atualizando issue #$EXISTENTE ($TITULO)"
+              gh issue comment "$EXISTENTE" --body "$CORPO"
+            else
+              echo "Abrindo issue: $TITULO"
+              gh issue create --title "$TITULO" --body "$CORPO"
+            fi
+          }
+
           if [ -z "$CRONICAS" ]; then
-            echo "Nenhuma degradação crônica."
-            exit 0
+            echo "Nenhuma plataforma zerada crônica."
           fi
-          echo "$CRONICAS" | while IFS='|' read -r PLATAFORMA DIAS JOB; do
+          printf '%s\n' "$CRONICAS" | while IFS='|' read -r PLATAFORMA DIAS JOB; do
             [ -z "$PLATAFORMA" ] && continue
-            TITULO="[pipeline] $PLATAFORMA sem dado há dias"
             CORPO=$(printf '%s\n' \
               "A plataforma **$PLATAFORMA** está há **$DIAS dia(s)** sem gravar nenhuma linha em \`coletas\`." \
               "" \
@@ -412,15 +467,45 @@ jobs:
               "" \
               "---" \
               "_Generated by [Claude Code](https://claude.ai/code)_")
-            EXISTENTE=$(gh issue list --state open --search "$TITULO in:title" --json number,title \
-                        --jq ".[] | select(.title == \"$TITULO\") | .number" | head -1)
-            if [ -n "$EXISTENTE" ]; then
-              echo "Atualizando issue #$EXISTENTE ($PLATAFORMA)"
-              gh issue comment "$EXISTENTE" --body "$CORPO"
-            else
-              echo "Abrindo issue para $PLATAFORMA"
-              gh issue create --title "$TITULO" --body "$CORPO"
-            fi
+            abrir_ou_atualizar "[pipeline] $PLATAFORMA$SUFIXO_ZERADA" "$CORPO"
+          done
+
+          if ! jq -e '[.quedas_volume[]? | select(.cronica)] | length > 0' logs/pipeline_status.json >/dev/null; then
+            echo "Nenhuma queda de volume crônica."
+          fi
+          # Uma linha JSON compacta por plataforma: `evidencia` é texto livre
+          # do scraper e pode conter "|", então nada de split por separador.
+          jq -c '.quedas_volume[]? | select(.cronica)' logs/pipeline_status.json | while read -r QUEDA; do
+            PLATAFORMA=$(printf '%s' "$QUEDA" | jq -r '.plataforma')
+            DIAS=$(printf '%s' "$QUEDA" | jq -r '.dias_degradada')
+            DIA=$(printf '%s' "$QUEDA" | jq -r '.dia')
+            JOBS=$(printf '%s' "$QUEDA" | jq -r '[.jobs[]? | "`\(.)`"] | join(", ")')
+            TURNOS=$(printf '%s' "$QUEDA" | jq -r '.turnos[]? | "| \(.turno) | \(.linhas) | \(.mediana) | \(.percentual)% | `\(.job)` |"')
+            EVIDENCIA=$(printf '%s' "$QUEDA" | jq -r '.evidencia // "(o scraper não deixou diagnóstico no detail da batida)"')
+            CORPO=$(printf '%s\n' \
+              "A plataforma **$PLATAFORMA** está há **$DIAS dia(s)** seguidos com volume **DEGRADADO**: abaixo de 20% da mediana do mesmo turno (7 dias normais anteriores) em ≥ 2 turnos no dia." \
+              "" \
+              "Último dia avaliado: $DIA. Turnos magros:" \
+              "" \
+              "| Turno | Linhas | Mediana | % da mediana | Job |" \
+              "|---|---:|---:|---:|---|" \
+              "$TURNOS" \
+              "" \
+              "Diagnóstico do scraper (\`evidencia\`):" \
+              "" \
+              '```' \
+              "$EVIDENCIA" \
+              '```' \
+              "" \
+              "Job(s) responsável(is): $JOBS (contrato em \`utils/pipeline_registry.py\`)." \
+              "Detectado por \`scripts/pipeline_watch.py\` (lógica em \`utils/volume_drop.py\`) em $HOJE." \
+              "" \
+              "Quase nunca zera, então a issue \"sem dado há dias\" não pega este caso (foi o ML de 09–14/10/2026)." \
+              "A issue é atualizada a cada detecção e fecha sozinha quando a plataforma sai de \`quedas_volume\`." \
+              "" \
+              "---" \
+              "_Generated by [Claude Code](https://claude.ai/code)_")
+            abrir_ou_atualizar "[pipeline] $PLATAFORMA$SUFIXO_VOLUME" "$CORPO"
           done
 
       # ── 4b. Retenção do livro-razão ───────────────────────────────────────
