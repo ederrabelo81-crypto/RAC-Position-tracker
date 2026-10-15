@@ -29,7 +29,12 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from config import MAX_PAGES
 from scrapers.base import BaseScraper
@@ -41,6 +46,18 @@ _API_BASE    = "https://api.mercadolibre.com"
 _SITE_ID     = "MLB"
 _PAGE_SIZE   = 50   # máximo permitido pela API
 _DELAY_SECS  = 0.8  # pausa entre requests (evita 429)
+
+# Status que significam "a conta/endpoint foi recusada", não "a rede piscou".
+# Repetir não muda a resposta: o retry só somava ~15 s de espera por keyword
+# gateada, e o 403 virava "0 resultados" indistinguível de busca vazia.
+_REFUSAL_STATUS = (401, 403)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Retry só para erro transitório — nunca para recusa 401/403."""
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return exc.response.status_code not in _REFUSAL_STATUS
+    return True
 
 # Mapeamento de tags da API → texto legível para "Tag Destaque"
 _TAG_MAP: Dict[str, str] = {
@@ -64,9 +81,15 @@ class MLAPIScraper(BaseScraper):
 
     platform_name = "Mercado Livre"
 
+    #: Motivo pelo qual a API não serve nesta run (ex.: "HTTP 403 em /sites/
+    #: MLB/search"), ou None. Lido pelo `MLScraper` para desligar o fallback
+    #: de uma vez e levar o motivo ao livro-razão.
+    unavailable_reason: Optional[str] = None
+
     def __init__(self, headless: bool = True) -> None:
         # headless ignorado — este scraper não usa browser
         super().__init__(headless=True)
+        self.unavailable_reason = None
         self._session = requests.Session()
         self._session.headers.update({
             "Accept":          "application/json",
@@ -164,6 +187,7 @@ class MLAPIScraper(BaseScraper):
         if token:
             self._session.headers["Authorization"] = f"Bearer {token}"
         else:
+            self.unavailable_reason = "sem token OAuth (rode scripts/ml_oauth_setup.py)"
             logger.error(
                 f"[{self.platform_name}] Sem token OAuth — coleta vai falhar com 403. "
                 "Configure ML_APP_ID e ML_APP_SECRET."
@@ -176,7 +200,12 @@ class MLAPIScraper(BaseScraper):
     # Chamadas à API com retry
     # ------------------------------------------------------------------
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10), reraise=True)
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=2, max=10),
+        retry=retry_if_exception(_is_retryable),
+        reraise=True,
+    )
     def _get_json(self, url: str, params: Optional[dict] = None) -> dict:
         resp = self._session.get(url, params=params, timeout=15)
         resp.raise_for_status()
@@ -276,6 +305,15 @@ class MLAPIScraper(BaseScraper):
             try:
                 data    = self._get_json(url, params)
                 results = data.get("results", [])
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                corpo = (exc.response.text or "")[:160] if exc.response is not None else ""
+                if status in _REFUSAL_STATUS:
+                    self.unavailable_reason = f"HTTP {status} em /sites/{_SITE_ID}/search"
+                logger.error(
+                    f"[{self.platform_name}] Erro na API (HTTP {status}): {corpo!r}"
+                )
+                break
             except Exception as exc:
                 logger.error(f"[{self.platform_name}] Erro na API: {exc}")
                 break

@@ -46,6 +46,7 @@ Notas de manutenção:
 
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -260,11 +261,22 @@ _GATE_TEXT_RE = re.compile(
 
 # Cookies que indicam sessão LOGADA no ML (any-of). Só informativo: serve para
 # o log dizer se a coleta está anônima (gate mais provável) ou autenticada.
-_ML_LOGIN_COOKIES = ("orguseridp", "MELI_SESSION", "c_user_id")
+_ML_LOGIN_COOKIES = (
+    "orguseridp", "orguserid", "orgnickp", "MELI_SESSION", "c_user_id",
+)
 
 # Depois de N keywords gateadas seguidas, o log imprime o roteiro de conserto
 # (login no perfil, sessão capturada, fallback de API) uma única vez.
 _GATE_STREAK_ALERT = 3
+
+# Freio do gate (Out/2026). Com N páginas gateadas SEGUIDAS a identidade já
+# está marcada: insistir não coleta nada e ensina o antibot. No incidente de
+# 09–14/10/2026 cada turno fez ~200 navegações contra o gate (40 keywords × 3
+# tentativas + reaquecimentos) e só 0–3 keywords passaram — o ML ficou 5 dias
+# a 0–136 linhas/turno contra ~5.000 normais. Ao atingir o freio, as keywords
+# restantes são ADIADAS para a repescagem no fim do turno (main.py), depois
+# das outras plataformas (~3h de esfriamento), em vez de perdidas.
+_GATE_ABORT_STREAK = 4
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +352,17 @@ class MLScraper(BaseScraper):
     _gate_failures: int = 0
     _gate_hint_shown: bool = False
     _identity_reset: bool = False
+    _local_active: bool = False
     _api_scraper: Any = None
+    # Telemetria da run (vai para o livro-razão via `run_diagnostics`) e freio.
+    _kw_ok: int = 0
+    _kw_gated: int = 0
+    _kw_api_saved: int = 0
+    _gate_reason_counts: Optional[Counter] = None
+    _api_status: Optional[str] = None
+    collection_aborted: bool = False
+    deferred_keywords: Optional[List[str]] = None
+    retry_pass: bool = False
 
     def __init__(self, headless: bool = True) -> None:
         # ML detecta Chromium headless como bot e exibe login gate.
@@ -371,6 +393,16 @@ class MLScraper(BaseScraper):
         self._identity_reset = False
         # Fallback pela API oficial: None = ainda não tentado, False = indisponível.
         self._api_scraper = None
+        self._api_status = None
+        # Telemetria e freio do gate (ver `_GATE_ABORT_STREAK`).
+        self._kw_ok = 0
+        self._kw_gated = 0
+        self._kw_api_saved = 0
+        self._gate_reason_counts = Counter()
+        self.collection_aborted = False
+        self.deferred_keywords = []
+        # Repescagem (2ª passada no fim do turno): não adia de novo.
+        self.retry_pass = False
 
     def _launch(self) -> None:
         """Preferência: Chrome real local (perfil dedicado) via CDP; senão, launch próprio."""
@@ -506,6 +538,7 @@ class MLScraper(BaseScraper):
 
     def _close(self) -> None:
         self._log_run_summary()
+        logger.info(f"[{self.platform_name}] Diagnóstico da run — {self.run_diagnostics()}")
         if self._api_scraper:
             try:
                 self._api_scraper._close()
@@ -1448,10 +1481,28 @@ class MLScraper(BaseScraper):
         identidade nova. Numa sessão LOGADA isto deslogaria o usuário, então
         nunca roda nesse caso. Uma vez por run.
 
+        **Nunca no Chrome local (perfil persistente).** Ali o `clear_cookies`
+        é definitivo: apaga do `data/chrome_profile` o device id com histórico
+        (e, se o nome do cookie de login mudar e `_is_logged_in` não o
+        reconhecer, o próprio login). Um `_d2id` recém-nascido é exatamente o
+        "dispositivo desconhecido" que a verificação de dispositivo cobra — com
+        três turnos por dia, o perfil nunca envelhecia e o gate se
+        realimentava (incidente de 09–14/10/2026). Só vale para o contexto
+        descartável do Playwright próprio.
+
         Returns:
             True se os cookies foram limpos (e a home, reaquecida).
         """
         if self._identity_reset or self._context is None or self._is_logged_in():
+            return False
+        if self._local_active:
+            self._identity_reset = True
+            logger.info(
+                f"[{self.platform_name}] Perfil persistente do Chrome local: "
+                "identidade do ML preservada (sem limpar cookies). Se o gate "
+                "seguir, logue o perfil: python scripts/setup_local_profile.py "
+                "--site mercadolivre"
+            )
             return False
         self._identity_reset = True
 
@@ -1558,6 +1609,12 @@ class MLScraper(BaseScraper):
             True se a página carregou utilizável; False se o gate persistiu.
         """
         first_page = "_Desde_" not in url
+        # Referer de quem chegaria aqui clicando: a home (de onde o warm-up
+        # acabou de sair) para a página 1, a SERP anterior para as demais. Um
+        # `goto` sem Referer em `_Desde_N` é o formato que o antibot mais
+        # penaliza — na quebra de 09–14/10/2026 a página 2 não passou NENHUMA
+        # vez, nem nas keywords cuja página 1 entrou.
+        referer = _ML_HOME if first_page else self._current_serp_url()
 
         for attempt in range(1, _GATE_RETRIES + 2):
             landed = False
@@ -1572,7 +1629,7 @@ class MLScraper(BaseScraper):
                     f"falhou ({exc}) — usando goto direto."
                 )
             if not landed:
-                self._page.goto(url, wait_until="domcontentloaded")
+                self._goto_with_referer(url, referer)
                 self._wait_for_network_idle()
 
             if not self._is_login_gate(confirm=True):
@@ -1603,6 +1660,7 @@ class MLScraper(BaseScraper):
                 self._random_delay()
 
         self._gate_failures += 1
+        self._count_gate_reason(self._last_gate_reason)
         evidencia = self._dump_gate_evidence(keyword, page)
         logger.error(
             f"[{self.platform_name}] Login gate persistente após "
@@ -1619,6 +1677,97 @@ class MLScraper(BaseScraper):
         if self._gate_failures >= _GATE_STREAK_ALERT:
             self._log_gate_recovery_hint()
         return False
+
+    # ------------------------------------------------------------------
+    # Navegação com Referer + telemetria do gate
+    # ------------------------------------------------------------------
+
+    def _current_serp_url(self) -> Optional[str]:
+        """URL atual da aba, se for uma SERP do ML (vira o Referer da próxima)."""
+        try:
+            url = self._page.url or ""
+        except Exception:
+            return None
+        return url if "lista.mercadolivre.com.br" in url else None
+
+    def _goto_with_referer(self, url: str, referer: Optional[str]) -> None:
+        """`page.goto` com Referer quando houver; sem ele, o goto de sempre."""
+        if referer:
+            self._page.goto(url, wait_until="domcontentloaded", referer=referer)
+        else:
+            self._page.goto(url, wait_until="domcontentloaded")
+
+    def _count_gate_reason(self, reason: Optional[str]) -> None:
+        """Agrupa o motivo do gate numa categoria curta, estável entre runs."""
+        if self._gate_reason_counts is None:
+            self._gate_reason_counts = Counter()
+        texto = (reason or "desconhecido").strip()
+        if texto.startswith("URL de gate"):
+            m = _GATE_URL_RE.search(texto)
+            categoria = f"URL {m.group(0).strip('/.')}" if m else "URL de gate"
+        else:
+            categoria = texto.split(" (")[0]
+        self._gate_reason_counts[categoria] += 1
+
+    def run_diagnostics(self) -> str:
+        """
+        Resumo de UMA linha do ML nesta run — vai para o livro-razão.
+
+        Existe por causa do incidente de 09–14/10/2026: o heartbeat dizia só
+        "Mercado Livre=48" (sem ZERADAS, logo sem alarme) e os logs ficavam no
+        PC coletor. O motivo do gate, o estado da API e da sessão precisam
+        estar no banco para o diagnóstico não depender de quem tem o PC na mão.
+
+        Example:
+            "ML: 2/40 kw ok, 38 gate [login/verificação de dispositivo ×36,
+            URL account-verification ×2], API: sem credenciais, sessão: anônima,
+            modo: Chrome local, FREIO (8 adiadas)"
+        """
+        total = self._kw_ok + self._kw_gated + self._kw_api_saved
+        partes = [f"ML: {self._kw_ok}/{total} kw ok"]
+        if self._kw_gated:
+            motivos = ", ".join(
+                f"{nome} ×{qtd}"
+                for nome, qtd in (self._gate_reason_counts or Counter()).most_common(3)
+            )
+            partes[0] += f", {self._kw_gated} gate" + (f" [{motivos}]" if motivos else "")
+        if self._kw_api_saved:
+            partes.append(f"{self._kw_api_saved} salvas pela API")
+        if self._api_status:
+            partes.append(f"API: {self._api_status}")
+        try:
+            partes.append("sessão: " + ("logada" if self._is_logged_in() else "anônima"))
+        except Exception:
+            pass
+        partes.append("modo: " + ("Chrome local" if getattr(self, "_local_active", False)
+                                  else "Playwright próprio"))
+        if self.collection_aborted:
+            adiadas = len(self.deferred_keywords or [])
+            partes.append(f"FREIO ({adiadas} adiadas)" if not self.retry_pass
+                          else "FREIO na repescagem")
+        if self.retry_pass:
+            partes.insert(0, "repescagem")
+        return ", ".join(partes)
+
+    def _register_gated_keyword(self, keyword: str) -> None:
+        """Keyword sem dado por gate: conta, adia (1ª passada) e aciona o freio."""
+        self._kw_gated += 1
+        if not self.retry_pass:
+            if self.deferred_keywords is None:
+                self.deferred_keywords = []
+            self.deferred_keywords.append(keyword)
+        if self._gate_failures >= _GATE_ABORT_STREAK and not self.collection_aborted:
+            self.collection_aborted = True
+            destino = (
+                "fim da repescagem — o ML fica sem as keywords restantes neste turno"
+                if self.retry_pass
+                else "as keywords restantes vão para a repescagem no fim do turno"
+            )
+            logger.error(
+                f"[{self.platform_name}] FREIO: {self._gate_failures} páginas "
+                f"gateadas seguidas — parando de insistir para não queimar mais a "
+                f"identidade; {destino}."
+            )
 
     # ------------------------------------------------------------------
     # Fallback pela API oficial (OAuth) — dado algum em vez de dado nenhum
@@ -1644,6 +1793,7 @@ class MLScraper(BaseScraper):
 
         if not self._api_fallback_enabled():
             self._api_scraper = False
+            self._api_status = "desligada (RAC_ML_API_FALLBACK=0)"
             return None
         if not (os.getenv("ML_APP_ID", "").strip()
                 and os.getenv("ML_APP_SECRET", "").strip()):
@@ -1653,6 +1803,7 @@ class MLScraper(BaseScraper):
                 "fica sem dado. Configure para blindar as próximas coletas."
             )
             self._api_scraper = False
+            self._api_status = "sem credenciais"
             return None
 
         try:
@@ -1660,7 +1811,10 @@ class MLScraper(BaseScraper):
 
             api = MLAPIScraper()
             api._launch()
+            if getattr(api, "unavailable_reason", None):
+                raise RuntimeError(api.unavailable_reason)
             self._api_scraper = api
+            self._api_status = "ativa"
             logger.info(
                 f"[{self.platform_name}] Fallback pela API oficial ativado "
                 "(posição patrocinada não existe na API — virão como orgânicos)."
@@ -1671,6 +1825,7 @@ class MLScraper(BaseScraper):
                 f"[{self.platform_name}] Fallback de API indisponível: {exc}"
             )
             self._api_scraper = False
+            self._api_status = f"indisponível ({str(exc)[:60]})"
             return None
 
     def _page_is_usable(self) -> bool:
@@ -1774,6 +1929,22 @@ class MLScraper(BaseScraper):
                 f"'{keyword}': {exc}"
             )
             return []
+        # A API recusou a credencial/endpoint (401/403): é recusa da conta, não
+        # da keyword — insistir nas 40 keywords só soma espera de retry.
+        motivo = getattr(api, "unavailable_reason", None)
+        if motivo:
+            logger.error(
+                f"[{self.platform_name}] API oficial recusou a busca ({motivo}) — "
+                "fallback desligado no resto da run. Confira o app em "
+                "developers.mercadolivre.com.br e rode scripts/ml_oauth_setup.py."
+            )
+            self._api_status = f"recusada ({motivo})"
+            try:
+                api._close()
+            except Exception:
+                pass
+            self._api_scraper = False
+            return []
         if records:
             logger.success(
                 f"[{self.platform_name}] Fallback de API salvou '{keyword}': "
@@ -1809,6 +1980,11 @@ class MLScraper(BaseScraper):
         cursor = _SerpCursor()
         sample_card: Optional[Tag] = None
         gated = False
+
+        # Freio acionado: o `_run_scraper` já para o laço, isto é só a rede
+        # para quem chama `search` direto (scripts de diagnóstico).
+        if self.collection_aborted:
+            return all_records
 
         # Browser morto não é motivo para perder a keyword: sem aba utilizável
         # a API oficial ainda coleta (quando ML_APP_ID/ML_APP_SECRET existem).
@@ -1886,6 +2062,12 @@ class MLScraper(BaseScraper):
             all_records = self._api_fallback_search(
                 keyword, keyword_category_map, page_limit
             )
+            if all_records:
+                self._kw_api_saved += 1
+            else:
+                self._register_gated_keyword(keyword)
+        elif all_records:
+            self._kw_ok += 1
 
         self._log_search_result(keyword, len(all_records))
         
