@@ -358,6 +358,8 @@ class MLScraper(BaseScraper):
     _kw_ok: int = 0
     _kw_gated: int = 0
     _kw_api_saved: int = 0
+    _kw_partial: int = 0
+    _kw_empty: int = 0
     _gate_reason_counts: Optional[Counter] = None
     _api_status: Optional[str] = None
     collection_aborted: bool = False
@@ -398,6 +400,8 @@ class MLScraper(BaseScraper):
         self._kw_ok = 0
         self._kw_gated = 0
         self._kw_api_saved = 0
+        self._kw_partial = 0
+        self._kw_empty = 0
         self._gate_reason_counts = Counter()
         self.collection_aborted = False
         self.deferred_keywords = []
@@ -1723,14 +1727,21 @@ class MLScraper(BaseScraper):
             URL account-verification ×2], API: sem credenciais, sessão: anônima,
             modo: Chrome local, FREIO (8 adiadas)"
         """
-        total = self._kw_ok + self._kw_gated + self._kw_api_saved
+        total = (self._kw_ok + self._kw_partial + self._kw_gated
+                 + self._kw_api_saved + self._kw_empty)
         partes = [f"ML: {self._kw_ok}/{total} kw ok"]
+        if self._kw_partial:
+            # pág. 1 entrou, a seguinte levou gate — a quebra de 09–14/10
+            # começou exatamente assim e "ok" escondia isso.
+            partes[0] += f", {self._kw_partial} parciais (gate na pág. 2+)"
         if self._kw_gated:
             motivos = ", ".join(
                 f"{nome} ×{qtd}"
                 for nome, qtd in (self._gate_reason_counts or Counter()).most_common(3)
             )
             partes[0] += f", {self._kw_gated} gate" + (f" [{motivos}]" if motivos else "")
+        if self._kw_empty:
+            partes.append(f"{self._kw_empty} vazias sem gate")
         if self._kw_api_saved:
             partes.append(f"{self._kw_api_saved} salvas pela API")
         if self._api_status:
@@ -1750,12 +1761,22 @@ class MLScraper(BaseScraper):
         return ", ".join(partes)
 
     def _register_gated_keyword(self, keyword: str) -> None:
-        """Keyword sem dado por gate: conta, adia (1ª passada) e aciona o freio."""
+        """Keyword sem dado por gate: conta e adia (só na 1ª passada)."""
         self._kw_gated += 1
         if not self.retry_pass:
             if self.deferred_keywords is None:
                 self.deferred_keywords = []
             self.deferred_keywords.append(keyword)
+
+    def _check_gate_brake(self) -> None:
+        """
+        Aciona o freio pela sequência de páginas gateadas.
+
+        Separado de `_register_gated_keyword` porque vale também quando a API
+        salvou a keyword: o dado dela fica, mas a SERP seguinte bateria no
+        mesmo gate — sem isto cada keyword restante ainda faria 3 navegações
+        bloqueadas antes de cair na API.
+        """
         if self._gate_failures >= _GATE_ABORT_STREAK and not self.collection_aborted:
             self.collection_aborted = True
             destino = (
@@ -1944,7 +1965,8 @@ class MLScraper(BaseScraper):
             except Exception:
                 pass
             self._api_scraper = False
-            return []
+            # Páginas que vieram antes da recusa são dado válido.
+            return records
         if records:
             logger.success(
                 f"[{self.platform_name}] Fallback de API salvou '{keyword}': "
@@ -2068,8 +2090,17 @@ class MLScraper(BaseScraper):
                 self._kw_api_saved += 1
             else:
                 self._register_gated_keyword(keyword)
+        elif gated:
+            # Página 1 entrou, a seguinte levou gate: o dado coletado fica e a
+            # keyword NÃO vai para a repescagem — refazê-la duplicaria a
+            # página 1 no mesmo run_id. Só a telemetria registra.
+            self._kw_partial += 1
         elif all_records:
             self._kw_ok += 1
+        else:
+            self._kw_empty += 1
+        if gated:
+            self._check_gate_brake()
 
         self._log_search_result(keyword, len(all_records))
         

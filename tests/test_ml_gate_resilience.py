@@ -151,6 +151,39 @@ class TestFreio:
         assert scraper.deferred_keywords == []
         assert scraper._kw_gated == 1
 
+    def test_freio_vale_mesmo_com_api_salvando(self, scraper: MLScraper, monkeypatch) -> None:
+        self._gate_all(scraper)
+        monkeypatch.setattr(
+            scraper, "_api_fallback_search", lambda *a, **k: [{"Plataforma": "x"}]
+        )
+        for i in range(_GATE_ABORT_STREAK):
+            scraper.search.__wrapped__(scraper, f"kw{i}", {}, page_limit=1)
+        assert scraper.collection_aborted is True
+        assert scraper.deferred_keywords == []  # dado salvo não é adiado
+
+    def test_gate_na_pagina_2_e_parcial(self, scraper: MLScraper, monkeypatch) -> None:
+        page = scraper._page
+        original_goto = page.goto
+
+        def goto(url: str, **kw: Any) -> None:
+            original_goto(url, **kw)
+            page.html = _GATE_HTML if "_Desde_" in url else _SERP_HTML
+
+        page.goto = goto
+        monkeypatch.setattr(scraper, "_dismiss_cep_popup", lambda: None)
+        monkeypatch.setattr(scraper, "_human_scroll", lambda **k: None)
+        monkeypatch.setattr(scraper, "capture_screenshot", lambda **k: None)
+        def parse(**k: Any) -> List[Dict[str, Any]]:
+            k["cursor"].items_seen += 3  # como o parser real
+            return [{"Plataforma": "Mercado Livre"}] * 3
+
+        monkeypatch.setattr(scraper, "_parse_results", parse)
+        records = scraper.search.__wrapped__(scraper, "kw", {}, page_limit=2)
+        assert len(records) == 3
+        assert scraper._kw_partial == 1 and scraper._kw_ok == 0
+        assert scraper.deferred_keywords == []  # refazer duplicaria a pág. 1
+        assert "1 parciais (gate na pág. 2+)" in scraper.run_diagnostics()
+
     def test_api_que_salva_nao_adia(self, scraper: MLScraper, monkeypatch) -> None:
         self._gate_all(scraper)
         monkeypatch.setattr(
@@ -176,6 +209,13 @@ class TestDiagnostico:
         assert "API: sem credenciais" in linha
         assert "sessão: anônima" in linha
         assert "modo: Chrome local" in linha
+
+    def test_denominador_conta_buscas_vazias(self, scraper: MLScraper) -> None:
+        scraper._kw_ok = 1
+        scraper._kw_empty = 39
+        linha = scraper.run_diagnostics()
+        assert linha.startswith("ML: 1/40 kw ok")
+        assert "39 vazias sem gate" in linha
 
     def test_freio_aparece(self, scraper: MLScraper) -> None:
         scraper.collection_aborted = True
@@ -231,6 +271,14 @@ class TestApiRecusada:
         assert scraper._kw_api_saved == 1
         assert scraper.run_diagnostics().startswith("ML: 0/1 kw ok")
 
+    def test_paginas_antes_da_recusa_sao_mantidas(self, scraper: MLScraper) -> None:
+        api = MagicMock()
+        api.search.return_value = [{"Plataforma": "Mercado Livre"}]
+        api.unavailable_reason = "HTTP 403 em /sites/MLB/search"
+        scraper._api_scraper = api
+        assert scraper._api_fallback_search("kw", {}, 2) == [{"Plataforma": "Mercado Livre"}]
+        assert scraper._api_scraper is False
+
     def test_fallback_desliga_na_recusa(self, scraper: MLScraper) -> None:
         api = MagicMock()
         api.search.return_value = []
@@ -275,6 +323,7 @@ class TestRepescagemNoMain:
     @pytest.fixture(autouse=True)
     def _limpa(self, monkeypatch):
         monkeypatch.setattr(main, "_PENDING_RETRY", {})
+        monkeypatch.setattr(main, "_PENDING_SINCE", {})
         monkeypatch.setattr(main, "_RUN_DIAGNOSTICS", [])
 
     _MAP = {"A": ["k1", "k2", "k3"], "B": ["k4"]}
@@ -282,6 +331,7 @@ class TestRepescagemNoMain:
     def test_adiadas_e_nao_tentadas_vao_para_repescagem(self) -> None:
         main._run_scraper(_FakeScraper, self._MAP, 1, True, priority_filter=None)
         assert main._PENDING_RETRY[_FakeScraper] == ["k1", "k2", "k3", "k4"]
+        assert _FakeScraper in main._PENDING_SINCE  # relógio do esfriamento
         assert main._RUN_DIAGNOSTICS == ["fake: 2 tentadas"]
 
     def test_repescagem_nao_reagenda(self) -> None:
@@ -294,3 +344,15 @@ class TestRepescagemNoMain:
         assert main._keywords_map_subset(self._MAP, ["k4", "k1"]) == {
             "A": ["k1"], "B": ["k4"],
         }
+
+
+class TestEsfriamento:
+    def test_padrao_30_min(self, monkeypatch) -> None:
+        monkeypatch.delenv("RAC_RETRY_COOLDOWN_MIN", raising=False)
+        assert main._retry_cooldown_seconds() == 1800
+
+    def test_configuravel_e_tolerante(self, monkeypatch) -> None:
+        monkeypatch.setenv("RAC_RETRY_COOLDOWN_MIN", "0")
+        assert main._retry_cooldown_seconds() == 0
+        monkeypatch.setenv("RAC_RETRY_COOLDOWN_MIN", "abc")
+        assert main._retry_cooldown_seconds() == 1800

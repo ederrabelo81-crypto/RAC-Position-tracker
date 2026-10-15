@@ -346,6 +346,20 @@ def _export_csv(records: List[Dict[str, Any]], output_dir: str) -> Path:
 #: plataformas. Só scrapers que expõem `deferred_keywords` entram aqui.
 _PENDING_RETRY: Dict[Type[BaseScraper], List[str]] = {}
 
+#: Quando (time.monotonic) cada scraper adiou — a repescagem só roda depois do
+#: esfriamento mínimo. No turno normal o ML roda primeiro e as outras
+#: plataformas levam ~3h; numa run só de ML a repescagem viria segundos depois,
+#: contra a mesma identidade gateada, e só reforçaria o bloqueio.
+_PENDING_SINCE: Dict[Type[BaseScraper], float] = {}
+
+
+def _retry_cooldown_seconds() -> float:
+    """Esfriamento mínimo antes da repescagem (`RAC_RETRY_COOLDOWN_MIN`, padrão 30)."""
+    try:
+        return max(float(os.getenv("RAC_RETRY_COOLDOWN_MIN", "30")), 0.0) * 60
+    except ValueError:
+        return 30 * 60
+
 #: Linhas de diagnóstico dos scrapers (`run_diagnostics()`), anexadas à batida
 #: de ponto final — o motivo de uma plataforma vir magra fica no banco, não só
 #: no log do PC coletor (incidente do ML de 09–14/10/2026).
@@ -491,6 +505,7 @@ def _run_scraper(
         pending = list(deferred) + (skipped if stop_reason == "breaker" else [])
         if pending:
             _PENDING_RETRY[scraper_cls] = pending
+            _PENDING_SINCE[scraper_cls] = time.monotonic()
 
     return records
 
@@ -735,6 +750,16 @@ def main() -> int:
         os.environ[ENV_TURNO] = _turno
         try:
             for scraper_cls, pendentes in list(_PENDING_RETRY.items()):
+                esfriou = time.monotonic() - _PENDING_SINCE.get(scraper_cls, 0.0)
+                if esfriou < _retry_cooldown_seconds():
+                    logger.warning(
+                        f"Repescagem de {scraper_cls.platform_name} pulada: só "
+                        f"{esfriou / 60:.0f} min desde o bloqueio (mínimo "
+                        f"{_retry_cooldown_seconds() / 60:.0f} min, "
+                        "RAC_RETRY_COOLDOWN_MIN). Insistir agora reforçaria o "
+                        f"gate — {len(pendentes)} keyword(s) sem dado neste turno."
+                    )
+                    continue
                 logger.info(f"{'='*60}")
                 logger.info(
                     f"Repescagem: {scraper_cls.platform_name} — {len(pendentes)} "
