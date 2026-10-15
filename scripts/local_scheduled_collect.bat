@@ -155,25 +155,11 @@ if not "%SLOT%"=="legado" (
     echo ok> "logs\coleta_%SLOT%_%TODAY%.done"
 )
 
-:: Estagio C: materializa o fato do seller_app (seller_offer_daily). Reprocessa
-:: `coletas` do dia -> tabelas que o seller_app le. Idempotente por data e roda
-:: "ontem e hoje", entao a materializacao da NOITE fecha o dia inteiro (3 turnos
-:: locais + Amazon do Actions, que pode ter chegado atrasada) e a da manha
-:: seguinte ainda recupera Amazon que caiu tarde. Best-effort: falha aqui NAO
-:: derruba a coleta (o dado ja esta no Supabase), so vira aviso; a ausencia da
-:: batida de ponto (--heartbeat, job local_seller_fact) e que dispara o alarme
-:: no pipeline_watch. So nos turnos de verdade (nao no legado).
-::
-:: Fora de um bloco ( ) de proposito: este .bat roda com `setlocal` SEM
-:: enabledelayedexpansion, entao definir e usar %PYEXE% no mesmo bloco expandiria
-:: o valor antigo (vazio). No nivel de cima, cada linha reexpande e o valor vale.
+:: Estagio C: materializa o fato do seller_app (seller_offer_daily) - ver a
+:: sub-rotina :materializar no fim do arquivo. Roda TAMBEM quando a coleta
+:: falha (ver :failed). So nos turnos de verdade (nao no legado).
 if "%SLOT%"=="legado" exit /b 0
-set "PYEXE=python"
-if exist "venv\Scripts\python.exe" set "PYEXE=venv\Scripts\python.exe"
-if exist ".venv\Scripts\python.exe" set "PYEXE=.venv\Scripts\python.exe"
-echo [%DATE% %TIME%] [%SLOT%] materializando seller_offer_daily [seller_app]
-call "%PYEXE%" scripts\build_seller_offer_daily.py --heartbeat
-if errorlevel 1 echo [%DATE% %TIME%] [%SLOT%] AVISO: build do seller_offer_daily falhou - veja pipeline_watch [SUPABASE_KEY service_role no .env?]
+call :materializar
 
 :: Estagio D: poda a janela quente do Supabase (tier -> Drive). Este e o passo
 :: que FALTAVA: a escrita ao Drive roda a cada coleta (main.py), mas apagar do
@@ -203,4 +189,38 @@ if exist "venv\Scripts\python.exe" set "PYEXE=venv\Scripts\python.exe"
 if exist ".venv\Scripts\python.exe" set "PYEXE=.venv\Scripts\python.exe"
 "%PYEXE%" -c "from utils.n8n_notify import notify_scheduler_failure; notify_scheduler_failure('%SLOT%', %RC%)"
 if errorlevel 1 echo [%DATE% %TIME%] [%SLOT%] AVISO: nao consegui enviar o alerta Telegram
+
+:: Estagio C mesmo com a coleta em FALHA. exit != 0 quase sempre significa
+:: "uma copia faltou" (historico frio no Drive, CSV, espelho) com as linhas JA
+:: no Supabase - em 14/10/2026 a noite falhou so no Drive e, como o estagio C
+:: so rodava no sucesso, o seller_app ficou sem o dia inteiro. A materializacao
+:: le `coletas` e e idempotente por data: se o upload ao Supabase e que falhou,
+:: ela apenas reprocessa o que ja existe - nunca piora o painel. O exit da
+:: coleta continua %RC% (alerta e retentativa do Task Scheduler intactos).
+:: A poda (estagio D) NAO roda aqui: com o Drive falhando nao e hora de apagar
+:: a janela quente.
+if not "%SLOT%"=="legado" call :materializar
 exit /b %RC%
+
+:: ---------------------------------------------------------------------------
+:: Sub-rotina do estagio C: materializa o fato do seller_app.
+:: Reprocessa `coletas` -> seller_offer_daily / seller_coverage_daily, tabelas
+:: que o seller_app le. Idempotente por data e roda "ontem e hoje", entao a
+:: materializacao da NOITE fecha o dia inteiro (3 turnos locais + Amazon do
+:: Actions, que pode ter chegado atrasada) e a da manha seguinte ainda recupera
+:: Amazon que caiu tarde. Best-effort: falha aqui NAO muda o exit da coleta, so
+:: vira aviso; a ausencia da batida de ponto (--heartbeat, job
+:: local_seller_fact) e que dispara o alarme no pipeline_watch.
+::
+:: Linhas no nivel de cima, fora de bloco ( ), de proposito: este .bat roda com
+:: `setlocal` SEM enabledelayedexpansion, entao definir e usar %PYEXE% no mesmo
+:: bloco expandiria o valor antigo (vazio). Aqui cada linha reexpande, e o
+:: PYEXE definido vale tambem para o estagio D depois do `call`.
+:materializar
+set "PYEXE=python"
+if exist "venv\Scripts\python.exe" set "PYEXE=venv\Scripts\python.exe"
+if exist ".venv\Scripts\python.exe" set "PYEXE=.venv\Scripts\python.exe"
+echo [%DATE% %TIME%] [%SLOT%] materializando seller_offer_daily [seller_app]
+call "%PYEXE%" scripts\build_seller_offer_daily.py --heartbeat
+if errorlevel 1 echo [%DATE% %TIME%] [%SLOT%] AVISO: build do seller_offer_daily falhou - veja pipeline_watch [SUPABASE_KEY service_role no .env?]
+exit /b 0

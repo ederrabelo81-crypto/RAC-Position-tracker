@@ -56,7 +56,7 @@ a buy box, caro demais para a varredura do PC.
 > roda — ele não substitui a tarefa fixa que falta recriar.
 >
 > **Estágio C — materialização do seller_app (Set/2026):** depois de cada coleta
-> bem-sucedida, o `local_scheduled_collect.bat` roda
+> — **inclusive as que terminam em falha** (Out/2026) — o `local_scheduled_collect.bat` roda
 > `build_seller_offer_daily.py --heartbeat` (job `local_seller_fact` no
 > registro). Reprocessa `coletas` do dia em `seller_offer_daily` /
 > `seller_coverage_daily` / `v_seller_buybox_share` — a base do Track Position
@@ -65,6 +65,14 @@ a buy box, caro demais para a varredura do PC.
 > atrasada) e a da manhã seguinte recupera Amazon que caiu tarde. Best-effort —
 > falha aqui não derruba a coleta (o dado já está no Supabase), mas a ausência da
 > batida vira alarme no `pipeline_watch.py`. Requer `SUPABASE_KEY` service_role.
+>
+> Incidente 14/10/2026 (painel sem o dia inteiro): a manhã terminou com sucesso
+> em 4h04min e o Task Scheduler a matou no limite de 4h antes do estágio C; a
+> noite falhou só no histórico frio (Drive) e o estágio C rodava só no sucesso.
+> Desde então: limite de **5h** por turno (`setup_local_scheduler.ps1` — re-rode
+> no PC; `check_local_scheduler.ps1` avisa registro antigo) e estágio C também
+> no caminho de falha (a poda do estágio D continua só no sucesso). Recuperar um
+> dia perdido: `python scripts/build_seller_offer_daily.py --desde <YYYY-MM-DD>`.
 >
 > **Estágio D — poda da janela quente (Set/2026):** só no turno da **noite**, o
 > `local_scheduled_collect.bat` roda `history_cli.py tier --dataset all --confirm
