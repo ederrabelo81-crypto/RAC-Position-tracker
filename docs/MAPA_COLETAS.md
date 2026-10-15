@@ -198,6 +198,7 @@ Três detalhes que parecem miudeza e não são:
 | Import falhou nos 3 degraus | Escada + guardião já tentaram 4 vezes; alerta nomeia o erro | Chave da API / cota |
 | Plataforma zerada 1–2 dias | Entra no relatório como aviso | — |
 | Plataforma zerada **≥ 3 dias** | Abre (ou atualiza) **issue no GitHub** com a contagem | Consertar o scraper |
+| Plataforma **DEGRADADA** (< 20% da mediana do turno em ≥ 2 turnos no dia) | Alerta no Telegram com turnos, mediana e o diagnóstico do scraper (`ML: x/y kw ok, ...`); ≥ 3 dias seguidos → exit 1 | Consertar o scraper / destravar o bloqueio |
 | PC coletor desligado | Um alerta de `EXECUTOR_OFFLINE`, não N de plataforma caída | Ligar o notebook |
 | Import do PriceTrack não disparou | Re-dispatch automático **se** houver `RAC_GH_PAT` | Sem PAT, disparo manual |
 

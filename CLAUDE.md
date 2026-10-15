@@ -235,6 +235,18 @@ EXECUTOU** (dead man's switch: o silêncio é que dispara o alarme).
 4. **Batida de ponto nunca derruba coleta.** Falha do livro-razão é absorvida e
    espelhada em `logs/heartbeat.jsonl`.
 
+**Queda brusca de volume (Out/2026):** o supervisor também marca plataforma
+**DEGRADADA** quando ela fica abaixo de **20% da mediana** do mesmo turno (7
+dias normais anteriores) em **≥ 2 turnos** no mesmo dia. Foi o caso do ML de
+09–14/10/2026, com 0–136 linhas por turno contra ~5.000: como quase nunca
+zerava, nada alarmou durante 5 dias. A lógica pura fica em `utils/volume_drop.py` e lê
+o `detail` das batidas (uma consulta; `coletas` teria a gravação dupla até
+30/09). Ela avalia só o dono de cada (plataforma, turno) e pula batida
+FAILED/PARTIAL/0 linhas, que já são alertadas no job. Plataforma já ZERADA sai
+da lista, para não haver alerta duplicado. A mediana não aprende com dia
+degradado (senão o alarme se calaria sozinho). Se a checagem falhar, o
+supervisor só registra um aviso e não fica cego. `--sem-queda-volume` desliga.
+
 ---
 
 ## Track Position Seller — painel do lojista (`seller_app/`) 🆕 (Set/2026)

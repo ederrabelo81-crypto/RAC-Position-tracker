@@ -243,3 +243,82 @@ class TestRegressoesDaRevisao:
         assert _classificar(fechamento, DIA, _hora(22, 35), None, 0).estado == ATRASADO
         # 23:30: passou o deadline sem batida — não executou.
         assert _classificar(fechamento, DIA, _hora(23, 30), None, 0).estado == NAO_EXECUTOU
+
+
+# ---------------------------------------------------------------------------
+# Queda brusca de volume (utils/volume_drop.py) — o ML de 09–14/10/2026
+# ---------------------------------------------------------------------------
+
+def _queda(dias: int, plataforma: str = "Mercado Livre", evidencia=None):
+    from utils.volume_drop import QuedaVolume, TurnoMagro
+
+    return QuedaVolume(
+        plataforma,
+        date(2026, 10, 13),
+        dias,
+        [
+            TurnoMagro("Abertura", 68, 5012.0, "local_manha", None),
+            TurnoMagro("Tarde", 0, 4870.0, "local_tarde", evidencia),
+        ],
+    )
+
+
+class TestQuedaDeVolume:
+    def test_queda_recente_e_aviso_nao_critico(self):
+        assert _exit_code([Diagnostico(COLETA_GH, OK, "ok")], [], [_queda(1)]) == 2
+
+    def test_queda_cronica_derruba_o_exit_code(self):
+        assert _exit_code([Diagnostico(COLETA_GH, OK, "ok")], [], [_queda(5)]) == 1
+
+    def test_alerta_mostra_turnos_mediana_e_evidencia(self):
+        texto = _formatar_telegram(
+            [Diagnostico(COLETA_GH, OK, "30.000 linhas")], [], DIA,
+            [_queda(2, evidencia="ML: 1/40 kw ok, 39 gate [login ×39]")],
+        )
+        assert "queda de volume" in texto
+        assert "DEGRADADA" in texto
+        assert "Mercado Livre" in texto
+        assert "Abertura 68 (1% de 5.012)" in texto
+        assert "ML: 1/40 kw ok" in texto
+        assert "tudo no contrato" not in texto
+
+    def test_queda_cronica_vira_cabecalho_de_falha(self):
+        texto = _formatar_telegram([], [], DIA, [_queda(5)])
+        assert "falha de execução" in texto
+
+    def test_varredura_nao_duplica_plataforma_ja_zerada(self, monkeypatch):
+        """Zerada e degradada no mesmo dia são o MESMO buraco: um alerta só."""
+        import scripts.pipeline_watch as pw
+
+        monkeypatch.setattr(pw, "batidas_periodo", lambda *a, **k: [])
+        monkeypatch.setattr(
+            pw, "classificar_quedas",
+            lambda obs, ate: [_queda(2), _queda(2, plataforma="Shopee")],
+        )
+        zerada = Degradacao("Shopee", 1, False, "local_manha")
+        quedas = pw.varrer_quedas(DIA, [zerada])
+        assert [q.plataforma for q in quedas] == ["Mercado Livre"]
+
+    def test_falha_da_checagem_nao_cega_o_supervisor(self, monkeypatch):
+        """Livro-razão ilegível só nesta checagem: aviso e lista vazia, sem exceção."""
+        import scripts.pipeline_watch as pw
+
+        def _quebra(*_a, **_k):
+            raise RuntimeError("timeout")
+
+        monkeypatch.setattr(pw, "batidas_periodo", _quebra)
+        assert pw.varrer_quedas(DIA) == []
+
+    def test_varredura_consulta_so_jobs_de_coleta_com_turno(self, monkeypatch):
+        import scripts.pipeline_watch as pw
+
+        pedidos = {}
+
+        def _captura(desde, ate, job_ids):
+            pedidos["ids"] = set(job_ids)
+            return []
+
+        monkeypatch.setattr(pw, "batidas_periodo", _captura)
+        pw.varrer_quedas(DIA)
+        assert {"local_manha", "local_tarde", "local_noite"} <= pedidos["ids"]
+        assert "gh_pricetrack_d1" not in pedidos["ids"]
