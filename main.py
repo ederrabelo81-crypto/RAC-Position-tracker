@@ -341,12 +341,58 @@ def _export_csv(records: List[Dict[str, Any]], output_dir: str) -> Path:
 # Execução de um scraper para múltiplas keywords
 # ---------------------------------------------------------------------------
 
+#: Keywords que um scraper ADIOU nesta run (gate/freio do ML), por classe —
+#: `main()` faz a repescagem delas no fim do turno, depois das outras
+#: plataformas. Só scrapers que expõem `deferred_keywords` entram aqui.
+_PENDING_RETRY: Dict[Type[BaseScraper], List[str]] = {}
+
+#: Quando (time.monotonic) cada scraper adiou — a repescagem só roda depois do
+#: esfriamento mínimo. No turno normal o ML roda primeiro e as outras
+#: plataformas levam ~3h; numa run só de ML a repescagem viria segundos depois,
+#: contra a mesma identidade gateada, e só reforçaria o bloqueio.
+_PENDING_SINCE: Dict[Type[BaseScraper], float] = {}
+
+
+def _retry_cooldown_seconds() -> float:
+    """Esfriamento mínimo antes da repescagem (`RAC_RETRY_COOLDOWN_MIN`, padrão 30)."""
+    try:
+        return max(float(os.getenv("RAC_RETRY_COOLDOWN_MIN", "30")), 0.0) * 60
+    except ValueError:
+        return 30 * 60
+
+#: Linhas de diagnóstico dos scrapers (`run_diagnostics()`), anexadas à batida
+#: de ponto final — o motivo de uma plataforma vir magra fica no banco, não só
+#: no log do PC coletor (incidente do ML de 09–14/10/2026).
+_RUN_DIAGNOSTICS: List[str] = []
+
+
+def _retry_pass_enabled() -> bool:
+    """Repescagem ligada por padrão; `RAC_RETRY_PASS=0` desliga."""
+    return os.getenv("RAC_RETRY_PASS", "1").strip().lower() not in (
+        "0", "false", "no", "nao", "off"
+    )
+
+
+def _keywords_map_subset(
+    keywords_map: Dict[str, List[str]], keywords: List[str]
+) -> Dict[str, List[str]]:
+    """Recorta o mapa {categoria: [keywords]} às keywords pedidas, na ordem original."""
+    wanted = set(keywords)
+    subset: Dict[str, List[str]] = {}
+    for category, kws in keywords_map.items():
+        kept = [kw for kw in kws if kw in wanted]
+        if kept:
+            subset[category] = kept
+    return subset
+
+
 def _run_scraper(
     scraper_cls: Type[BaseScraper],
     keywords_map: Dict[str, List[str]],
     page_limit: int,
     headless: bool,
     priority_filter: Optional[List[str]] = None,
+    retry_pass: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Instancia o scraper (como context manager) e itera por todas as keywords.
@@ -359,11 +405,17 @@ def _run_scraper(
         keywords_map: dict {categoria: [keywords]} do config
         page_limit:   páginas por keyword
         headless:     modo headless do browser
+        retry_pass:   True na repescagem do fim do turno — o scraper não adia
+                      de novo o que falhar.
 
     Returns:
         Lista agregada de todos os registros.
     """
     records: List[Dict[str, Any]] = []
+    # Keywords não tentadas depois que o laço parou (captcha/freio) — viram
+    # repescagem quando o scraper adia em vez de desistir.
+    skipped: List[str] = []
+    stop_reason: Optional[str] = None
 
     # Priority filter aplica só a scrapers de marketplace.
     # DealerScraper usa nomes de sites como "keywords" — nunca estão em
@@ -378,6 +430,8 @@ def _run_scraper(
         active_keywords = [k for k in KEYWORDS_LIST if k.priority in effective_filter]
 
     with scraper_cls(headless=headless) as scraper:
+        if retry_pass:
+            scraper.retry_pass = True
         for category, kws in keywords_map.items():
             filtered_kws = [
                 kw for kw in kws
@@ -393,23 +447,32 @@ def _run_scraper(
                 random.shuffle(kws_to_run)
 
             for keyword in kws_to_run:
+                # Laço já parado: só anota o que ficou de fora (vai para a
+                # repescagem se o scraper adia) — sem logar keyword por
+                # keyword, que parecia coleta vazia.
+                if stop_reason:
+                    skipped.append(keyword)
+                    continue
+
                 # Para keywords restantes se reCAPTCHA foi detectado
                 if getattr(scraper, "captcha_hit", False):
                     logger.warning(
                         f"[{scraper.platform_name}] captcha_hit=True — "
                         "abortando keywords restantes."
                     )
-                    break
+                    stop_reason = "captcha"
+                    skipped.append(keyword)
+                    continue
 
-                # Circuit breaker do scraper (bloqueios consecutivos): sem este
-                # break, o log imprimia "Iniciando keyword" para cada keyword
-                # que o scraper ia pular em silêncio — parecia coleta vazia.
+                # Circuit breaker do scraper (bloqueios consecutivos).
                 if getattr(scraper, "collection_aborted", False):
                     logger.warning(
                         f"[{scraper.platform_name}] Circuit breaker ativo — "
                         "keywords restantes puladas."
                     )
-                    break
+                    stop_reason = "breaker"
+                    skipped.append(keyword)
+                    continue
 
                 logger.info(
                     f"[{scraper.platform_name}] Iniciando keyword: '{keyword}' "
@@ -427,12 +490,22 @@ def _run_scraper(
                         f"[{scraper.platform_name}] Falha em '{keyword}': {exc}. "
                         "Continuando para a próxima keyword."
                     )
-            else:
-                continue
-            # O for/else só chega aqui via break (captcha/circuit breaker):
-            # aborta as categorias restantes também — sem isso o warning
-            # repetia uma vez por categoria até esgotar o keywords_map.
-            break
+
+        # Antes do __exit__: o diagnóstico consulta a sessão (cookies) do
+        # contexto, que o _close derruba.
+        diagnostics = getattr(scraper, "run_diagnostics", None)
+        if callable(diagnostics):
+            try:
+                _RUN_DIAGNOSTICS.append(diagnostics())
+            except Exception as exc:
+                logger.debug(f"Diagnóstico de {scraper_cls.__name__} falhou: {exc}")
+
+    deferred = getattr(scraper, "deferred_keywords", None)
+    if deferred is not None and not retry_pass:
+        pending = list(deferred) + (skipped if stop_reason == "breaker" else [])
+        if pending:
+            _PENDING_RETRY[scraper_cls] = pending
+            _PENDING_SINCE[scraper_cls] = time.monotonic()
 
     return records
 
@@ -666,6 +739,63 @@ def main() -> int:
                 "Continuando para o próximo scraper."
             )
 
+    # --- Repescagem: keywords adiadas por gate, depois das outras plataformas ---
+    # O ML roda primeiro; quando a identidade está marcada, insistir na hora só
+    # aprofunda o bloqueio. Aqui ele volta ~3h depois, já esfriado. O turno é
+    # cravado no do início do run: a repescagem da manhã pode passar das 12h e
+    # o relógio a gravaria como "Tarde".
+    if _PENDING_RETRY and _retry_pass_enabled():
+        from utils.text import ENV_TURNO
+        turno_anterior = os.environ.get(ENV_TURNO)
+        os.environ[ENV_TURNO] = _turno
+        try:
+            for scraper_cls, pendentes in list(_PENDING_RETRY.items()):
+                esfriou = time.monotonic() - _PENDING_SINCE.get(scraper_cls, 0.0)
+                if esfriou < _retry_cooldown_seconds():
+                    logger.warning(
+                        f"Repescagem de {scraper_cls.platform_name} pulada: só "
+                        f"{esfriou / 60:.0f} min desde o bloqueio (mínimo "
+                        f"{_retry_cooldown_seconds() / 60:.0f} min, "
+                        "RAC_RETRY_COOLDOWN_MIN). Insistir agora reforçaria o "
+                        f"gate — {len(pendentes)} keyword(s) sem dado neste turno."
+                    )
+                    continue
+                logger.info(f"{'='*60}")
+                logger.info(
+                    f"Repescagem: {scraper_cls.platform_name} — {len(pendentes)} "
+                    "keyword(s) adiada(s) por bloqueio"
+                )
+                logger.info(f"{'='*60}")
+                try:
+                    records = _run_scraper(
+                        scraper_cls=scraper_cls,
+                        keywords_map=_keywords_map_subset(keywords_map, pendentes),
+                        page_limit=args.pages,
+                        headless=args.headless,
+                        priority_filter=args.priority,
+                        retry_pass=True,
+                    )
+                    all_records.extend(records)
+                    logger.info(
+                        f"Repescagem {scraper_cls.platform_name}: "
+                        f"{len(records)} registros recuperados"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"Repescagem de {scraper_cls.platform_name} falhou: {exc}"
+                    )
+        finally:
+            if turno_anterior is None:
+                os.environ.pop(ENV_TURNO, None)
+            else:
+                os.environ[ENV_TURNO] = turno_anterior
+    elif _PENDING_RETRY:
+        logger.warning(
+            "Repescagem desligada (RAC_RETRY_PASS=0) — keywords adiadas ficam sem "
+            "dado neste turno: "
+            + "; ".join(f"{c.platform_name}={len(k)}" for c, k in _PENDING_RETRY.items())
+        )
+
     # --- Exporta resultados ---
     # Cada etapa de persistência é INDEPENDENTE das outras. Antes, o CSV vinha
     # primeiro e sem proteção: uma exceção de tipagem nele abortava main() e
@@ -835,7 +965,10 @@ def main() -> int:
         )
         _bater_ponto(
             "FAILED", all_records, platform_names,
-            detalhe="persistência falhou: " + ", ".join(falhas_persistencia),
+            detalhe=" | ".join(
+                ["persistência falhou: " + ", ".join(falhas_persistencia)]
+                + _RUN_DIAGNOSTICS
+            ),
             data_ref=_RUN_DATA_REF,
         )
         return 1
@@ -846,6 +979,7 @@ def main() -> int:
         "SUCCESS" if all_records else "PARTIAL",
         all_records,
         platform_names,
+        detalhe=" | ".join(_RUN_DIAGNOSTICS),
         data_ref=_RUN_DATA_REF,
     )
     return 0

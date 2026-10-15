@@ -270,7 +270,9 @@ def bater(
     if rows is not None:
         registro["rows_written"] = int(rows)
     if detail:
-        registro["detail"] = detail[:500]
+        # 1000: contagem por plataforma (~400) + diagnóstico dos scrapers
+        # (ML, Out/2026) — com 500 o motivo do gate era o pedaço cortado.
+        registro["detail"] = detail[:1000]
     url = _run_url()
     if url:
         registro["run_url"] = url
