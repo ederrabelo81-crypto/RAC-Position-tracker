@@ -195,7 +195,7 @@ Três detalhes que parecem miudeza e não são:
 |---|---|---|
 | PriceTrack D-1 ausente às 06:35 | Reimporta na hora (`briefing_gate --curar`) e revalida antes das 07:00 | — |
 | Plataforma volta a coletar | A issue `[pipeline] <plataforma> sem dado há dias` é **fechada** automaticamente | — |
-| Plataforma sai de `quedas_volume` (volume normal de novo) | A issue `[pipeline] <plataforma> com volume degradado` é **fechada** automaticamente — mas só se a checagem de volume rodou (`quedas_volume_avaliadas`); checagem que falhou ou `--sem-queda-volume` não fecha nada | — |
+| Plataforma sai de `quedas_volume` (volume normal de novo) | A issue `[pipeline] <plataforma> com volume degradado` é **fechada** automaticamente. Histerese: abre no limiar crônico (≥ 3 dias), mas enquanto a plataforma seguir em `quedas_volume` — mesmo com a sequência abaixo de 3 dias — fica aberta. Só fecha se a checagem de volume rodou e leu batidas (`quedas_volume_avaliadas`); checagem que falhou, livro-razão vazio ou `--sem-queda-volume` não fecham nada | — |
 | Import falhou nos 3 degraus | Escada + guardião já tentaram 4 vezes; alerta nomeia o erro | Chave da API / cota |
 | Plataforma zerada 1–2 dias | Entra no relatório como aviso | — |
 | Plataforma zerada **≥ 3 dias** | Abre (ou atualiza) a **issue no GitHub** `[pipeline] <plataforma> sem dado há dias` com a contagem | Consertar o scraper |

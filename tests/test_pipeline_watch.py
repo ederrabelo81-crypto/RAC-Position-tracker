@@ -327,10 +327,19 @@ class TestQuedaDeVolume:
         assert js["quedas_volume"] == []
         assert js["quedas_volume_avaliadas"] is False
 
-    def test_checagem_ok_sai_como_avaliada(self, monkeypatch):
+    def test_livro_razao_vazio_sai_como_nao_avaliado(self, monkeypatch):
+        """Sem batida lida (ex.: migração 015 ausente) não há prova de recuperação."""
         import scripts.pipeline_watch as pw
 
         monkeypatch.setattr(pw, "batidas_periodo", lambda *a, **k: [])
+        quedas, avaliado = pw.varrer_quedas_avaliado(DIA)
+        assert quedas == [] and avaliado is False
+
+    def test_checagem_ok_sai_como_avaliada(self, monkeypatch):
+        import scripts.pipeline_watch as pw
+
+        monkeypatch.setattr(pw, "batidas_periodo", lambda *a, **k: [{"id": 1}])
+        monkeypatch.setattr(pw, "observacoes_de_batidas", lambda *a, **k: [])
         monkeypatch.setattr(pw, "classificar_quedas", lambda obs, ate: [_queda(3)])
         quedas, avaliado = pw.varrer_quedas_avaliado(DIA)
         assert avaliado is True

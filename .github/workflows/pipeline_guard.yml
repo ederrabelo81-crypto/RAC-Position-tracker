@@ -382,7 +382,11 @@ jobs:
           SUFIXO_VOLUME=" com volume degradado"
           CRONICAS=$(jq -r '.degradacoes[]? | select(.cronica) | "\(.plataforma)|\(.dias_zerada)|\(.job)"' logs/pipeline_status.json)
           PLATS_ZERADAS=$(printf '%s\n' "$CRONICAS" | cut -d'|' -f1)
-          PLATS_VOLUME=$(jq -r '.quedas_volume[]? | select(.cronica) | .plataforma' logs/pipeline_status.json)
+          # Histerese: a issue de volume ABRE no limiar crônico (≥ 3 dias), mas
+          # só FECHA quando a plataforma sai de `quedas_volume` — degradada há
+          # menos dias ainda é degradada, e fechar/reabrir a cada oscilação da
+          # contagem é o ruído que este passo existe para evitar.
+          PLATS_VOLUME=$(jq -r '.quedas_volume[]? | .plataforma' logs/pipeline_status.json)
           # Checagem de volume que falhou (ou `--sem-queda-volume`) devolve
           # lista vazia — que NÃO é "volume normal". Sem a chave (status
           # antigo), idem: na dúvida, issue de volume não fecha.
@@ -412,7 +416,7 @@ jobs:
                   continue
                 fi
                 ATIVAS=$PLATS_VOLUME
-                MOTIVO="$PLAT_ABERTA deixou de aparecer como volume degradado crônico em \`quedas_volume\` (voltou ao normal — ou zerou de vez, caso em que a issue \"sem dado há dias\" assume)."
+                MOTIVO="$PLAT_ABERTA saiu de \`quedas_volume\`: o volume voltou ao normal (ou zerou de vez, caso em que a issue \"sem dado há dias\" assume)."
                 ;;
               *)
                 continue   # outra issue com "[pipeline]" no título: não é nossa
@@ -466,7 +470,7 @@ jobs:
             abrir_ou_atualizar "[pipeline] $PLATAFORMA$SUFIXO_ZERADA" "$CORPO"
           done
 
-          if [ -z "$PLATS_VOLUME" ]; then
+          if ! jq -e '[.quedas_volume[]? | select(.cronica)] | length > 0' logs/pipeline_status.json >/dev/null; then
             echo "Nenhuma queda de volume crônica."
           fi
           # Uma linha JSON compacta por plataforma: `evidencia` é texto livre

@@ -620,9 +620,10 @@ def varrer_quedas_avaliado(
 
     Returns:
         (quedas, avaliado). Quedas vêm com a pior sequência primeiro;
-        ``avaliado`` é False quando a checagem falhou — lista vazia por falha
-        não é "volume normal", e o `pipeline_guard.yml` não pode fechar as
-        issues de volume degradado por causa dela.
+        ``avaliado`` é False quando a checagem falhou ou não leu nenhuma
+        batida — lista vazia por falta de dado não é "volume normal", e o
+        `pipeline_guard.yml` não pode fechar as issues de volume degradado
+        por causa dela.
     """
     jobs = [
         JobDeColeta(j.id, j.turno, tuple(j.plataformas))
@@ -630,7 +631,7 @@ def varrer_quedas_avaliado(
         if j.destino.startswith("coletas") and j.turno and j.plataformas
     ]
     if not jobs:
-        return [], True
+        return [], False
     try:
         batidas = batidas_periodo(
             dia - timedelta(days=DIAS_HISTORICO), dia, [j.id for j in jobs]
@@ -643,7 +644,9 @@ def varrer_quedas_avaliado(
         return [], False
 
     zeradas = {g.plataforma for g in (degradacoes or [])}
-    return [q for q in quedas if q.plataforma not in zeradas], True
+    # Nenhuma batida lida (migração 015 ausente, livro-razão vazio) não é
+    # prova de volume normal: sem dado, a checagem não foi de fato avaliada.
+    return [q for q in quedas if q.plataforma not in zeradas], bool(batidas)
 
 
 def _descrever_queda(queda: QuedaVolume) -> str:
