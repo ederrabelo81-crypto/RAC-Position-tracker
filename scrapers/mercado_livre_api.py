@@ -192,6 +192,7 @@ class MLAPIScraper(BaseScraper):
             self._session.headers["Authorization"] = f"Bearer {token}"
         else:
             self.unavailable_reason = "sem token OAuth (rode scripts/ml_oauth_setup.py)"
+            self.collection_aborted = True
             logger.error(
                 f"[{self.platform_name}] Sem token OAuth — coleta vai falhar com 403. "
                 "Configure ML_APP_ID e ML_APP_SECRET."

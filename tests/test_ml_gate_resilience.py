@@ -279,6 +279,13 @@ class TestApiRecusada:
         assert scraper._api_fallback_search("kw", {}, 2) == [{"Plataforma": "Mercado Livre"}]
         assert scraper._api_scraper is False
 
+    def test_sem_token_para_o_laco(self, monkeypatch) -> None:
+        api = MLAPIScraper()
+        monkeypatch.setattr(api, "_get_access_token", lambda: None)
+        api._launch()
+        assert api.unavailable_reason.startswith("sem token OAuth")
+        assert api.collection_aborted is True
+
     def test_fallback_desliga_na_recusa(self, scraper: MLScraper) -> None:
         api = MagicMock()
         api.search.return_value = []
