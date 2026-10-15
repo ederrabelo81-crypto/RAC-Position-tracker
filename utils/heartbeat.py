@@ -425,6 +425,58 @@ def ultimas_batidas(dia: date, job_ids: Optional[List[str]] = None) -> Dict[str,
     return ultimas
 
 
+def batidas_periodo(
+    desde: date, ate: date, job_ids: List[str]
+) -> List[Dict[str, Any]]:
+    """Batidas terminais (SUCCESS/PARTIAL/FAILED) de alguns jobs num intervalo.
+
+    Uma consulta só para a janela inteira: é a base da detecção de queda de
+    volume (`utils/volume_drop.py`), que compara cada turno com a mediana dos
+    dias anteriores.
+
+    Args:
+        desde: Primeiro dia BRT (inclusive).
+        ate: Último dia BRT (inclusive).
+        job_ids: Jobs consultados.
+
+    Returns:
+        Linhas de `pipeline_heartbeat` (id, job_id, data_ref, status,
+        rows_written, detail). Lista vazia se a migração 015 não foi aplicada.
+
+    Raises:
+        LivroRazaoIndisponivel: Leitura falhou por outro motivo.
+    """
+    try:
+        from utils.supabase_client import _get_client
+
+        client = _get_client()
+        if client is None:
+            raise LivroRazaoIndisponivel(
+                "Supabase não configurado — o livro-razão não pôde ser lido."
+            )
+        linhas = (
+            client.table(TABELA)
+            .select("id,job_id,data_ref,status,rows_written,detail")
+            .gte("data_ref", desde.isoformat())
+            .lte("data_ref", ate.isoformat())
+            .in_("job_id", job_ids)
+            .neq("status", STATUS_STARTED)
+            .order("id", desc=True)
+            .limit(2000)
+            .execute()
+            .data
+            or []
+        )
+    except LivroRazaoIndisponivel:
+        raise
+    except Exception as exc:
+        texto = str(exc).lower()
+        if any(marcador in texto for marcador in _TABELA_AUSENTE):
+            return []
+        raise LivroRazaoIndisponivel(f"Leitura de {TABELA} falhou: {exc}") from exc
+    return linhas
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI para os executores que não são Python (workflow, .bat, cron)."""
     parser = argparse.ArgumentParser(

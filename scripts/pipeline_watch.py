@@ -29,11 +29,20 @@ Uso::
     python scripts/pipeline_watch.py --data 2026-08-27 --no-notify
     python scripts/pipeline_watch.py --json logs/pipeline_status.json
     python scripts/pipeline_watch.py --sempre-notificar   # manda mesmo tudo OK
+    python scripts/pipeline_watch.py --sem-queda-volume   # pula a checagem de volume
+
+Além de "não rodou" e "zerada", cobra a **queda brusca de volume**: plataforma
+abaixo de 20% da sua mediana (mesmo turno, últimos 7 dias normais) em ≥2
+turnos no mesmo dia. Foi o caso do Mercado Livre entre 09 e 14/10/2026, com
+0–136 linhas por turno contra ~5.000. Como quase nunca chegava a zero, nada
+alarmou durante cinco dias. Lógica pura em `utils/volume_drop.py`.
 
 Exit codes:
     0 — tudo dentro do contrato (ou só coisas ainda dentro da janela)
-    1 — algum job crítico não executou, falhou ou executou sem dado
-    2 — problemas não-críticos (atrasos, degradação de plataforma tolerante)
+    1 — algum job crítico não executou, falhou ou executou sem dado; ou
+        plataforma zerada/degradada há ≥3 dias
+    2 — problemas não-críticos (atrasos, degradação de plataforma tolerante,
+        queda de volume há menos de 3 dias)
     3 — supervisor CEGO: Supabase indisponível, não deu para olhar
 
     O 3 é deliberadamente distinto de 1: "não consegui olhar" nunca deve ser
@@ -61,6 +70,7 @@ from utils.heartbeat import (
     STATUS_PARTIAL,
     STATUS_STARTED,
     LivroRazaoIndisponivel,
+    batidas_periodo,
     ultimas_batidas,
 )
 from utils.pipeline_registry import (
@@ -68,10 +78,19 @@ from utils.pipeline_registry import (
     MARKETPLACES,
     PLATAFORMA_DEALERS,
     SEV_CRITICO,
+    JOBS,
     JobSpec,
     jobs_do_dia,
 )
 from utils.text import now_brt
+from utils.volume_drop import (
+    DIAS_HISTORICO,
+    FRACAO_QUEDA,
+    JobDeColeta,
+    QuedaVolume,
+    classificar_quedas,
+    observacoes_de_batidas,
+)
 
 # ---------------------------------------------------------------------------
 # Vocabulário de estado
@@ -572,12 +591,65 @@ def varrer(
     return diagnosticos, degradacoes
 
 
+def varrer_quedas(
+    dia: date, degradacoes: Optional[List[Degradacao]] = None
+) -> List[QuedaVolume]:
+    """Plataformas com queda brusca de volume (ver `utils/volume_drop.py`).
+
+    Lê o `detail` das batidas dos jobs de coleta (uma consulta para os últimos
+    `DIAS_HISTORICO` dias) e compara cada turno com a mediana do mesmo turno.
+
+    É uma checagem ADICIONAL: se falhar, registra um aviso e devolve lista
+    vazia, sem cegar o supervisor inteiro. Os vereditos de execução valem por
+    si e não podem se perder por causa dela.
+
+    Args:
+        dia: Dia avaliado (o dia corrente entra a partir de 2 turnos fechados).
+        degradacoes: Plataformas já reportadas como ZERADAS. Elas saem daqui,
+            porque o mesmo buraco não gera dois alertas.
+
+    Returns:
+        Quedas, a pior sequência primeiro.
+    """
+    jobs = [
+        JobDeColeta(j.id, j.turno, tuple(j.plataformas))
+        for j in JOBS
+        if j.destino.startswith("coletas") and j.turno and j.plataformas
+    ]
+    if not jobs:
+        return []
+    try:
+        batidas = batidas_periodo(
+            dia - timedelta(days=DIAS_HISTORICO), dia, [j.id for j in jobs]
+        )
+        quedas = classificar_quedas(
+            observacoes_de_batidas(batidas, jobs, MARKETPLACES), dia
+        )
+    except Exception as exc:
+        logger.warning(f"[Supervisor] Checagem de queda de volume falhou: {exc}")
+        return []
+
+    zeradas = {g.plataforma for g in (degradacoes or [])}
+    return [q for q in quedas if q.plataforma not in zeradas]
+
+
+def _descrever_queda(queda: QuedaVolume) -> str:
+    """``Abertura 68 (1% de 5.012), Tarde 0 (0% de 4.870)``."""
+    return ", ".join(
+        f"{t.turno} {t.linhas:,} ({t.percentual:.0f}% de {t.mediana:,.0f})".replace(",", ".")
+        for t in queda.turnos
+    )
+
+
 # ---------------------------------------------------------------------------
 # Saída
 # ---------------------------------------------------------------------------
 
 def imprimir(
-    diagnosticos: List[Diagnostico], degradacoes: List[Degradacao], dia: date
+    diagnosticos: List[Diagnostico],
+    degradacoes: List[Degradacao],
+    dia: date,
+    quedas: Optional[List[QuedaVolume]] = None,
 ) -> None:
     """Imprime o relatório no terminal."""
     linha = "=" * 72
@@ -604,19 +676,36 @@ def imprimir(
             sufixo = "+" if deg.truncado else ""
             print(f"   {marcador} {deg.plataforma:<24} {deg.dias}{sufixo} dia(s) zerada")
 
+    if quedas:
+        print(f"\n▸ Plataformas DEGRADADAS (< {FRACAO_QUEDA:.0%} da mediana em ≥2 turnos)")
+        for queda in quedas:
+            marcador = "🔴 CRÔNICO" if queda.cronica else "🟠"
+            print(
+                f"   {marcador} {queda.plataforma:<24} {queda.dias} dia(s) — "
+                f"{queda.dia:%d/%m}: {_descrever_queda(queda)}"
+            )
+            if queda.evidencia:
+                print(f"      ↳ {queda.evidencia}")
+
     print(f"\n{linha}\n")
 
 
 def _formatar_telegram(
-    diagnosticos: List[Diagnostico], degradacoes: List[Degradacao], dia: date
+    diagnosticos: List[Diagnostico],
+    degradacoes: List[Degradacao],
+    dia: date,
+    quedas: Optional[List[QuedaVolume]] = None,
 ) -> str:
     """Monta o alerta. Curto e acionável: o que quebrou e o comando que resolve."""
     problemas = [d for d in diagnosticos if d.estado in _PROBLEMAS]
     atrasos = [d for d in diagnosticos if d.estado == ATRASADO]
     cronicas = [g for g in degradacoes if g.cronica]
+    quedas = quedas or []
 
-    if problemas or cronicas:
+    if problemas or cronicas or any(q.cronica for q in quedas):
         cabecalho = "🚨 <b>Pipeline RAC — falha de execução</b>"
+    elif quedas:
+        cabecalho = "🟠 <b>Pipeline RAC — queda de volume</b>"
     elif atrasos:
         cabecalho = "🟡 <b>Pipeline RAC — atrasos</b>"
     else:
@@ -648,7 +737,23 @@ def _formatar_telegram(
             )
         linhas.append("")
 
-    if not problemas and not atrasos and not cronicas:
+    if quedas:
+        linhas.append(
+            f"📉 <b>Plataforma DEGRADADA</b> (&lt; {FRACAO_QUEDA:.0%} da mediana "
+            "em ≥2 turnos)"
+        )
+        for queda in quedas:
+            marcador = "🔴" if queda.cronica else "🟠"
+            linhas.append(
+                f"   {marcador} {html.escape(queda.plataforma)}: "
+                f"<b>{queda.dias} dia(s)</b> — {queda.dia:%d/%m}: "
+                f"{html.escape(_descrever_queda(queda))}"
+            )
+            if queda.evidencia:
+                linhas.append(f"      ↳ <code>{html.escape(queda.evidencia)}</code>")
+        linhas.append("")
+
+    if not problemas and not atrasos and not cronicas and not quedas:
         ok = sum(1 for d in diagnosticos if d.estado == OK)
         linhas.append(f"{ok} job(s) executados dentro do contrato.")
 
@@ -694,6 +799,7 @@ def montar_json(
     degradacoes: List[Degradacao],
     dia: date,
     agora: datetime,
+    quedas: Optional[List[QuedaVolume]] = None,
 ) -> Dict[str, Any]:
     """Estado da pipeline em forma de dado.
 
@@ -708,17 +814,23 @@ def montar_json(
         "criticos": sum(1 for d in problemas if d.critico),
         "jobs": [d.to_dict() for d in diagnosticos],
         "degradacoes": [g.to_dict() for g in degradacoes],
+        "quedas_volume": [q.to_dict() for q in (quedas or [])],
     }
 
 
-def _exit_code(diagnosticos: List[Diagnostico], degradacoes: List[Degradacao]) -> int:
+def _exit_code(
+    diagnosticos: List[Diagnostico],
+    degradacoes: List[Degradacao],
+    quedas: Optional[List[QuedaVolume]] = None,
+) -> int:
     """Traduz o relatório em exit code (ver docstring do módulo)."""
     problemas = [d for d in diagnosticos if d.estado in _PROBLEMAS]
+    quedas = quedas or []
     if any(d.critico for d in problemas):
         return 1
-    if any(g.cronica for g in degradacoes):
+    if any(g.cronica for g in degradacoes) or any(q.cronica for q in quedas):
         return 1
-    if problemas or any(d.estado == ATRASADO for d in diagnosticos):
+    if problemas or quedas or any(d.estado == ATRASADO for d in diagnosticos):
         return 2
     return 0
 
@@ -749,6 +861,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="pula a varredura de plataformas cronicamente zeradas (mais rápido)",
     )
+    parser.add_argument(
+        "--sem-queda-volume",
+        action="store_true",
+        help="pula a checagem de queda brusca de volume por plataforma",
+    )
     args = parser.parse_args(argv)
 
     agora = now_brt()
@@ -772,21 +889,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         return 3
 
-    imprimir(diagnosticos, degradacoes, dia)
+    quedas = [] if args.sem_queda_volume else varrer_quedas(dia, degradacoes)
+
+    imprimir(diagnosticos, degradacoes, dia, quedas)
 
     if args.json_path:
         caminho = Path(args.json_path)
         caminho.parent.mkdir(parents=True, exist_ok=True)
         caminho.write_text(
-            json.dumps(montar_json(diagnosticos, degradacoes, dia, agora),
+            json.dumps(montar_json(diagnosticos, degradacoes, dia, agora, quedas),
                        ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         logger.info(f"[Supervisor] Estado gravado em {caminho}")
 
-    codigo = _exit_code(diagnosticos, degradacoes)
+    codigo = _exit_code(diagnosticos, degradacoes, quedas)
     if not args.no_notify and (codigo != 0 or args.sempre_notificar):
-        _enviar_telegram(_formatar_telegram(diagnosticos, degradacoes, dia))
+        _enviar_telegram(_formatar_telegram(diagnosticos, degradacoes, dia, quedas))
 
     return codigo
 
