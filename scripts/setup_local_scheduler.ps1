@@ -76,7 +76,9 @@ if (-not $isAdmin) {
     Write-Host "Precisa de Administrador. Re-executando via UAC..." -ForegroundColor Yellow
     # Captura o usuario interativo ATUAL e repassa pro processo elevado, para
     # nao depender do $env:USERNAME de dentro da elevacao (que pode diferir).
-    $origUser = "$env:USERDOMAIN\$env:USERNAME"
+    # Nome vindo do token (DOMINIO\usuario como o Windows o resolve), nao de
+    # $env:USERDOMAIN - ver Resolve-RacTaskUser abaixo.
+    $origUser = $currentUser.Name
     $argList = @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"",
         "-TaskUser", "`"$origUser`""
@@ -105,8 +107,32 @@ $CollectScript = Join-Path $BaseDir "scripts\run_local_scheduled.bat"
 # Usa o usuario interativo repassado na elevacao; se rodou ja como admin sem o
 # parametro, cai no usuario atual.
 if ([string]::IsNullOrWhiteSpace($TaskUser)) {
-    $TaskUser = "$env:USERDOMAIN\$env:USERNAME"
+    $TaskUser = $currentUser.Name
 }
+
+# O Task Scheduler resolve -UserId para um SID; um nome que nao resolve falha
+# com HRESULT 0x80070534 ("Nao foi feito mapeamento entre os nomes de conta e
+# as identificacoes de seguranca"). Foi o que aconteceu em Out/2026 com
+# $env:USERDOMAIN = "WORKGROUP" (nome do grupo de trabalho, nao da maquina):
+# "WORKGROUP\eder rabelo" nao existe. Valida ANTES de registrar e, se nao
+# resolver, cai no nome do token do processo (sempre resolvivel) e depois em
+# COMPUTERNAME\usuario.
+function Resolve-RacTaskUser([string]$Name) {
+    $candidatos = @($Name, $currentUser.Name, "$env:COMPUTERNAME\$env:USERNAME", $env:USERNAME)
+    foreach ($c in $candidatos) {
+        if ([string]::IsNullOrWhiteSpace($c)) { continue }
+        try {
+            $sid = (New-Object Security.Principal.NTAccount($c)).Translate([Security.Principal.SecurityIdentifier])
+            if ($c -ne $Name) {
+                Write-Host "  Usuario '$Name' nao resolve para um SID - usando '$c'" -ForegroundColor Yellow
+            }
+            return $c
+        } catch { }
+    }
+    throw "Nenhum nome de usuario resolve para um SID (tentei: $($candidatos -join ', ')). Rode de novo com -TaskUser 'MAQUINA\usuario'."
+}
+$TaskUser = Resolve-RacTaskUser $TaskUser
+Write-Host "Usuario das tarefas: $TaskUser" -ForegroundColor Gray
 
 $Tasks       = @("RAC_Local_Manha", "RAC_Local_Tarde", "RAC_Local_Noite")
 # Tarefas antigas substituidas/descontinuadas por esta versao. RAC_Bestsellers
