@@ -83,6 +83,17 @@ foreach ($name in @("RAC_Local_Manha", "RAC_Local_Tarde", "RAC_Local_Noite")) {
         }
     }
 
+    # Limite de execucao: abaixo de 5h o Task Scheduler mata uma coleta lenta
+    # antes do estagio C (materializacao do seller_app) - incidente 14/10/2026.
+    $limit = $task.Settings.ExecutionTimeLimit
+    if ($limit -and $limit -ne "PT0S") {
+        $limitSpan = $null
+        try { $limitSpan = [System.Xml.XmlConvert]::ToTimeSpan($limit) } catch { $limitSpan = $null }
+        if ($limitSpan -and $limitSpan.TotalHours -lt 5) {
+            Write-Warn "$name com limite de execucao de $($limitSpan.TotalHours)h (esperado 5h) - coleta lenta e morta antes de materializar o seller_app. Re-rode scripts\setup_local_scheduler.ps1"
+        }
+    }
+
     $hasLogon = $task.Triggers | Where-Object { $_.CimClass.CimClassName -eq "MSFT_TaskLogonTrigger" }
     if (-not $hasLogon) {
         Write-Warn "$name sem gatilho de LOGON (catch-up) - registro antigo; re-rode o setup para cobrir notebook desligado no horario"

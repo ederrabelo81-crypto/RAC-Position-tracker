@@ -178,16 +178,22 @@ function New-RacLogonTrigger {
 # (desligado), roda assim que possivel. RestartCount/Interval: retenta se a
 # execucao falhar (ex.: pull/coleta com erro transiente). IgnoreNew: os gatilhos
 # de horario e de logon podem coincidir - nao empilha instancias.
-# Janela de tempo de 4h por turno: a varredura agora e completa (8 plataformas,
-# todas as keywords), entao precisa de mais folga que os 2-3h antigos. Nos
-# horarios normais (8/14/20h) os turnos nao se sobrepoem (8+4=12<14; 14+4=18<20).
+# Limite de 5h por turno (era 4h ate Out/2026). O Task Scheduler MATA a tarefa
+# no limite - e o processo morto nao chega ao estagio C (materializacao do
+# seller_app). Em 14/10/2026 a coleta da manha terminou com SUCESSO em 4h04min
+# (ML lento sob bloqueio antibot) e foi encerrada antes de materializar: o
+# Track Position Seller ficou sem o dia inteiro. A repescagem do ML no fim do
+# turno (RAC_RETRY_COOLDOWN_MIN, padrao 30 min) tambem alonga o run. Nos
+# horarios normais (8/14/20h) os turnos continuam sem sobrepor (8+5=13<14;
+# 14+5=19<20). check_local_scheduler.ps1 avisa se o registro ainda for o antigo.
+$TaskTimeLimitHours = 5
 $AllPlatforms = "ML+Amazon+Magalu+CB+GoogleShopping+Leroy+Shopee+dealers"
 
 Write-Host "Registrando: RAC_Local_Manha (08:00 diario + catch-up no logon)" -ForegroundColor Cyan
 $triggers = @((New-ScheduledTaskTrigger -Daily -At "8:00AM"), (New-RacLogonTrigger))
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10) `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours $TaskTimeLimitHours)
 Register-ScheduledTask -TaskName "RAC_Local_Manha" `
     -Action (New-RacAction "manha") -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
     -Description "Coleta local autenticada ($AllPlatforms) - turno Abertura, janela 8-11h" `
@@ -197,7 +203,7 @@ Write-Host "Registrando: RAC_Local_Tarde (14:00 diario + catch-up no logon)" -Fo
 $triggers = @((New-ScheduledTaskTrigger -Daily -At "2:00PM"), (New-RacLogonTrigger))
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10) `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours $TaskTimeLimitHours)
 Register-ScheduledTask -TaskName "RAC_Local_Tarde" `
     -Action (New-RacAction "tarde") -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
     -Description "Coleta local autenticada ($AllPlatforms) - turno Tarde, janela 12-17h" `
@@ -207,7 +213,7 @@ Write-Host "Registrando: RAC_Local_Noite (20:00 diario + catch-up no logon)" -Fo
 $triggers = @((New-ScheduledTaskTrigger -Daily -At "8:00PM"), (New-RacLogonTrigger))
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -WakeToRun -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10) `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours $TaskTimeLimitHours)
 Register-ScheduledTask -TaskName "RAC_Local_Noite" `
     -Action (New-RacAction "noite") -Trigger $triggers -Settings $settings -Principal $taskPrincipal `
     -Description "Coleta local autenticada ($AllPlatforms) - turno Fechamento, janela 18-23h" `
