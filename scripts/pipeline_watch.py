@@ -596,6 +596,16 @@ def varrer_quedas(
 ) -> List[QuedaVolume]:
     """Plataformas com queda brusca de volume (ver `utils/volume_drop.py`).
 
+    Atalho de `varrer_quedas_avaliado` para quem só quer a lista.
+    """
+    return varrer_quedas_avaliado(dia, degradacoes)[0]
+
+
+def varrer_quedas_avaliado(
+    dia: date, degradacoes: Optional[List[Degradacao]] = None
+) -> Tuple[List[QuedaVolume], bool]:
+    """Plataformas com queda brusca de volume (ver `utils/volume_drop.py`).
+
     Lê o `detail` das batidas dos jobs de coleta (uma consulta para os últimos
     `DIAS_HISTORICO` dias) e compara cada turno com a mediana do mesmo turno.
 
@@ -609,7 +619,10 @@ def varrer_quedas(
             porque o mesmo buraco não gera dois alertas.
 
     Returns:
-        Quedas, a pior sequência primeiro.
+        (quedas, avaliado). Quedas vêm com a pior sequência primeiro;
+        ``avaliado`` é False quando a checagem falhou — lista vazia por falha
+        não é "volume normal", e o `pipeline_guard.yml` não pode fechar as
+        issues de volume degradado por causa dela.
     """
     jobs = [
         JobDeColeta(j.id, j.turno, tuple(j.plataformas))
@@ -617,7 +630,7 @@ def varrer_quedas(
         if j.destino.startswith("coletas") and j.turno and j.plataformas
     ]
     if not jobs:
-        return []
+        return [], True
     try:
         batidas = batidas_periodo(
             dia - timedelta(days=DIAS_HISTORICO), dia, [j.id for j in jobs]
@@ -627,10 +640,10 @@ def varrer_quedas(
         )
     except Exception as exc:
         logger.warning(f"[Supervisor] Checagem de queda de volume falhou: {exc}")
-        return []
+        return [], False
 
     zeradas = {g.plataforma for g in (degradacoes or [])}
-    return [q for q in quedas if q.plataforma not in zeradas]
+    return [q for q in quedas if q.plataforma not in zeradas], True
 
 
 def _descrever_queda(queda: QuedaVolume) -> str:
@@ -800,11 +813,16 @@ def montar_json(
     dia: date,
     agora: datetime,
     quedas: Optional[List[QuedaVolume]] = None,
+    quedas_avaliadas: bool = True,
 ) -> Dict[str, Any]:
     """Estado da pipeline em forma de dado.
 
     É o que `scripts/briefing_gate.py` lê e o que o dashboard pode exibir —
     para que "a pipeline está saudável" deixe de ser opinião.
+
+    ``quedas_volume_avaliadas`` separa "nenhuma queda" de "não deu para
+    checar" (falha ou `--sem-queda-volume`): o `pipeline_guard.yml` só fecha
+    issue de volume degradado quando a checagem de fato rodou.
     """
     problemas = [d for d in diagnosticos if d.estado in _PROBLEMAS]
     return {
@@ -815,6 +833,7 @@ def montar_json(
         "jobs": [d.to_dict() for d in diagnosticos],
         "degradacoes": [g.to_dict() for g in degradacoes],
         "quedas_volume": [q.to_dict() for q in (quedas or [])],
+        "quedas_volume_avaliadas": quedas_avaliadas,
     }
 
 
@@ -889,7 +908,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         return 3
 
-    quedas = [] if args.sem_queda_volume else varrer_quedas(dia, degradacoes)
+    if args.sem_queda_volume:
+        quedas, quedas_avaliadas = [], False
+    else:
+        quedas, quedas_avaliadas = varrer_quedas_avaliado(dia, degradacoes)
 
     imprimir(diagnosticos, degradacoes, dia, quedas)
 
@@ -897,8 +919,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         caminho = Path(args.json_path)
         caminho.parent.mkdir(parents=True, exist_ok=True)
         caminho.write_text(
-            json.dumps(montar_json(diagnosticos, degradacoes, dia, agora, quedas),
-                       ensure_ascii=False, indent=2),
+            json.dumps(
+                montar_json(diagnosticos, degradacoes, dia, agora, quedas,
+                            quedas_avaliadas),
+                ensure_ascii=False, indent=2,
+            ),
             encoding="utf-8",
         )
         logger.info(f"[Supervisor] Estado gravado em {caminho}")

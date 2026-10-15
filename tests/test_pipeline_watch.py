@@ -309,6 +309,35 @@ class TestQuedaDeVolume:
         monkeypatch.setattr(pw, "batidas_periodo", _quebra)
         assert pw.varrer_quedas(DIA) == []
 
+    def test_falha_da_checagem_sai_como_nao_avaliada(self, monkeypatch):
+        """Lista vazia por falha não é "volume normal": o JSON tem de dizer.
+
+        Sem isso o `pipeline_guard.yml` leria a falha como recuperação e
+        fecharia toda issue de volume degradado aberta.
+        """
+        import scripts.pipeline_watch as pw
+
+        def _quebra(*_a, **_k):
+            raise RuntimeError("timeout")
+
+        monkeypatch.setattr(pw, "batidas_periodo", _quebra)
+        quedas, avaliado = pw.varrer_quedas_avaliado(DIA)
+        assert quedas == [] and avaliado is False
+        js = pw.montar_json([], [], DIA, datetime(2026, 10, 15, 12), quedas, avaliado)
+        assert js["quedas_volume"] == []
+        assert js["quedas_volume_avaliadas"] is False
+
+    def test_checagem_ok_sai_como_avaliada(self, monkeypatch):
+        import scripts.pipeline_watch as pw
+
+        monkeypatch.setattr(pw, "batidas_periodo", lambda *a, **k: [])
+        monkeypatch.setattr(pw, "classificar_quedas", lambda obs, ate: [_queda(3)])
+        quedas, avaliado = pw.varrer_quedas_avaliado(DIA)
+        assert avaliado is True
+        js = pw.montar_json([], [], DIA, datetime(2026, 10, 15, 12), quedas, avaliado)
+        assert js["quedas_volume_avaliadas"] is True
+        assert js["quedas_volume"][0]["cronica"] is True
+
     def test_varredura_consulta_so_jobs_de_coleta_com_turno(self, monkeypatch):
         import scripts.pipeline_watch as pw
 
