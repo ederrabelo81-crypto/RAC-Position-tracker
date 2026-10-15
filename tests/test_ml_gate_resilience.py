@@ -216,6 +216,20 @@ class TestApiRecusada:
         assert api.search("ar condicionado", {}, page_limit=2) == []
         assert api.unavailable_reason == "HTTP 403 em /sites/MLB/search"
         assert len(calls) == 1  # sem retry e sem página 2
+        # recusa vale para a run: a próxima keyword nem chama a API...
+        assert api.search("ar condicionado lg", {}, page_limit=1) == []
+        assert len(calls) == 1
+        # ...e o `_run_scraper` (--platforms ml_api) para o laço
+        assert api.collection_aborted is True
+
+    def test_api_salva_keyword_com_browser_morto(self, scraper: MLScraper, monkeypatch) -> None:
+        monkeypatch.setattr(scraper, "_ensure_page", lambda: False)
+        monkeypatch.setattr(
+            scraper, "_api_fallback_search", lambda *a, **k: [{"Plataforma": "x"}]
+        )
+        scraper.search.__wrapped__(scraper, "kw", {}, page_limit=1)
+        assert scraper._kw_api_saved == 1
+        assert scraper.run_diagnostics().startswith("ML: 0/1 kw ok")
 
     def test_fallback_desliga_na_recusa(self, scraper: MLScraper) -> None:
         api = MagicMock()

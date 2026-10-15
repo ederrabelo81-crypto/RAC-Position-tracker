@@ -1992,6 +1992,8 @@ class MLScraper(BaseScraper):
             all_records = self._api_fallback_search(
                 keyword, keyword_category_map, page_limit
             )
+            if all_records:
+                self._kw_api_saved += 1
             self._log_search_result(keyword, len(all_records))
             return all_records
 

@@ -85,11 +85,15 @@ class MLAPIScraper(BaseScraper):
     #: MLB/search"), ou None. Lido pelo `MLScraper` para desligar o fallback
     #: de uma vez e levar o motivo ao livro-razão.
     unavailable_reason: Optional[str] = None
+    #: Lido por `main._run_scraper`: com a conta recusada, parar o laço em vez
+    #: de gastar uma chamada rejeitada por keyword (`--platforms ml_api`).
+    collection_aborted: bool = False
 
     def __init__(self, headless: bool = True) -> None:
         # headless ignorado — este scraper não usa browser
         super().__init__(headless=True)
         self.unavailable_reason = None
+        self.collection_aborted = False
         self._session = requests.Session()
         self._session.headers.update({
             "Accept":          "application/json",
@@ -291,6 +295,9 @@ class MLAPIScraper(BaseScraper):
             Lista de records no formato padrão do DataFrame.
         """
         all_records: List[Dict[str, Any]] = []
+        # Recusa da conta (401/403) vale para a run inteira, não só a keyword.
+        if self.unavailable_reason:
+            return all_records
 
         for page in range(page_limit):
             offset = page * _PAGE_SIZE
@@ -310,6 +317,7 @@ class MLAPIScraper(BaseScraper):
                 corpo = (exc.response.text or "")[:160] if exc.response is not None else ""
                 if status in _REFUSAL_STATUS:
                     self.unavailable_reason = f"HTTP {status} em /sites/{_SITE_ID}/search"
+                    self.collection_aborted = True
                 logger.error(
                     f"[{self.platform_name}] Erro na API (HTTP {status}): {corpo!r}"
                 )
