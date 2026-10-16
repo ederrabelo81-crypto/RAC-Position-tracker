@@ -747,6 +747,11 @@ _TITLE_LOOKUP_PAGE = 1000
 _TITLE_LOOKUP_MAX_PAGES = 100
 
 
+class TitleLookupError(RuntimeError):
+    """Não deu para saber o último título conhecido — gravar agora apagaria
+    títulos do banco, então a data é abortada (o NDJSON fica em disco)."""
+
+
 def fill_missing_titles(records: List[Dict], dry_run: bool = False) -> int:
     """Preenche `title` vazio com o último título conhecido no banco.
 
@@ -765,6 +770,11 @@ def fill_missing_titles(records: List[Dict], dry_run: bool = False) -> int:
 
     Returns:
         Quantos registros ficaram SEM título depois do preenchimento.
+
+    Raises:
+        TitleLookupError: a consulta falhou ou bateu no teto de páginas. Seguir
+            com o título vazio apagaria no upsert um título que o banco tem —
+            melhor abortar a data e tentar de novo no próximo run.
     """
     faltando = [r for r in records if not str(r.get("title") or "").strip()]
     if not faltando:
@@ -801,6 +811,7 @@ def fill_missing_titles(records: List[Dict], dry_run: bool = False) -> int:
                     .in_("sku", chunk)
                     .neq("title", "")
                     .order("collection_date", desc=True)
+                    .order("id", desc=True)          # desempate no mesmo dia
                     .range(inicio, inicio + _TITLE_LOOKUP_PAGE - 1)
                     .execute()
                 )
@@ -815,12 +826,17 @@ def fill_missing_titles(records: List[Dict], dry_run: bool = False) -> int:
                     por_sku.setdefault(sku, title)
                 if len(rows) < _TITLE_LOOKUP_PAGE or alvo <= por_sku_mkt.keys():
                     break
+            else:
+                # Teto atingido sem esgotar as páginas: o título de algum par
+                # pode estar além do corte. Tratar como "SKU novo" apagaria.
+                raise TitleLookupError(
+                    f"busca de títulos passou de {_TITLE_LOOKUP_MAX_PAGES} páginas "
+                    f"sem esgotar o histórico (lote de {len(chunk)} SKUs)"
+                )
+    except TitleLookupError:
+        raise
     except Exception as e:
-        logger.warning(
-            f"Não foi possível buscar títulos conhecidos no banco ({e}) — "
-            f"{len(faltando):,} linha(s) gravadas com título vazio."
-        )
-        return len(faltando)
+        raise TitleLookupError(f"consulta de títulos falhou: {e}") from e
 
     sem_titulo = 0
     for r in faltando:
@@ -1207,7 +1223,15 @@ def _process_date(
     # V2 do export não traz título: recupera o último conhecido ANTES de
     # gravar em qualquer lugar (Parquet incluso), senão o upsert apaga o que o
     # banco já sabia. No-op quando o export trouxe título (V1).
-    fill_missing_titles(records, dry_run=dry_run)
+    try:
+        fill_missing_titles(records, dry_run=dry_run)
+    except TitleLookupError as e:
+        logger.error(
+            f"{collection_date} — {e}. Import da data ABORTADO antes de gravar, "
+            f"para não apagar títulos existentes; o NDJSON fica em disco e o "
+            f"próximo run tenta de novo."
+        )
+        return "failed", 0
 
     # ── Histórico frio (Parquet no Drive) ─────────────────────────────────
     # ANTES do Supabase e independente dele: é o que faz o dia sobreviver a um

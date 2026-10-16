@@ -665,8 +665,10 @@ class _TitleTable:
         return self
 
     def order(self, col, desc=False):
-        self._calls["order"] = (col, desc)
-        self._rows = sorted(self._rows, key=lambda r: r.get(col) or "", reverse=desc)
+        # O mock ordena pela data; o desempate por `id` só é registrado.
+        self._calls.setdefault("order", []).append((col, desc))
+        if col == "collection_date":
+            self._rows = sorted(self._rows, key=lambda r: r.get(col) or "", reverse=desc)
         return self
 
     def range(self, start, end):
@@ -706,7 +708,7 @@ class TestFillMissingTitles:
         assert [r["title"] for r in records] == [
             "A amazon novo", "A amazon novo", None, "já tinha"]
         assert faltando == 1
-        assert calls["order"] == ("collection_date", True)
+        assert calls["order"] == [("collection_date", True), ("id", True)]
         # Só consulta quem estava sem título.
         assert calls["in_"] == [["A", "B"]]
 
@@ -722,12 +724,20 @@ class TestFillMissingTitles:
         assert ptai.fill_missing_titles(
             [{"sku": "A", "title": ""}], dry_run=True) == 1
 
-    def test_erro_no_banco_nao_derruba_import(self, monkeypatch):
+    def test_erro_no_banco_aborta_em_vez_de_apagar(self, monkeypatch):
         monkeypatch.setattr(ptai, "_banco_disponivel", lambda: True)
         monkeypatch.setattr(ptai, "_supabase_client", lambda: 1 / 0)
         records = [{"sku": "A", "title": ""}]
-        assert ptai.fill_missing_titles(records) == 1
-        assert records[0]["title"] == ""
+        with pytest.raises(ptai.TitleLookupError):
+            ptai.fill_missing_titles(records)
+
+    def test_teto_de_paginas_aborta(self, monkeypatch):
+        monkeypatch.setattr(ptai, "_TITLE_LOOKUP_PAGE", 1)
+        monkeypatch.setattr(ptai, "_TITLE_LOOKUP_MAX_PAGES", 2)
+        records = [{"sku": "A", "marketplace": "MAGALU", "title": ""}]
+        rows = [{"sku": "A", "marketplace": "AMAZON", "title": "x"}] * 5
+        with pytest.raises(ptai.TitleLookupError):
+            self._run(monkeypatch, records, rows)
 
     def test_pagina_alem_do_teto_do_postgrest(self, monkeypatch):
         monkeypatch.setattr(ptai, "_TITLE_LOOKUP_PAGE", 2)
