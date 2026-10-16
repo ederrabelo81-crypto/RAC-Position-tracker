@@ -131,3 +131,23 @@ class TestContrato:
         raw = offer_payload(collectionHour=None, title=None,
                             collectionHourExecution="14:37")
         assert Offer.from_api(raw).collection_hour == 14
+
+
+class TestFallbackV1:
+    def test_filtros_da_v2_nao_vao_para_a_v1(self, settings, clock):
+        session = FakeSession(responses=[FakeResponse(json_data=_CRIADO)])
+        _client(settings, session, clock).create_offers_export(
+            ExportRequest("2026-01-10", skus=["42AFVCI12S5"], proof_filter="ALL"))
+        call = session.calls[0]
+        assert call.url.endswith(EXPORT_OFFERS_PATH)
+        assert call.json == {"collectionDate": "2026-01-10"}
+
+    def test_404_reenvia_sem_filtros_da_v2(self, settings, clock):
+        session = FakeSession(responses=[
+            FakeResponse(status_code=404, json_data={"message": "Not Found"}),
+            FakeResponse(json_data=_CRIADO),
+        ])
+        _client(settings, session, clock).create_offers_export(
+            ExportRequest("2026-10-15", skus=["A"]))
+        assert session.calls[0].json["skus"] == ["A"]
+        assert session.calls[1].json == {"collectionDate": "2026-10-15"}

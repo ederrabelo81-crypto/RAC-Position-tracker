@@ -193,7 +193,7 @@ class PriceTrackClient:
             PriceTrackNoCollectionError: 409 — sem coleta para a data.
         """
         if not self._use_offers_v2(request):
-            return self._create_export(EXPORT_OFFERS_PATH, request)
+            return self._create_export(EXPORT_OFFERS_PATH, request, body=_v1_body(request))
         body = request.to_body()
         body.setdefault("proofFilter", PROOF_ALL)
         try:
@@ -207,7 +207,7 @@ class PriceTrackClient:
                 f"— endpoint indisponível para a organização; usando a V1 no "
                 f"resto da execução."
             )
-            return self._create_export(EXPORT_OFFERS_PATH, request)
+            return self._create_export(EXPORT_OFFERS_PATH, request, body=_v1_body(request))
 
     def offers_v2_window_start(self) -> date:
         """Data mais antiga que a V2 ainda serve (retenção conta hoje)."""
@@ -226,7 +226,7 @@ class PriceTrackClient:
         return True
 
     def create_shipping_export(self, request: ExportRequest) -> ExportJob:
-        return self._create_export(EXPORT_SHIPPING_PATH, request)
+        return self._create_export(EXPORT_SHIPPING_PATH, request, body=_v1_body(request))
 
     def _create_export(
         self, path: str, request: ExportRequest, body: Optional[Dict] = None
@@ -350,6 +350,23 @@ class PriceTrackClient:
             f"({size / 1024:.0f} KB → {dest})"
         )
         return job
+
+
+def _v1_body(request: ExportRequest) -> Dict:
+    """Body sem os filtros que só a V2 de ofertas conhece (`skus`, `proofFilter`).
+
+    Mandá-los à V1 (ou ao export de fretes) arrisca um 400 justamente no
+    caminho de fallback. Sem `skus` a V1 exporta o dia inteiro — mais dado,
+    nunca menos —, e isso fica dito no log.
+    """
+    body = request.to_body()
+    descartados = [k for k in ("skus", "proofFilter") if body.pop(k, None) is not None]
+    if descartados:
+        logger.warning(
+            f"PriceTrack {request.collection_date}: {', '.join(descartados)} só "
+            f"existe(m) na V2 — omitido(s) no export V1 (que traz o dia inteiro)."
+        )
+    return body
 
 
 def replace_query(query: CollectQuery, **changes) -> CollectQuery:

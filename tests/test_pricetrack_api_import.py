@@ -667,11 +667,14 @@ class _TitleTable:
     def order(self, *_a, **_k):
         return self
 
-    def limit(self, *_a):
+    def range(self, start, end):
+        self._slice = (start, end + 1)
+        self._calls.setdefault("range", []).append((start, end))
         return self
 
     def execute(self):
-        return type("R", (), {"data": self._rows})()
+        a, b = getattr(self, "_slice", (0, len(self._rows)))
+        return type("R", (), {"data": self._rows[a:b]})()
 
 
 class TestFillMissingTitles:
@@ -719,3 +722,23 @@ class TestFillMissingTitles:
         records = [{"sku": "A", "title": ""}]
         assert ptai.fill_missing_titles(records) == 1
         assert records[0]["title"] == ""
+
+    def test_pagina_alem_do_teto_do_postgrest(self, monkeypatch):
+        monkeypatch.setattr(ptai, "_TITLE_LOOKUP_PAGE", 2)
+        records = [{"sku": "A", "marketplace": "MAGALU", "title": ""}]
+        rows = [
+            {"sku": "A", "marketplace": "AMAZON", "title": "a1"},
+            {"sku": "A", "marketplace": "AMAZON", "title": "a2"},
+            {"sku": "A", "marketplace": "MAGALU", "title": "o certo"},
+        ]
+        faltando, calls = self._run(monkeypatch, records, rows)
+        assert records[0]["title"] == "o certo"
+        assert faltando == 0
+        assert calls["range"] == [(0, 1), (2, 3)]
+
+    def test_para_quando_todos_acharam_titulo(self, monkeypatch):
+        monkeypatch.setattr(ptai, "_TITLE_LOOKUP_PAGE", 1)
+        records = [{"sku": "A", "marketplace": "AMAZON", "title": ""}]
+        rows = [{"sku": "A", "marketplace": "AMAZON", "title": "x"}] * 5
+        _, calls = self._run(monkeypatch, records, rows)
+        assert calls["range"] == [(0, 0)]

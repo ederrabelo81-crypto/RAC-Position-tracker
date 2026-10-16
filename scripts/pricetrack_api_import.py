@@ -741,6 +741,10 @@ def _supabase_client():
 
 #: SKUs por consulta no preenchimento de título (cabe folgado na URL do PostgREST).
 _TITLE_LOOKUP_CHUNK = 100
+#: Tamanho da página = teto de linhas por resposta do PostgREST.
+_TITLE_LOOKUP_PAGE = 1000
+#: Teto de páginas por lote de SKUs (100 mil linhas) — guarda contra loop.
+_TITLE_LOOKUP_MAX_PAGES = 100
 
 
 def fill_missing_titles(records: List[Dict], dry_run: bool = False) -> int:
@@ -777,25 +781,40 @@ def fill_missing_titles(records: List[Dict], dry_run: bool = False) -> int:
     por_sku: Dict[str, str] = {}
     try:
         client = _supabase_client()
+        procurados = {
+            (str(r.get("sku") or ""), str(r.get("marketplace") or "")) for r in faltando
+        }
         for i in range(0, len(skus), _TITLE_LOOKUP_CHUNK):
             chunk = skus[i : i + _TITLE_LOOKUP_CHUNK]
-            resp = (
-                client.table(_TABLE)
-                .select("sku,marketplace,title,collection_date")
-                .in_("sku", chunk)
-                .neq("title", "")
-                .order("collection_date", desc=True)
-                .limit(10_000)
-                .execute()
-            )
-            # Ordenado do mais recente para o mais antigo: o primeiro visto vence.
-            for row in resp.data or []:
-                title = str(row.get("title") or "").strip()
-                if not title:
-                    continue
-                sku = str(row.get("sku") or "")
-                por_sku_mkt.setdefault((sku, str(row.get("marketplace") or "")), title)
-                por_sku.setdefault(sku, title)
+            alvo = {k for k in procurados if k[0] in set(chunk)}
+            # Pagina com `.range`: o PostgREST corta cada resposta em 1.000
+            # linhas mesmo com `.limit` maior, e 100 SKUs × marketplaces ×
+            # turnos × dias passam disso fácil — o SKU cujo título caísse
+            # depois do corte ficaria vazio e o upsert apagaria o título do
+            # banco, justamente o que esta função existe para impedir. Para
+            # cedo quando todo (sku, marketplace) do lote já tem título.
+            for pagina in range(_TITLE_LOOKUP_MAX_PAGES):
+                inicio = pagina * _TITLE_LOOKUP_PAGE
+                resp = (
+                    client.table(_TABLE)
+                    .select("sku,marketplace,title,collection_date")
+                    .in_("sku", chunk)
+                    .neq("title", "")
+                    .order("collection_date", desc=True)
+                    .range(inicio, inicio + _TITLE_LOOKUP_PAGE - 1)
+                    .execute()
+                )
+                rows = resp.data or []
+                # Ordenado do mais recente para o mais antigo: o primeiro visto vence.
+                for row in rows:
+                    title = str(row.get("title") or "").strip()
+                    if not title:
+                        continue
+                    sku = str(row.get("sku") or "")
+                    por_sku_mkt.setdefault((sku, str(row.get("marketplace") or "")), title)
+                    por_sku.setdefault(sku, title)
+                if len(rows) < _TITLE_LOOKUP_PAGE or alvo <= por_sku_mkt.keys():
+                    break
     except Exception as e:
         logger.warning(
             f"Não foi possível buscar títulos conhecidos no banco ({e}) — "
