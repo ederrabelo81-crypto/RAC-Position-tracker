@@ -253,3 +253,19 @@ def test_placeholder_de_seller_nao_entra_na_leitura_por_vendedor():
     res = compare_prices(nossos, pt)
     assert res.mesmo_vendedor == {}
     assert "pct_mais_barato_fora_do_pt" not in res.por_plataforma["CASAS BAHIA"]
+
+
+def test_dia_sem_dado_nas_duas_fontes_e_alerta():
+    vazio = {"pt_volume": {}, "nosso_volume": {}, "indisp": {}, "pt_dia": [],
+             "nossos": [], "plataformas_dia": set(), "truncados": []}
+    rel = script.auditar(vazio, "2026-10-15", AuditConfig())
+    assert any("nada foi auditado" in a for a in rel["alertas"])
+
+
+def test_markdown_formata_excluidos_por_tipo():
+    dados = script.coletar(_Client(_tabelas()), "2026-10-02", "2026-09-18")
+    dados["nossos"].append({"plataforma": "Amazon", "sku_resolvido": "X", "preco": "255",
+                            "produto": "Ar Condicionado TCL", "url_produto":
+                            "https://www.amazon.com.br/Completo-Instala%C3%A7%C3%A3o-condicionado-Suporte/dp/B0D"})
+    md = script._md(script.auditar(dados, "2026-10-02", AuditConfig()))
+    assert "unidade: ACESSORIO 1." in md and "{" not in md.split("unidade:")[1].split("\n")[0]

@@ -166,8 +166,13 @@ def auditar(dados: Dict[str, Any], dia: str, cfg: AuditConfig) -> Dict[str, Any]
         alertas.append(f"{sem_indisp} dias seguidos sem nenhuma oferta indisponível")
     if lacunas:
         alertas.append(f"sem cobertura: {', '.join(lacunas)}")
-    if dados["nossos"] and not dados["pt_dia"]:
+    if not dados["nossos"] and not dados["pt_dia"]:
+        # Data inteira ausente das duas fontes: nada a comparar NÃO é saudável.
+        alertas.append(f"sem dado em {dia} nas duas fontes — nada foi auditado")
+    elif not dados["pt_dia"]:
         alertas.append(f"PriceTrack sem linhas em {dia}")
+    elif not dados["nossos"]:
+        alertas.append(f"coletas sem linhas com SKU em {dia} (janela quente já podada?)")
     return {
         "data": dia,
         "alertas": alertas,
@@ -200,7 +205,7 @@ def _md(rel: Dict[str, Any]) -> str:
         linhas.append("")
     linhas += ["## Menor preço do SKU (o PriceTrack vê o mercado?) — só anúncio de unidade", "",
                f"{p['pares']} pares comparados. Fora da comparação por não serem uma "
-               f"unidade: {p['excluidos_por_tipo'] or 'nenhum'}.", "",
+               f"unidade: {', '.join(f'{k} {v}' for k, v in p['excluidos_por_tipo'].items()) or 'nenhum'}.", "",
                "| Marketplace | Pares | Bate (≤5%) | Diverge (>15%) | PT mais caro | Nosso mais barato fora do PT |",
                "|---|---:|---:|---:|---:|---:|"]
     for mkt, v in p["por_plataforma"].items():
