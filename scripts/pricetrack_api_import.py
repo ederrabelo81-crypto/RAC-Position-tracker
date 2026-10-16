@@ -217,6 +217,10 @@ _MARKETPLACE_FIELDS = ("marketplace", "market", "loja_marketplace")
 _SELLER_FIELDS = ("seller", "vendedor", "store", "loja")
 _CATEGORY_FIELDS = ("category", "categoria", "product_category", "productcategory")
 _HOUR_FIELDS = ("collection_hour", "collectionhour")
+# Export V2 (Redis, Out/2026) grava `collection_hour` NULO e só o HH:MM da
+# execução. Sem este fallback toda oferta da V2 ficaria sem hora — e Manhã/
+# Tarde sumiriam do dia sem erro nenhum, sobrando só o "Diário".
+_HOUR_EXEC_FIELDS = ("collection_hour_execution", "collectionhourexecution")
 
 # Categorias de ar condicionado aceitas (uppercase, comparação exata).
 # Configurável via --categories na CLI.
@@ -270,6 +274,27 @@ def _pick_text(df: pd.DataFrame, lookup: Dict[str, str],
         if cand in lookup:
             return df[lookup[cand]].fillna(default).astype(str).str.strip()
     return pd.Series([default] * len(df), index=df.index, dtype="object")
+
+
+def _pick_hour(df: pd.DataFrame, lookup: Dict[str, str]) -> pd.Series:
+    """Hora da coleta (0–23): `collection_hour`, senão a hora de
+    `collection_hour_execution` ("HH:MM" ou "HH:MM:SS").
+
+    As duas coincidem em 100% das ofertas de AR CONDICIONADO verificadas no
+    export bruto da V1, então o fallback não muda o turno de ninguém — só
+    devolve a hora que a V2 deixou de preencher.
+    """
+    hour = pd.Series(pd.NA, index=df.index, dtype="Int64")
+    for cand in _HOUR_FIELDS:
+        if cand in lookup:
+            col = pd.to_numeric(df[lookup[cand]], errors="coerce")
+            hour = hour.fillna(col.where(col.between(0, 23)).astype("Int64"))
+    for cand in _HOUR_EXEC_FIELDS:
+        if cand in lookup:
+            hh = df[lookup[cand]].astype("string").str.extract(r"^\s*(\d{1,2}):")[0]
+            col = pd.to_numeric(hh, errors="coerce")
+            hour = hour.fillna(col.where(col.between(0, 23)).astype("Int64"))
+    return hour
 
 
 def _pick_numeric(
@@ -448,9 +473,7 @@ def aggregate_offers(
         "_spot": spot,
         "_pix": pix,
         "_available": available,
-        "_hour": pd.to_numeric(
-            _pick_text(df, lookup, _HOUR_FIELDS), errors="coerce"
-        ).astype("Int64"),
+        "_hour": _pick_hour(df, lookup),
         "brand": _pick_text(df, lookup, _BRAND_FIELDS).str.upper(),
         "sku": _pick_text(df, lookup, _SKU_FIELDS),
         "title": _pick_text(df, lookup, _TITLE_FIELDS),
@@ -714,6 +737,86 @@ def _supabase_client():
         raise EnvironmentError("SUPABASE_URL e SUPABASE_KEY não configurados no .env")
     _CLIENT = create_client(url, key)
     return _CLIENT
+
+
+#: SKUs por consulta no preenchimento de título (cabe folgado na URL do PostgREST).
+_TITLE_LOOKUP_CHUNK = 100
+
+
+def fill_missing_titles(records: List[Dict], dry_run: bool = False) -> int:
+    """Preenche `title` vazio com o último título conhecido no banco.
+
+    O export V2 (Redis) entrega `title` sempre nulo. O título da linha sai
+    primeiro de `product_name` (ver `_TITLE_FIELDS`), então isto só age quando
+    o export não traz nenhum dos dois. Sem isto, esse import gravaria
+    `title = ''` — e, como `title` está fora da chave do
+    upsert, um reimport (--force) APAGARIA o título que a linha já tinha.
+    `title` alimenta o recorte de BTU por título (`shelf_insights.extract_btu`)
+    e a auditoria de capacidade, então perdê-lo em silêncio corrompe leitura
+    a jusante.
+
+    Precedência: mesmo (sku, marketplace) → mesmo sku em qualquer marketplace.
+    O título vem da linha mais recente com título. O que não for achado fica
+    vazio e é contado no log — nunca inventado.
+
+    Returns:
+        Quantos registros ficaram SEM título depois do preenchimento.
+    """
+    faltando = [r for r in records if not str(r.get("title") or "").strip()]
+    if not faltando:
+        return 0
+    if dry_run or not _banco_disponivel():
+        logger.warning(
+            f"{len(faltando):,} linha(s) sem título no export e sem banco "
+            f"para consultar o último título conhecido — gravadas com título vazio."
+        )
+        return len(faltando)
+
+    skus = sorted({str(r.get("sku") or "") for r in faltando} - {""})
+    por_sku_mkt: Dict[Tuple[str, str], str] = {}
+    por_sku: Dict[str, str] = {}
+    try:
+        client = _supabase_client()
+        for i in range(0, len(skus), _TITLE_LOOKUP_CHUNK):
+            chunk = skus[i : i + _TITLE_LOOKUP_CHUNK]
+            resp = (
+                client.table(_TABLE)
+                .select("sku,marketplace,title,collection_date")
+                .in_("sku", chunk)
+                .neq("title", "")
+                .order("collection_date", desc=True)
+                .limit(10_000)
+                .execute()
+            )
+            # Ordenado do mais recente para o mais antigo: o primeiro visto vence.
+            for row in resp.data or []:
+                title = str(row.get("title") or "").strip()
+                if not title:
+                    continue
+                sku = str(row.get("sku") or "")
+                por_sku_mkt.setdefault((sku, str(row.get("marketplace") or "")), title)
+                por_sku.setdefault(sku, title)
+    except Exception as e:
+        logger.warning(
+            f"Não foi possível buscar títulos conhecidos no banco ({e}) — "
+            f"{len(faltando):,} linha(s) gravadas com título vazio."
+        )
+        return len(faltando)
+
+    sem_titulo = 0
+    for r in faltando:
+        sku = str(r.get("sku") or "")
+        title = por_sku_mkt.get((sku, str(r.get("marketplace") or ""))) or por_sku.get(sku)
+        if title:
+            r["title"] = title
+        else:
+            sem_titulo += 1
+    logger.info(
+        f"Título preenchido pelo histórico em {len(faltando) - sem_titulo:,}/"
+        f"{len(faltando):,} linha(s) sem título no export"
+        + (f"; {sem_titulo:,} SKU(s) novos ficam com título vazio." if sem_titulo else ".")
+    )
+    return sem_titulo
 
 
 def date_exists(collection_date: str, dry_run: bool = False) -> bool:
@@ -1081,6 +1184,11 @@ def _process_date(
         for k in ("last_hour", "obs_count", "unavailable_count"):
             v = r.get(k)
             r[k] = None if v is None or pd.isna(v) else int(v)
+
+    # V2 do export não traz título: recupera o último conhecido ANTES de
+    # gravar em qualquer lugar (Parquet incluso), senão o upsert apaga o que o
+    # banco já sabia. No-op quando o export trouxe título (V1).
+    fill_missing_titles(records, dry_run=dry_run)
 
     # ── Histórico frio (Parquet no Drive) ─────────────────────────────────
     # ANTES do Supabase e independente dele: é o que faz o dia sobreviver a um

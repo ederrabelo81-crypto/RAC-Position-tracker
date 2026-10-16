@@ -39,7 +39,7 @@ collect_offers("2026-07-01")
     ├─ total ≤ threshold (50k default) → ESTRATÉGIA PAGINADA
     │      GET página a página via meta.hasNextPage (nunca take fixo)
     └─ total > threshold → ESTRATÉGIA EXPORT
-           POST /exports-external/collects-offers  {collectionDate, marketplaces?}
+           POST /exports-external/collects-offers[-v2]  {collectionDate, marketplaces?}
            polling GET /exports-external/{id}  (pending → processing → DONE|FAILED)
            download NDJSON.gz (URL pré-assinada, TTL 1h, renovação automática)
            filtros extras aplicados client-side (mesma semântica do paginado)
@@ -122,6 +122,27 @@ python -m pricetrack_api exports                               # lista exports d
 | `PRICETRACK_MAX_CONCURRENT_EXPORTS` | `3` | Exports em voo (limite fixo da API) |
 | `PRICETRACK_DOWNLOAD_URL_TTL_SECONDS` | `3000` | Idade máx. do snapshot antes de renovar a URL (TTL real: 1h) |
 | `PRICETRACK_DATA_DIR` | `imports/pricetrack/api` | Raiz dos arquivos locais |
+| `PRICETRACK_OFFERS_EXPORT_VERSION` | `v2` | Export de ofertas: `v2` (Redis, rápido) ou `v1` (rollback) |
+| `PRICETRACK_OFFERS_V2_RETENTION_DAYS` | `90` | Janela da V2 (contando hoje); data mais antiga vai pela V1 |
+
+### Export V2 de ofertas (Redis) — padrão desde Out/2026
+
+`POST /exports-external/collects-offers-v2` lê do cache Redis do PriceTrack
+(`price_matrix`) em vez das partições do Postgres: mesmo contrato de request e
+resposta da V1, muito mais rápido. O cliente usa a V2 sozinho e cai na V1 quando
+precisa. As diferenças da V2 e o tratamento de cada uma:
+
+| Diferença da V2 | Risco se ignorada | Tratamento |
+|-----------------|-------------------|------------|
+| Só os últimos 90 dias (contando hoje) | backfill antigo falha | data mais antiga vai pela **V1** automaticamente |
+| `proofFilter` padrão `WITH_PROOF` | **só ofertas com print** — corte silencioso vs. V1 | cliente envia `proofFilter: "ALL"` (o chamador pode escolher outro) |
+| `collection_hour` sempre `null` | Manhã/Tarde somem do `pricetrack_daily` | hora vem de `collection_hour_execution` (HH:MM) |
+| `title` sempre `null` | reimport apaga o título no banco | título sai de `product_name`; se faltar, último título conhecido no banco (`fill_missing_titles`) |
+| `url` resolvida em lote | — | sem mudança |
+| endpoint ausente (404) | import do dia falha | cai para a V1 no resto da execução, com WARNING |
+
+A chave do diário de exports não muda (o `proofFilter` é acrescentado só no
+envio), então um export V1 em voo antes do deploy continua sendo adotado.
 
 ---
 

@@ -616,3 +616,106 @@ class TestSupabaseClientResolucao:
         monkeypatch.setattr(ptai, "create_client", _nao_deveria, raising=False)
         with pytest.raises(EnvironmentError):
             ptai._supabase_client()
+
+
+class TestExportV2:
+    """Export V2 (Redis, Out/2026): `collection_hour` e `title` chegam nulos.
+
+    Sem os fallbacks, Manhã/Tarde sumiriam do dia (toda oferta sem hora vai
+    só para o Diário) e um reimport apagaria o título que o banco já tinha.
+    """
+
+    def test_hora_da_execucao_alimenta_os_turnos(self):
+        df = pd.DataFrame([
+            _offer(collection_hour=None, collection_hour_execution="09:15"),
+            _offer(collection_hour=None, collection_hour_execution="19:40",
+                   spot_price=1899.90),
+            _offer(collection_hour=None, collection_hour_execution="03:05"),
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-10-15")
+        assert set(agg["turno"]) == {"Diário", "Manhã", "Tarde"}
+        diario = agg[agg["turno"] == "Diário"].iloc[0]
+        assert diario["last_hour"] == 19
+
+    def test_collection_hour_vence_quando_presente(self):
+        df = pd.DataFrame([
+            _offer(collection_hour=10, collection_hour_execution="20:00"),
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-10-15")
+        assert set(agg["turno"]) == {"Diário", "Manhã"}
+
+    def test_hora_de_execucao_invalida_vira_sem_hora(self):
+        df = pd.DataFrame([_offer(collection_hour_execution="xx")])
+        agg, _ = ptai.aggregate_offers(df, "2026-10-15")
+        assert list(agg["turno"]) == ["Diário"]
+
+
+class _TitleTable:
+    def __init__(self, rows, calls):
+        self._rows, self._calls = rows, calls
+
+    def select(self, *_a):
+        return self
+
+    def in_(self, col, values):
+        self._calls.setdefault("in_", []).append(list(values))
+        return self
+
+    def neq(self, *_a):
+        return self
+
+    def order(self, *_a, **_k):
+        return self
+
+    def limit(self, *_a):
+        return self
+
+    def execute(self):
+        return type("R", (), {"data": self._rows})()
+
+
+class TestFillMissingTitles:
+    def _run(self, monkeypatch, records, rows):
+        calls = {}
+        monkeypatch.setattr(ptai, "_banco_disponivel", lambda: True)
+        monkeypatch.setattr(ptai, "_supabase_client", lambda: type(
+            "C", (), {"table": lambda self, name: _TitleTable(rows, calls)})())
+        return ptai.fill_missing_titles(records), calls
+
+    def test_mesmo_marketplace_vence_e_sku_cobre_o_resto(self, monkeypatch):
+        records = [
+            {"sku": "A", "marketplace": "AMAZON", "title": ""},
+            {"sku": "A", "marketplace": "MAGALU", "title": ""},
+            {"sku": "B", "marketplace": "AMAZON", "title": None},
+            {"sku": "C", "marketplace": "AMAZON", "title": "já tinha"},
+        ]
+        rows = [  # mais recente primeiro
+            {"sku": "A", "marketplace": "AMAZON", "title": "A amazon novo"},
+            {"sku": "A", "marketplace": "MERCADO LIVRE", "title": "A ml"},
+            {"sku": "A", "marketplace": "AMAZON", "title": "A amazon velho"},
+        ]
+        faltando, calls = self._run(monkeypatch, records, rows)
+        assert [r["title"] for r in records] == [
+            "A amazon novo", "A amazon novo", None, "já tinha"]
+        assert faltando == 1
+        # Só consulta quem estava sem título.
+        assert calls["in_"] == [["A", "B"]]
+
+    def test_sem_vazios_nao_consulta(self, monkeypatch):
+        def _nao():
+            raise AssertionError("não deveria consultar")
+        monkeypatch.setattr(ptai, "_banco_disponivel", lambda: True)
+        monkeypatch.setattr(ptai, "_supabase_client", _nao)
+        assert ptai.fill_missing_titles([{"sku": "A", "title": "x"}]) == 0
+
+    def test_dry_run_nao_toca_no_banco(self, monkeypatch):
+        monkeypatch.setattr(ptai, "_supabase_client", lambda: 1 / 0)
+        assert ptai.fill_missing_titles(
+            [{"sku": "A", "title": ""}], dry_run=True) == 1
+
+    def test_erro_no_banco_nao_derruba_import(self, monkeypatch):
+        monkeypatch.setattr(ptai, "_banco_disponivel", lambda: True)
+        monkeypatch.setattr(ptai, "_supabase_client", lambda: 1 / 0)
+        records = [{"sku": "A", "title": ""}]
+        assert ptai.fill_missing_titles(records) == 1
+        assert records[0]["title"] == ""

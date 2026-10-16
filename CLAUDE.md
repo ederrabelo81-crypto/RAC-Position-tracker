@@ -1463,6 +1463,17 @@ Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto;
 ID Produto Marketplace; ID Oferta Marketplace; ID Seller; URL Canônica; Offer Key
 ```
 
+### Export V2 do PriceTrack via Redis (Out/2026) 🆕
+
+O import de ofertas usa por padrão `POST /exports-external/collects-offers-v2`
+(lê do cache Redis, muito mais rápido que a V1). Data fora dos 90 dias de
+retenção e 404 da V2 caem na V1 sozinhos; `PRICETRACK_OFFERS_EXPORT_VERSION=v1`
+é o rollback. **Regras duras:** a V2 tem `proofFilter` padrão `WITH_PROOF` (só
+oferta com print) — o cliente sempre manda `ALL`; `collection_hour` e `title`
+vêm nulos — a hora sai de `collection_hour_execution` e o título de
+`product_name`/último título no banco (`fill_missing_titles`). Detalhes em
+`pricetrack_api/README.md`.
+
 ### Preço do PriceTrack — base explícita (`price_basis`, Set/2026) 🆕
 
 O importador da API colapsava os quatro preços de cada oferta (`spotPrice`,

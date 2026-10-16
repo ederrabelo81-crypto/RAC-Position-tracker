@@ -54,6 +54,16 @@ class PriceTrackSettings:
     # imports com 429. Com o orçamento definido, o manager para de SUBMETER
     # lote que não caberia no tempo restante, em vez de ser interrompido.
     run_budget_seconds: float = 0.0
+    # Versão do export em massa de OFERTAS. "v2" (padrão, Out/2026) lê do
+    # cache Redis do PriceTrack em vez das partições do Postgres — muito mais
+    # rápido, mesmo contrato de request/resposta. Limites da V2, todos
+    # tratados pelo cliente/importador: só os últimos `offers_v2_retention_days`
+    # dias (contando hoje; data mais antiga cai na V1 sozinha), `title` e
+    # `collection_hour` nulos, e `proofFilter` com padrão WITH_PROOF (o
+    # cliente pede ALL para manter a paridade com a V1). "v1" é o rollback.
+    offers_export_version: str = "v2"
+    offers_v2_retention_days: int = 90
+
     # Margem de segurança sobre o TTL de 1h da downloadUrl: renova aos 50min.
     download_url_ttl_seconds: float = 3000.0
 
@@ -81,6 +91,17 @@ class PriceTrackSettings:
                 f"que poll_timeout_seconds ({self.poll_timeout_seconds:.0f}s): "
                 "nenhum export seria submetido. O orçamento da execução "
                 "precisa comportar ao menos um export."
+            )
+
+        self.offers_export_version = str(self.offers_export_version).strip().lower()
+        if self.offers_export_version not in ("v1", "v2"):
+            raise PriceTrackConfigError(
+                "offers_export_version deve ser 'v1' ou 'v2' "
+                f"(recebido: {self.offers_export_version!r})."
+            )
+        if self.offers_v2_retention_days < 1:
+            raise PriceTrackConfigError(
+                "offers_v2_retention_days deve ser ≥ 1."
             )
 
         if not 1 <= self.max_concurrent_exports <= 3:

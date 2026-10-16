@@ -154,7 +154,7 @@ class NdjsonStore:
                         by_id: Dict[str, Dict[str, Any]], source: str) -> None:
         hours = sorted({
             h for raw in by_id.values()
-            if (h := to_hour(pick(raw, "collectionHour"))) is not None
+            if (h := to_hour(pick(raw, "collectionHour", "collectionHourExecution"))) is not None
         })
         previous = self.manifest(dataset, cd) or {}
         sources = list(dict.fromkeys(previous.get("sources", []) + ([source] if source else [])))

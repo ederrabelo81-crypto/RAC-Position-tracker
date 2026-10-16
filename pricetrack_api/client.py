@@ -5,6 +5,7 @@ Endpoints cobertos:
   * GET  /collects-offers-external      (ofertas paginadas)
   * GET  /collects-shipping-external    (fretes paginados)
   * POST /exports-external/collects-offers
+  * POST /exports-external/collects-offers-v2   (V2 via Redis — padrão)
   * POST /exports-external/collects-shipping
   * GET  /exports-external              (lista; data[0] = mais recente)
   * GET  /exports-external/{exportId}   (status + downloadUrl quando DONE)
@@ -18,16 +19,19 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 
 from .config import PriceTrackSettings
-from .exceptions import DownloadUrlExpiredError, PriceTrackError
+from .exceptions import DownloadUrlExpiredError, PriceTrackError, PriceTrackHTTPError
 from .http import HttpTransport
 from .models import (
     EXPORT_DONE,
+    PROOF_ALL,
     CollectQuery,
     ExportJob,
     ExportRequest,
@@ -41,6 +45,14 @@ from .models import (
 OFFERS_PATH = "/collects-offers-external"
 SHIPPING_PATH = "/collects-shipping-external"
 EXPORT_OFFERS_PATH = "/exports-external/collects-offers"
+EXPORT_OFFERS_V2_PATH = "/exports-external/collects-offers-v2"
+_BRT = ZoneInfo("America/Sao_Paulo")
+
+
+def _today_brt() -> date:
+    """Hoje no fuso do PriceTrack — é por ele que a retenção do Redis conta."""
+    return datetime.now(_BRT).date()
+
 EXPORT_SHIPPING_PATH = "/exports-external/collects-shipping"
 EXPORTS_PATH = "/exports-external"
 #: Teto de páginas ao listar exports. Com `page_take` de 100, cobre 5 mil
@@ -56,10 +68,15 @@ class PriceTrackClient:
         settings: PriceTrackSettings,
         transport: Optional[HttpTransport] = None,
         clock: Callable[[], float] = time.monotonic,
+        today: Callable[[], date] = _today_brt,
     ):
         self.settings = settings
         self._transport = transport or HttpTransport(settings)
         self._clock = clock
+        self._today = today
+        # Vira False no primeiro 404 da V2 (endpoint não liberado para a
+        # organização): o resto da execução vai direto à V1, sem repetir o erro.
+        self._v2_available = True
 
     # ── Endpoints paginados ──────────────────────────────────────────────
 
@@ -162,24 +179,65 @@ class PriceTrackClient:
     # ── Exports assíncronos ──────────────────────────────────────────────
 
     def create_offers_export(self, request: ExportRequest) -> ExportJob:
-        """POST /exports-external/collects-offers → job em status pending.
+        """Cria o export de ofertas — V2 (Redis) quando cabe, senão V1.
+
+        A V2 tem o mesmo contrato da V1 e é muito mais rápida, mas só vale
+        para a janela de retenção do Redis. Cai na V1 quando: a configuração
+        pede V1, a data é mais antiga que a retenção, ou a V2 responde 404
+        (endpoint não liberado). Na V2 o ``proofFilter`` vai explícito como
+        ``ALL`` quando o chamador não escolheu: o padrão da API (WITH_PROOF)
+        descartaria em silêncio toda oferta sem print, que a V1 entrega.
 
         Raises:
             PriceTrackExportLimitError: 429 — 3 exports concorrentes em uso.
             PriceTrackNoCollectionError: 409 — sem coleta para a data.
         """
-        return self._create_export(EXPORT_OFFERS_PATH, request)
+        if not self._use_offers_v2(request):
+            return self._create_export(EXPORT_OFFERS_PATH, request)
+        body = request.to_body()
+        body.setdefault("proofFilter", PROOF_ALL)
+        try:
+            return self._create_export(EXPORT_OFFERS_V2_PATH, request, body=body)
+        except PriceTrackHTTPError as e:
+            if e.status_code != 404:
+                raise
+            self._v2_available = False
+            logger.warning(
+                f"PriceTrack export V2 respondeu 404 ({request.collection_date}) "
+                f"— endpoint indisponível para a organização; usando a V1 no "
+                f"resto da execução."
+            )
+            return self._create_export(EXPORT_OFFERS_PATH, request)
+
+    def offers_v2_window_start(self) -> date:
+        """Data mais antiga que a V2 ainda serve (retenção conta hoje)."""
+        return self._today() - timedelta(days=self.settings.offers_v2_retention_days - 1)
+
+    def _use_offers_v2(self, request: ExportRequest) -> bool:
+        if self.settings.offers_export_version != "v2" or not self._v2_available:
+            return False
+        inicio = self.offers_v2_window_start()
+        if request.collection_date < inicio:
+            logger.info(
+                f"PriceTrack {request.collection_date}: fora da retenção da V2 "
+                f"(desde {inicio}) — export pela V1."
+            )
+            return False
+        return True
 
     def create_shipping_export(self, request: ExportRequest) -> ExportJob:
         return self._create_export(EXPORT_SHIPPING_PATH, request)
 
-    def _create_export(self, path: str, request: ExportRequest) -> ExportJob:
+    def _create_export(
+        self, path: str, request: ExportRequest, body: Optional[Dict] = None
+    ) -> ExportJob:
         payload = self._transport.request_json(
-            "POST", path, json_body=request.to_body()
+            "POST", path, json_body=body if body is not None else request.to_body()
         )
         job = ExportJob.from_api(payload, fetched_at=self._clock())
+        versao = " [V2]" if path == EXPORT_OFFERS_V2_PATH else ""
         logger.info(
-            f"PriceTrack export criado: {job.export_id} "
+            f"PriceTrack export criado{versao}: {job.export_id} "
             f"({request.collection_date}) status={job.status}"
         )
         return job

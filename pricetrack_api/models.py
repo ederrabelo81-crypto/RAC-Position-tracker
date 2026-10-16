@@ -114,6 +114,15 @@ STATUS_UNAVAILABLE = "UNAVAILABLE"
 
 _HOUR_RANGE_RE = re.compile(r"^\d{2}:\d{2}-\d{2}:\d{2}$")
 
+#: Teto de SKUs por export (V2 de ofertas).
+MAX_EXPORT_SKUS = 1000
+#: Valores de `proofFilter` (V2). O padrão da API é WITH_PROOF — só ofertas
+#: com print —, que NÃO é o que a V1 entrega; o cliente pede ALL.
+PROOF_WITH = "WITH_PROOF"
+PROOF_WITHOUT = "WITHOUT_PROOF"
+PROOF_ALL = "ALL"
+PROOF_FILTERS = frozenset({PROOF_WITH, PROOF_WITHOUT, PROOF_ALL})
+
 
 # ── Schemas de dados ─────────────────────────────────────────────────────────
 
@@ -175,7 +184,11 @@ class Offer:
             installment_value=to_float(pick(raw, "installmentValue")),
             status=to_str(pick(raw, "status")).upper(),
             collection_date=to_date(pick(raw, "collectionDate")),
-            collection_hour=to_hour(pick(raw, "collectionHour")),
+            # V2 grava `collectionHour` nulo; a hora sobrevive no HH:MM da
+            # execução (que coincide com ela nas ofertas verificadas).
+            collection_hour=to_hour(
+                pick(raw, "collectionHour", "collectionHourExecution")
+            ),
             image_url=to_str(pick(raw, "imageUrl")),
             screenshot_url=to_str(screenshot) if screenshot is not None else None,
             url=to_str(pick(raw, "url")),
@@ -365,6 +378,11 @@ class ExportRequest:
     collection_date: date | str
     marketplaces: Optional[Sequence[str]] = None
     collection_hour_execution_range: Optional[str] = None   # "HH:MM-HH:MM"
+    # Só o export V2 de ofertas aceita os dois abaixo. Ficam fora do body
+    # quando ausentes, para que a chave do diário (`journal_key`, que é o body)
+    # continue a mesma de antes da V2 e um export já em voo seja adotado.
+    skus: Optional[Sequence[str]] = None                    # até 1000
+    proof_filter: Optional[str] = None                      # WITH_PROOF|WITHOUT_PROOF|ALL
 
     def __post_init__(self) -> None:
         cd = to_date(self.collection_date)
@@ -380,6 +398,18 @@ class ExportRequest:
             raise ValueError(
                 "collectionHourExecutionRange deve ter formato HH:MM-HH:MM"
             )
+        if self.skus is not None and len(self.skus) > MAX_EXPORT_SKUS:
+            raise ValueError(
+                f"skus aceita no máximo {MAX_EXPORT_SKUS} itens "
+                f"(recebido: {len(self.skus)})"
+            )
+        if self.proof_filter is not None:
+            self.proof_filter = str(self.proof_filter).strip().upper()
+            if self.proof_filter not in PROOF_FILTERS:
+                raise ValueError(
+                    f"proofFilter deve ser um de {sorted(PROOF_FILTERS)} "
+                    f"(recebido: {self.proof_filter!r})"
+                )
 
     def to_body(self) -> Dict[str, Any]:
         body: Dict[str, Any] = {"collectionDate": self.collection_date.isoformat()}
@@ -387,6 +417,10 @@ class ExportRequest:
             body["marketplaces"] = list(self.marketplaces)
         if self.collection_hour_execution_range:
             body["collectionHourExecutionRange"] = self.collection_hour_execution_range
+        if self.skus:
+            body["skus"] = list(self.skus)
+        if self.proof_filter:
+            body["proofFilter"] = self.proof_filter
         return body
 
 
