@@ -29,7 +29,14 @@ from typing import Any, Dict, Iterable, Iterator, Optional
 
 from loguru import logger
 
-from .models import pick, record_id, to_date, to_hour
+from .models import _first_hour, pick, record_id, to_date
+
+
+def _hour_of(raw: Dict[str, Any]) -> Optional[int]:
+    """Hora da oferta: `collectionHour`, senão a de `collectionHourExecution`
+    (a V2 grava a primeira nula). Cai no fallback também quando a primeira vem
+    vazia ou malformada, como `_pick_hour` do importador."""
+    return _first_hour(pick(raw, "collectionHour"), pick(raw, "collectionHourExecution"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +161,7 @@ class NdjsonStore:
                         by_id: Dict[str, Dict[str, Any]], source: str) -> None:
         hours = sorted({
             h for raw in by_id.values()
-            if (h := to_hour(pick(raw, "collectionHour", "collectionHourExecution"))) is not None
+            if (h := _hour_of(raw)) is not None
         })
         previous = self.manifest(dataset, cd) or {}
         sources = list(dict.fromkeys(previous.get("sources", []) + ([source] if source else [])))

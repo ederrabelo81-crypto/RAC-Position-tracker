@@ -39,7 +39,7 @@ collect_offers("2026-07-01")
     ├─ total ≤ threshold (50k default) → ESTRATÉGIA PAGINADA
     │      GET página a página via meta.hasNextPage (nunca take fixo)
     └─ total > threshold → ESTRATÉGIA EXPORT
-           POST /exports-external/collects-offers[-v2]  {collectionDate, marketplaces?}
+           POST /exports-external/collects-offers[-v2]  {collectionDate, marketplaces?, skus?, proofFilter?}
            polling GET /exports-external/{id}  (pending → processing → DONE|FAILED)
            download NDJSON.gz (URL pré-assinada, TTL 1h, renovação automática)
            filtros extras aplicados client-side (mesma semântica do paginado)

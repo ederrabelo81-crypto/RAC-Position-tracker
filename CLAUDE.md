@@ -1469,7 +1469,8 @@ O import de ofertas usa por padrão `POST /exports-external/collects-offers-v2`
 (lê do cache Redis, muito mais rápido que a V1). Data fora dos 90 dias de
 retenção e 404 da V2 caem na V1 sozinhos; `PRICETRACK_OFFERS_EXPORT_VERSION=v1`
 é o rollback. **Regras duras:** a V2 tem `proofFilter` padrão `WITH_PROOF` (só
-oferta com print) — o cliente sempre manda `ALL`; `collection_hour` e `title`
+oferta com print) — o cliente manda `ALL` por padrão (um `proof_filter`
+explícito do chamador prevalece); `collection_hour` e `title`
 vêm nulos — a hora sai de `collection_hour_execution` e o título de
 `product_name`/último título no banco (`fill_missing_titles`). Detalhes em
 `pricetrack_api/README.md`.

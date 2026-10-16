@@ -54,6 +54,12 @@ class PriceTrackSettings:
     # imports com 429. Com o orçamento definido, o manager para de SUBMETER
     # lote que não caberia no tempo restante, em vez de ser interrompido.
     run_budget_seconds: float = 0.0
+    # Margem de segurança sobre o TTL de 1h da downloadUrl: renova aos 50min.
+    download_url_ttl_seconds: float = 3000.0
+
+    # Diretório raiz das partições locais (raw NDJSON por collection_date)
+    data_dir: Path = Path("imports/pricetrack/api")
+
     # Versão do export em massa de OFERTAS. "v2" (padrão, Out/2026) lê do
     # cache Redis do PriceTrack em vez das partições do Postgres — muito mais
     # rápido, mesmo contrato de request/resposta. Limites da V2, todos
@@ -63,12 +69,6 @@ class PriceTrackSettings:
     # cliente pede ALL para manter a paridade com a V1). "v1" é o rollback.
     offers_export_version: str = "v2"
     offers_v2_retention_days: int = 90
-
-    # Margem de segurança sobre o TTL de 1h da downloadUrl: renova aos 50min.
-    download_url_ttl_seconds: float = 3000.0
-
-    # Diretório raiz das partições locais (raw NDJSON por collection_date)
-    data_dir: Path = Path("imports/pricetrack/api")
 
     def __post_init__(self) -> None:
         if not self.api_key or not str(self.api_key).strip():

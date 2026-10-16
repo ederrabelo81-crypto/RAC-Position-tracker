@@ -664,7 +664,9 @@ class _TitleTable:
     def neq(self, *_a):
         return self
 
-    def order(self, *_a, **_k):
+    def order(self, col, desc=False):
+        self._calls["order"] = (col, desc)
+        self._rows = sorted(self._rows, key=lambda r: r.get(col) or "", reverse=desc)
         return self
 
     def range(self, start, end):
@@ -692,15 +694,19 @@ class TestFillMissingTitles:
             {"sku": "B", "marketplace": "AMAZON", "title": None},
             {"sku": "C", "marketplace": "AMAZON", "title": "já tinha"},
         ]
-        rows = [  # mais recente primeiro
-            {"sku": "A", "marketplace": "AMAZON", "title": "A amazon novo"},
-            {"sku": "A", "marketplace": "MERCADO LIVRE", "title": "A ml"},
-            {"sku": "A", "marketplace": "AMAZON", "title": "A amazon velho"},
+        rows = [  # fora de ordem de propósito: quem ordena é a consulta
+            {"sku": "A", "marketplace": "AMAZON", "title": "A amazon velho",
+             "collection_date": "2026-10-01"},
+            {"sku": "A", "marketplace": "MERCADO LIVRE", "title": "A ml",
+             "collection_date": "2026-10-10"},
+            {"sku": "A", "marketplace": "AMAZON", "title": "A amazon novo",
+             "collection_date": "2026-10-14"},
         ]
         faltando, calls = self._run(monkeypatch, records, rows)
         assert [r["title"] for r in records] == [
             "A amazon novo", "A amazon novo", None, "já tinha"]
         assert faltando == 1
+        assert calls["order"] == ("collection_date", True)
         # Só consulta quem estava sem título.
         assert calls["in_"] == [["A", "B"]]
 

@@ -151,3 +151,18 @@ class TestFallbackV1:
             ExportRequest("2026-10-15", skus=["A"]))
         assert session.calls[0].json["skus"] == ["A"]
         assert session.calls[1].json == {"collectionDate": "2026-10-15"}
+
+
+class TestManifestEDestino:
+    def test_hora_vazia_cai_na_execucao(self):
+        from pricetrack_api.store import _hour_of
+        assert _hour_of({"collectionHour": "", "collectionHourExecution": "08:10"}) == 8
+        assert _hour_of({"collectionHour": 21, "collectionHourExecution": "08:10"}) == 21
+
+    def test_export_filtrado_por_sku_nao_sobrescreve_o_do_dia(self, settings, clock):
+        from pricetrack_api.exports import ExportManager
+        client = _client(settings, FakeSession(responses=[]), clock)
+        mgr = ExportManager(client, sleep_fn=clock.sleep, clock=clock)
+        cheio = mgr._default_dest(ExportRequest("2026-10-15"))
+        filtrado = mgr._default_dest(ExportRequest("2026-10-15", skus=["A"]))
+        assert cheio != filtrado

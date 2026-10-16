@@ -233,7 +233,8 @@ class ExportManager:
         se sobrescrevam em disco."""
         root = self._client.settings.data_dir / "raw"
         suffix = ""
-        if request.marketplaces or request.collection_hour_execution_range:
+        if (request.marketplaces or request.collection_hour_execution_range
+                or request.skus or request.proof_filter):
             import hashlib
             import json
             key = json.dumps(request.to_body(), sort_keys=True, ensure_ascii=False)

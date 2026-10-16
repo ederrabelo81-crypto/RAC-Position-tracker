@@ -65,6 +65,15 @@ def to_hour(value: Any) -> Optional[int]:
     return hour if 0 <= hour <= 23 else None
 
 
+def _first_hour(*values: Any) -> Optional[int]:
+    """Primeira hora VÁLIDA entre os candidatos (vazio/malformado não bloqueia)."""
+    for value in values:
+        hour = to_hour(value)
+        if hour is not None:
+            return hour
+    return None
+
+
 def to_date(value: Any) -> Optional[date]:
     """Converte 'YYYY-MM-DD' (ou ISO datetime) para date."""
     if value is None:
@@ -186,8 +195,8 @@ class Offer:
             collection_date=to_date(pick(raw, "collectionDate")),
             # V2 grava `collectionHour` nulo; a hora sobrevive no HH:MM da
             # execução (que coincide com ela nas ofertas verificadas).
-            collection_hour=to_hour(
-                pick(raw, "collectionHour", "collectionHourExecution")
+            collection_hour=_first_hour(
+                pick(raw, "collectionHour"), pick(raw, "collectionHourExecution")
             ),
             image_url=to_str(pick(raw, "imageUrl")),
             screenshot_url=to_str(screenshot) if screenshot is not None else None,
