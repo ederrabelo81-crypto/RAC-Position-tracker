@@ -174,7 +174,7 @@ categoria AR CONDICIONADO → tabela `pricetrack_daily`.
 
 **Precedência (28/05/2026):** para cada `(data, sku_resolvido)` presente no PriceTrack, os dashboards de preço descartam a linha equivalente das coletas
 
-**Reconciliação:** de-para de marketplace (`_PT_TO_CANONICAL_PLATFORM` no `app.py`) e de seller (`pricetrack_importer/seller_map.py`, ~103 variantes → ~30 canônicos)
+**Reconciliação:** de-para de marketplace (`PT_TO_CANONICAL_PLATFORM` em `utils/pricetrack_platforms.py`, usado pelo `app.py` e pela auditoria) e de seller (`pricetrack_importer/seller_map.py`, ~103 variantes → ~30 canônicos)
 
 **Env:** `PRICETRACK_API_KEY` no `.env` / GitHub Secrets
 
@@ -581,7 +581,7 @@ python scripts/pipeline_heal.py --dry-run
 | Dealer URLs/seletores | `scrapers/dealers.py` `DEALER_CONFIGS` |
 | Parser de preço | `utils/text.py` `parse_price_brazil()` |
 | Colunas CSV | `main.py` `COLUMN_ORDER` |
-| De-para PriceTrack↔coletas | `app.py` `_PT_TO_CANONICAL_PLATFORM` / `pricetrack_importer/seller_map.py` |
+| De-para PriceTrack↔coletas | `utils/pricetrack_platforms.py` `PT_TO_CANONICAL_PLATFORM` / `pricetrack_importer/seller_map.py` |
 
 ---
 

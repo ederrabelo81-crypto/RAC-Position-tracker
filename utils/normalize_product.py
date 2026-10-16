@@ -24,6 +24,8 @@ USO:
 import re
 from typing import Optional
 
+from utils.offer_kind import is_unit_offer
+
 # ---------------------------------------------------------------------------
 # Brand alias table  raw → normalized
 # Ordered longest-first for greedy matching
@@ -427,6 +429,13 @@ def normalize_product_name(
     if not raw_name:
         return raw_name
 
+    # 0. Só um aparelho completo, vendido sozinho, ganha nome canônico. Kit de
+    # instalação, peça, meia unidade e "kit 2" viravam o mesmo nome do modelo
+    # — e o gatilho do banco casava esse nome com o SKU, levando preço de kit
+    # para a série do aparelho (ver utils/offer_kind.py). Título cru = sem SKU.
+    if not is_unit_offer(raw_name):
+        return raw_name
+
     name_lower = raw_name.lower()
 
     # 1. Brand
@@ -525,6 +534,9 @@ def normalize_product_name_v2(
 
     if not raw_name:
         return None
+
+    if not is_unit_offer(raw_name):
+        return None  # kit/peça/meia unidade/múltiplo → mantém cru (offer_kind)
 
     name_lower = raw_name.lower()
 

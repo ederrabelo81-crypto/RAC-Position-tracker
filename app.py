@@ -434,30 +434,7 @@ def _expand_platforms(platforms: list[str]) -> list[str]:
 # por plataforma. Mapa explícito p/ os casos que `.title()` não resolve;
 # o restante cai no fallback title-case + `_normalize_platform`.
 # ---------------------------------------------------------------------------
-_PT_TO_CANONICAL_PLATFORM = {
-    # 7 marketplaces no foco
-    "MERCADO LIVRE":  "Mercado Livre",
-    "AMAZON":         "Amazon",
-    "MAGAZINE LUIZA": "Magalu",
-    "CASAS BAHIA":    "Casas Bahia",
-    "LEROY MERLIN":   "Leroy Merlin",
-    "SHOPEE":         "Shopee",
-    # dealers (fora do foco, mas presentes nas coletas — evita split)
-    "FERREIRA COSTA": "FerreiraCosta",
-    "WEB CONTINENTAL": "WebContinental",
-    "CENTRAL AR":     "CentralAr",
-    "POLO AR":        "PoloAr",
-    "FRIOPEÇAS":      "FrioPecas",
-    "CLIMA RIO":      "Climario",
-    "G BARBOSA":      "GBarbosa",
-    "ADIAS":          "ADias",
-    "AR CERTO":       "ArCerto",
-    "FRIGELAR":       "Frigelar",
-    "DUFRIO":         "Dufrio",
-    "LEVEROS":        "Leveros",
-    "BEMOL":          "Bemol",
-    "FUJIOKA":        "Fujioka",
-}
+from utils.pricetrack_platforms import PT_TO_CANONICAL_PLATFORM as _PT_TO_CANONICAL_PLATFORM  # noqa: E402
 
 # Inverso (canônico → variantes do PriceTrack) para o filtro de plataforma.
 _CANONICAL_TO_PT_PLATFORM: dict[str, list[str]] = {}
