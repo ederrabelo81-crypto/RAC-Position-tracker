@@ -87,7 +87,25 @@ def test_titulo_ou_url_qualquer_um_denuncia():
 
 @pytest.mark.parametrize("vazio", [None, "", float("nan")])
 def test_entrada_vazia_e_unidade(vazio):
-    assert classify_offer(vazio if isinstance(vazio, str) or vazio is None else None) == UNIDADE
+    # NaN chega assim de linha de DataFrame; não pode estourar a auditoria.
+    assert classify_offer(vazio, vazio) == UNIDADE
+
+
+@pytest.mark.parametrize("titulo,esperado", [
+    # Achados da revisão (cubic, PR #407)
+    ("Pegar e Instalar Ar Condicionado Split 9000 Btus Consul", UNIDADE),
+    ("Portátil Gree Aovia 12000 BTU R32 Frio com Controle Remoto", UNIDADE),
+    ("Kit 10 Unidades Ar Condicionado Split 9000", MULTIPLO),
+    ("Kit com quatro aparelhos Ar Condicionado 12000", MULTIPLO),
+    ("Kit 3 Metros Tubulação Ar Condicionado Split", ACESSORIO),
+])
+def test_casos_da_revisao(titulo, esperado):
+    assert classify_offer(titulo) == esperado
+
+
+def test_slug_vence_segmento_de_categoria():
+    url = "https://www.loja.com.br/ar-condicionado/condensadora-gree-inverter-9000-btus/p/123"
+    assert classify_offer(url=url) == PARCIAL
 
 
 class TestNormalizacaoNaoCanonizaNaoUnidade:

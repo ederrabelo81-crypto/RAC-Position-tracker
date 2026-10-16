@@ -27,7 +27,7 @@
 | Import diário via API | `scripts/pricetrack_api_import.py` + `.github/workflows/pricetrack_daily.yml` | Export assíncrono → NDJSON.gz → agrega → upsert em `pricetrack_daily`; auto-heal `--gaps-only` (14 dias) |
 | Import manual (md/xlsx) | `pricetrack_importer/` | Parser streaming + validador + dedup + upsert idempotente |
 | Espelho na VM | `scripts/pricetrack_import_linux.sh` + cron 06:00 | Scheduler CONFIÁVEL (sem o atraso 2–6h do GH Actions). O cron `:30` horário saiu em 08/08/2026 junto com o intra-dia; o modo `refresh` segue disponível para uso manual |
-| Reconciliação | `app.py` (`_PT_TO_CANONICAL_PLATFORM`, `seller_map.py`) | De-para marketplace (22 mapas) e seller (~103 variantes → ~30 canônicos) |
+| Reconciliação | `utils/pricetrack_platforms.py` (`PT_TO_CANONICAL_PLATFORM`), `seller_map.py` | De-para marketplace (22 mapas) e seller (~103 variantes → ~30 canônicos) |
 | Consumo | `query_pricetrack_daily()` / `query_price_evolution_data()` | Preço PT com precedência; coletas preenchem gaps e posições |
 | Auditoria | `pricetrack_import_log` | rows_total/inserted/rejected + rejection_log JSONB |
 

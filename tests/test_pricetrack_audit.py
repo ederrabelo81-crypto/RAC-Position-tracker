@@ -88,12 +88,23 @@ def test_menor_preco_de_unidade_por_sku():
     nossos = [
         {"plataforma": "Magalu", "sku_resolvido": "X", "preco": p,
          "produto": "Ar Condicionado Midea 12.000", "url_produto": f"https://m.magazineluiza.com.br/ar-condicionado-midea/p/{i}"}
-        for i, p in enumerate((3100, 2990, None, "abc"))
+        for i, p in enumerate((5000, 2990, None, "abc"))
     ]
     pt = [{"marketplace": "MAGAZINE LUIZA", "sku": "X", "min_price": 2990}]
     res = compare_prices(nossos, pt)
+    # Se o 1º (5.000) fosse escolhido, o par divergiria em −40%.
     assert res.por_plataforma["MAGAZINE LUIZA"] == {
         "pares": 1, "pct_bate": 100.0, "pct_divergente": 0.0, "pct_pt_mais_caro": 0.0}
+
+
+def test_kit_no_lado_do_pricetrack_tambem_sai():
+    nossos = [{"plataforma": "Magalu", "sku_resolvido": "X", "preco": 3000,
+               "produto": "Ar Condicionado Midea 12.000", "url_produto": "https://m.magazineluiza.com.br/ar-condicionado-midea/p/1"}]
+    pt = [{"marketplace": "MAGAZINE LUIZA", "sku": "X", "min_price": 300,
+           "title": "Kit Instalação Ar Condicionado Split Midea 12000"},
+          {"marketplace": "MAGAZINE LUIZA", "sku": "X", "min_price": 3000,
+           "title": "Ar Condicionado Split Midea 12000 Btus"}]
+    assert compare_prices(nossos, pt).por_plataforma["MAGAZINE LUIZA"]["pct_bate"] == 100.0
 
 
 # ── Script (I/O) com cliente falso ───────────────────────────────────────────
@@ -134,7 +145,9 @@ class _Q:
     def like(self, c, v):
         return self._add(lambda r: str(r.get(c)).startswith(v.rstrip("%")))
 
-    def order(self, *_a, **_k):
+    def order(self, col, desc=False):
+        # Ordenação estável e acumulável, como o PostgREST.
+        self._ordens = getattr(self, "_ordens", []) + [(col, desc)]
         return self
 
     @property
@@ -152,6 +165,8 @@ class _Q:
 
     def execute(self):
         rows = [r for r in self._rows if all(f(r) for f in self._f)]
+        for col, desc in reversed(getattr(self, "_ordens", [])):
+            rows = sorted(rows, key=lambda r: str(r.get(col)), reverse=desc)
         a, b = getattr(self, "_slice", (0, len(rows)))
         return type("R", (), {"data": rows[a:b]})()
 
@@ -166,8 +181,12 @@ class _Client:
 
 def _tabelas():
     dias = [f"2026-09-{d:02d}" for d in range(23, 31)] + ["2026-10-01", "2026-10-02"]
-    log = [{"source_file": f"api-{d}", "rows_total": 547_794 if d == "2026-10-02" else 1_470_000,
-            "import_started": f"{d}T09:00:00"} for d in dias]
+    log = [{"id": i, "source_file": f"api-{d}", "rows_total": 1_470_000, "rows_inserted": 26_000,
+            "import_started": f"{d}T09:00:00"} for i, d in enumerate(dias)]
+    # Reimport do dia 02/10 mais tarde, gravado ANTES na lista: vence o mais
+    # recente (547.794), não o primeiro encontrado.
+    log.insert(0, {"id": 99, "source_file": "api-2026-10-02", "rows_total": 547_794,
+                   "rows_inserted": 16_863, "import_started": "2026-10-03T12:00:00"})
     sod = [{"data": d, "plataforma": p, "offer_key": f"{p}-{i}"}
            for d in dias for p in ("Amazon", "Shopee") for i in range(1200)]  # > 1 página
     ptd = [{"collection_date": d, "turno": "Diário", "marketplace": "AMAZON", "sku": "X",
@@ -189,6 +208,24 @@ def test_script_de_ponta_a_ponta_com_cliente_falso():
     assert rel["precos"]["por_plataforma"]["AMAZON"]["pct_bate"] == 100.0
     md = script._md(rel)
     assert "Degrau de volume" in md and "| AMAZON | 1 | 100.0% |" in md
+    assert not any("PARCIAL" in a for a in rel["alertas"])
+
+
+def test_dia_com_import_vazio_nao_vira_zero_indisponivel():
+    t = _tabelas()
+    for row in t["pricetrack_import_log"]:
+        if row["source_file"] == "api-2026-10-01":
+            row["rows_inserted"] = 0          # import 100% rejeitado
+    dados = script.coletar(_Client(t), "2026-10-02", "2026-09-18")
+    assert "2026-10-01" not in dados["indisp"]
+    assert unavailability_streak(dados["indisp"]) == 1   # 02/10 só, o buraco corta
+
+
+def test_teto_de_linhas_vira_alerta(monkeypatch):
+    monkeypatch.setattr(script, "_MAX_ROWS", 1000)
+    dados = script.coletar(_Client(_tabelas()), "2026-10-02", "2026-09-18")
+    rel = script.auditar(dados, "2026-10-02", AuditConfig())
+    assert any("PARCIAL" in a and "seller_offer_daily" in a for a in rel["alertas"])
 
 
 def test_mesmo_vendedor_e_vendedor_mais_barato_fora_do_pt():

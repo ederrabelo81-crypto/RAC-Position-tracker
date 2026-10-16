@@ -37,10 +37,13 @@ COM_INSTALACAO = "COM_INSTALACAO"  # aparelho + serviço de instalação no pre�
 NAO_UNIDADE = frozenset({ACESSORIO, PARCIAL, MULTIPLO, COM_INSTALACAO})
 
 # Núcleo que identifica o aparelho. "condicionado" sozinho cobre o slug da
-# Amazon, que corta o "ar" ("condicionado-portatil-...").
+# Amazon, que corta o "ar" ("condicionado-portatil-..."); BTU, portátil, janela
+# e cassete cobrem o aparelho anunciado sem a palavra "ar condicionado"
+# ("Portátil Gree Aovia 12000 BTU ... com controle remoto").
 _RE_NUCLEO = re.compile(
     r"\b(?:ar\s*condicionado|condicionador\s+de\s+ar|condicionado|split|"
-    r"hi\s*wall|high\s*wall|air\s+conditioner)\b"
+    r"hi\s*wall|high\s*wall|air\s+conditioner|portatil|janela|cassete)\b"
+    r"|\d\s*btu\w*|\bbtu\w*"
 )
 
 # Termos de acessório/peça. Só desqualificam quando vêm ANTES do núcleo —
@@ -48,7 +51,9 @@ _RE_NUCLEO = re.compile(
 # para Ar Condicionado" é acessório. Mesmo critério posicional de
 # `bestsellers/models.py::_e_acessorio`.
 _RE_ACESSORIO = re.compile(
-    r"\b(?:kit\s+instala\w*|instala\w*|suporte|capa|controle|higieniza\w*|"
+    # "instalac" (o substantivo) e não "instala\w*": "Pegar e instalar Ar
+    # Condicionado" é anúncio de aparelho, não de kit.
+    r"\b(?:kit\s+instala\w*|instalac\w*|suporte|capa|controle|higieniza\w*|"
     r"limpa\w*|tubula\w*|dreno|silicone|filtro|spray|bomba|mangueira|manifold|"
     r"gas\s+refrigerante|vacuo|motor|placa|caixa|telhado|protetor|protecao|"
     r"compressor|turbina|capacitor|sensor|termistor|ventilador|evaporador|"
@@ -65,12 +70,14 @@ _RE_SO_METADE = re.compile(
     r"|\bnao\s+e\s+(?:o\s+)?(?:ar\s+)?split\s+completo\b"
 )
 
-# Dois ou mais aparelhos num preço só. Exige separador depois de "kit": o
-# "kit9426" da Frigelar é código de produto, não kit com 9 aparelhos.
+# Dois ou mais aparelhos num preço só. Exige separador depois de "kit" (o
+# "kit9426" da Frigelar é código de produto) e a palavra do aparelho depois do
+# número ("Kit 3 metros de tubulação" não é kit com 3 aparelhos).
+_QTD = r"(?:[2-9]|1\d|dois|duas|tres|quatro|cinco|seis)"
+_APARELHO = r"(?:un|unid\w*|aparelhos?|ar(?:es)?|splits?|condicionados?)"
 _RE_MULTIPLO = re.compile(
-    r"\bkit\s+(?:com\s+|c\s+)?[2-9]\s*(?:x\s*)?"
-    r"(?:un\w*|aparelhos?|ar(?:es)?|splits?|condicionados?|pecas)?\b"
-    r"|\b(?:[2-9]|dois|duas|tres)\s+(?:unidades|aparelhos|ares\s+condicionados)\b"
+    rf"\bkit\s+(?:com\s+|c\s+)?{_QTD}\s*(?:x\s*)?{_APARELHO}\b"
+    rf"|\b{_QTD}\s+(?:unidades|aparelhos|ares\s+condicionados)\b"
 )
 
 # Serviço de instalação embutido no preço. "Pegar e instalar" (anúncio de
@@ -95,10 +102,16 @@ def texto_da_url(url: Optional[str]) -> str:
     if not url or not isinstance(url, str):
         return ""
     try:
-        path = urlsplit(url).path
+        path = unquote(urlsplit(url).path)
     except ValueError:
         return ""
-    return unquote(path).replace("-", " ").replace("_", " ").replace("/", " ")
+    # O slug do produto é o segmento mais longo; categorias ("ar", "aciv",
+    # "ar-condicionado") e ids ("p", "dp", "MLB123") ficam de fora — senão um
+    # "ar condicionado" de categoria antes do slug viraria núcleo e esconderia
+    # a "condensadora" do anúncio.
+    segmentos = [s for s in path.split("/") if s]
+    slug = max(segmentos, key=len, default="")
+    return slug.replace("-", " ").replace("_", " ")
 
 
 def _e_acessorio(t: str) -> bool:
@@ -147,7 +160,9 @@ def classify_offer(title: Optional[str] = None, url: Optional[str] = None) -> st
         >>> classify_offer("Ar Condicionado Portátil Philco com Controle Remoto")
         'UNIDADE'
     """
-    textos = [_normalizar(x) for x in (title or "", texto_da_url(url)) if x]
+    # NaN do pandas é float e truthy: só string conta como título.
+    titulo = title if isinstance(title, str) else ""
+    textos = [_normalizar(x) for x in (titulo, texto_da_url(url)) if x]
     textos = [t for t in textos if t]
     # Ordem importa: multiplo antes de acessório ("kit 2 ar" não é kit de
     # instalação) e acessório antes de parcial ("placa evaporadora" é peça).

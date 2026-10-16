@@ -59,12 +59,18 @@ from utils.pricetrack_audit import (
 from utils.text import now_brt
 
 _PAGE = 1000          # teto de linhas por resposta do PostgREST
-_MAX_ROWS = 400_000   # guarda contra loop; acima disso o relatório avisa
+_MAX_ROWS = 400_000   # guarda contra loop; acima disso vira alerta no relatório
 _RE_DATA_LOG = re.compile(r"api-(\d{4}-\d{2}-\d{2})")
 
 
-def _paged(build: Callable[[], Any]) -> List[Dict[str, Any]]:
-    """Lê todas as páginas de um select (PostgREST corta em 1.000 linhas)."""
+def _paged(build: Callable[[], Any], nome: str, truncados: List[str]) -> List[Dict[str, Any]]:
+    """Lê todas as páginas de um select (PostgREST corta em 1.000 linhas).
+
+    ``build`` precisa trazer um ``.order`` determinístico (chave única): sem
+    ordem, offset/limit não garante página estável e linhas podem pular ou
+    repetir entre páginas. Bater no teto registra ``nome`` em ``truncados``,
+    que vira alerta no relatório — leitura parcial nunca passa por completa.
+    """
     rows: List[Dict[str, Any]] = []
     offset = 0
     while offset < _MAX_ROWS:
@@ -73,28 +79,36 @@ def _paged(build: Callable[[], Any]) -> List[Dict[str, Any]]:
         if len(page) < _PAGE:
             return rows
         offset += _PAGE
-    logger.warning(f"pricetrack_audit: teto de {_MAX_ROWS} linhas atingido — leitura parcial")
+    logger.warning(f"pricetrack_audit: {nome} bateu no teto de {_MAX_ROWS} linhas — leitura parcial")
+    truncados.append(nome)
     return rows
 
 
 def coletar(client, dia: str, inicio: str) -> Dict[str, Any]:
     """Lê do banco tudo que a auditoria precisa (somente leitura)."""
+    truncados: List[str] = []
     # 1a. Volume do PriceTrack: última importação de cada data no log.
     log = _paged(lambda: client.table("pricetrack_import_log")
-                 .select("source_file,rows_total,import_started")
+                 .select("id,source_file,rows_total,rows_inserted,import_started")
                  .like("source_file", "api-%")
                  .gte("import_started", inicio)
-                 .order("import_started"))
+                 .order("import_started").order("id"), "pricetrack_import_log", truncados)
     pt_volume: Dict[str, float] = {}
+    pt_gravou: Dict[str, bool] = {}
     for row in log:  # ordenado por import_started: a última sobrescreve
         m = _RE_DATA_LOG.search(str(row.get("source_file") or ""))
-        if m and inicio <= m.group(1) <= dia and row.get("rows_total"):
+        if m and inicio <= m.group(1) <= dia and row.get("rows_total") is not None:
             pt_volume[m.group(1)] = float(row["rows_total"])
+            pt_gravou[m.group(1)] = bool(row.get("rows_inserted"))
 
     # 1b. Volume nosso: ofertas distintas por dia (fato do seller_app).
     sod = _paged(lambda: client.table("seller_offer_daily")
                  .select("data,plataforma,offer_key")
-                 .gte("data", inicio).lte("data", dia))
+                 .gte("data", inicio).lte("data", dia)
+                 # ordem = chave primária (data, turno, plataforma, offer_key, seller)
+                 .order("data").order("turno").order("plataforma")
+                 .order("offer_key").order("seller_canonical"),
+                 "seller_offer_daily", truncados)
     chaves: Dict[str, set] = defaultdict(set)
     plataformas_dia: set = set()
     for row in sod:
@@ -104,28 +118,34 @@ def coletar(client, dia: str, inicio: str) -> Dict[str, Any]:
             plataformas_dia.add(row.get("plataforma"))
     nosso_volume = {d: float(len(v)) for d, v in chaves.items()}
 
-    # 2. Indisponíveis: só as linhas com > 0 (barato); dia sem nenhuma = 0.
+    # 2. Indisponíveis: só as linhas com > 0 (barato). Zero só vale para dia
+    # que o import de fato gravou: import falho ou 100% rejeitado não foi
+    # observado e fica de fora — senão emendaria a sequência de "zero".
     indisp_rows = _paged(lambda: client.table("pricetrack_daily")
-                         .select("collection_date,unavailable_count")
+                         .select("id,collection_date,unavailable_count")
                          .eq("turno", "Diário")
                          .gte("collection_date", inicio).lte("collection_date", dia)
-                         .gt("unavailable_count", 0))
-    indisp = {d: 0 for d in pt_volume}
+                         .gt("unavailable_count", 0)
+                         .order("id"), "pricetrack_daily (indisponíveis)", truncados)
+    indisp = {d: 0 for d, gravou in pt_gravou.items() if gravou}
     for row in indisp_rows:
         d = str(row.get("collection_date"))[:10]
         indisp[d] = indisp.get(d, 0) + int(row.get("unavailable_count") or 0)
 
     # 3 + 4. PriceTrack do dia e as nossas ofertas com SKU resolvido.
     pt_dia = _paged(lambda: client.table("pricetrack_daily")
-                    .select("marketplace,sku,seller,min_price")
-                    .eq("turno", "Diário").eq("collection_date", dia))
+                    .select("id,marketplace,sku,seller,title,min_price")
+                    .eq("turno", "Diário").eq("collection_date", dia)
+                    .order("id"), "pricetrack_daily", truncados)
     nossos = _paged(lambda: client.table("coletas")
                     .select("plataforma,sku_resolvido,preco,produto,url_produto,seller,buy_box_seller")
                     .eq("data", dia)
-                    .not_.is_("sku_resolvido", "null"))
+                    .not_.is_("sku_resolvido", "null")
+                    .order("id"), "coletas", truncados)
     return {
         "pt_volume": pt_volume, "nosso_volume": nosso_volume, "indisp": indisp,
         "pt_dia": pt_dia, "nossos": nossos, "plataformas_dia": plataformas_dia,
+        "truncados": truncados,
     }
 
 
@@ -137,6 +157,9 @@ def auditar(dados: Dict[str, Any], dia: str, cfg: AuditConfig) -> Dict[str, Any]
                             {r.get("marketplace") for r in dados["pt_dia"]})
     degraus = volume_steps(dados["pt_volume"], dados["nosso_volume"], cfg)
     alertas: List[str] = []
+    if dados.get("truncados"):
+        alertas.append("LEITURA PARCIAL (teto de linhas) em: " + ", ".join(dados["truncados"])
+                       + " — números abaixo incompletos")
     if degraus:
         alertas.append(f"degrau de volume do PriceTrack em {', '.join(d['data'] for d in degraus)}")
     if sem_indisp >= cfg.dias_sem_indisp:

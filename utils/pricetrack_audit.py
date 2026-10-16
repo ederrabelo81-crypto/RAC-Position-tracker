@@ -159,7 +159,8 @@ def compare_prices(
             `preco`, `produto`, `url_produto` e, opcionais, `seller` e
             `buy_box_seller`.
         pricetrack: linhas de `pricetrack_daily` (turno Diário) com
-            `marketplace`, `sku`, `min_price` e, opcional, `seller`.
+            `marketplace`, `sku`, `min_price` e, opcionais, `seller` e
+            `title` (o título passa pelo mesmo filtro de unidade).
 
     Returns:
         Pares comparados, faixas de concordância por plataforma, quantos
@@ -193,7 +194,7 @@ def compare_prices(
     pt_vendedores: Dict[tuple, set] = {}
     for row in pricetrack:
         preco = _num(row.get("min_price"))
-        if not preco:
+        if not preco or classify_offer(row.get("title")) != UNIDADE:
             continue
         chave = (str(row.get("marketplace") or "").upper(),
                  str(row.get("sku") or "").strip().upper())
