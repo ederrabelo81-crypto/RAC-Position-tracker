@@ -42,6 +42,12 @@ def test_sequencia_sem_indisponivel():
     assert unavailability_streak({}) == 0
 
 
+def test_dia_sem_observacao_encerra_a_sequencia():
+    # 12/10 não foi importado: 13–15 contam, 10–11 não emendam por cima do buraco.
+    dias = {"2026-10-10": 0, "2026-10-11": 0, "2026-10-13": 0, "2026-10-14": 0, "2026-10-15": 0}
+    assert unavailability_streak(dias) == 3
+
+
 def test_shopee_sem_cobertura():
     nossas = ["Amazon", "Shopee", "Magalu", "Google Shopping"]
     pt = ["AMAZON", "MAGAZINE LUIZA"]

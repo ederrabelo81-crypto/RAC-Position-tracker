@@ -36,6 +36,7 @@ Regras duras:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from statistics import median
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 
@@ -118,12 +119,20 @@ def volume_steps(
 
 
 def unavailability_streak(indisp_por_dia: Mapping[str, int]) -> int:
-    """Dias seguidos, a partir do mais recente, sem nenhuma oferta indisponível."""
+    """Dias seguidos, a partir do mais recente, sem nenhuma oferta indisponível.
+
+    "Seguidos" é no calendário: um dia ausente (import falho ou vazio) não foi
+    observado, então encerra a sequência em vez de ser pulado — senão dois
+    trechos separados por um buraco somariam como uma série só.
+    """
     sequencia = 0
+    anterior: Optional[date] = None
     for dia in sorted(indisp_por_dia, reverse=True):
-        if indisp_por_dia[dia]:
+        atual = date.fromisoformat(dia)
+        if indisp_por_dia[dia] or (anterior and (anterior - atual).days != 1):
             break
         sequencia += 1
+        anterior = atual
     return sequencia
 
 
