@@ -1463,6 +1463,42 @@ Preço (R$); URL Produto; Screenshot Busca; Screenshot Produto;
 ID Produto Marketplace; ID Oferta Marketplace; ID Seller; URL Canônica; Offer Key
 ```
 
+### Coletas Python como auditoria do PriceTrack (Out/2026) 🆕
+
+**O que aconteceu (16/10/2026):** conferindo o PriceTrack contra as nossas
+coletas: degrau de volume em 02/10 (1,49 mi → 548 mil ofertas/dia, com a nossa
+coleta estável ±6%), zero oferta indisponível em 14 dias (sinal de último preço
+repetido), Shopee fora, e o menor preço por SKU divergindo >15% em ~30% dos
+pares. No MESMO vendedor o preço bate (64–87% dentro de 5%); a divergência vem
+do conjunto de vendedores — o nosso mais barato estava no PriceTrack em só
+17–35% dos SKUs.
+
+**Bug nosso corrigido:** `normalize_product_name` reescrevia kit de instalação,
+peça, meia unidade e "kit 2" para o nome canônico do modelo, e o gatilho
+`trg_resolve_familia_coletas` casava com o SKU (`MAPEADO`) — R$ 255 de kit na
+série do TCL 9.000. Agora `utils/offer_kind.py` classifica o anúncio
+(UNIDADE / ACESSORIO / PARCIAL / MULTIPLO / COM_INSTALACAO) e só UNIDADE ganha
+nome canônico; o resto mantém o título cru e fica sem SKU (continua na coleta:
+share, posição, buy box). Linhas antigas já gravadas com nome canônico não
+mudam — a auditoria as reclassifica pelo slug da URL.
+
+```bash
+python scripts/pricetrack_audit.py                  # ontem: logs/pricetrack_audit_<data>.md/.json
+python scripts/pricetrack_audit.py --data 2026-10-15 --strict
+```
+
+**Regras duras:**
+1. Série de preço por SKU e comparação com o PriceTrack só com anúncio de
+   UNIDADE. Na dúvida o classificador diz UNIDADE (só exclui com evidência).
+2. Ao mexer nas regras de `offer_kind`, valide contra URLs REAIS de `coletas`
+   — "com controle remoto" (atributo), o slug da Amazon sem "ar" e o
+   `kit9426` (código de produto da Frigelar) já enganaram a primeira versão.
+3. A auditoria aponta divergência, não decide quem está certo: cada caso vai
+   com a URL para conferência na tela. Degrau do PriceTrack só conta se a
+   nossa coleta não caiu junto.
+4. Comparação por vendedor ignora `seller` placeholder (Amazon/Casas Bahia sem
+   `buy_box_seller`), como no Cockpit.
+
 ### Preço do PriceTrack — base explícita (`price_basis`, Set/2026) 🆕
 
 O importador da API colapsava os quatro preços de cada oferta (`spotPrice`,
