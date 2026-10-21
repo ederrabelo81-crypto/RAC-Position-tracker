@@ -241,6 +241,35 @@ _SERP_CARD_RE = re.compile(
     re.I,
 )
 
+# Id de item/produto do ML dentro de um href: `/p/MLB35630510`,
+# `/MLB-4685950692-…`, `wid=MLB4685950692` e o `item_id%3AMLB…` do link de ad.
+# É a evidência de SERP que NÃO depende de classe CSS (Out/2026): na quebra de
+# 19/10/2026 o ML passou a servir uma SERP que nenhum seletor do
+# `_SERP_CARD_RE` reconhecia — com sessão logada, Chrome local e IP
+# residencial, enquanto o Mais Vendidos (mesmo perfil, `www.`) seguia
+# coletando. Sem card reconhecido, `_gate_reason` caía no `_GATE_TEXT_RE`, que
+# casa o `/gz/webdevice` que TODA página do ML carrega: SERP cheia lida como
+# gate (ou, sem o script, como "vazia sem gate"). Link de produto é o que uma
+# SERP sempre tem e uma tela de login/verificação nunca tem.
+_PRODUCT_ID_IN_HREF_RE = re.compile(
+    r"(?:/p/|/|[?&#]wid=|item_id(?:%3A|:))MLB-?(\d{6,})", re.I
+)
+
+# Mínimo de produtos DISTINTOS linkados para a página contar como SERP pela
+# estrutura. Uma SERP traz ~50–60; tela de gate, zero. Folga para busca de
+# cauda longa com poucos resultados sem aceitar uma página de erro com 1–2
+# recomendações.
+_SERP_MIN_PRODUCT_LINKS = 6
+
+# Rótulo do seletor quando os cards vêm de `_select_items_structural`.
+_STRUCTURAL_SELECTOR = "estrutural (links de produto MLB)"
+
+# "Por WebContinental" / "Vendido por Frigelar" — rótulo do seller no card,
+# lido por texto no modo estrutural. "por R$ 2.399" (preço) não é seller.
+_SELLER_TEXT_RE = re.compile(
+    r"^(?:vendido\s+por|por)\s+(?!R\$|\d)(\S.{0,59})$", re.I
+)
+
 # URLs em que o ML TIROU o visitante da SERP — gate inequívoco, vale mesmo que
 # a página ainda tenha resquício de card no DOM.
 _GATE_URL_RE = re.compile(
@@ -565,8 +594,25 @@ class MLScraper(BaseScraper):
 
     @staticmethod
     def _has_serp_cards(html: str) -> bool:
-        """True se o HTML tem card de produto — a evidência de SERP utilizável."""
-        return bool(html) and bool(_SERP_CARD_RE.search(html))
+        """
+        True se o HTML tem card de produto — a evidência de SERP utilizável.
+
+        Duas evidências, nesta ordem: a classe conhecida do card (barata) e,
+        se o ML renomeou o DOM, os links para produtos distintos — o que
+        separa uma SERP redesenhada de uma tela de gate sem depender de CSS.
+        """
+        if not html:
+            return False
+        if _SERP_CARD_RE.search(html):
+            return True
+        ids = set()
+        for m in re.finditer(r'href="([^"]+)"', html):
+            hit = _PRODUCT_ID_IN_HREF_RE.search(m.group(1))
+            if hit:
+                ids.add(hit.group(1))
+                if len(ids) >= _SERP_MIN_PRODUCT_LINKS:
+                    return True
+        return False
 
     def _gate_reason(self) -> Optional[str]:
         """
@@ -595,6 +641,10 @@ class MLScraper(BaseScraper):
             url = page.url or ""
             if _GATE_URL_RE.search(url):
                 return f"URL de gate ({url[:90]})"
+            if url.rstrip("/") == _ML_HOME.rstrip("/"):
+                # A busca devolveu a home: o carrossel dela passaria pela
+                # evidência estrutural de `_has_serp_cards` como se fosse SERP.
+                return "redirecionado para a home (nenhuma SERP)"
             content = page.content()
         except Exception:
             return None
@@ -1104,7 +1154,135 @@ class MLScraper(BaseScraper):
             found = soup.select(sel)
             if found:
                 return found, sel
+        found = MLScraper._select_items_structural(soup)
+        if found:
+            return found, _STRUCTURAL_SELECTOR
         return [], None
+
+    @staticmethod
+    def _href_product_ids(href: str) -> set:
+        """Ids MLB citados num href (produto de catálogo + item, quando ambos)."""
+        return {m.group(1) for m in _PRODUCT_ID_IN_HREF_RE.finditer(href or "")}
+
+    @staticmethod
+    def _select_items_structural(soup: BeautifulSoup) -> List[Tag]:
+        """
+        Cards da SERP achados pela ESTRUTURA, sem nenhuma classe CSS.
+
+        Último recurso de `_select_items`, para quando o ML redesenha a SERP e
+        nenhum seletor casa (19/10/2026). Cada âncora que aponta para um produto
+        sobe na árvore enquanto o ancestral só contiver links DESSE produto; o
+        nó mais alto assim é o card. Ids que aparecem no mesmo href (o `/p/MLB…`
+        de catálogo e o `wid=MLB…` do item) contam como o mesmo produto, senão
+        o card seria cortado ao meio.
+
+        Returns:
+            Cards em ordem de documento (a ordem é a posição na SERP), sem
+            repetição. Menos de `_SERP_MIN_PRODUCT_LINKS` cards → lista vazia:
+            poucos links soltos são recomendação de página de erro, não SERP.
+        """
+        # union-find dos ids que co-ocorrem num mesmo href
+        parent: Dict[str, str] = {}
+
+        def find(x: str) -> str:
+            while parent.setdefault(x, x) != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        anchors: List[Tuple[Tag, set]] = []
+        for a in soup.find_all("a", href=True):
+            ids = MLScraper._href_product_ids(a["href"])
+            if not ids:
+                continue
+            first, *rest = sorted(ids)
+            for other in rest:
+                parent[find(other)] = find(first)
+            anchors.append((a, ids))
+        if not anchors:
+            return []
+
+        def keys_of(a_ids: set) -> set:
+            return {find(i) for i in a_ids}
+
+        # chaves de produto sob cada nó (memo por id do objeto)
+        memo: Dict[int, set] = {}
+
+        def keys_under(node: Tag) -> set:
+            k = memo.get(id(node))
+            if k is None:
+                k = set()
+                for a in node.find_all("a", href=True):
+                    k |= keys_of(MLScraper._href_product_ids(a["href"]))
+                memo[id(node)] = k
+            return k
+
+        cards: List[Tag] = []
+        seen: set = set()
+        for a, ids in anchors:
+            key = keys_of(ids)
+            if len(key) != 1:
+                continue
+            node = a
+            while (
+                node.parent is not None
+                and node.parent.name not in ("body", "html", "[document]")
+                and keys_under(node.parent) <= key
+            ):
+                node = node.parent
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            cards.append(node)
+
+        if len(cards) < _SERP_MIN_PRODUCT_LINKS:
+            return []
+        return cards
+
+    @staticmethod
+    def _structural_title(item: Tag) -> Optional[str]:
+        """Título sem classe CSS: o texto mais longo de um link de produto, senão o alt da imagem."""
+        best = ""
+        for a in item.find_all("a", href=True):
+            if not _PRODUCT_ID_IN_HREF_RE.search(a["href"]):
+                continue
+            text = a.get_text(" ", strip=True)
+            if len(text) > len(best):
+                best = text
+        if len(best) >= 10:
+            return best
+        img = item.find("img", alt=True)
+        alt = (img.get("alt") or "").strip() if img else ""
+        return alt or (best or None)
+
+    @staticmethod
+    def _structural_seller(item: Tag) -> Optional[str]:
+        """
+        Seller sem classe CSS: o elemento "Por <loja>" / "Vendido por <loja>".
+
+        Lido no nível do ELEMENTO, não do nó de texto: o Poly quebra o rótulo
+        em spans ("Por " + "<span>WebContinental</span>"). Fica o menor
+        elemento que casa — o mais específico.
+        """
+        def _is_product_link(tag: Tag) -> bool:
+            return tag.name == "a" and bool(
+                _PRODUCT_ID_IN_HREF_RE.search(tag.get("href") or "")
+            )
+
+        best: Optional[str] = None
+        for el in item.find_all(True):
+            # Título é link de produto: "Por Que…" no título não é seller.
+            if _is_product_link(el) or el.find_parent(_is_product_link):
+                continue
+            if el.find(_is_product_link):
+                continue
+            text = el.get_text(" ", strip=True)
+            if len(text) > 80:
+                continue
+            m = _SELLER_TEXT_RE.match(text)
+            if m and (best is None or len(m.group(1)) < len(best)):
+                best = m.group(1).strip()
+        return best or None
 
     def _parse_results(
         self,
@@ -1191,6 +1369,8 @@ class MLScraper(BaseScraper):
                 if el and el.get_text(strip=True):
                     title = el.get_text(strip=True)
                     break
+            if title is None and used_selector == _STRUCTURAL_SELECTOR:
+                title = self._structural_title(item)
 
             # --- preço ---
             price = self._extract_price(item)
@@ -1207,6 +1387,8 @@ class MLScraper(BaseScraper):
                         r"^por\s+", "", el.get_text(strip=True), flags=re.I
                     ).strip() or None
                     break
+            if seller is None and used_selector == _STRUCTURAL_SELECTOR:
+                seller = self._structural_seller(item)
 
             # --- URL do produto ---
             url_produto = self._extract_url(item)
@@ -1438,6 +1620,11 @@ class MLScraper(BaseScraper):
         page.keyboard.press("Enter")
         page.wait_for_load_state("domcontentloaded")
         self._wait_for_network_idle()
+        # A home também tem carrossel de produtos: se o Enter não navegou, ela
+        # passaria como SERP pela evidência estrutural e os itens da vitrine
+        # entrariam como resultado da keyword.
+        if (page.url or "").rstrip("/") == _ML_HOME.rstrip("/"):
+            return False
         return self._has_serp_cards(page.content())
 
     def _try_solve_verification(self) -> bool:
