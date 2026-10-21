@@ -567,14 +567,16 @@ class MLScraper(BaseScraper):
         continuavam lá. Gate persistente COM cookie de login é exatamente esse
         caso, e o conserto é relogar o perfil.
         """
-        if not self._is_logged_in():
-            return "anônima"
+        # O contador vem antes: ele registra a evidência no momento do gate,
+        # e o cookie pode sumir depois disso sem desfazer o diagnóstico.
         if self._gate_while_logged:
             return (
                 f"EXPIRADA (cookies de login presentes, mas o ML pediu "
                 f"login/verificação em {self._gate_while_logged} pág.; relogar: "
                 "python scripts/setup_local_profile.py --site mercadolivre)"
             )
+        if not self._is_logged_in():
+            return "anônima"
         return "logada"
 
     def _log_session_state(self) -> None:
@@ -1874,8 +1876,15 @@ class MLScraper(BaseScraper):
 
         self._gate_failures += 1
         self._count_gate_reason(self._last_gate_reason)
+        # Só login/verificação de dispositivo indica sessão recusada. Captcha,
+        # WAF ou redirecionamento para a home não pedem relogin.
+        reason = self._last_gate_reason or ""
+        login_gate = (
+            reason.startswith("login/verificação de dispositivo")
+            or reason.startswith("URL de gate")
+        )
         try:
-            if self._is_logged_in():
+            if login_gate and self._is_logged_in():
                 self._gate_while_logged += 1
         except Exception:
             pass
