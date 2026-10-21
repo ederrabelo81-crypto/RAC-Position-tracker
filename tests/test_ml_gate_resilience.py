@@ -222,6 +222,34 @@ class TestDiagnostico:
         scraper.deferred_keywords = ["a", "b"]
         assert "FREIO (2 adiadas)" in scraper.run_diagnostics()
 
+    def test_logada_sem_gate(self, scraper: MLScraper) -> None:
+        scraper._context.cookies.return_value = [{"name": "orgnickp", "value": "x"}]
+        assert "sessão: logada" in scraper.run_diagnostics()
+
+    def test_cookie_de_login_com_gate_e_sessao_expirada(self, scraper: MLScraper) -> None:
+        # quebra de 19–21/10/2026: cookies no perfil, ML pedindo login, e o
+        # livro-razão dizendo "logada" por 3 dias
+        scraper._context.cookies.return_value = [{"name": "orgnickp", "value": "x"}]
+        scraper._page.html = _GATE_HTML
+        assert scraper._goto_serp(MLScraper._build_url("kw", 0), "kw", 1) is False
+        linha = scraper.run_diagnostics()
+        assert "sessão: EXPIRADA" in linha
+        assert "sessão: logada" not in linha
+        assert "setup_local_profile.py --site mercadolivre" in linha
+
+    def test_expirada_sobrevive_ao_cookie_sumir(self, scraper: MLScraper) -> None:
+        scraper._context.cookies.return_value = [{"name": "orgnickp", "value": "x"}]
+        scraper._page.html = _GATE_HTML
+        scraper._goto_serp(MLScraper._build_url("kw", 0), "kw", 1)
+        scraper._context.cookies.return_value = []
+        assert "sessão: EXPIRADA" in scraper.run_diagnostics()
+
+    def test_captcha_logado_nao_e_sessao_expirada(self, scraper: MLScraper) -> None:
+        scraper._context.cookies.return_value = [{"name": "orgnickp", "value": "x"}]
+        scraper._page.html = "<html><body><div class='g-recaptcha'></div></body></html>"
+        assert scraper._goto_serp(MLScraper._build_url("kw", 0), "kw", 1) is False
+        assert "sessão: logada" in scraper.run_diagnostics()
+
     def test_sem_init_nao_estoura(self) -> None:
         # parser/diagnóstico também rodam via __new__ (scripts/diagnose_ml.py)
         assert MLScraper.__new__(MLScraper).run_diagnostics().startswith("ML: 0/0")

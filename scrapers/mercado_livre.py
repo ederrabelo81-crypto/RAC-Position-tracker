@@ -389,6 +389,7 @@ class MLScraper(BaseScraper):
     _kw_api_saved: int = 0
     _kw_partial: int = 0
     _kw_empty: int = 0
+    _gate_while_logged: int = 0
     _gate_reason_counts: Optional[Counter] = None
     _api_status: Optional[str] = None
     collection_aborted: bool = False
@@ -431,6 +432,7 @@ class MLScraper(BaseScraper):
         self._kw_api_saved = 0
         self._kw_partial = 0
         self._kw_empty = 0
+        self._gate_while_logged = 0
         self._gate_reason_counts = Counter()
         self.collection_aborted = False
         self.deferred_keywords = []
@@ -553,6 +555,29 @@ class MLScraper(BaseScraper):
         """True quando há cookie de sessão autenticada do ML no contexto."""
         names = {c.get("name") for c in self._ml_cookies()}
         return any(n in names for n in _ML_LOGIN_COOKIES)
+
+    def _session_label(self) -> str:
+        """
+        Estado da sessão para o log e o livro-razão.
+
+        `_is_logged_in` só vê se os cookies de login EXISTEM no perfil, não se o
+        ML ainda os aceita. Na quebra de 19–21/10/2026 o livro-razão disse
+        "sessão: logada" por 3 dias enquanto o ML tratava o perfil como
+        dispositivo não verificado: a sessão tinha expirado e os cookies
+        continuavam lá. Gate persistente COM cookie de login é exatamente esse
+        caso, e o conserto é relogar o perfil.
+        """
+        # O contador vem antes: ele registra a evidência no momento do gate,
+        # e o cookie pode sumir depois disso sem desfazer o diagnóstico.
+        if self._gate_while_logged:
+            return (
+                f"EXPIRADA (cookies de login presentes, mas o ML pediu "
+                f"login/verificação em {self._gate_while_logged} pág.; relogar: "
+                "python scripts/setup_local_profile.py --site mercadolivre)"
+            )
+        if not self._is_logged_in():
+            return "anônima"
+        return "logada"
 
     def _log_session_state(self) -> None:
         """Diz no log se a coleta começa autenticada — o gate depende disso."""
@@ -1766,10 +1791,9 @@ class MLScraper(BaseScraper):
             return
         self._gate_hint_shown = True
         modo = "Chrome local (CDP)" if self._local_active else "Playwright próprio"
-        logado = "SIM" if self._is_logged_in() else "NÃO"
         logger.error(
             f"[{self.platform_name}] Gate em {self._gate_failures} keywords "
-            f"seguidas (modo: {modo} | sessão logada: {logado}). Ordem de "
+            f"seguidas (modo: {modo} | sessão: {self._session_label()}). Ordem de "
             "conserto:\n"
             "  1) Logue o perfil dedicado (resolve o device-verification):\n"
             "     python scripts/setup_local_profile.py --site mercadolivre\n"
@@ -1852,6 +1876,18 @@ class MLScraper(BaseScraper):
 
         self._gate_failures += 1
         self._count_gate_reason(self._last_gate_reason)
+        # Só login/verificação de dispositivo indica sessão recusada. Captcha,
+        # WAF ou redirecionamento para a home não pedem relogin.
+        reason = self._last_gate_reason or ""
+        login_gate = (
+            reason.startswith("login/verificação de dispositivo")
+            or reason.startswith("URL de gate")
+        )
+        try:
+            if login_gate and self._is_logged_in():
+                self._gate_while_logged += 1
+        except Exception:
+            pass
         evidencia = self._dump_gate_evidence(keyword, page)
         logger.error(
             f"[{self.platform_name}] Login gate persistente após "
@@ -1934,7 +1970,7 @@ class MLScraper(BaseScraper):
         if self._api_status:
             partes.append(f"API: {self._api_status}")
         try:
-            partes.append("sessão: " + ("logada" if self._is_logged_in() else "anônima"))
+            partes.append("sessão: " + self._session_label())
         except Exception:
             pass
         partes.append("modo: " + ("Chrome local" if getattr(self, "_local_active", False)
