@@ -124,3 +124,11 @@ class TestCardsPelaEstrutura:
         assert "/p/MLB30000001" in organico["URL Produto"]
         # link de ad vira o permalink do item
         assert anuncio["URL Produto"].endswith("MLB-900000000")
+
+    def test_titulo_com_por_nao_vira_seller(self) -> None:
+        card = BeautifulSoup(
+            _card(1).replace("Ar Condicionado Split Inverter Marca1", "Por Que Comprar Split")
+            .replace('<span class="sr-s">Por <span>Loja1</span></span>', ""),
+            "html.parser",
+        )
+        assert MLScraper._structural_seller(card) is None

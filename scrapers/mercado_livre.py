@@ -1264,8 +1264,18 @@ class MLScraper(BaseScraper):
         em spans ("Por " + "<span>WebContinental</span>"). Fica o menor
         elemento que casa — o mais específico.
         """
+        def _is_product_link(tag: Tag) -> bool:
+            return tag.name == "a" and bool(
+                _PRODUCT_ID_IN_HREF_RE.search(tag.get("href") or "")
+            )
+
         best: Optional[str] = None
         for el in item.find_all(True):
+            # Título é link de produto: "Por Que…" no título não é seller.
+            if _is_product_link(el) or el.find_parent(_is_product_link):
+                continue
+            if el.find(_is_product_link):
+                continue
             text = el.get_text(" ", strip=True)
             if len(text) > 80:
                 continue
