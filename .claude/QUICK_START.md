@@ -10,7 +10,10 @@
 # Varredura do PC (o que as tarefas agendadas rodam: 2 páginas, todas as keywords)
 python main.py --platforms ml magalu shopee casasbahia google_shopping leroy dealers --pages 2
 
-# Todas as plataformas ativas (inclui Amazon e dealers; não inclui ml_api)
+# Plataformas ON em ACTIVE_PLATFORMS (sem argumento nenhum, `python main.py` roda a demo de 1 keyword no ML)
+python main.py --pages 2
+
+# `all` = todo o registry exceto ml_api — ignora ACTIVE_PLATFORMS (inclui Fast Shop, bloqueada)
 python main.py --platforms all --pages 2
 
 # Amazon como no Actions (buy box do PDP, sem cache, turno cravado)

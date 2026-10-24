@@ -40,8 +40,9 @@ box diretamente.
 > Scheduler. Agendamento local em `scripts/setup_local_scheduler.ps1`.
 
 ```bash
-# Coleta padrão (todas as plataformas ativas em ACTIVE_PLATFORMS, dealers incluídos)
-python main.py --platforms all --pages 2
+# Plataformas ON em ACTIVE_PLATFORMS (dealers incluídos). `--platforms all` é diferente:
+# todo o registry exceto ml_api, ignorando ACTIVE_PLATFORMS (inclui Fast Shop)
+python main.py --pages 2
 
 # Plataformas individuais
 python main.py --platforms casasbahia --pages 1   # VTEX IS + warm-up Akamai
@@ -103,7 +104,7 @@ python scripts/collect_bestsellers.py                    # coleta do dia + brief
 python scripts/collect_bestsellers.py --plataformas dufrio webcontinental  # dealers avulsos
 python scripts/collect_bestsellers.py --relatorio semanal  # evolução (não coleta)
 python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6
-python scripts/collect_bestsellers.py --import arquivo.xlsx # backfill
+python scripts/collect_bestsellers.py --importar-xlsx ./uploads --data 2026-08-10  # backfill (diretório + data)
 ```
 
 Tabela `bestsellers` — migrações `011_bestsellers_diario.sql` +
@@ -1407,14 +1408,14 @@ python -m playwright install chromium
 # Run collection
 python main.py                                    # Demo (ML, 1 keyword)
 python main.py --platforms dealers --pages 2      # All dealers
-python main.py --platforms all --pages 1          # All active platforms
+python main.py --platforms all --pages 1          # Registry inteiro exceto ml_api (ignora ACTIVE_PLATFORMS)
 python main.py --no-headless --platforms ml       # Visible browser (debug)
 
 # Bestsellers (Mais Vendidos) — rankings diário/semanal/mensal
 python scripts/collect_bestsellers.py              # Coleta do dia + relatório Telegram
 python scripts/collect_bestsellers.py --relatorio semanal  # Evolução da semana
 python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6  # Últimos 6 meses
-python scripts/collect_bestsellers.py --import arquivo.xlsx  # Backfill histórico
+python scripts/collect_bestsellers.py --importar-xlsx ./uploads --data 2026-08-10  # Backfill histórico
 
 # Dashboard (interno, indústria)
 streamlit run app.py

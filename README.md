@@ -209,8 +209,9 @@ Detalhes: [`docs/COLETA_LOCAL_AUTENTICADA.md`](docs/COLETA_LOCAL_AUTENTICADA.md)
 ## 📖 Uso — coleta de oferta/posição
 
 ```bash
-python main.py                                     # demo: plataformas ativas, padrão de config.py
-python main.py --platforms all --pages 2           # todas as ativas (inclui dealers; não inclui ml_api)
+python main.py                                     # demo fixa: Mercado Livre, 1 keyword, 1 página
+python main.py --pages 2                           # plataformas ON em ACTIVE_PLATFORMS (config.py)
+python main.py --platforms all --pages 2           # TODO o registry exceto ml_api — inclui Fast Shop (OFF/bloqueada)
 python main.py --platforms ml magalu --pages 1
 python main.py --platforms dealers --pages 1 --no-headless   # browser visível (debug)
 python main.py --platforms ml --keywords "ar condicionado inverter 12000"
@@ -225,7 +226,7 @@ scripts\run_local_scheduled.bat manha              # manha | tarde | noite
 
 | Opção | Valores | Padrão |
 |-------|---------|--------|
-| `--platforms` | `ml`, `ml_api`, `amazon`, `magalu`, `casasbahia`, `google_shopping`, `leroy`, `shopee`, `fast`, `dealers`, `all` | `ACTIVE_PLATFORMS` em `config.py` |
+| `--platforms` | `ml`, `ml_api`, `amazon`, `magalu`, `casasbahia`, `google_shopping`, `leroy`, `shopee`, `fast`, `dealers`, `all` (= todas exceto `ml_api`, **ignora** `ACTIVE_PLATFORMS`) | `ACTIVE_PLATFORMS` em `config.py` (sem nenhum argumento, roda a demo) |
 | `--pages` | páginas por keyword | `3` (`MAX_PAGES`); o agendado usa `2` |
 | `--keywords` | termos customizados | `KEYWORDS_LIST` (40 keywords) |
 | `--priority` | `alta`, `media`, `baixa` | todas |
@@ -258,7 +259,7 @@ python scripts/collect_bestsellers.py                           # coleta do dia 
 python scripts/collect_bestsellers.py --plataformas dufrio webcontinental
 python scripts/collect_bestsellers.py --relatorio semanal        # evolução (não coleta)
 python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6
-python scripts/collect_bestsellers.py --importar-xlsx arquivo.xlsx   # backfill
+python scripts/collect_bestsellers.py --importar-xlsx ./uploads --data 2026-08-10   # backfill (diretório de .xlsx + data)
 ```
 
 - **Status:** coleta e grava no Supabase (tabela `bestsellers`) quase todo
