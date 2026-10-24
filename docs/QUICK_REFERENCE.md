@@ -4,14 +4,21 @@
 
 1. Activate venv
 2. Check `config.py` ACTIVE_PLATFORMS for which platforms are enabled
-3. Check recent logs in `logs/` for last run status
-4. Check recent CSVs in `output/` for data quality
+3. `python scripts/pipeline_watch.py --no-notify` — which jobs ran / didn't run today
+4. Check recent logs in `logs/` (`bot_*.log`, `heartbeat.jsonl`) and CSVs in `output/`
+
+Where things run (Out/2026): PC collector at 08/14/20h BRT for the active
+PC-owned platforms (ML, Magalu, Casas Bahia, Google Shopping, Leroy, Shopee,
+dealers — Fast Shop is off); Amazon, PriceTrack and supervision on GitHub Actions. See
+`docs/MAPA_COLETAS.md`.
 
 ## Platform Aliases (for --platforms flag)
 
 ```
-ml, magalu, amazon, shopee, casasbahia, google_shopping, leroy, fast, dealers
+ml, ml_api, amazon, magalu, casasbahia, google_shopping, leroy, shopee, fast, dealers, all
 ```
+
+`ml_api` só roda quando pedido explicitamente (não entra em `all`).
 
 ## Scraper Extraction Patterns
 
@@ -72,3 +79,5 @@ Most specific first: `"Springer Midea"` before `"Midea"` before `"Springer"`.
 - Encoding: UTF-8 BOM (`utf-8-sig`) for Excel PT-BR
 - Price: float (`.` decimal), e.g., `2499.00`
 - Missing values: empty string (pandas NaN → blank in CSV)
+- Turno: `Abertura` (≤11h), `Tarde` (≤17h), `Fechamento` — BRT, ou `RAC_TURNO`
+- Sidecar `<csv>.run_id`: `scripts/upload_csv.py` e `scripts/history_cli.py` reusam o run_id; `reenviar_csv.py` e `scripts/upload_magalu_csv.py` ainda geram outro (duplicam)

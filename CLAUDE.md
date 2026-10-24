@@ -4,8 +4,12 @@
 > **Domain:** Buy box, sellers & competitive insights for the air conditioning market in Brazil  
 > **Stack:** Python 3.10+, Playwright, curl_cffi, BeautifulSoup, Pandas, Supabase, Streamlit  
 > **Sub-projeto:** `magalu_shopee/` — Node.js/TypeScript + Puppeteer (Shopee — fallback)  
-> **Status:** ✅ Production | PC Coletor (Windows, IP residencial) + GitHub Actions (backup)  
-> **Versão:** v5.5 (Set/2026) | **Última atualização:** 30 de Setembro de 2026
+> **Status:** ✅ Production | PC Coletor (Windows, IP residencial) + GitHub Actions (Amazon, PriceTrack, supervisão)  
+> **Versão:** v5.6 (Out/2026) | **Última atualização:** 24 de Outubro de 2026
+>
+> **Leia junto:** o `README.md` da raiz descreve o estado atual para quem chega
+> ao projeto (o que é, como instalar, como usar). Este arquivo guarda as
+> **regras duras** e o porquê de cada decisão.
 
 ---
 
@@ -32,12 +36,13 @@ box diretamente.
 > (um PDP por item), então isolá-la na nuvem deixa o PC leve; o turno é cravado
 > por `RAC_TURNO` (o cron do Actions atrasa). Um turno = um dono: a posse da
 > Amazon migrou para os jobs `gh_amazon_*` em `utils/pipeline_registry.py`.
-> **Mais Vendidos** deixou de ser coletado. Agendamento local em
-> `scripts/setup_local_scheduler.ps1`.
+> **Mais Vendidos** segue coletado (ver a seção abaixo), mas fora do Task
+> Scheduler. Agendamento local em `scripts/setup_local_scheduler.ps1`.
 
 ```bash
-# Coleta padrão (todas as plataformas ativas em ACTIVE_PLATFORMS, dealers incluídos)
-python main.py --platforms all --pages 2
+# Plataformas ON em ACTIVE_PLATFORMS (dealers incluídos). `--platforms all` é diferente:
+# todo o registry exceto ml_api, ignorando ACTIVE_PLATFORMS (inclui Fast Shop)
+python main.py --pages 2
 
 # Plataformas individuais
 python main.py --platforms casasbahia --pages 1   # VTEX IS + warm-up Akamai
@@ -57,11 +62,17 @@ python utils/session_grabber.py --site shopee
 > com 360 linhas), ~350 linhas/dia, 13 fontes reportando, incluindo o próprio
 > dia da conferência.
 >
-> O que de fato saiu foi o **agendamento** pelo `pipeline_registry.py`: o job
-> `local_bestsellers` não está no contrato e a tarefa `RAC_Bestsellers` não
-> está no agendador — mas a coleta acontece por outro caminho. **É esse o
-> problema**, não o desligamento: sem job no registro não há batida de ponto,
-> e sem batida de ponto ninguém cobra as fontes que somem.
+> O que de fato saiu foi o **agendamento**: a tarefa `RAC_Bestsellers` não
+> está no Task Scheduler (o `setup_local_scheduler.ps1` ainda a remove como
+> legado) — a coleta acontece por disparo no PC coletor
+> (`scripts\collect_bestsellers.bat`).
+>
+> **Atualização (Out/2026):** o job `local_bestsellers` **já está** no
+> `pipeline_registry.py` (dias úteis, 09:30 BRT, deadline generoso), então um
+> dia em que a coleta INTEIRA não roda vira alerta no `pipeline_watch.py`. Ele
+> ainda **não cobra fonte por fonte** — a contagem é do dia todo —, por isso
+> as fontes mudas abaixo continuam sem alarme próprio. O passo que falta é
+> recadastrar `RAC_Bestsellers` no agendador.
 >
 > **E somem.** Das 20 fontes de `bestsellers/config.py`, **7 não gravam uma
 > única linha**, e nunca gravaram em toda a história da tabela:
@@ -93,7 +104,7 @@ python scripts/collect_bestsellers.py                    # coleta do dia + brief
 python scripts/collect_bestsellers.py --plataformas dufrio webcontinental  # dealers avulsos
 python scripts/collect_bestsellers.py --relatorio semanal  # evolução (não coleta)
 python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6
-python scripts/collect_bestsellers.py --import arquivo.xlsx # backfill
+python scripts/collect_bestsellers.py --importar-xlsx ./uploads --data 2026-08-10  # backfill (diretório + data)
 ```
 
 Tabela `bestsellers` — migrações `011_bestsellers_diario.sql` +
@@ -138,10 +149,12 @@ coleta de oferta/posição, todas rodando a varredura completa (todas as
 plataformas + dealers, 2 páginas, todas as keywords):
 `RAC_Local_Manha` 08:00 (Abertura), `RAC_Local_Tarde` 14:00 (Tarde) e
 `RAC_Local_Noite` 20:00 (Fechamento), cada uma com catch-up no logon dentro da
-sua janela (8–11h / 12–17h / 18–23h). A tarefa `RAC_Bestsellers` não está no
-agendador — mas a coleta de Mais Vendidos **acontece mesmo assim** por outro
-caminho (ver a seção acima); o que falta é o job no `pipeline_registry.py`,
-para que a ausência de fonte vire alarme.
+sua janela (8–11h / 12–17h / 18–23h). Depois da coleta, cada turno roda o
+estágio C (`build_seller_offer_daily.py --heartbeat`) e o da noite também o
+estágio D (poda `history_cli.py tier --dataset all --confirm --heartbeat`).
+A tarefa `RAC_Bestsellers` não está no agendador — a coleta de Mais Vendidos
+**acontece mesmo assim** por disparo no PC (ver a seção acima); o job
+`local_bestsellers` já está no registro, o que falta é a tarefa.
 Setup: `scripts\setup_local_scheduler.ps1`; diagnóstico:
 `scripts\check_local_scheduler.ps1`.
 
@@ -599,8 +612,9 @@ diário ou "resumo de tudo que foi coletado":**
 não pode ter, um conector MCP Postgres genérico — só serviços com conector
 OAuth publicado no diretório (Supabase, Neon, etc.), e o Aiven não é um
 deles. Por isso o briefing diário foi movido para rodar **localmente**, no
-PC coletor, via Claude Code CLI headless (`claude -p`), que já tem o
-conector `postgres`/Aiven configurado. Setup completo (conectores, GitHub
+PC coletor, via Claude Code CLI headless (`claude -p`), com um conector
+`postgres` local — que desde 23/09/2026 aponta para o **Session Pooler do
+Supabase** (read-only), não mais para a Aiven (ver o rodapé deste arquivo). Setup completo (conectores, GitHub
 Pages do painel, tarefa do Task Scheduler) em
 `docs/BRIEFING_LOCAL_SETUP.md`; o prompt versionado é
 `docs/briefing_diario_prompt.md`; o disparo agendado é
@@ -627,11 +641,11 @@ a cada push do próprio briefing.
 
 ## Session Start Protocol
 
-**MANDATORY** — Load these 4 files at session start (~1,250 tokens):
+**MANDATORY** — Load these 4 files at session start (~35k tokens — CLAUDE.md alone is ~25k):
 
 ```markdown
 1. CLAUDE.md                          ← This file
-2. .claude/COMMON_MISTAKES.md         ⚠️ CRITICAL — 8 recurring anti-patterns
+2. .claude/COMMON_MISTAKES.md         ⚠️ CRITICAL — 26 anti-patterns que já quebraram produção
 3. .claude/QUICK_START.md             ← Essential commands & workflows
 4. .claude/ARCHITECTURE_MAP.md        ← File locations & data flow
 ```
@@ -821,7 +835,7 @@ rac-position-tracker/
 │   ├── magalu.py                # MagaluScraper (LocalBrowser + curl_cffi fallback)
 │   ├── casas_bahia.py           # CasasBahiaScraper (VTEX IS)
 │   ├── shopee.py                # ShopeeScraper (API v4 + sessão)
-│   ├── dealers.py               # DealerScraper (⏸️ fora do foco)
+│   ├── dealers.py               # DealerScraper + DEALER_CONFIGS (33 ativos, 3 on_hold)
 │   └── fast_shop.py             # ⏸️ PerimeterX
 │
 ├── utils/
@@ -835,24 +849,45 @@ rac-position-tracker/
 │   ├── shelf_insights.py        # 🆕 Métricas puras do Cockpit do Trade (share, buy box, alertas)
 │   ├── price_series.py          # 🆕 Série de preço = uma fonte (PT × coletas) + recorte BTU/hi-wall
 │   ├── run_sidecar.py           # 🆕 run_id viaja com o CSV (fim da gravação dupla)
+│   ├── offer_identity.py        # offer_key versionada + ids de marketplace
+│   ├── offer_kind.py            # UNIDADE / ACESSORIO / PARCIAL / MULTIPLO / COM_INSTALACAO
+│   ├── pipeline_registry.py     # Contrato de execução (JOBS: quem roda, quando, dono de quê)
+│   ├── heartbeat.py             # Batida de ponto no livro-razão (pipeline_heartbeat)
+│   ├── volume_drop.py           # Plataforma DEGRADADA (queda brusca de volume)
+│   ├── db.py                    # Adaptador supabase-py ↔ psycopg2 (RAC_DB_DSN)
+│   ├── history/                 # Histórico frio em Parquet (Drive/disco)
 │   ├── admin_automation.py      # Motor da automação ADMIN (zero interação)
 │   └── n8n_notify.py            # Telegram notifications (API direta)
 │
 ├── scripts/
-│   ├── oracle_setup.sh          # VM setup script
-│   ├── collect_manha_linux.sh   # Morning collection (10:00 BRT)
-│   ├── collect_noite_linux.sh   # Night collection (21:00 BRT)
-│   ├── admin_auto.py            # CLI da automação ADMIN (cron/debug)
+│   ├── run_local_scheduled.bat  # Estágio A da tarefa agendada: git pull → estágio B
+│   ├── local_scheduled_collect.bat  # Estágios B (coleta), C (seller fact), D (poda, noite)
+│   ├── collect_local_authenticated.bat  # main.py com as plataformas do PC (sem Amazon)
+│   ├── setup_local_scheduler.ps1 / check_local_scheduler.ps1  # Task Scheduler + diagnóstico
+│   ├── setup_local_profile.py   # Login nos sites no perfil Chrome dedicado
+│   ├── collect_bestsellers.py/.bat  # Mais Vendidos
+│   ├── pipeline_watch.py / briefing_gate.py / pipeline_heal.py  # Supervisão
+│   ├── pricetrack_api_import.py # Import PriceTrack D-1 (+ --gaps-only)
+│   ├── history_cli.py           # Histórico frio: stats / import-csv / tier / export
 │   ├── build_seller_offer_daily.py  # 🆕 Materializa seller_offer_daily (Track Position Seller)
+│   ├── admin_auto.py            # CLI da automação ADMIN (cron/debug)
 │   ├── fix_turno.py             # Database cleanup utilities
-│   └── monitor.sh               # Log monitoring
+│   └── oracle_setup.sh, collect_*_linux.sh  # ⏸️ VM Oracle (standby, não coleta)
 │
 ├── n8n/
 │   └── rac_coleta_monitor.json  # N8N workflow (Webhook → Telegram)
 │
+├── pricetrack_api/              # Cliente tipado da API PriceTrack
+├── pricetrack_importer/         # Importador md/xlsx do PriceTrack
+├── pricetrack_dashboard/        # Dashboard de preço 9K/12K por tier (peer.py)
+│
 ├── .github/workflows/
-│   ├── collect.yml              # GitHub Actions (manual dispatch only)
-│   └── collect_amazon_sellers.yml  # 🆕 Amazon-only, 3 turnos, PDP → buy box → seller_app
+│   ├── tests.yml                # pytest em todo PR + push em main
+│   ├── collect_amazon_sellers.yml  # 🆕 Amazon-only, 3 turnos, PDP → buy box → seller_app
+│   ├── pricetrack_daily.yml     # Import PriceTrack D-1 (00:01/04:20/05:20 BRT)
+│   ├── pipeline_guard.yml       # Supervisor de execução (06:35/12:35/22:35 BRT)
+│   ├── watchdog.yml             # Validação de dado (20:30 BRT)
+│   └── collect.yml              # Backup de coleta (manual dispatch only)
 │
 ├── .claude/                     # AI assistant documentation
 │   ├── COMMON_MISTAKES.md
@@ -1050,7 +1085,7 @@ Preferência do mantenedor (Jun/2026) — vale para todas as sessões.
 ### CI — a suíte roda em todo PR (Ago/2026) 🆕
 
 `.github/workflows/tests.yml` roda `pytest tests/ pricetrack_api/tests
-pricetrack_importer/tests -q` em **todo Pull Request** e em todo push para
+pricetrack_importer/tests pricetrack_dashboard/tests -q` em **todo Pull Request** e em todo push para
 `main` (~1 min, Python 3.11, sem secret — a suíte é hermética e os testes de
 integração se auto-pulam sem `SUPABASE_URL`). Antes disso nenhum workflow
 rodava em PR: `collect`, `pricetrack_daily` e `watchdog` são cron ou dispatch
@@ -1060,16 +1095,16 @@ Amazon e um índice Algolia sombreado na Leroy (PRs #322/#323).
 Os browsers do Playwright ficam **fora** do job de propósito — nenhum teste
 abre browser, e `playwright install` somaria minutos a uma suíte de 1 min.
 
-### Cobertura Atual (Ago/2026)
+### Cobertura Atual (validada em 24/10/2026)
 
-**1.555 testes** incluindo:
+**2.505 testes passando + 62 pulados** (~75 s), incluindo:
 - 60+ novos testes de bestsellers (parsers, metrics, pipeline, validate)
 - 40+ testes de browser local (LocalBrowser, PlaywrightRuntime, fallback chain)
 - 20+ testes de Amazon sellers (cache, PDP)
 - Testes de watchdog channels (Telegram alert routing)
 - Testes de orçamento PriceTrack
 
-Rodando: `pytest tests/ pricetrack_api/tests pricetrack_importer/tests -q`
+Rodando: `pytest tests/ pricetrack_api/tests pricetrack_importer/tests pricetrack_dashboard/tests -q`
 
 ### Testing Pyramid
 
@@ -1258,7 +1293,12 @@ def function_name(param1: Type, param2: Type) -> ReturnType:
 
 ## Deployment & Infrastructure
 
-### Oracle Cloud VM Setup
+### Oracle Cloud VM Setup — ⏸️ standby
+
+> **Estado atual (Out/2026):** a VM **não coleta** nada e não tem job no
+> `pipeline_registry.py`. O PC coletor é o dono de oferta/posição e o GitHub
+> Actions cuida de Amazon, PriceTrack e supervisão. As instruções abaixo ficam
+> só para religar a VM em caso de necessidade.
 
 **VM Specs:** Standard.E2.1.Micro (1 GB RAM, ARM64)  
 **Location:** Brazil East (São Paulo)  
@@ -1280,7 +1320,7 @@ cd ~/rac-position-tracker
 tail -f logs/bot_*.log
 ```
 
-### Cron Schedule (BRT)
+### Cron Schedule (BRT) — legado, desligado
 
 | Script | Time (BRT) | Platforms | Priority | Pages |
 |--------|-----------|-----------|----------|-------|
@@ -1309,6 +1349,22 @@ N8N_TELEGRAM_CHAT_ID=123456789
 # Optional N8N webhook
 N8N_WEBHOOK_URL=http://localhost:5678/webhook/coleta
 
+# PriceTrack (import diário)
+PRICETRACK_API_KEY=...
+
+# Histórico frio (Drive) — gerado por scripts/gdrive_setup.py
+GDRIVE_CLIENT_ID=...
+GDRIVE_CLIENT_SECRET=...
+GDRIVE_REFRESH_TOKEN=...
+GDRIVE_FOLDER_ID=...
+
+# Janela quente do Supabase (padrão 2) e backend alternativo (vazio = Supabase)
+RAC_HOT_WINDOW_DAYS=2
+RAC_DB_DSN=
+
+# Chrome real logado via CDP no PC coletor
+RAC_LOCAL_CHROME=1
+
 # Mercado Livre — API oficial (fallback automático quando a SERP leva gate)
 ML_APP_ID=...
 ML_APP_SECRET=...
@@ -1324,7 +1380,7 @@ ML_PASSWORD=...
 Workflow: `.github/workflows/collect.yml`
 
 **Trigger:** Manual dispatch only (no cron)  
-**Purpose:** Backup when Oracle VM unavailable, testing
+**Purpose:** Backup when the PC collector is unavailable, testing
 
 ```yaml
 # Usage: GitHub → Actions → RAC Price Collection → Run workflow
@@ -1352,14 +1408,14 @@ python -m playwright install chromium
 # Run collection
 python main.py                                    # Demo (ML, 1 keyword)
 python main.py --platforms dealers --pages 2      # All dealers
-python main.py --platforms all --pages 1          # All active platforms
+python main.py --platforms all --pages 1          # Registry inteiro exceto ml_api (ignora ACTIVE_PLATFORMS)
 python main.py --no-headless --platforms ml       # Visible browser (debug)
 
 # Bestsellers (Mais Vendidos) — rankings diário/semanal/mensal
 python scripts/collect_bestsellers.py              # Coleta do dia + relatório Telegram
 python scripts/collect_bestsellers.py --relatorio semanal  # Evolução da semana
 python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6  # Últimos 6 meses
-python scripts/collect_bestsellers.py --import arquivo.xlsx  # Backfill histórico
+python scripts/collect_bestsellers.py --importar-xlsx ./uploads --data 2026-08-10  # Backfill histórico
 
 # Dashboard (interno, indústria)
 streamlit run app.py
@@ -1376,7 +1432,7 @@ python scripts/briefing_gate.py                   # portão de frescor do briefi
 python scripts/briefing_gate.py --json --curar    # verifica e reimporta o que faltar
 python scripts/pipeline_heal.py --dry-run         # contenção: o que seria curado
 
-# Briefing diário completo v2 (Aiven + Notion + painel) — roda LOCAL, ver docs/BRIEFING_LOCAL_SETUP.md
+# Briefing diário completo v2 (Supabase via Session Pooler + Notion + painel) — roda LOCAL, ver docs/BRIEFING_LOCAL_SETUP.md
 scripts\run_briefing_diario.bat                            # dispara na mão (mesmo comando da tarefa agendada)
 PowerShell -ExecutionPolicy Bypass -File scripts\setup_briefing_scheduler.ps1   # agenda RAC_Briefing_0700 (07:00 BRT)
 
@@ -1405,8 +1461,8 @@ python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv --mirror
 
 ### Platform Status (foco buy box/seller)
 
-> Set/2026: dealers de volta ao foco (coletados localmente). Coleta 100% no PC
-> coletor, 3 turnos (8h/14h/20h). Preço é secundário.
+> Set/2026: dealers de volta ao foco (coletados localmente). Coleta no PC
+> coletor, 3 turnos (8h/14h/20h), exceto Amazon (GitHub Actions). Preço é secundário.
 
 | Platform | Status | Notes |
 |----------|--------|-------|
@@ -1624,13 +1680,14 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 
 | Document | Tokens | Auto-loaded? |
 |----------|--------|-------------|
-| CLAUDE.md | ~400 | Yes |
-| .claude/COMMON_MISTAKES.md | ~350 | Yes |
-| .claude/QUICK_START.md | ~200 | Yes |
-| .claude/ARCHITECTURE_MAP.md | ~300 | Yes |
-| **Session start total** | **~1,250** | |
-| docs/learnings/*.md | ~400-600 | No (task-specific) |
-| **Typical task total** | **~1,850** | |
+| CLAUDE.md | ~25,000 | Yes |
+| .claude/COMMON_MISTAKES.md | ~8,000 | Yes |
+| .claude/QUICK_START.md | ~1,100 | Yes |
+| .claude/ARCHITECTURE_MAP.md | ~2,200 | Yes |
+| **Session start total** | **~35,000** | |
+| docs/learnings/*.md | ~1,000-3,000 each | No (task-specific) |
+
+*(Estimativa por tamanho em bytes / 4, medida em 24/10/2026.)*
 
 ---
 
@@ -1660,8 +1717,9 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 
 ---
 
-*Last updated: September 30, 2026 (v5.5)*  
-*Latest changes (30/09/2026): validação do dashboard contra o banco — o Overview virou **🏠 Cockpit do Trade** (share de prateleira da Midea Carrier nas buscas genéricas, batalha por keyword, defesa/conquista de marca, buy box das ofertas Midea, preço de vitrine por BTU, alertas e cobertura; `docs/COCKPIT_TRADE.md`), filtros globais passaram a valer para todas as páginas (Período único + Canal novo + herança de Plataformas/Marcas), keywords agrupadas por tipo de busca sem as vitrines de dealer, filtro de seller pelo seller efetivo (buy box), limpeza do sufixo "e mais" do Google Shopping e do byline de marca da Amazon, e fim da gravação dupla de cada turno do PC coletor (`utils/run_sidecar.py`). Ver a seção "Cockpit do Trade + filtros globais únicos".*  
+*Last updated: October 24, 2026 (v5.6)*  
+*Latest changes (24/10/2026): revisão das instruções contra o código. `README.md` reescrito como retrato do estado atual (o antigo, com o histórico de validações, foi para `docs/archive/README_HISTORICO_ATE_SET2026.md`); corrigidos aqui: Mais Vendidos segue coletado e `local_bestsellers` já está no registro (falta só a tarefa no agendador); estágios C/D do turno; briefing lê o Supabase (Session Pooler), não a Aiven; VM Oracle marcada como standby; workflows e módulos novos na árvore; contagem de testes (2.505 + 62 pulados, CI inclui `pricetrack_dashboard/tests`). `.claude/QUICK_START.md`, `.claude/ARCHITECTURE_MAP.md`, `docs/QUICK_REFERENCE.md` e `docs/INDEX.md` atualizados; textos do job `local_tier_migration` deixaram de falar em janela de 15 dias.*  
+*Anterior (30/09/2026): validação do dashboard contra o banco — o Overview virou **🏠 Cockpit do Trade** (share de prateleira da Midea Carrier nas buscas genéricas, batalha por keyword, defesa/conquista de marca, buy box das ofertas Midea, preço de vitrine por BTU, alertas e cobertura; `docs/COCKPIT_TRADE.md`), filtros globais passaram a valer para todas as páginas (Período único + Canal novo + herança de Plataformas/Marcas), keywords agrupadas por tipo de busca sem as vitrines de dealer, filtro de seller pelo seller efetivo (buy box), limpeza do sufixo "e mais" do Google Shopping e do byline de marca da Amazon, e fim da gravação dupla de cada turno do PC coletor (`utils/run_sidecar.py`). Ver a seção "Cockpit do Trade + filtros globais únicos".*  
 *Anterior (23/09/2026): correção pós-incidente — a janela quente voltou do Aiven para o **Supabase** em 22/09/2026 (`docs/RETORNO_SUPABASE.md`, `RAC_HOT_WINDOW_DAYS=2`), mas `docs/briefing_diario_prompt.md` e `docs/BRIEFING_LOCAL_SETUP.md` continuaram exigindo/documentando um conector Postgres apontado pra **Aiven** — o PASSO 0 chegava a proibir explicitamente o Supabase. Efeito: o conector local, se apontado (por essas instruções) pra Aiven, lê um banco congelado desde a virada (sem coleta nova) e reproduz o mesmo padrão de falso "outage" do incidente de 12–17/09. Corrigido: todos os pontos de `briefing_diario_prompt.md` que citavam "Aiven" como origem de dado (PASSO 0, 3, 5, 6, 7.3) agora dizem Supabase; `BRIEFING_LOCAL_SETUP.md` §1 reescrita para apontar o conector `postgres` pro **Session Pooler do Supabase** (conexão direta, sobrevive a uma restrição de cota na API REST — `docs/RETORNO_SUPABASE.md` §5.1) em vez da Aiven; comentários de `scripts/run_briefing_diario.bat` e `scripts/setup_briefing_scheduler.ps1` idem. Nova seção "Banco intercambiável" acima recebeu um aviso de reversão no topo, para não ser lida como estado atual. Também confirmado nesta sessão: o projeto Supabase (`ailbsczkrympslpjwwko`) segue com `status=ACTIVE_HEALTHY` e a conexão Postgres direta respondendo normalmente (banco em 125 MB, bem abaixo dos 500 MB) mesmo com o painel mostrando PostgREST/Auth "Unhealthy" e o banner "Services restricted" — condizente com a nota de `RETORNO_SUPABASE.md` §5.1 de que a reavaliação da cota pela plataforma leva minutos a algumas horas após o banco encolher, e não há ação de API/dashboard disponível para acelerá-la; se persistir muitas horas com o banco pequeno, checar Organization Settings → Billing para uma restrição distinta (billing), não de tamanho.*
 *Anterior (18/09/2026, 2): o briefing diário v2 completo foi movido para rodar **localmente** (Claude Code CLI headless no PC coletor) porque o Cowork/claude.ai não tem conector MCP Postgres genérico para o Aiven (só serviços com OAuth publicado no diretório, tipo Supabase/Neon). Novo `docs/briefing_diario_prompt.md` (prompt versionado, com as correções de schema já aplicadas), `scripts/run_briefing_diario.bat` + `scripts/setup_briefing_scheduler.ps1` (tarefa `RAC_Briefing_0700`, 07:00 BRT), `docs/BRIEFING_LOCAL_SETUP.md` (setup único: conector Postgres/Aiven read-only, conector Notion via OAuth, GitHub Pages). O painel deixou de ser Artifact da claude.ai (ferramenta ausente no Claude Code CLI) e virou página estática em `docs/painel/index.html`, publicada via GitHub Pages a cada push do próprio briefing.*
 *Anterior (18/09/2026): nova seção "Briefing/resumo diário — nunca consultar o banco de memória" — documenta o incidente de 12–17/09/2026 (tarefa agendada `painel-trade-rac-7h` publicou "outage total" no Notion 3 dias seguidos porque consultava um schema de `pricetrack_daily` inventado contra o projeto Supabase antigo, já descontinuado pela migração Aiven) e fixa a regra dura: nunca escrever SQL de schema de memória, sempre passar por `utils/db.py`/`briefing_gate.py`/`pricetrack_capacity_audit.py`, `pipeline_heartbeat` usa `job_id` (não `job_name`), e sem conector Postgres/Aiven configurado o resultado é reportar o bloqueio, nunca fabricar diagnóstico.*

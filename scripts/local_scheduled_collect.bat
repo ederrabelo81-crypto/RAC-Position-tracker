@@ -174,7 +174,8 @@ call :materializar
 :: SUPABASE_KEY service_role (a chave anon nao apaga). Se o banco JA estiver
 :: restrito por cota, tier nao roda (a REST recusa ate leitura): o primeiro
 :: desbloqueio e manual pelo SQL Editor (scripts\retention_cleanup.sql + VACUUM
-:: FULL), e dai em diante esta poda noturna mantem os 15 dias.
+:: FULL), e dai em diante esta poda noturna mantem a janela quente
+:: (RAC_HOT_WINDOW_DAYS=2 desde 22/09/2026; eram 15 na epoca).
 if /i "%SLOT%"=="noite" (
     echo [%DATE% %TIME%] [%SLOT%] podando janela quente do Supabase [tier -^> Drive]
     call "%PYEXE%" scripts\history_cli.py tier --dataset all --confirm --heartbeat

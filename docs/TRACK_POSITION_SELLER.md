@@ -445,6 +445,13 @@ Corolário para o SLA contratual: o compromisso vendável é sobre
 **disponibilidade de leitura por plataforma/turno**, não sobre "dado completo".
 Prometer completude de uma coleta anti-bot é prometer o que não se controla.
 
+> **Atualização (Out/2026):** desde então o job `local_bestsellers` entrou no
+> `pipeline_registry.py` — um dia sem coleta inteira já vira alerta —, mas ele
+> ainda não cobra fonte por fonte; as 7 fontes mudas descritas abaixo seguem
+> sem alarme próprio, e a tarefa `RAC_Bestsellers` segue fora do Task Scheduler.
+> O `seller_app` também ganhou job (`local_seller_fact`). **O parágrafo abaixo
+> e o item 5 mais adiante descrevem o estado de 04/09/2026** (antes do job).
+
 **Isto não é hipótese — está acontecendo agora, no próprio repositório.** A
 coleta de `bestsellers` roda todo dia e grava no Supabase, mas **não tem job no
 `pipeline_registry.py`**. Sem job não há batida de ponto; sem batida, ausência
