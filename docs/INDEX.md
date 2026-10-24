@@ -1,5 +1,9 @@
 # Documentation Index — RAC Position Tracker
 
+> Comece pelo `README.md` da raiz (estado atual: o que é, como instalar e usar)
+> e pelo `CLAUDE.md` (regras duras). Este índice aponta o documento certo por
+> tarefa. Atualizado em 24/10/2026.
+
 ## Navigation by Task
 
 ### "I need to fix a scraper that returns 0 products"
@@ -100,6 +104,30 @@
    prompt + Supabase→Drive filter equivalences)
 3. CLI: `python scripts/history_cli.py stats` / `export --cold-only`
 
+### "I need to work on the seller panel (Track Position Seller)"
+1. Operation/deploy: `seller_app/README.md`; strategy & architecture: `docs/TRACK_POSITION_SELLER.md`
+2. Data: `seller_offer_daily` / `seller_coverage_daily` / `v_seller_buybox_share`
+   (`docs/migrations/016`–`018`, `020`), built by `scripts/build_seller_offer_daily.py`
+   (job `local_seller_fact`, stage C of every PC turn)
+3. Hard rule: secret `SELLER` is compared literally against `seller_canonical`
+
+### "The Supabase hit the quota / I need to switch database backend"
+1. Current backend and the emergency runbook: `docs/RETORNO_SUPABASE.md` (§5.1)
+2. Rollback to a direct Postgres (Aiven): `docs/MIGRACAO_AIVEN.md`
+   (`utils/db.py`, `RAC_DB_DSN`)
+3. Background and numbers: `docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`;
+   old retention policy (superseded): `docs/DB_RETENTION.md`
+
+### "I need to run or fix the daily briefing (07:00)"
+1. `docs/BRIEFING_LOCAL_SETUP.md` (local Claude Code headless, Supabase Session Pooler)
+2. Versioned prompt: `docs/briefing_diario_prompt.md`; static panel: `docs/painel/`
+3. Hard rule (CLAUDE.md): never write schema SQL from memory — use
+   `briefing_gate.py`, `pricetrack_capacity_audit.py`, `pipeline_watch.py`
+
+### "I need to check PriceTrack price fidelity"
+1. `docs/PRICETRACK_FIDELIDADE.md` (`price_basis`, best_cash, pending reimport)
+2. `python scripts/pricetrack_audit.py` — our collection as an audit of PriceTrack
+
 ### "I need to orchestrate or automate collection with n8n"
 1. Load `docs/n8n_orchestration.md`
 2. Key file: `n8n/rac_coleta_monitor.json` (workflow: notifications + CSV ingestion)
@@ -110,24 +138,23 @@
 
 | Document | Tokens | Auto-loaded? |
 |----------|--------|-------------|
-| CLAUDE.md | ~400 | Yes |
-| .claude/COMMON_MISTAKES.md | ~350 | Yes |
-| .claude/QUICK_START.md | ~200 | Yes |
-| .claude/ARCHITECTURE_MAP.md | ~300 | Yes |
-| **Session start total** | **~1,250** | |
-| docs/learnings/scraping-patterns.md | ~600 | No |
-| docs/learnings/anti-bot-strategies.md | ~500 | No |
-| docs/learnings/dealer-configs.md | ~600 | No |
-| docs/learnings/testing-debugging.md | ~400 | No |
-| **Typical task total** | **~1,850** | |
+| CLAUDE.md | ~25,000 | Yes |
+| .claude/COMMON_MISTAKES.md | ~8,000 | Yes |
+| .claude/QUICK_START.md | ~1,000 | Yes |
+| .claude/ARCHITECTURE_MAP.md | ~1,200 | Yes |
+| **Session start total** | **~35,000** | |
+| docs/learnings/*.md | ~1,000–3,000 each | No |
+
+*(Estimativa: bytes / 4, medida em 24/10/2026.)*
 
 ---
 
 ## All Documentation Files
 
 ```
-CLAUDE.md                                  ← Project overview + session protocol
-.claude/COMMON_MISTAKES.md                 ← Critical anti-patterns (8 items)
+README.md                                  ← Current state: what it is, install, usage ⭐
+CLAUDE.md                                  ← Hard rules + session protocol
+.claude/COMMON_MISTAKES.md                 ← Critical anti-patterns (26 items)
 .claude/QUICK_START.md                     ← Commands and workflows
 .claude/ARCHITECTURE_MAP.md                ← File locations and data flow
 .claude/LEARNINGS_INDEX.md                 ← Quick pointer to learnings
@@ -141,7 +168,24 @@ docs/COLETA_LOCAL_AUTENTICADA.md           ← Shopee/Magalu/CB no notebook (Chr
 docs/AUTOMACAO_COLETAS_AUTENTICADAS.md     ← Legado: automation via CDP + sessions
 docs/MAPA_COLETAS.md                       ← Where each collection runs + execution monitoring ⭐
 docs/PRICETRACK_INSIGHTS.md                ← PriceTrack pipeline + insight roadmap
-docs/TRACK_POSITION_SELLER.md              ← Spin-off seller-side: strategy + multi-tenant architecture (proposal)
+docs/TRACK_POSITION_SELLER.md              ← Spin-off seller-side: strategy + architecture (Phase 1 live in seller_app/)
+seller_app/README.md                       ← Run/deploy the seller panel
+pricetrack_api/README.md                   ← PriceTrack API client
+pricetrack_dashboard/README.md             ← 9K/12K price dashboard
+docs/BESTSELLERS.md                        ← Mais Vendidos: KPI, rules, validation gates
+docs/COCKPIT_TRADE.md                      ← Cockpit do Trade metric definitions
+docs/DASHBOARD_FILTERS.md                  ← Global filters wiring
+docs/RETORNO_SUPABASE.md                   ← Current DB backend (Supabase, 2-day hot window) + quota emergency ⭐
+docs/MIGRACAO_AIVEN.md                     ← Rollback path: direct Postgres (Aiven)
+docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md ← Storage numbers and agent options
+docs/DB_RETENTION.md                       ← Old retention policy (superseded)
+docs/BRIEFING_LOCAL_SETUP.md               ← Daily briefing, local headless setup
+docs/briefing_diario_prompt.md             ← Versioned briefing prompt
+docs/PRICETRACK_FIDELIDADE.md              ← PriceTrack price-basis fidelity
+docs/ADAPTIVE_SCRAPER.md                   ← Adaptive scraper (selector memory)
+docs/AVALIACAO_SCRAPLING.md                ← Scrapling evaluation
+docs/SECURITY_TODO_RLS.md                  ← RLS security backlog
+docs/archive/README_HISTORICO_ATE_SET2026.md ← Old README with validation logs (history)
 docs/HISTORICO_DRIVE.md                    ← Cold history in Parquet (Google Drive)
 docs/PROMPT_COWORK_DRIVE.md                ← Cowork prompt: read the Drive instead of Supabase
 docs/DIAGNOSTICO_COLETA_JUN2026.md         ← Field coverage diagnosis (buy box, ML fix)

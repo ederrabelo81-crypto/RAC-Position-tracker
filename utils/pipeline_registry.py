@@ -494,7 +494,7 @@ JOBS: Tuple[JobSpec, ...] = (
     # O passo que FALTAVA até Set/2026. A arquitetura híbrida (docs/HISTORICO_
     # DRIVE.md) tem DUAS metades: (1) a escrita ao Drive, que roda a cada coleta
     # e sempre rodou; (2) a PODA do Supabase — apagar do banco o que já saiu da
-    # janela quente de 15 dias e está verificado no frio. A metade (2) era um
+    # janela quente (15 dias na época; 2 desde 22/09/2026) e está verificado no frio. A metade (2) era um
     # `history_cli.py tier --confirm` MANUAL, "mensal ou quando a cota apertar",
     # e nunca foi agendada. Resultado: o Supabase acumulou ~40 dias em vez de 15
     # e estourou a cota de 1,1 GB duas vezes (Jul e Set/2026) — o MESMO modo de
@@ -509,7 +509,7 @@ JOBS: Tuple[JobSpec, ...] = (
     # poda) — por isso turno=None e plataformas=().
     JobSpec(
         id="local_tier_migration",
-        nome="Poda Supabase → Drive (tier, janela quente de 15d)",
+        nome="Poda Supabase → Drive (tier, janela quente RAC_HOT_WINDOW_DAYS)",
         executor=EXEC_LOCAL,
         gatilho="scripts\\local_scheduled_collect.bat (estágio D, após o turno da noite)",
         comando="python scripts/history_cli.py tier --dataset all --confirm --heartbeat",
@@ -524,7 +524,7 @@ JOBS: Tuple[JobSpec, ...] = (
         # se este fosse um job PRODUTOR de dado, e uma noite sem nada a migrar
         # (tier bate SUCCESS sem `rows_written`) cairia em SEM_DADO falso. Job de
         # MANUTENÇÃO: a batida SUCCESS/FAILED já diz tudo, sem sondar destino.
-        destino="poda >15d: coletas + pricetrack_daily → histórico frio (Drive)",
+        destino="poda fora da janela quente: coletas + pricetrack_daily → histórico frio (Drive)",
         severidade=SEV_IMPORTANTE,
         depende_de=("local_noite",),
         remediacao=(
@@ -539,7 +539,8 @@ JOBS: Tuple[JobSpec, ...] = (
             "rodando), mas a REST inteira cai em 402 e a coleta para de gravar a "
             "janela quente. tier não roda com o banco restrito (a REST recusa "
             "até leitura): o primeiro desbloqueio é sempre manual pelo SQL "
-            "Editor; daí em diante esta batida noturna mantém os 15 dias."
+            "Editor; daí em diante esta batida noturna mantém a janela quente "
+            "(RAC_HOT_WINDOW_DAYS, 2 dias desde 22/09/2026)."
         ),
     ),
     # ── PC local — Mais Vendidos (bestsellers) ──────────────────────────────
