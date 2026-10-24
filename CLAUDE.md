@@ -1432,7 +1432,7 @@ python scripts/briefing_gate.py                   # portão de frescor do briefi
 python scripts/briefing_gate.py --json --curar    # verifica e reimporta o que faltar
 python scripts/pipeline_heal.py --dry-run         # contenção: o que seria curado
 
-# Briefing diário completo v2 (Aiven + Notion + painel) — roda LOCAL, ver docs/BRIEFING_LOCAL_SETUP.md
+# Briefing diário completo v2 (Supabase via Session Pooler + Notion + painel) — roda LOCAL, ver docs/BRIEFING_LOCAL_SETUP.md
 scripts\run_briefing_diario.bat                            # dispara na mão (mesmo comando da tarefa agendada)
 PowerShell -ExecutionPolicy Bypass -File scripts\setup_briefing_scheduler.ps1   # agenda RAC_Briefing_0700 (07:00 BRT)
 
@@ -1682,8 +1682,8 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 |----------|--------|-------------|
 | CLAUDE.md | ~25,000 | Yes |
 | .claude/COMMON_MISTAKES.md | ~8,000 | Yes |
-| .claude/QUICK_START.md | ~1,000 | Yes |
-| .claude/ARCHITECTURE_MAP.md | ~1,200 | Yes |
+| .claude/QUICK_START.md | ~1,100 | Yes |
+| .claude/ARCHITECTURE_MAP.md | ~2,200 | Yes |
 | **Session start total** | **~35,000** | |
 | docs/learnings/*.md | ~1,000-3,000 each | No (task-specific) |
 

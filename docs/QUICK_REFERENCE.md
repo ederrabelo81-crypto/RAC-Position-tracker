@@ -79,4 +79,4 @@ Most specific first: `"Springer Midea"` before `"Midea"` before `"Springer"`.
 - Price: float (`.` decimal), e.g., `2499.00`
 - Missing values: empty string (pandas NaN → blank in CSV)
 - Turno: `Abertura` (≤11h), `Tarde` (≤17h), `Fechamento` — BRT, ou `RAC_TURNO`
-- Sidecar `<csv>.run_id`: reenvios reusam o run_id (sem gravação dupla)
+- Sidecar `<csv>.run_id`: `scripts/upload_csv.py` e `scripts/history_cli.py` reusam o run_id; `reenviar_csv.py` e `scripts/upload_magalu_csv.py` ainda geram outro (duplicam)

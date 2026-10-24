@@ -107,7 +107,8 @@
 ### "I need to work on the seller panel (Track Position Seller)"
 1. Operation/deploy: `seller_app/README.md`; strategy & architecture: `docs/TRACK_POSITION_SELLER.md`
 2. Data: `seller_offer_daily` / `seller_coverage_daily` / `v_seller_buybox_share`
-   (`docs/migrations/016`–`018`, `020`), built by `scripts/build_seller_offer_daily.py`
+   (`docs/migrations/016_seller_offer_daily.sql`, `017_seller_offer_daily_correcoes.sql`,
+   `018_seller_offer_daily_amazon_buybox.sql`, `020_share_view_indices.sql`), built by `scripts/build_seller_offer_daily.py`
    (job `local_seller_fact`, stage C of every PC turn)
 3. Hard rule: secret `SELLER` is compared literally against `seller_canonical`
 
@@ -140,8 +141,8 @@
 |----------|--------|-------------|
 | CLAUDE.md | ~25,000 | Yes |
 | .claude/COMMON_MISTAKES.md | ~8,000 | Yes |
-| .claude/QUICK_START.md | ~1,000 | Yes |
-| .claude/ARCHITECTURE_MAP.md | ~1,200 | Yes |
+| .claude/QUICK_START.md | ~1,100 | Yes |
+| .claude/ARCHITECTURE_MAP.md | ~2,200 | Yes |
 | **Session start total** | **~35,000** | |
 | docs/learnings/*.md | ~1,000–3,000 each | No |
 

@@ -13,7 +13,7 @@ Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos ma
 
 > ### 🆕 Última Atualização (23/09/2026) — volta ao Supabase, docs do briefing corrigidas
 >
-> - ✅ **A janela quente voltou do Aiven para o Supabase** em 22/09/2026 (decisão e runbook completo em [`docs/RETORNO_SUPABASE.md`](docs/RETORNO_SUPABASE.md)), encolhida de 15 para **2 dias** (`RAC_HOT_WINDOW_DAYS=2`) — é o que cabe com folga no free tier de 500 MB. O resto do histórico segue só no Parquet do Drive, como sempre. A Aiven fica de rollback (não recebe coleta nova).
+> - ✅ **A janela quente voltou do Aiven para o Supabase** em 22/09/2026 (decisão e runbook completo em [`docs/RETORNO_SUPABASE.md`](../RETORNO_SUPABASE.md)), encolhida de 15 para **2 dias** (`RAC_HOT_WINDOW_DAYS=2`) — é o que cabe com folga no free tier de 500 MB. O resto do histórico segue só no Parquet do Drive, como sempre. A Aiven fica de rollback (não recebe coleta nova).
 > - 🐛 **Corrigido:** `docs/briefing_diario_prompt.md` e `docs/BRIEFING_LOCAL_SETUP.md` continuavam exigindo/documentando um conector Postgres apontado pra **Aiven** mesmo depois da volta ao Supabase — o PASSO 0 do prompt chegava a **proibir** o Supabase explicitamente. Um conector nessas condições lê um banco congelado desde a virada (sem coleta nova) e reproduz o mesmo padrão de falso "outage" do incidente de 12–17/09. Todos os pontos corrigidos para apontar para o Supabase (Session Pooler, credencial read-only).
 > - ⚠️ **Em curso:** o Supabase estourou a cota de novo em 23/09/2026 (1053 MB — a poda diária do Passo 8 de `docs/RETORNO_SUPABASE.md` ainda não estava agendada) e foi resetado/evacuado; o banco está saudável e pequeno (~125 MB), mas o painel do Supabase pode seguir mostrando PostgREST/Auth "Unhealthy" por um tempo após o reset — a reavaliação da cota pela plataforma leva minutos a horas, sem ação de API disponível para acelerar. Ver `docs/RETORNO_SUPABASE.md` §5.1.
 > - ✅ **Amazon migrou para coletor Amazon-only no GitHub Actions** (`.github/workflows/collect_amazon_sellers.yml`), nos mesmos 3 turnos (08/14/20h). Saiu da varredura do PC — ela roda de IP de datacenter e abre o **PDP de cada item** para ler a buy box (`RAC_AMAZON_PDP_FRESH=1`, sem cache), alimentando o novo `seller_app/`. Dona no `pipeline_registry.py`: jobs `gh_amazon_*`.
@@ -67,8 +67,8 @@ Monitoramento de **buy box, sellers e posicionamento** de ar condicionado nos ma
 >             └── Drive: todo o resto ─────┴─► uma série só
 > ```
 >
-> Setup, operação e troubleshooting: **[`docs/HISTORICO_DRIVE.md`](docs/HISTORICO_DRIVE.md)**.
-> A conta que justifica o desenho: **[`docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`](docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md)**.
+> Setup, operação e troubleshooting: **[`docs/HISTORICO_DRIVE.md`](../HISTORICO_DRIVE.md)**.
+> A conta que justifica o desenho: **[`docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`](../ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md)**.
 
 > ### ⚠️ Antes de religar a coleta no Supabase — 3 verificações
 >
@@ -733,7 +733,7 @@ RAC_CDP_URL=http://localhost:9222  # CDP p/ refresh_sessions_cdp.py (fallback: M
 ## 🧊 Histórico frio — Parquet no Google Drive
 
 Arquitetura híbrida (Jul/2026, janela reajustada em 22/09/2026 — ver
-[`docs/RETORNO_SUPABASE.md`](docs/RETORNO_SUPABASE.md)): o Supabase guarda a
+[`docs/RETORNO_SUPABASE.md`](../RETORNO_SUPABASE.md)): o Supabase guarda a
 **janela quente** e o histórico completo vive em Parquet no Drive.
 
 ```
@@ -800,7 +800,7 @@ pela coleta ou importadas de CSV) aparecem pelo interruptor **Filtros Globais �
 "Incluir histórico do Drive sem de-para"**, ligado por padrão — sem ele o filtro
 `estado_match = MAPEADO` esconderia todo o histórico recuperado.
 
-Detalhes, credenciais e troubleshooting: **[`docs/HISTORICO_DRIVE.md`](docs/HISTORICO_DRIVE.md)**.
+Detalhes, credenciais e troubleshooting: **[`docs/HISTORICO_DRIVE.md`](../HISTORICO_DRIVE.md)**.
 
 ## 🐕 Watchdog — `.github/workflows/watchdog.yml`
 
@@ -820,7 +820,7 @@ chegou**. Secrets: `SUPABASE_URL`, `SUPABASE_KEY`, `TELEGRAM_BOT_TOKEN`,
 > para a Aiven e à volta ao Supabase com janela de **2 dias** em 22/09/2026.
 > Não a leia como estado atual — para o procedimento vigente de medir,
 > evacuar e podar o banco (inclusive o passo a passo de emergência usado no
-> incidente de 23/09/2026), use **[`docs/RETORNO_SUPABASE.md`](docs/RETORNO_SUPABASE.md)**,
+> incidente de 23/09/2026), use **[`docs/RETORNO_SUPABASE.md`](../RETORNO_SUPABASE.md)**,
 > §5.1 em diante.
 
 Medição de **08/08/2026** (org `Mydea`, plano **free**, limite 500 MB), após a
@@ -840,7 +840,7 @@ poda do intra-dia antigo do PriceTrack + `VACUUM FULL`:
 > apertar. Sem ela o 402 volta. As alternativas de fundo (Supabase Pro a
 > US$ 25/mês, que compra ~14 meses de janela quente) estão comparadas com
 > custo e esforço em
-> [`docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`](docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md).
+> [`docs/ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md`](../ARQUITETURA_ARMAZENAMENTO_E_AGENTES.md).
 
 Quando a API devolve 402, `utils/supabase_client.py` faz **fail-fast** com
 `is_quota_restricted_error()` — aborta os lotes restantes, preserva o CSV local

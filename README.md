@@ -56,7 +56,7 @@ config.py (keywords, plataformas, marcas)
    ↓
 main.py  →  scrapers/*.py  →  _build_record()  (marca, seller canônico, offer_key)
    ↓
-CSV (output/)  ─┬─► Parquet no Google Drive   (histórico frio, sempre — independente do banco)
+CSV (output/)  ─┬─► Parquet do histórico frio (Google Drive com GDRIVE_*; sem isso, disco local)
                 └─► Supabase `coletas`        (janela quente de 2 dias)
    ↓
 heartbeat (pipeline_heartbeat) → supervisor → Telegram
@@ -289,7 +289,7 @@ python scripts/pricetrack_api_import.py --gaps-only           # auto-heal dos ú
 python scripts/pricetrack_api_import.py --force --start 2026-07-28 --end 2026-09-01
 python -m pricetrack_api exports                              # quem segura os 3 slots de export (429)
 python scripts/pricetrack_audit.py                            # coletas Python × PriceTrack (ontem)
-python scripts/pricetrack_capacity_audit.py                   # cobertura 9K/12K (derivada de sku+title)
+python scripts/pricetrack_capacity_audit.py --desde 2026-10-23 --ate 2026-10-23   # cobertura 9K/12K (sku+title)
 python -m pricetrack_importer arquivo.md                      # import manual md/xlsx
 ```
 
@@ -344,6 +344,9 @@ materializadas pelo estágio C de cada turno do PC (job `local_seller_fact`).
 ```bash
 python scripts/build_seller_offer_daily.py                 # ontem e hoje (requer service_role)
 python scripts/build_seller_offer_daily.py --desde 2026-08-28
+
+# O painel lê .streamlit/secrets.toml com SUPABASE_URL e SUPABASE_ANON_KEY
+# (chave anon — NUNCA a service_role); SELLER é opcional. Ver seller_app/README.md.
 pip install -r seller_app/requirements.txt
 streamlit run seller_app/app.py
 ```
@@ -369,9 +372,13 @@ Ver [`pricetrack_dashboard/README.md`](pricetrack_dashboard/README.md).
 - **Supabase** (free tier, 500 MB) guarda só a **janela quente**
   (`RAC_HOT_WINDOW_DAYS`, padrão **2 dias**): `coletas`, `pricetrack_daily`,
   `bestsellers`, `pipeline_heartbeat`, tabelas do `seller_app` e de-para.
-- **Parquet no Google Drive** guarda todo o histórico. É gravado **antes** do
+- **Parquet do histórico frio** guarda todo o histórico. É gravado **antes** do
   banco e não depende dele — um dia sobrevive a banco fora do ar ou restrito
-  por cota.
+  por cota. Vai para o **Google Drive só com `GDRIVE_*` configurado**
+  (`RAC_HISTORY_BACKEND=auto`, o padrão); sem isso, ou com o Drive
+  falhando, cai para **disco local** — e aí não há cópia fora da máquina. O
+  log avisa (`[Histórico] … → local:`) e `python scripts/gdrive_setup.py --check`
+  confirma.
 - **Leitura costurada:** `query_coletas()` e `query_pricetrack_daily()` leem o
   Supabase e completam com o Drive os dias que faltam.
 - **Poda automática:** toda noite o estágio D roda
@@ -436,8 +443,10 @@ Secrets usados: `SUPABASE_URL`, `SUPABASE_KEY` (service_role),
 ## 📄 Saída (CSV)
 
 `output/rac_monitoramento_YYYYMMDD_HHMM.csv` — separador `;`, UTF-8 com BOM
-(Excel PT-BR). O `main.py` grava ao lado um `<csv>.run_id` para que reenvios
-reusem o mesmo `run_id` (sem gravação dupla).
+(Excel PT-BR). O `main.py` grava ao lado um `<csv>.run_id`; `scripts/upload_csv.py`
+e `scripts/history_cli.py` reusam esse `run_id` (sem gravação dupla).
+`reenviar_csv.py` e `scripts/upload_magalu_csv.py` ainda geram um novo — reenviar
+por eles duplica o turno.
 
 ```
 Data; Turno; Horário; Analista; Plataforma; Tipo Plataforma;
