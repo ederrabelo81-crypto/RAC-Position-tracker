@@ -59,7 +59,7 @@ RAC-Position-tracker/
 │   └── n8n_notify.py          # Telegram (API direta)
 │
 ├── scripts/                   # Agendamento Windows, supervisão, PriceTrack, histórico, diagnóstico
-│   └── admin_auto.py          # CLI da automação ADMIN (cron: --full semanal)
+│   └── admin_auto.py          # CLI da automação ADMIN (roda sozinha pós-coleta; --full sob demanda — sem agendamento)
 ├── migrations/                # SQL PriceTrack (001–006)
 ├── docs/migrations/           # SQL coletas/bestsellers/heartbeat/seller (001–020)
 ├── .github/workflows/         # tests, collect_amazon_sellers, pricetrack_daily, pipeline_guard, watchdog, collect
