@@ -7,8 +7,9 @@
 3. `python scripts/pipeline_watch.py --no-notify` — which jobs ran / didn't run today
 4. Check recent logs in `logs/` (`bot_*.log`, `heartbeat.jsonl`) and CSVs in `output/`
 
-Where things run (Out/2026): PC collector at 08/14/20h BRT for every platform
-except Amazon; Amazon, PriceTrack and supervision on GitHub Actions. See
+Where things run (Out/2026): PC collector at 08/14/20h BRT for the active
+PC-owned platforms (ML, Magalu, Casas Bahia, Google Shopping, Leroy, Shopee,
+dealers — Fast Shop is off); Amazon, PriceTrack and supervision on GitHub Actions. See
 `docs/MAPA_COLETAS.md`.
 
 ## Platform Aliases (for --platforms flag)

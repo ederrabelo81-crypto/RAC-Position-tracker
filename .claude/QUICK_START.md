@@ -18,7 +18,8 @@ python main.py --pages 2
 python main.py --platforms all --pages 2
 
 # Amazon como no Actions (buy box do PDP, sem cache, turno cravado)
-RAC_TURNO=Abertura RAC_AMAZON_PDP_FRESH=1 python main.py --platforms amazon --pages 2
+RAC_TURNO=Abertura RAC_AMAZON_PDP_FRESH=1 python main.py --platforms amazon --pages 2   # bash
+$env:RAC_TURNO="Abertura"; $env:RAC_AMAZON_PDP_FRESH="1"; python main.py --platforms amazon --pages 2   # PowerShell
 
 # Plataformas específicas / debug com browser visível
 python main.py --platforms ml magalu --pages 1
@@ -40,7 +41,7 @@ com `$env:RAC_LOCAL_CHROME="1"` (Chrome real logado do perfil dedicado).
 python scripts/pipeline_watch.py            # quem não bateu ponto hoje
 python scripts/briefing_gate.py --json      # dado de D-1 está fresco?
 python scripts/daily_status_check.py        # PASS/FAIL por plataforma
-python scripts/collect_bestsellers.py       # Mais Vendidos (manual no PC)
+scripts\collect_bestsellers.bat             # Mais Vendidos no PC (liga RAC_LOCAL_CHROME=1 antes do .py)
 python scripts/build_seller_offer_daily.py  # fato do seller_app (service_role)
 python scripts/history_cli.py stats         # histórico frio no Drive
 streamlit run app.py                        # dashboard interno

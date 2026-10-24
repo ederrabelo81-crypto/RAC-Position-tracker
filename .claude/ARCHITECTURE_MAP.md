@@ -5,6 +5,8 @@
 
 ## Directory Structure
 
+Árvore com os pontos de entrada principais — não é exaustiva (`ls scripts/ utils/` para o resto).
+
 ```
 RAC-Position-tracker/
 ├── config.py                  # Central config: keywords (40), platforms, brands (43), delays, turnos
@@ -36,6 +38,8 @@ RAC-Position-tracker/
 ├── utils/
 │   ├── text.py                # parse_price, parse_rating, now_brt(), get_turno() (RAC_TURNO)
 │   ├── brands.py              # extract_brand() — regex contra BRANDS
+│   ├── session_grabber.py     # Captura manual de sessão (Shopee/Casas Bahia)
+│   ├── discover_shopee_api.py # Descoberta da API da Shopee
 │   ├── seller_names.py        # SELLER_GROUPS — nome canônico de seller
 │   ├── seller_surface.py      # marketplace × loja própria (seller_app)
 │   ├── offer_identity.py      # offer_key versionada + ids de marketplace
@@ -55,6 +59,7 @@ RAC-Position-tracker/
 │   └── n8n_notify.py          # Telegram (API direta)
 │
 ├── scripts/                   # Agendamento Windows, supervisão, PriceTrack, histórico, diagnóstico
+│   └── admin_auto.py          # CLI da automação ADMIN (cron: --full semanal)
 ├── migrations/                # SQL PriceTrack (001–006)
 ├── docs/migrations/           # SQL coletas/bestsellers/heartbeat/seller (001–020)
 ├── .github/workflows/         # tests, collect_amazon_sellers, pricetrack_daily, pipeline_guard, watchdog, collect
@@ -84,7 +89,8 @@ all_records → DataFrame
     ├─► Parquet no Drive (histórico frio — ANTES do banco, independente dele)
     └─► Supabase `coletas` (janela quente, RAC_HOT_WINDOW_DAYS=2)
     ↓
-heartbeat (RAC_JOB_ID) → automação ADMIN → Telegram
+Telegram (resumo) → automação ADMIN pós-coleta → heartbeat de fim (RAC_JOB_ID)
+(a batida de INÍCIO é gravada antes do loop de coleta)
 
 PC coletor, após cada turno (local_scheduled_collect.bat):
   estágio C → build_seller_offer_daily.py --heartbeat   (seller_app)
