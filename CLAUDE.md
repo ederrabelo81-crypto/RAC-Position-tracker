@@ -255,8 +255,11 @@ dias normais anteriores) em **≥ 2 turnos** no mesmo dia. Foi o caso do ML de
 zerava, nada alarmou durante 5 dias. A lógica pura fica em `utils/volume_drop.py` e lê
 o `detail` das batidas (uma consulta; `coletas` teria a gravação dupla até
 30/09). Ela avalia só o dono de cada (plataforma, turno) e pula batida
-FAILED/PARTIAL/0 linhas, que já são alertadas no job. Plataforma já ZERADA sai
-da lista, para não haver alerta duplicado. A mediana não aprende com dia
+FAILED/PARTIAL/0 linhas, que já são alertadas no job. Só a plataforma ZERADA
+**crônica** (≥ 3 dias) sai da lista, para não haver alerta duplicado — e herda
+a evidência do scraper (o comando de remediação). A zerada de 1–2 dias **fica**
+como DEGRADADA: até 27/10/2026 ela também saía e, como zerada recente não vai
+ao Telegram, o ML com sessão expirada (25–27/10) passou sem alerta. A mediana não aprende com dia
 degradado (senão o alarme se calaria sozinho). Se a checagem falhar, o
 supervisor só registra um aviso e não fica cego. `--sem-queda-volume` desliga.
 
