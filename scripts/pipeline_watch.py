@@ -178,12 +178,16 @@ class Degradacao:
         truncado: True se a contagem bateu no teto (`MAX_DIAS_ZERADOS`) — o
             número real é "pelo menos isso".
         job_id: Job cobrado por ela.
+        evidencia: Diagnóstico do scraper (ex.: ``ML: 0/4 kw ok ... relogar``),
+            herdado da queda de volume que esta zerada absorveu. Sem isso, a
+            partir do 3º dia o alerta dizia "zerada" e perdia o porquê.
     """
 
     plataforma: str
     dias: int
     truncado: bool
     job_id: str
+    evidencia: Optional[str] = None
 
     @property
     def cronica(self) -> bool:
@@ -197,6 +201,7 @@ class Degradacao:
             "truncado": self.truncado,
             "job": self.job_id,
             "cronica": self.cronica,
+            "evidencia": self.evidencia,
         }
 
 
@@ -615,8 +620,12 @@ def varrer_quedas_avaliado(
 
     Args:
         dia: Dia avaliado (o dia corrente entra a partir de 2 turnos fechados).
-        degradacoes: Plataformas já reportadas como ZERADAS. Elas saem daqui,
-            porque o mesmo buraco não gera dois alertas.
+        degradacoes: Plataformas zeradas há dias. Só as CRÔNICAS saem daqui
+            (o mesmo buraco não gera dois alertas), e a evidência da queda
+            passa para elas. A zerada de 1–2 dias FICA: ela não aparece no
+            Telegram nem no exit code, então tirá-la daqui deixava o buraco
+            sem alerta nenhum até o 3º dia (ML de 25–27/10/2026, sessão
+            expirada, só pego pelo briefing).
 
     Returns:
         (quedas, avaliado). Quedas vêm com a pior sequência primeiro;
@@ -643,10 +652,14 @@ def varrer_quedas_avaliado(
         logger.warning(f"[Supervisor] Checagem de queda de volume falhou: {exc}")
         return [], False
 
-    zeradas = {g.plataforma for g in (degradacoes or [])}
+    cronicas = {g.plataforma: g for g in (degradacoes or []) if g.cronica}
+    for queda in quedas:
+        deg = cronicas.get(queda.plataforma)
+        if deg is not None and deg.evidencia is None:
+            deg.evidencia = queda.evidencia
     # Nenhuma batida lida (migração 015 ausente, livro-razão vazio) não é
     # prova de volume normal: sem dado, a checagem não foi de fato avaliada.
-    return [q for q in quedas if q.plataforma not in zeradas], bool(batidas)
+    return [q for q in quedas if q.plataforma not in cronicas], bool(batidas)
 
 
 def _descrever_queda(queda: QuedaVolume) -> str:
@@ -691,6 +704,8 @@ def imprimir(
             marcador = "🔴 CRÔNICO" if deg.cronica else "🟡"
             sufixo = "+" if deg.truncado else ""
             print(f"   {marcador} {deg.plataforma:<24} {deg.dias}{sufixo} dia(s) zerada")
+            if deg.evidencia:
+                print(f"      ↳ {deg.evidencia}")
 
     if quedas:
         print(f"\n▸ Plataformas DEGRADADAS (< {FRACAO_QUEDA:.0%} da mediana em ≥2 turnos)")
@@ -751,6 +766,8 @@ def _formatar_telegram(
             linhas.append(
                 f"   • {html.escape(deg.plataforma)}: <b>{deg.dias}{sufixo} dias</b> zerada"
             )
+            if deg.evidencia:
+                linhas.append(f"      ↳ <code>{html.escape(deg.evidencia)}</code>")
         linhas.append("")
 
     if quedas:

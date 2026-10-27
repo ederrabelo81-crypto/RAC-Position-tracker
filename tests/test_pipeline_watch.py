@@ -286,18 +286,50 @@ class TestQuedaDeVolume:
         texto = _formatar_telegram([], [], DIA, [_queda(5)])
         assert "falha de execução" in texto
 
-    def test_varredura_nao_duplica_plataforma_ja_zerada(self, monkeypatch):
-        """Zerada e degradada no mesmo dia são o MESMO buraco: um alerta só."""
+    def test_varredura_nao_duplica_plataforma_zerada_cronica(self, monkeypatch):
+        """Zerada crônica e degradada são o MESMO buraco: um alerta só.
+
+        A evidência da queda (o porquê, com o comando de remediação) passa
+        para a zerada, senão o alerta do 3º dia em diante perde a causa.
+        """
         import scripts.pipeline_watch as pw
 
         monkeypatch.setattr(pw, "batidas_periodo", lambda *a, **k: [])
         monkeypatch.setattr(
             pw, "classificar_quedas",
-            lambda obs, ate: [_queda(2), _queda(2, plataforma="Shopee")],
+            lambda obs, ate: [
+                _queda(2),
+                _queda(3, plataforma="Shopee", evidencia="sessão vencida"),
+            ],
         )
-        zerada = Degradacao("Shopee", 1, False, "local_manha")
+        zerada = Degradacao("Shopee", 3, False, "local_manha")
         quedas = pw.varrer_quedas(DIA, [zerada])
         assert [q.plataforma for q in quedas] == ["Mercado Livre"]
+        assert zerada.evidencia == "sessão vencida"
+        texto = _formatar_telegram([], [zerada], DIA, quedas)
+        assert "sessão vencida" in texto
+
+    def test_zerada_recente_continua_alertada_pela_queda(self, monkeypatch):
+        """Incidente 25–27/10/2026: ML zerado por sessão expirada.
+
+        A zerada de 1–2 dias não sai no Telegram nem no exit code. Se ela
+        também tirasse a queda da lista, o buraco ficava sem alerta até o
+        3º dia. A queda precisa ficar, com a evidência do scraper.
+        """
+        import scripts.pipeline_watch as pw
+
+        evidencia = "ML: 0/4 kw ok, sessão: EXPIRADA (relogar: python scripts/setup_local_profile.py --site mercadolivre)"
+        monkeypatch.setattr(pw, "batidas_periodo", lambda *a, **k: [])
+        monkeypatch.setattr(
+            pw, "classificar_quedas",
+            lambda obs, ate: [_queda(2, evidencia=evidencia)],
+        )
+        zerada = Degradacao("Mercado Livre", 1, False, "local_manha")
+        quedas = pw.varrer_quedas(DIA, [zerada])
+        assert [q.plataforma for q in quedas] == ["Mercado Livre"]
+        assert _exit_code([Diagnostico(COLETA_GH, OK, "ok")], [zerada], quedas) == 2
+        texto = _formatar_telegram([Diagnostico(COLETA_GH, OK, "ok")], [zerada], DIA, quedas)
+        assert "setup_local_profile.py --site mercadolivre" in texto
 
     def test_falha_da_checagem_nao_cega_o_supervisor(self, monkeypatch):
         """Livro-razão ilegível só nesta checagem: aviso e lista vazia, sem exceção."""
