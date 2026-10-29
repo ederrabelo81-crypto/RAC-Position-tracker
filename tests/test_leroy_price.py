@@ -353,3 +353,16 @@ class TestBrowserDoPreco:
         s = LeroyMerlinScraper()
         assert s._fetch_pdp_browser_preco("https://x/p") is None
         assert s._fetch_pdp_browser_preco("https://x/q") == "<html>nova</html>"
+
+    def test_mais_vendidos_fecha_a_aba_local(self, monkeypatch):
+        """Sem context manager não há `_close()`: o `_fechar` da fonte fecha a aba."""
+        from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers
+
+        local = _PaginaFake("<html>local</html>")
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(leroy_mod, "get_local_browser", lambda: _ChromeLocalFake(local))
+        fonte = LeroyMerlinBestSellers()
+        fonte._abrir()
+        fonte._leroy._fetch_pdp_browser("https://x/p")
+        fonte._fechar()
+        assert local.fechada

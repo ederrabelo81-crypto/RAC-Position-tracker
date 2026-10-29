@@ -122,6 +122,10 @@ class LeroyMerlinBestSellers(BestSellerSource):
         self._leroy = LeroyMerlinScraper(headless=self.headless)
 
     def _fechar(self) -> None:
+        # Sem context manager não há `_close()`: a aba de PDP que a resolução de
+        # seller abre no Chrome local (RAC_LOCAL_CHROME=1) é fechada aqui.
+        if self._leroy is not None:
+            self._leroy.fechar_pdp_local()
         self._leroy = None
 
     def _coletar(self, paginas: int) -> List[BestSellerItem]:

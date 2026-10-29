@@ -607,9 +607,15 @@ class LeroyMerlinScraper(BaseScraper):
         """PDP no browser só pelo preço: sem esperar o rótulo do seller."""
         return self._abrir_pdp_browser(url, aguardar_rotulo=False)
 
-    def _close(self) -> None:
-        # A aba do Chrome local é nossa; a janela é compartilhada e fechada no
-        # fim da coleta (close_local_browser).
+    def fechar_pdp_local(self) -> None:
+        """
+        Fecha a aba dos PDPs no Chrome local, se aberta.
+
+        A aba é nossa; a janela é compartilhada e fechada no fim da coleta
+        (close_local_browser). Público porque quem usa o scraper sem o context
+        manager (Mais Vendidos) também abre a aba e precisa fechá-la — senão o
+        Chrome persistente acumula uma aba por execução.
+        """
         if self._pdp_local_page is not None:
             try:
                 if not self._pdp_local_page.is_closed():
@@ -617,6 +623,9 @@ class LeroyMerlinScraper(BaseScraper):
             except Exception:
                 pass
             self._pdp_local_page = None
+
+    def _close(self) -> None:
+        self.fechar_pdp_local()
         super()._close()
 
     @staticmethod
