@@ -12495,7 +12495,9 @@ def _bs_aba_radar(serie: pd.DataFrame, dia, n: int, referencia_sel: str) -> None
         marcas = tabela["marca"].tolist()
         padrao = [m for m in marcas if m in set(
             tabela.loc[~tabela["status"].isin((radar.ESTAVEL, radar.SEM_DADO)), "marca"]
-        )][:6] or marcas[:3]
+        )][:6] or [m for m in marcas if m in set(
+            tabela.loc[tabela["status"] != radar.SEM_DADO, "marca"]
+        )][:3]
         sel = st.multiselect("Marcas no mapa", marcas, default=padrao, key="bs_radar_marcas")
         mapa = detalhe[detalhe["marca_radar"].isin(sel)].assign(
             Plataforma=lambda d: d["plataforma"].map(lambda k: _bs_nome(k, _bs_specs()))
