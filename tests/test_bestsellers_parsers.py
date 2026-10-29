@@ -95,6 +95,42 @@ class TestAmazonParser:
         itens = fonte._parse(html, offset=0)
         assert itens and itens[0].titulo.startswith("Ar Condicionado Split")
 
+    def test_preco_de_ofertas_a_partir_de_sem_virgula(self, fonte):
+        """Markup real (SERP de 29/10/2026): no card "N ofertas a partir de"
+        o `a-price-decimal` vem vazio e o `a-offscreen` diz "R$1.85900".
+        Lido como texto vira R$ 185.900 — os 12 preços 100x de 26 e 28/10."""
+        card = """
+        <div id="gridItemRoot" data-asin="B0GNZRSP66">
+          <span class="zg-bdg-text">#11</span>
+          <img alt="Ar-Condicionado Split HW Inverter Elgin Eco III Wi-Fi 9.000 BTUs">
+          <span class="a-color-base">13 ofertas a partir de
+            <span class="a-price" data-a-color="base" data-a-size="medium_plus">
+              <span class="a-offscreen">R$1.85900</span>
+              <span aria-hidden="true"><span class="a-price-symbol">R$</span><span
+                class="a-price-whole">1.859<span class="a-price-decimal"></span></span><span
+                class="a-price-fraction">00</span></span>
+            </span>
+          </span>
+        </div>
+        """
+        itens = fonte._parse(card * 6, offset=0)
+        assert itens[0].preco == 1859.0
+
+    def test_preco_a_price_com_virgula_e_centavos(self, fonte):
+        """O caminho normal do `a-price` (decimal preenchido) segue igual."""
+        card = """
+        <div id="gridItemRoot" data-asin="B0FCSXLNJP">
+          <span class="zg-bdg-text">#1</span>
+          <img alt="Ar Condicionado 12000 Btus Split Hi Wall Inverter Midea">
+          <span class="a-price"><span class="a-offscreen">R$\xa02.525,26</span>
+            <span aria-hidden="true"><span class="a-price-symbol">R$</span><span
+              class="a-price-whole">2.525<span class="a-price-decimal">,</span></span><span
+              class="a-price-fraction">26</span></span></span>
+        </div>
+        """
+        itens = fonte._parse(card * 6, offset=0)
+        assert itens[0].preco == 2525.26
+
     def test_grid_irreconhecivel_devolve_vazio(self, fonte):
         """Poucos matches é banner, não grid — melhor vazio (com dump) do que
         um ranking de 2 itens tratado como lista completa."""

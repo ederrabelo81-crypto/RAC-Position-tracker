@@ -249,13 +249,12 @@ class AmazonBestSellers(BestSellerSource):
                 achado = re.search(r"\d+", rank_tag.get_text(strip=True))
                 rank = int(achado.group()) if achado else None
 
-            preco_tag = self._primeiro(card, _PRICE_SELECTORS)
             rating_tag = self._primeiro(card, _RATING_SELECTORS)
 
             itens.append(BestSellerItem(
                 rank=rank if rank is not None else offset + idx + 1,
                 titulo=titulo,
-                preco=parse_price(preco_tag.get_text(" ", strip=True)) if preco_tag else None,
+                preco=self._extrair_preco(card),
                 rating=parse_rating(rating_tag.get_text(" ", strip=True)) if rating_tag else None,
                 reviews=self._extrair_reviews(card),
                 sku_plataforma=self._extrair_asin(card),
@@ -265,6 +264,34 @@ class AmazonBestSellers(BestSellerSource):
                 patrocinado=False,
             ))
         return itens
+
+    @classmethod
+    def _extrair_preco(cls, card: Tag) -> Optional[float]:
+        """
+        Preço do card.
+
+        Quando o elemento achado pertence a um bloco `span.a-price`, o preço
+        sai das partes visíveis `a-price-whole` + `a-price-fraction`, não do
+        texto. Nos cards "N ofertas a partir de" (sem buy box) a Amazon deixa
+        `a-price-decimal` VAZIO e o próprio `a-offscreen` vem sem vírgula
+        ("R$1.85900"), que qualquer parser lê como R$ 185.900 — foi o que
+        gravou preço 100x em out/2026. As partes separadas não têm essa
+        ambiguidade. Fora de `a-price` (o `p13n-sc-price` de sempre, que já
+        vem "R$ 2.068,60"), segue o `parse_price` do texto.
+        """
+        tag = cls._primeiro(card, _PRICE_SELECTORS)
+        if tag is None:
+            return None
+        bloco = tag if "a-price" in (tag.get("class") or []) else tag.find_parent("span", class_="a-price")
+        if bloco is not None:
+            inteiro_tag = bloco.select_one("span.a-price-whole")
+            centavos_tag = bloco.select_one("span.a-price-fraction")
+            if inteiro_tag is not None and centavos_tag is not None:
+                inteiro = re.sub(r"\D", "", inteiro_tag.get_text("", strip=True))
+                centavos = re.sub(r"\D", "", centavos_tag.get_text("", strip=True))
+                if inteiro and centavos:
+                    return float(f"{inteiro}.{centavos}")
+        return parse_price(tag.get_text(" ", strip=True))
 
     @classmethod
     def _extrair_titulo(cls, card: Tag) -> Optional[str]:
