@@ -408,35 +408,80 @@ estiver validada, a Aiven é o seu rollback de um comando (§7).
 
 ---
 
+## 5.2 Incidente 29/10/2026 — cota estourada por índice inchado, não por dado
+
+`pg_database_size` = **561 MB** (cota 500), com o PostgREST ainda sem 402.
+Somando o dado de verdade (`pg_column_size` das linhas), havia ~330 MB. O resto
+era **índice inchado** nas tabelas que a poda esvazia por `DELETE` e a coleta
+reenche todo dia:
+
+| Tabela | Heap | Índices antes | Índices depois do REINDEX |
+|---|---|---|---|
+| `pricetrack_daily` (2 dias) | 20 MB | **111 MB** | 12 MB |
+| `coletas` (2 dias) | 46 MB | 69 MB | 18 MB |
+| `seller_offer_daily` (47 dias) | 94 MB | 149 MB | 74 MB |
+
+`REINDEX TABLE CONCURRENTLY` nas três (sem lock de escrita, sem apagar linha)
+levou o banco de **561 → 336 MB**. Nem `DELETE` nem o autovacuum devolvem
+página de B-tree meio vazia, então o inchaço volta. Por isso o `tier` passou a
+chamar, ao fim de cada passada com `--confirm`, a RPC **`compactar_indices`**
+(`docs/migrations/022_compactar_indices.sql`, aplicada em 29/10/2026): uma
+tabela por chamada, lista branca fixa, e só reconstrói quando índice > 1,25×
+heap. Noite comum = uma consulta de tamanho por tabela. Falha da RPC deixa a
+batida FAILED, para o `pipeline_watch` cobrar.
+
+**Orçamento depois da correção (29/10/2026):**
+
+| Parcela | Normal | Pico |
+|---|---|---|
+| `seller_offer_daily` + `coverage`, 62 dias × ~3,3 MB | ~205 MB | — |
+| `coletas` (2–3 dias) | ~65 MB | ~90 MB |
+| `pricetrack_daily` (2 dias × 3 turnos) | ~31 MB | ~100 MB¹ |
+| `rac_monitoramento` + `bestsellers` + resto + schemas do Supabase | ~75 MB | ~75 MB |
+| **Total** | **~375 MB (folga ~125 MB, 25%)** | **~470 MB** |
+
+¹ Medido no mesmo dia: um reimport do PriceTrack dos dias 15–19/10 levou a
+tabela a 190 mil linhas / 96 MB durante a manhã. Esses dias estão fora da
+janela quente e saem na poda da noite. Se a folga apertar, as alavancas, em
+ordem: baixar `RAC_SELLER_RETENTION_DAYS` (o slider do `seller_app` se ajusta
+sozinho ao histórico que existe), e manter só o turno `Diário` de
+`pricetrack_daily` na janela quente (~20 MB, decisão de produto em aberto).
+
+Conferir a qualquer momento:
+
+```sql
+SELECT pg_size_pretty(pg_database_size(current_database()));
+SELECT relname, pg_size_pretty(pg_relation_size(relid)) heap,
+       pg_size_pretty(pg_indexes_size(relid)) idx
+FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 6;
+```
+
+---
+
 ## 6. Decisões que a janela de 2 dias força
 
 - **`pricetrack_daily`:** hoje guarda 3 linhas por (sku,seller,dia) — `Diário` +
   intra-dia. Com 2 dias quentes, o intra-dia antigo sai; o `Diário` histórico
   vive no Parquet (`DATASET_PRICETRACK`). O painel do PriceTrack já sabe cair no
   frio (`_hot_window_days_safe`), então precisa só herdar `RAC_HOT_WINDOW_DAYS=2`.
-- **`seller_offer_daily` / `seller_app` — retenção PRÓPRIA (decisão tomada):**
-  o fato do seller é **reprocessado de `coletas`** (`refresh_seller_offer_daily(
-  data)`). Com `coletas` em 2 dias, só 2 dias são *reconstruíveis*, mas as linhas
-  já materializadas **sobrevivem** — elas não são apagadas por nada. A decisão é
-  dar a `seller_offer_daily`/`seller_coverage_daily` uma **retenção própria,
-  maior que a de `coletas`** (ele é derivado e menor, ~56 MB para 90 dias), para
-  o `seller_app` manter série de buy box. Por isso essas tabelas **não** entram
-  na poda do `tier` (agora comentado explícito em `scripts/history_cli.py::
-  _TIER_SPECS`). Para **limitar** o crescimento sem cortar junto com `coletas`,
-  pode-se podar essas duas ao seu próprio horizonte, num passo de manutenção
-  separado (ex.: 90 dias):
+- **`seller_offer_daily` / `seller_app` — retenção PRÓPRIA, agora AUTOMÁTICA
+  (29/10/2026):** o fato do seller é **reprocessado de `coletas`**
+  (`refresh_seller_offer_daily(data)`), então só os 2 dias quentes são
+  *reconstruíveis* — as linhas materializadas antes disso só existem no banco
+  (ou no Parquet, depois da poda). A retenção é **62 dias**
+  (`RAC_SELLER_RETENTION_DAYS`, piso 16): o slider "Janela (dias)" do
+  `seller_app` vai até 60 e é ancorado no último dia com dado, então a janela
+  cheia pede hoje − 61. A estimativa original deste parágrafo (~56 MB para 90
+  dias) estava errada por ~5×: o custo medido foi **~3,6 MB/dia** (heap +
+  7 índices), e em 47 dias a tabela chegou a 243 MB.
 
-  ```sql
-  -- Retenção própria do fato de seller (NÃO é a janela de 2 dias de coletas).
-  -- Ajuste os 90 dias ao horizonte que o seller_app precisa.
-  DELETE FROM seller_offer_daily    WHERE data < CURRENT_DATE - 90;
-  DELETE FROM seller_coverage_daily WHERE data < CURRENT_DATE - 90;
-  VACUUM (FULL, ANALYZE) seller_offer_daily;
-  VACUUM (FULL, ANALYZE) seller_coverage_daily;
-  ```
+  A poda roda no **estágio D** (`history_cli.py tier --dataset all --confirm
+  --heartbeat`, job `local_tier_migration`), com o mesmo fluxo de `coletas`:
+  exporta o dia para o Parquet (datasets `seller_offer` / `seller_coverage`),
+  relê a partição recém-gravada e só apaga se a contagem bater **exata**.
+  `--cutoff` manual vale só para a janela quente — nunca corta o seller.
+  Avulso: `python scripts/history_cli.py tier --dataset seller --dry-run`.
 
-  Enquanto o `seller_app` couber no orçamento de 500 MB, essa poda é opcional;
-  ela existe para o dia em que a soma se aproximar do teto (§8).
 - **`bestsellers`:** tabela pequena, cadência própria, `referencia`-aware. Não
   entra na conta dos 2 dias; mantenha a política atual.
 - **Cobertura/`estado_match`:** não está no Parquet (é do gatilho). Fora dos 2

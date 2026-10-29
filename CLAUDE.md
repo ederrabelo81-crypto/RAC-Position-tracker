@@ -484,6 +484,16 @@ linha por SKU) e o "vs ontem" do 📅 Daily Price Vision. `_price_data`
 > novo (1053 MB — a poda diária do Passo 8 daquele runbook ainda não estava
 > agendada) e foi resetado; ver `docs/RETORNO_SUPABASE.md` §5.1 para o
 > procedimento de emergência e o estado do Supabase logo depois.
+>
+> **29/10/2026 — estourou de novo (561 MB), e desta vez era índice, não dado.**
+> `pricetrack_daily` com 2 dias (20 MB) sob 111 MB de índice; um `REINDEX
+> TABLE CONCURRENTLY` em três tabelas levou o banco a 336 MB sem apagar linha.
+> O estágio D agora (a) poda `seller_offer_daily`/`seller_coverage_daily` na
+> retenção **própria** de 62 dias (`RAC_SELLER_RETENTION_DAYS`, exporta →
+> confere a partição → apaga), e (b) chama a RPC `compactar_indices`
+> (migração 022) ao fim. **Regra dura:** `DELETE` não devolve disco nem
+> encolhe índice — toda tabela podada por DELETE entra na lista branca da
+> 022. Orçamento e alavancas: `docs/RETORNO_SUPABASE.md` §5.2.
 
 **O que aconteceu:** em 12/09/2026 o banco passou de **1 GB** contra os 500 MB
 do free tier. O Postgres seguiu saudável e gravável (`read_only=off`), mas o
@@ -1412,6 +1422,8 @@ GDRIVE_FOLDER_ID=...
 
 # Janela quente do Supabase (padrão 2) e backend alternativo (vazio = Supabase)
 RAC_HOT_WINDOW_DAYS=2
+# Retenção própria do fato do seller_app no banco (padrão 62, piso 16)
+RAC_SELLER_RETENTION_DAYS=62
 RAC_DB_DSN=
 
 # Chrome real logado via CDP no PC coletor

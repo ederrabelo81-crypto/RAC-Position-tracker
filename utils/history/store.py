@@ -63,6 +63,11 @@ except ImportError:  # pragma: no cover - python-dotenv é dependência declarad
 
 DATASET_COLETAS = "coletas"
 DATASET_PRICETRACK = "pricetrack"
+#: Fatos DERIVADOS do `seller_app` (reprocessados de `coletas`). Não passam pela
+#: janela quente: têm retenção própria (`seller_retention_days`) e só vão ao
+#: Parquet quando saem dela — ver `scripts/history_cli.py::_TIER_SPECS`.
+DATASET_SELLER_OFFER = "seller_offer"
+DATASET_SELLER_COVERAGE = "seller_coverage"
 
 #: Janela quente padrão: dias mantidos no banco antes de migrarem ao Drive.
 #:
@@ -74,6 +79,21 @@ DATASET_PRICETRACK = "pricetrack"
 #: É o valor DEFAULT (sem `RAC_HOT_WINDOW_DAYS` no ambiente). Uma máquina que
 #: precise seguir em 15 durante a transição pinça isso com a env explícita.
 DEFAULT_HOT_WINDOW_DAYS = 2
+
+#: Retenção própria de `seller_offer_daily`/`seller_coverage_daily` no banco.
+#:
+#: Sai do que o `seller_app` lê: o slider "Janela (dias)" vai até 60 e é
+#: ancorado no último dia COM dado (`seller_app/app.py::_dias_max`/`_janela`,
+#: `desde = max_data - dias`). Com a coleta um dia atrás de hoje, a janela
+#: cheia precisa de hoje − 61 → hoje: 62 dias. Em 29/10/2026 o fato custava
+#: ~3,6 MB/dia depois do REINDEX — 62 dias ≈ 225 MB, com o banco inteiro em
+#: ~390 MB contra os 500 MB do free tier.
+DEFAULT_SELLER_RETENTION_DAYS = 62
+
+#: Piso da retenção: a janela padrão do slider (14 dias) + âncora + margem.
+#: Um `RAC_SELLER_RETENTION_DAYS=2` digitado por engano (o valor da janela
+#: quente de `coletas`) cortaria o painel do lojista a dois dias numa noite.
+MIN_SELLER_RETENTION_DAYS = 16
 
 #: Tipos das colunas conhecidas de `coletas`. Colunas extras (id,
 #: estado_match, sku_resolvido…) passam com o tipo inferido — o schema é
@@ -136,6 +156,26 @@ def hot_window_days() -> int:
     if raw.isdigit() and int(raw) > 0:
         return int(raw)
     return DEFAULT_HOT_WINDOW_DAYS
+
+
+def seller_retention_days() -> int:
+    """Dias de `seller_offer_daily` mantidos no banco (``RAC_SELLER_RETENTION_DAYS``).
+
+    Valor abaixo de ``MIN_SELLER_RETENTION_DAYS`` é elevado ao piso (com
+    WARNING); valor inválido cai no default.
+    """
+    raw = os.getenv("RAC_SELLER_RETENTION_DAYS", "").strip()
+    if not (raw.isdigit() and int(raw) > 0):
+        return DEFAULT_SELLER_RETENTION_DAYS
+    dias = int(raw)
+    if dias < MIN_SELLER_RETENTION_DAYS:
+        logger.warning(
+            f"RAC_SELLER_RETENTION_DAYS={dias} abaixo do piso "
+            f"{MIN_SELLER_RETENTION_DAYS} — usando o piso (o seller_app abre "
+            "com janela de 14 dias)."
+        )
+        return MIN_SELLER_RETENTION_DAYS
+    return dias
 
 
 def partition_key(dataset: str, day: date, run_id: Optional[str] = None) -> str:

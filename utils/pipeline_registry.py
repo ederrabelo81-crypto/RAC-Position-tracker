@@ -550,7 +550,11 @@ JOBS: Tuple[JobSpec, ...] = (
         # se este fosse um job PRODUTOR de dado, e uma noite sem nada a migrar
         # (tier bate SUCCESS sem `rows_written`) cairia em SEM_DADO falso. Job de
         # MANUTENÇÃO: a batida SUCCESS/FAILED já diz tudo, sem sondar destino.
-        destino="poda fora da janela quente: coletas + pricetrack_daily → histórico frio (Drive)",
+        destino=(
+            "poda fora da janela quente: coletas + pricetrack_daily (2 dias) e "
+            "seller_offer/coverage_daily (retenção própria, 62 dias) → histórico "
+            "frio (Drive) + compactação de índice"
+        ),
         severidade=SEV_IMPORTANTE,
         depende_de=("local_noite",),
         remediacao=(
@@ -566,7 +570,11 @@ JOBS: Tuple[JobSpec, ...] = (
             "janela quente. tier não roda com o banco restrito (a REST recusa "
             "até leitura): o primeiro desbloqueio é sempre manual pelo SQL "
             "Editor; daí em diante esta batida noturna mantém a janela quente "
-            "(RAC_HOT_WINDOW_DAYS, 2 dias desde 22/09/2026)."
+            "(RAC_HOT_WINDOW_DAYS, 2 dias desde 22/09/2026). Desde 29/10/2026 "
+            "também poda os fatos do seller_app na retenção própria "
+            "(RAC_SELLER_RETENTION_DAYS, 62) e compacta os índices pela RPC "
+            "compactar_indices (migração 022) — sem ela o DELETE não devolve "
+            "disco e a cota estourou com ~330 MB de dado (561 MB no total)."
         ),
     ),
     # ── PC local — Mais Vendidos (bestsellers) ──────────────────────────────
