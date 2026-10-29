@@ -44,6 +44,7 @@ from utils.leroy_sellers import (
     extract_seller_from_pdp,
     is_leroy_self,
 )
+from utils.leroy_price import PdpPrice, extract_pdp_price
 from utils.seller_names import normalize_seller_name, seller_key
 from utils.text import parse_price, parse_rating, parse_review_count, now_brt
 
@@ -105,6 +106,24 @@ _BUYBOX_MAX_FALHAS_SEGUIDAS = 5
 # PDPs via requests que chegam íntegros mas sem o rótulo (shell sem hidratar)
 # antes de desistir do caminho leve para a buy box e ir direto ao browser.
 _BUYBOX_REQUESTS_SEM_ROTULO_MAX = 3
+
+# --- Preço lido no PDP (Out/2026) -------------------------------------------
+# `averagePromotionalPrice` do índice é uma MÉDIA, não o preço do site: o Split
+# Vize Midea 12K quente/frio (371381) ficou meses a R$ 1.091,25, abaixo do
+# modelo só frio, e virou o piso do Daily Price Vision. O preço praticado sai do
+# JSON-LD do PDP (`utils/leroy_price.py`), lido a cada execução — mesma regra da
+# buy box: observação do turno, sem cache persistente. Os PDPs que a passada de
+# buy box já abre não custam nada a mais; o resto (~300 produtos distintos por
+# turno, medido em 26–28/10/2026) vai por `requests`, com o mesmo espaçamento.
+_PRECO_PDP_ENABLED = os.environ.get("LEROY_PRECO_PDP", "1") not in ("0", "false", "False")
+_PRECO_MAX_PER_RUN = int(os.environ.get("LEROY_PRECO_MAX_PER_RUN", "600") or 600)
+# Sem leitura do PDP, a linha fica SEM preço. `1` volta a gravar a média do
+# índice nesse caso — só como contingência consciente (bloqueio prolongado):
+# a média é o número que estes PDPs existem para substituir.
+_PRECO_MEDIA_FALLBACK = os.environ.get("LEROY_PRECO_MEDIA_FALLBACK", "0") in ("1", "true", "True")
+# PDPs íntegros seguidos sem preço no JSON-LD = layout novo; seguidos sem chegar
+# = bloqueio. Em ambos, a passada aborta em vez de gastar o turno à toa.
+_PRECO_MAX_FALHAS_SEGUIDAS = 8
 
 # Tempo máximo esperando o bloco de seller hidratar no browser.
 _PDP_HYDRATE_TIMEOUT = float(os.environ.get("LEROY_PDP_HYDRATE_TIMEOUT", "10000") or 10000)
@@ -251,6 +270,12 @@ class LeroyMerlinScraper(BaseScraper):
         self._buybox_falhas_seguidas = 0
         self._buybox_abortado = False
         self._buybox_requests_sem_rotulo = 0
+        # Preço do PDP — estado da EXECUÇÃO, nunca persistido (URL → leitura).
+        self._preco_pdp_enabled = _PRECO_PDP_ENABLED
+        self._preco_budget = _PRECO_MAX_PER_RUN
+        self._precos_lidos: Dict[str, PdpPrice] = {}
+        self._preco_falhas_seguidas = 0
+        self._preco_abortado = False
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -274,6 +299,11 @@ class LeroyMerlinScraper(BaseScraper):
             "pdp_bloqueios": 0,          # página não chegou (bloqueio/rate-limit)
             "fallback_3p_unidentified": 0,
             "fallback_leroy_default": 0,
+            "preco_pdp_lido": 0,          # preço praticado lido no JSON-LD
+            "preco_pdp_indisponivel": 0,  # PDP diz indisponível → sem preço
+            "preco_pdp_abertos": 0,       # PDPs abertos SÓ pelo preço
+            "preco_sem_leitura": 0,       # sem PDP lido → sem preço (ou média)
+            "preco_media_fallback": 0,    # gravou a média (LEROY_PRECO_MEDIA_FALLBACK=1)
         }
         if len(self._seller_cache):
             logger.info(
@@ -590,6 +620,7 @@ class LeroyMerlinScraper(BaseScraper):
             # leitura boa sempre vence a falha.
             if vencedor and self._buybox_lidos.get(product_url) is None:
                 self._buybox_lidos[product_url] = vencedor
+            self._registrar_preco(product_url, html, vencedor)
             candidate = extract_seller_from_pdp(html, seller_id)
             if candidate and not is_leroy_self(candidate):
                 name = candidate
@@ -983,6 +1014,9 @@ class LeroyMerlinScraper(BaseScraper):
             if not html:
                 continue
             vencedor = extract_buybox_winner(html)
+            # O JSON-LD vem no SSR: até o shell sem rótulo do caminho leve traz
+            # o preço. Leitura com o vencedor conhecido substitui a anterior.
+            self._registrar_preco(url, html, vencedor)
             if vencedor:
                 if caminho == "requests":
                     self._buybox_requests_sem_rotulo = 0
@@ -1098,6 +1132,173 @@ class LeroyMerlinScraper(BaseScraper):
                 self._seller_metrics["buybox_sem_leitura"] += 1
 
         self._seller_cache.save()
+
+    # ------------------------------------------------------------------
+    # Preço praticado (PDP)
+    # ------------------------------------------------------------------
+
+    def _registrar_preco(self, url: str, html: str, vencedor: Optional[str]) -> PdpPrice:
+        """
+        Lê o preço do PDP já baixado e guarda no cache da execução.
+
+        Uma leitura conclusiva (preço ou indisponível) sempre substitui a
+        anterior — a do browser, com o vencedor conhecido, vale mais que a do
+        shell. Leitura inconclusiva só entra se nada foi lido ainda, para o
+        PDP não ser reaberto só pelo preço.
+
+        Args:
+            url: URL do PDP (chave do cache da execução).
+            html: HTML recebido.
+            vencedor: vencedor da buy box lido no mesmo HTML, se houver.
+
+        Returns:
+            A leitura feita sobre este HTML.
+        """
+        if not self._preco_pdp_enabled:
+            return extract_pdp_price("")
+        leitura = extract_pdp_price(html, vencedor)
+        anterior = self._precos_lidos.get(url)
+        if leitura.lido or anterior is None:
+            self._precos_lidos[url] = leitura
+        return leitura
+
+    def _fetch_preco(self, url: str, vencedor: Optional[str]) -> Optional[PdpPrice]:
+        """
+        Abre o PDP só pelo preço: ``requests`` primeiro, browser se não chegou.
+
+        Args:
+            url: URL absoluta do PDP.
+            vencedor: vencedor da buy box já conhecido (escolhe entre ofertas).
+
+        Returns:
+            A leitura, ou None quando nenhuma página chegou (bloqueio).
+        """
+        strategies = []
+        if self._pdp_requests_strikes < 3:
+            strategies.append(self._fetch_pdp_requests)
+        strategies.append(self._fetch_pdp_browser)
+
+        leitura: Optional[PdpPrice] = None
+        for fetch in strategies:
+            html = fetch(url)
+            if not html:
+                continue
+            leitura = self._registrar_preco(url, html, vencedor)
+            if leitura.lido:
+                return leitura
+        return leitura
+
+    def _resolve_precos_pdp(
+        self,
+        hits: List[Dict],
+        seller_info: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Garante uma leitura de preço do PDP para cada produto da página.
+
+        Os PDPs abertos pela buy box e pela resolução de nome já trouxeram o
+        preço; aqui só entram os que nenhuma passada abriu. Cache por execução
+        (URL repetida entre keywords custa um PDP). Orçamento esgotado ou
+        passada abortada deixam o produto sem leitura — ver
+        `_preco_do_registro`.
+
+        Args:
+            hits: hits da página, na ordem de ``seller_info``.
+            seller_info: classificação de cada hit (vencedor já aplicado).
+        """
+        if not self._preco_pdp_enabled:
+            return
+
+        for hit, info in zip(hits, seller_info):
+            url = self._extract_algolia_url(hit)
+            if not url or url in self._precos_lidos:
+                continue
+            if self._preco_abortado or self._preco_budget <= 0:
+                continue
+
+            self._preco_budget -= 1
+            self._seller_metrics["preco_pdp_abertos"] += 1
+            leitura = self._fetch_preco(url, info.get("seller"))
+            self._random_delay(min_s=_PDP_MIN_INTERVAL, max_s=_PDP_MAX_INTERVAL)
+
+            if leitura is not None and leitura.lido:
+                self._preco_falhas_seguidas = 0
+                continue
+            self._preco_falhas_seguidas += 1
+            if self._preco_falhas_seguidas >= _PRECO_MAX_FALHAS_SEGUIDAS:
+                motivo = (
+                    "PDP chega sem preço no JSON-LD — layout novo?"
+                    if leitura is not None
+                    else "PDP não chega — bloqueio?"
+                )
+                logger.error(
+                    f"[{self.platform_name}] {self._preco_falhas_seguidas} PDPs "
+                    f"seguidos sem preço ({motivo}). Leitura de preço abortada "
+                    "neste run; os itens restantes ficam SEM preço "
+                    "(LEROY_PRECO_MEDIA_FALLBACK=1 grava a média do índice). "
+                    "Diagnóstico: python scripts/leroy_seller_probe.py --preco <URL>"
+                )
+                self._preco_abortado = True
+
+    def _preco_do_registro(self, hit: dict, url: Optional[str]) -> Optional[float]:
+        """
+        Preço que vai para a linha: o do PDP, nunca a média em silêncio.
+
+        - PDP lido com preço → esse preço;
+        - PDP diz indisponível → None (não compete no piso; a linha fica);
+        - sem leitura → None, ou a média do índice com
+          ``LEROY_PRECO_MEDIA_FALLBACK=1`` (contingência consciente);
+        - leitura de PDP desligada (``LEROY_PRECO_PDP=0``) → média, o
+          comportamento antigo.
+
+        Args:
+            hit: hit da Algolia.
+            url: URL do PDP do hit.
+
+        Returns:
+            Preço em reais, ou None.
+        """
+        if not self._preco_pdp_enabled:
+            return self._preco_media_indice(hit)
+
+        leitura = self._precos_lidos.get(url or "")
+        if leitura is not None and leitura.preco is not None:
+            self._seller_metrics["preco_pdp_lido"] += 1
+            return leitura.preco
+        if leitura is not None and leitura.disponivel is False:
+            self._seller_metrics["preco_pdp_indisponivel"] += 1
+            return None
+
+        self._seller_metrics["preco_sem_leitura"] += 1
+        if _PRECO_MEDIA_FALLBACK:
+            self._seller_metrics["preco_media_fallback"] += 1
+            return self._preco_media_indice(hit)
+        return None
+
+    @staticmethod
+    def _preco_media_indice(hit: dict) -> Optional[float]:
+        """
+        Preço do índice Algolia — ``averagePromotionalPrice`` é uma MÉDIA.
+
+        Só é usado com a leitura de PDP desligada ou como contingência
+        explícita; ver o bloco "Preço lido no PDP" no topo do módulo.
+        """
+        price_val = (
+            hit.get("averagePromotionalPrice")
+            or hit.get("medianPromotionalPrice")
+            or hit.get("price")
+            or hit.get("preco")
+            or hit.get("sellingPrice")
+            or hit.get("bestPrice")
+            or (hit.get("priceRange") or {}).get("sellingPrice", {}).get("lowPrice")
+            or (hit.get("priceRange") or {}).get("minPrice")
+        )
+        if isinstance(price_val, dict):
+            price_val = price_val.get("value") or price_val.get("amount")
+        try:
+            return float(str(price_val).replace(",", ".")) if price_val else None
+        except (ValueError, TypeError):
+            return None
 
     @staticmethod
     def _tipo_for(seller: str) -> str:
@@ -1226,6 +1427,9 @@ class LeroyMerlinScraper(BaseScraper):
                     if vencedor:
                         self._aplicar_vencedor(hit, info, vencedor)
 
+        # --- Passada 4: preço praticado (PDP) dos produtos que nenhuma passada abriu ---
+        self._resolve_precos_pdp(hits, seller_info)
+
         records = []
 
         for idx, hit in enumerate(hits):
@@ -1248,26 +1452,8 @@ class LeroyMerlinScraper(BaseScraper):
                 )
                 continue  # ← PULA registros sem título
 
-            # Preço: campos confirmados via debug em produção (30/03/2026).
-            # averagePromotionalPrice e medianPromotionalPrice são os únicos
-            # campos de preço retornados pelo índice production_products.
-            price_val = (
-                hit.get("averagePromotionalPrice")
-                or hit.get("medianPromotionalPrice")
-                or hit.get("price")
-                or hit.get("preco")
-                or hit.get("sellingPrice")
-                or hit.get("bestPrice")
-                or (hit.get("priceRange") or {}).get("sellingPrice", {}).get("lowPrice")
-                or (hit.get("priceRange") or {}).get("minPrice")
-            )
-            if isinstance(price_val, dict):
-                price_val = price_val.get("value") or price_val.get("amount")
-
-            try:
-                price_float = float(str(price_val).replace(",", ".")) if price_val else None
-            except (ValueError, TypeError):
-                price_float = None
+            # Preço: o do PDP (JSON-LD), nunca a média do índice em silêncio.
+            price_float = self._preco_do_registro(hit, self._extract_algolia_url(hit))
 
             # Log único das chaves do hit para diagnóstico de campo seller.
             if not hasattr(self, '_algolia_keys_logged'):

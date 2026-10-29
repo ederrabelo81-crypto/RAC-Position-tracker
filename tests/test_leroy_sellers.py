@@ -179,6 +179,9 @@ def scraper(tmp_path):
     # A buy box por produto abre um PDP por hit: desligada por padrão aqui para
     # nenhum teste ir à rede; `TestBuyBoxPorProduto` liga explicitamente.
     s._buybox_pdp_enabled = False
+    # Idem para o preço do PDP (um PDP por produto): `tests/test_leroy_price.py`
+    # liga explicitamente.
+    s._preco_pdp_enabled = False
     return s
 
 

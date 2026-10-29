@@ -29,6 +29,12 @@ Uso:
 
     # Registra um ID manualmente (quando você já sabe o lojista)
     python scripts/leroy_seller_probe.py --set 5e6fd1d90a8aa474fe271e83="Loja X"
+
+    # Preço praticado lido no PDP (JSON-LD) — o que a coleta grava desde
+    # Out/2026 no lugar da média `averagePromotionalPrice` do índice
+    python scripts/leroy_seller_probe.py --preco "URL"            # requests
+    python scripts/leroy_seller_probe.py --preco "URL" --browser  # Playwright
+    python scripts/leroy_seller_probe.py --preco logs/pdp_dump.html  # offline
 """
 
 from __future__ import annotations
@@ -45,8 +51,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import requests
 from loguru import logger
 
+from utils.leroy_price import _ld_payloads, _produtos, extract_pdp_price
 from utils.leroy_sellers import (
     SELLER_LABEL_PATTERN,
+    extract_buybox_winner,
     LeroySellerCache,
     extract_seller_from_pdp,
     extract_seller_with_layer,
@@ -439,6 +447,56 @@ def cmd_set(cache: LeroySellerCache, assignment: str) -> int:
     return 1
 
 
+def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> int:
+    """
+    Mostra o preço que a coleta gravaria para um PDP (URL ou HTML salvo).
+
+    Imprime também cada ``Product``/``offers`` do JSON-LD, para conferir na tela
+    do site se o número bate — é a validação que falta contra o PDP real.
+    """
+    if Path(alvo).is_file():
+        html: Optional[str] = Path(alvo).read_text(encoding="utf-8", errors="replace")
+    elif use_browser:
+        html = _fetch_via_browser(alvo, headless=headless)
+    else:
+        html = _fetch(alvo)
+    if not html:
+        logger.error("PDP não chegou (bloqueio?). Tente com --browser.")
+        return 1
+    if not Path(alvo).is_file():
+        dump = Path(__file__).resolve().parent.parent / "logs" / "leroy_preco_probe.html"
+        dump.parent.mkdir(parents=True, exist_ok=True)
+        dump.write_text(html, encoding="utf-8")
+        logger.info(f"HTML salvo em {dump} (reprocessável offline com --preco)")
+
+    produtos = _produtos(_ld_payloads(html))
+    logger.info(f"{len(html):,} bytes | {len(produtos)} Product(s) no JSON-LD")
+    for i, produto in enumerate(produtos, 1):
+        print(f"  Product {i}: {str(produto.get('name'))[:70]}")
+        ofertas = produto.get("offers")
+        for oferta in ofertas if isinstance(ofertas, list) else [ofertas]:
+            if isinstance(oferta, dict):
+                seller = oferta.get("seller")
+                nome = seller.get("name") if isinstance(seller, dict) else seller
+                print(
+                    f"    {oferta.get('@type')}: price={oferta.get('price')} "
+                    f"lowPrice={oferta.get('lowPrice')} "
+                    f"availability={oferta.get('availability')} seller={nome}"
+                )
+
+    vencedor = extract_buybox_winner(html)
+    leitura = extract_pdp_price(html, vencedor)
+    print(f"\n  Buy box : {vencedor or '(rótulo não encontrado)'}")
+    print(f"  Preço   : {leitura.preco}  (camada={leitura.camada}, disponivel={leitura.disponivel})")
+    if not leitura.lido:
+        logger.warning(
+            "Sem preço no JSON-LD: a coleta gravaria a linha SEM preço. "
+            "Mande logs/leroy_preco_probe.html para ajustar utils/leroy_price.py."
+        )
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Inspeciona e popula o cache de sellers da Leroy Merlin."
@@ -450,6 +508,10 @@ def main() -> int:
     parser.add_argument("--scan", metavar="KEYWORD", help="lista os seller IDs de uma busca")
     parser.add_argument("--pages", type=int, default=2, help="páginas no --scan (padrão: 2)")
     parser.add_argument("--set", metavar="ID=NOME", help="grava um par id=nome manualmente")
+    parser.add_argument(
+        "--preco", metavar="URL_OU_ARQUIVO",
+        help="mostra o preço que a coleta leria no PDP (JSON-LD)",
+    )
     parser.add_argument(
         "--browser", action="store_true",
         help="no --pdp, carrega pelo Playwright (igual à coleta) em vez de requests",
@@ -481,6 +543,8 @@ def main() -> int:
         return cmd_scan(cache, args.scan, max(1, args.pages))
     if args.set:
         return cmd_set(cache, args.set)
+    if args.preco:
+        return cmd_preco(args.preco, use_browser=args.browser, headless=not args.no_headless)
 
     parser.print_help()
     return 1

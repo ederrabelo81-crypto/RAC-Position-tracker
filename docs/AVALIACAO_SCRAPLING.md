@@ -112,9 +112,10 @@ O preço da buy box no PDP ficou de fora: segue `averagePromotionalPrice`.
   `python scripts/leroy_seller_probe.py --clear-quarantine`. O comando libera
   **todos** os IDs em quarentena, não só estes, e a próxima coleta tenta o PDP
   de todos eles (dentro do teto `LEROY_PDP_MAX_PER_RUN`).
-- **Preço:** a coleta lê `averagePromotionalPrice`, uma **média** do índice.
+- ~~**Preço:** a coleta lê `averagePromotionalPrice`, uma **média** do índice.
   No item do print ficou em R$ 2.290,53 nos quatro turnos, contra R$ 2.339,00
-  à vista no PDP.
+  à vista no PDP.~~ **Resolvido em Out/2026:** o preço sai do JSON-LD do PDP
+  (`utils/leroy_price.py`); ver `docs/learnings/scraping-patterns.md`.
 - **Buy box com 2+ sellers:** hoje se assume que o primeiro item de
   `marketplaceSellers` é o vencedor. Isso nunca foi validado contra o PDP e,
   pelo que o print mostra, pode nem ser um 3P.
