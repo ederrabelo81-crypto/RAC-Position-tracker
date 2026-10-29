@@ -176,6 +176,12 @@ call :materializar
 :: desbloqueio e manual pelo SQL Editor (scripts\retention_cleanup.sql + VACUUM
 :: FULL), e dai em diante esta poda noturna mantem a janela quente
 :: (RAC_HOT_WINDOW_DAYS=2 desde 22/09/2026; eram 15 na epoca).
+:: Desde 29/10/2026 o `--dataset all` tambem poda seller_offer_daily /
+:: seller_coverage_daily na retencao PROPRIA do seller_app
+:: (RAC_SELLER_RETENTION_DAYS, padrao 62 dias - nunca a janela de 2 dias) e,
+:: no fim, compacta os indices inchados (RPC compactar_indices, migracao 022).
+:: Sem isso o fato do seller crescia ~3,6 MB/dia sem teto e o banco passou da
+:: cota (561 MB) com so ~330 MB de dado - o resto era indice inchado.
 if /i "%SLOT%"=="noite" (
     echo [%DATE% %TIME%] [%SLOT%] podando janela quente do Supabase [tier -^> Drive]
     call "%PYEXE%" scripts\history_cli.py tier --dataset all --confirm --heartbeat

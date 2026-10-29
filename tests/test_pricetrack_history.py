@@ -200,9 +200,11 @@ class TestTierPorDataset:
         specs = history_cli._tier_datasets(argparse.Namespace())
         assert [s.dataset for s in specs] == ["coletas"]
 
-    def test_all_migra_os_dois(self):
+    def test_all_migra_todos(self):
         specs = history_cli._tier_datasets(argparse.Namespace(dataset="all"))
-        assert [s.dataset for s in specs] == ["coletas", "pricetrack"]
+        assert [s.dataset for s in specs] == [
+            "coletas", "pricetrack", "seller_offer", "seller_coverage",
+        ]
 
     def test_fetch_day_usa_a_coluna_de_data_do_dataset(self):
         client = _FakeClient({"pricetrack_daily": []})

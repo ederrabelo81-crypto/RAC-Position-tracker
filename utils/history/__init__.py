@@ -45,7 +45,11 @@ from utils.history.csv_mirror import (
 from utils.history.store import (
     DATASET_COLETAS,
     DATASET_PRICETRACK,
+    DATASET_SELLER_COVERAGE,
+    DATASET_SELLER_OFFER,
     DEFAULT_HOT_WINDOW_DAYS,
+    DEFAULT_SELLER_RETENTION_DAYS,
+    MIN_SELLER_RETENTION_DAYS,
     HistoryStore,
     HistoryStoreError,
     get_store,
@@ -54,13 +58,18 @@ from utils.history.store import (
     parse_key,
     partition_key,
     resolve_backend_name,
+    seller_retention_days,
 )
 
 __all__ = [
     "DATASET_COLETAS",
     "DATASET_CSV",
     "DATASET_PRICETRACK",
+    "DATASET_SELLER_COVERAGE",
+    "DATASET_SELLER_OFFER",
     "DEFAULT_HOT_WINDOW_DAYS",
+    "DEFAULT_SELLER_RETENTION_DAYS",
+    "MIN_SELLER_RETENTION_DAYS",
     "GoogleDriveBackend",
     "HistoryBackend",
     "HistoryBackendError",
@@ -77,6 +86,8 @@ __all__ = [
     "partition_key",
     "read_coletas",
     "resolve_backend_name",
+    "seller_retention_days",
+    "seller_retention_start",
     "write_records",
 ]
 
@@ -97,6 +108,19 @@ def hot_window_start(today: Optional[date] = None) -> date:
     """
     ref = today or date.today()
     return ref - timedelta(days=hot_window_days() - 1)
+
+
+def seller_retention_start(today: Optional[date] = None) -> date:
+    """Primeiro dia de `seller_offer_daily`/`seller_coverage_daily` mantido no banco.
+
+    Mesma convenção de `hot_window_start`: a retenção inclui hoje.
+
+    Example:
+        >>> seller_retention_start(date(2026, 10, 29))   # retenção de 62 dias
+        datetime.date(2026, 8, 29)
+    """
+    ref = today or date.today()
+    return ref - timedelta(days=seller_retention_days() - 1)
 
 
 def write_records(

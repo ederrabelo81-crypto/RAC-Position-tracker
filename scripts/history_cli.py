@@ -24,8 +24,14 @@ Exemplos
     python scripts/history_cli.py tier --confirm
 
     # A maior tabela do banco é pricetrack_daily — migre-a junto para manter
-    # o projeto dentro do plano free (`--dataset all` cobre as duas).
+    # o projeto dentro do plano free. `--dataset all` cobre coletas,
+    # pricetrack e os fatos do seller_app (estes na retenção PRÓPRIA,
+    # RAC_SELLER_RETENTION_DAYS, não na janela quente) e, ao fim, compacta os
+    # índices inchados (RPC compactar_indices, migração 022).
     python scripts/history_cli.py tier --dataset all --confirm
+
+    # Só os fatos do seller_app (seller_offer_daily + seller_coverage_daily)
+    python scripts/history_cli.py tier --dataset seller --dry-run
 
     # Relatório de um período qualquer, atravessando frio + quente
     python scripts/history_cli.py export --start 2026-01-01 --end 2026-07-25 \\
@@ -38,7 +44,7 @@ import argparse
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple
+from typing import Any, Dict, List, NamedTuple, Tuple
 
 from loguru import logger
 
@@ -48,6 +54,8 @@ sys.path.insert(0, str(_ROOT))
 from utils.history import (  # noqa: E402
     DATASET_COLETAS,
     DATASET_PRICETRACK,
+    DATASET_SELLER_COVERAGE,
+    DATASET_SELLER_OFFER,
     HistoryBackendError,
     HistoryStoreError,
     LocalBackend,
@@ -57,6 +65,8 @@ from utils.history import (  # noqa: E402
     hot_window_start,
     parse_key,
     read_coletas,
+    seller_retention_days,
+    seller_retention_start,
     write_records,
 )
 
@@ -74,26 +84,55 @@ class TierSpec(NamedTuple):
         dataset: Nome do dataset no histórico (subpasta no Drive).
         table: Tabela de origem no Supabase.
         date_col: Coluna de data usada para recortar o dia.
+        order_cols: Ordem total e estável para paginar o dia. Os fatos do
+            seller não têm `id`: a chave primária composta faz esse papel —
+            sem ordem total, `range()` pode repetir ou pular linha entre
+            páginas e a contagem da verificação deixaria de significar algo.
+        retencao_propria: ``True`` = o corte vem de `seller_retention_start`
+            (fato derivado, retenção maior); ``False`` = janela quente.
     """
 
     dataset: str
     table: str
     date_col: str
+    order_cols: Tuple[str, ...] = ("id",)
+    retencao_propria: bool = False
 
 
-# Só tabelas de FATO que vivem no Parquet entram na poda da janela quente. Com
-# a janela em 2 dias (docs/RETORNO_SUPABASE.md), este dicionário é a lista do que
-# o `tier` apaga do banco. `seller_offer_daily`/`seller_coverage_daily` NÃO
-# entram de propósito: são fatos DERIVADOS de `coletas` (não estão no Parquet) e
-# têm RETENÇÃO PRÓPRIA, maior que a de `coletas`, para o `seller_app` manter
-# série de buy box mesmo com `coletas` guardando só 2 dias (a decisão e o SQL da
-# poda independente estão em docs/RETORNO_SUPABASE.md §6). Adicioná-las aqui as
-# cortaria para 2 dias junto com `coletas` — exatamente o que a retenção própria
-# existe para evitar.
+# Este dicionário é a lista do que o `tier` apaga do banco. `coletas` e
+# `pricetrack_daily` saem quando deixam a janela quente (2 dias,
+# docs/RETORNO_SUPABASE.md). `seller_offer_daily`/`seller_coverage_daily` são
+# fatos DERIVADOS de `coletas` e têm RETENÇÃO PRÓPRIA, maior (62 dias,
+# `utils.history.seller_retention_days`), para o `seller_app` manter série de
+# buy box com `coletas` guardando só 2 dias. Cortá-las pela janela quente
+# deixaria o painel do lojista com 2 dias — por isso `retencao_propria=True`.
+# Até 29/10/2026 elas não tinham poda nenhuma: 47 dias somavam 243 MB e o banco
+# passou da cota (561 MB contra 500).
 _TIER_SPECS: Dict[str, TierSpec] = {
     DATASET_COLETAS: TierSpec(DATASET_COLETAS, "coletas", "data"),
     DATASET_PRICETRACK: TierSpec(DATASET_PRICETRACK, "pricetrack_daily", "collection_date"),
+    DATASET_SELLER_OFFER: TierSpec(
+        DATASET_SELLER_OFFER, "seller_offer_daily", "data",
+        order_cols=("turno", "plataforma", "offer_key", "seller_canonical"),
+        retencao_propria=True,
+    ),
+    DATASET_SELLER_COVERAGE: TierSpec(
+        DATASET_SELLER_COVERAGE, "seller_coverage_daily", "data",
+        order_cols=("turno", "plataforma"),
+        retencao_propria=True,
+    ),
 }
+
+#: Grupo `--dataset seller`: os dois fatos do seller_app, sempre juntos (a aba
+#: 🩺 Cobertura não pode cobrir uma janela diferente da do share).
+DATASET_GRUPO_SELLER = "seller"
+
+#: Tabelas que o `tier` compacta ao fim de uma passada com `--confirm`. Tem de
+#: bater com a lista branca de `compactar_indices` (migração 022) — o teste
+#: `tests/test_tier_seller_retention.py` confere as duas.
+_TABELAS_COMPACTAR: Tuple[str, ...] = (
+    "coletas", "pricetrack_daily", "seller_offer_daily", "seller_coverage_daily",
+)
 
 
 def _parse_day(raw: str) -> date:
@@ -238,14 +277,10 @@ def _fetch_day(client: Any, day: date, spec: TierSpec = _TIER_SPECS[DATASET_COLE
     rows: List[Dict[str, Any]] = []
     offset = 0
     while True:
-        resp = (
-            client.table(spec.table)
-            .select("*")
-            .eq(spec.date_col, day.isoformat())
-            .order("id", desc=False)
-            .range(offset, offset + _SUPABASE_PAGE - 1)
-            .execute()
-        )
+        query = client.table(spec.table).select("*").eq(spec.date_col, day.isoformat())
+        for col in spec.order_cols:
+            query = query.order(col, desc=False)
+        resp = query.range(offset, offset + _SUPABASE_PAGE - 1).execute()
         batch = resp.data or []
         rows.extend(batch)
         if len(batch) < _SUPABASE_PAGE:
@@ -280,7 +315,7 @@ def _distinct_days_before(
     while cursor < cutoff:
         count = (
             client.table(spec.table)
-            .select("id", count="exact", head=True)
+            .select(spec.date_col, count="exact", head=True)
             .eq(spec.date_col, cursor.isoformat())
             .execute()
         ).count or 0
@@ -298,8 +333,61 @@ def _tier_datasets(args: argparse.Namespace) -> List[TierSpec]:
     """
     escolha = getattr(args, "dataset", DATASET_COLETAS)
     if escolha == "all":
-        return [_TIER_SPECS[DATASET_COLETAS], _TIER_SPECS[DATASET_PRICETRACK]]
+        return list(_TIER_SPECS.values())
+    if escolha == DATASET_GRUPO_SELLER:
+        return [_TIER_SPECS[DATASET_SELLER_OFFER], _TIER_SPECS[DATASET_SELLER_COVERAGE]]
     return [_TIER_SPECS[escolha]]
+
+
+def _spec_cutoff(spec: TierSpec, args: argparse.Namespace) -> date:
+    """Primeiro dia que FICA no banco para este dataset.
+
+    `--cutoff` só vale para a janela quente: aplicado a um fato do seller, um
+    `--cutoff` pensado para `coletas` cortaria o painel do lojista junto.
+    """
+    if spec.retencao_propria:
+        return seller_retention_start()
+    return args.cutoff or hot_window_start()
+
+
+def _compactar_indices(client: Any) -> bool:
+    """Reconstrói os índices inchados das tabelas podadas (RPC, migração 022).
+
+    `DELETE` não devolve disco, e o autovacuum não encolhe índice: em
+    29/10/2026 `pricetrack_daily` tinha 2 dias (20 MB de heap) sob 111 MB de
+    índice, e o banco passou da cota com só ~330 MB de dado. A RPC só
+    reindexa tabela cujo índice passou de 1,25× o heap, então a noite comum
+    custa uma consulta de tamanho por tabela. Uma chamada por tabela: cada uma
+    é uma transação, e o lock do REINDEX dura só aquela tabela.
+
+    Returns:
+        ``True`` se todas as tabelas responderam; ``False`` se alguma falhou.
+    """
+    ok = True
+    for tabela in _TABELAS_COMPACTAR:
+        try:
+            resp = client.rpc("compactar_indices", {"p_tabela": tabela}).execute()
+        except Exception as exc:
+            logger.error(
+                f"Compactação de índices de {tabela} falhou ({exc}) — sem ela o "
+                "espaço do DELETE fica preso no índice. Migração 022 aplicada? "
+                "(docs/migrations/022_compactar_indices.sql)"
+            )
+            ok = False
+            continue
+        rel = resp.data if isinstance(resp.data, dict) else {}
+        if rel.get("reindexada"):
+            logger.success(
+                f"{tabela}: índices {rel.get('indices_antes')} → "
+                f"{rel.get('indices_depois')} (heap {rel.get('heap')}) · "
+                f"banco {rel.get('banco')}"
+            )
+        else:
+            logger.info(
+                f"{tabela}: índices {rel.get('indices_antes', '?')} para heap "
+                f"{rel.get('heap', '?')} — sem inchaço, nada a reconstruir."
+            )
+    return ok
 
 
 def cmd_tier(args: argparse.Namespace) -> int:
@@ -361,18 +449,23 @@ def _cmd_tier_run(args: argparse.Namespace) -> int:
         logger.error("Supabase não configurado — defina SUPABASE_URL/SUPABASE_KEY.")
         return 1
 
-    cutoff = args.cutoff or hot_window_start()
-    logger.info(
-        f"Janela quente: {hot_window_days()} dias — migrando tudo anterior a "
-        f"{cutoff.isoformat()}."
-    )
-
     specs = _tier_datasets(args)
+    if any(not spec.retencao_propria for spec in specs):
+        logger.info(
+            f"Janela quente: {hot_window_days()} dias — migrando tudo anterior a "
+            f"{(args.cutoff or hot_window_start()).isoformat()}."
+        )
+    if any(spec.retencao_propria for spec in specs):
+        logger.info(
+            f"Retenção do seller_app: {seller_retention_days()} dias — migrando "
+            f"tudo anterior a {seller_retention_start().isoformat()}."
+        )
+
     piores = 0
     for indice, spec in enumerate(specs):
         if len(specs) > 1:
             logger.info(f"── Dataset '{spec.dataset}' ({spec.table}) ──")
-        rc = _tier_one(client, spec, args, cutoff)
+        rc = _tier_one(client, spec, args, _spec_cutoff(spec, args))
         # Cota restrita (2) é o diagnóstico mais acionável — preserva-o sobre
         # o genérico (1) quando os dois aparecem.
         piores = 2 if 2 in (piores, rc) else max(piores, rc)
@@ -386,6 +479,13 @@ def _cmd_tier_run(args: argparse.Namespace) -> int:
                 "dataset(s) restante(s) desta passada."
             )
             break
+
+    # Compacta só quando houve poda de verdade e o banco aceita escrita. Sem
+    # ela o espaço do DELETE fica dentro dos índices e a cota volta a estourar
+    # com o mesmo volume de dado.
+    if args.confirm and not args.dry_run and piores != 2:
+        if not _compactar_indices(client):
+            piores = max(piores, 1)
     return piores
 
 
@@ -472,16 +572,25 @@ def _tier_one(
             falhas.append(f"{day} (escrita)")
             continue
 
-        # Verificação antes de apagar: releia o que foi gravado.
+        # Verificação antes de apagar: releia o que foi gravado e conte SÓ a
+        # partição recém-escrita. Contar o dia inteiro deixaria uma partição
+        # antiga (de uma passada anterior ou da coleta) tapar uma escrita
+        # truncada; a contagem tem de bater EXATA com o que saiu do banco.
         try:
-            conferido = store.read(spec.dataset, start=day, end=day)
+            conferido = store.read(
+                spec.dataset, start=day, end=day, partition_column="_particao"
+            )
         except (HistoryStoreError, HistoryBackendError) as exc:
             logger.error(f"{day}: verificação falhou ({exc}) — banco intacto.")
             falhas.append(f"{day} (verificação)")
             continue
-        if len(conferido) < len(rows):
+        relidas = (
+            int((conferido["_particao"] == key).sum())
+            if "_particao" in conferido.columns else 0
+        )
+        if relidas != len(rows):
             logger.error(
-                f"{day}: verificação falhou ({len(conferido)} de {len(rows)} "
+                f"{day}: verificação falhou ({relidas} de {len(rows)} "
                 f"linhas relidas) — NÃO vou apagar do Supabase."
             )
             falhas.append(f"{day} (verificação)")
@@ -630,10 +739,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_tier = sub.add_parser("tier", help="Supabase → histórico (fora da janela quente).")
     p_tier.add_argument(
-        "--dataset", choices=[DATASET_COLETAS, DATASET_PRICETRACK, "all"],
+        "--dataset",
+        choices=[*_TIER_SPECS, DATASET_GRUPO_SELLER, "all"],
         default=DATASET_COLETAS,
-        help="Qual tabela migrar. 'pricetrack' cobre pricetrack_daily — a maior "
-             "do banco. 'all' migra as duas (default: coletas).",
+        help="Qual tabela migrar. 'pricetrack' cobre pricetrack_daily; "
+             "'seller_offer'/'seller_coverage' (ou 'seller', os dois) são os "
+             "fatos do seller_app, na retenção própria RAC_SELLER_RETENTION_DAYS "
+             "(padrão 62 dias). 'all' migra todos e compacta os índices "
+             "(default: coletas).",
     )
     p_tier.add_argument(
         "--cutoff", type=_parse_day, metavar="YYYY-MM-DD",
