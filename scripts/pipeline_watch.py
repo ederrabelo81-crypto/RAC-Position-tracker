@@ -318,7 +318,13 @@ def _linhas_do_job(client, job: JobSpec, dia: date) -> Optional[int]:
     if job.destino == "bestsellers":
         return _contar_bestsellers(client, dia)
     if job.destino == "clima_diario":
-        return _contar_clima(client, dia)
+        # Sondagem adicional: tabela ausente (migração 021 não aplicada) ou
+        # consulta quebrada não pode cegar o supervisor inteiro.
+        try:
+            return _contar_clima(client, dia)
+        except Exception as exc:
+            logger.warning(f"[Supervisor] clima_diario não sondável: {exc}")
+            return None
     return None
 
 
@@ -721,6 +727,7 @@ def varrer_fontes_bestsellers(dia: date) -> Optional[RelatorioCobertura]:
                 .lte("data", dia.isoformat())
                 .lte("rank", 3)
                 .order("data")
+                .order("id")  # chave total: paginação sem pular nem repetir
                 .range(offset, offset + passo - 1)
                 .execute()
             )
@@ -742,6 +749,7 @@ def varrer_fontes_bestsellers(dia: date) -> Optional[RelatorioCobertura]:
                 client.table("bestsellers")
                 .select("data")
                 .eq("plataforma", chave)
+                .lte("data", dia.isoformat())
                 .order("data", desc=True)
                 .limit(1)
                 .execute()

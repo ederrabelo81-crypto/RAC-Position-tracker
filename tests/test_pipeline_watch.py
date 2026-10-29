@@ -426,3 +426,14 @@ class TestFontesBestsellers:
 
         monkeypatch.setattr(pw, "_client", _quebra)
         assert pw.varrer_fontes_bestsellers(DIA) is None
+
+
+def test_clima_sem_tabela_nao_cega_o_supervisor():
+    """Migração 021 ainda não aplicada: o job do clima fica sem contagem, não CEGO."""
+    import scripts.pipeline_watch as pw
+
+    class _Quebra:
+        def table(self, nome):
+            raise RuntimeError("relation clima_diario does not exist")
+
+    assert pw._linhas_do_job(_Quebra(), JOBS_POR_ID["gh_clima"], DIA) is None

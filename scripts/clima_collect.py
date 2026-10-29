@@ -115,21 +115,28 @@ def coletar(backfill: bool, desde: date, ate: date, dias_passados: int, hoje: da
     """
     partes: List[pd.DataFrame] = []
     for cidade in CIDADES:
+        pedidos = []
         if backfill:
-            resposta = _get(_ARCHIVE, _params(
-                cidade, start_date=desde.isoformat(), end_date=ate.isoformat()))
-            fonte = "archive"
+            pedidos.append(("archive", _ARCHIVE, _params(
+                cidade, start_date=desde.isoformat(), end_date=ate.isoformat())))
         else:
-            resposta = _get(_FORECAST, _params(
-                cidade, past_days=dias_passados, forecast_days=16))
-            fonte = "forecast"
-        if resposta is None:
-            logger.error(f"[Clima] {cidade.nome}: sem resposta")
-            continue
-        df = parse_open_meteo(resposta, cidade, hoje, fonte)
-        logger.info(f"[Clima] {cidade.nome}: {len(df)} dia(s) ({fonte})")
-        partes.append(df)
-        time.sleep(0.3)  # gentileza com a API gratuita
+            pedidos.append(("forecast", _FORECAST, _params(
+                cidade, past_days=dias_passados, forecast_days=16)))
+            # O ERA5 sai com ~5 dias de atraso: a rodada diária também traz
+            # D-15..D-6 do archive, que substitui a análise do modelo de
+            # previsão na mesma chave (consolidar/upsert: archive vence).
+            pedidos.append(("archive", _ARCHIVE, _params(
+                cidade, start_date=(hoje - timedelta(days=15)).isoformat(),
+                end_date=(hoje - timedelta(days=6)).isoformat())))
+        for fonte, url, params in pedidos:
+            resposta = _get(url, params)
+            if resposta is None:
+                logger.error(f"[Clima] {cidade.nome}: sem resposta ({fonte})")
+                continue
+            df = parse_open_meteo(resposta, cidade, hoje, fonte)
+            logger.info(f"[Clima] {cidade.nome}: {len(df)} dia(s) ({fonte})")
+            partes.append(df)
+            time.sleep(0.3)  # gentileza com a API gratuita
     return consolidar(*partes)
 
 
@@ -241,7 +248,8 @@ def ler_supabase(desde: date) -> pd.DataFrame:
         for offset in range(0, 500_000, 1000):
             resp = (
                 client.table(_TABELA).select(",".join(COLUNAS))
-                .gte("data", desde.isoformat()).order("data")
+                .gte("data", desde.isoformat())
+                .order("data").order("cidade").order("tipo")  # chave total
                 .range(offset, offset + 999).execute()
             )
             lote = resp.data or []
@@ -306,8 +314,8 @@ def _ler_bestsellers(desde: date) -> pd.DataFrame:
     for offset in range(0, 500_000, 1000):
         resp = (
             client.table("bestsellers")
-            .select("data,plataforma,sku_plataforma,url_produto,reviews,referencia")
-            .gte("data", desde.isoformat()).order("data")
+            .select("data,plataforma,sku_plataforma,url_produto,titulo,reviews,referencia")
+            .gte("data", desde.isoformat()).order("data").order("id")
             .range(offset, offset + 999).execute()
         )
         lote = resp.data or []

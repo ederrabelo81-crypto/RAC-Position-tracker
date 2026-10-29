@@ -1,9 +1,10 @@
 """
 Radar de marcas em ascensão (bestsellers/radar.py).
 
-Os cenários reproduzem o backtest de 12/09/2026 contra o banco: Philco subindo
-em Magalu e ML, Agratto saltando +13,5 p.p. no Magalu, Grupo Midea subindo em
-três praças e saindo do top 10 do Magalu.
+Os cenários são inspirados no backtest de 12/09/2026 contra o banco (Philco
+subindo em Magalu e ML, Agratto saltando +13,5 p.p. no Magalu, Grupo Midea
+subindo em três praças e saindo do top 10 do Magalu) — com números redondos,
+não os valores exatos do banco.
 """
 
 from datetime import date, timedelta
@@ -14,6 +15,7 @@ import pytest
 from bestsellers.radar import (
     ATENCAO,
     CAINDO,
+    SEM_DADO,
     ESTAVEL,
     GRUPO_MIDEA,
     MISTO,
@@ -146,9 +148,11 @@ class TestRadar:
             reviews += 50 if recente else 5
             linhas += _lista(dia, "shopee", marcas, Philco={"reviews": reviews})
         df = pd.DataFrame(linhas)
+        # O contador é só do anúncio líder; o 2º anúncio Philco não tem avaliações.
         df.loc[(df["marca"] == "Philco") & (df["rank"] == 1), "sku_plataforma"] = "P1"
+        df.loc[(df["marca"] == "Philco") & (df["rank"] == 2), "reviews"] = None
         radar = radar_marcas(df, JANELA).set_index("marca")
-        assert radar.loc["Philco", "tracao_avaliacoes"] >= 1.5
+        assert radar.loc["Philco", "tracao_avaliacoes"] == pytest.approx(10.0)
         assert radar.loc["Philco", "status"] == ATENCAO
 
     def test_preco_compara_os_mesmos_anuncios(self):
@@ -186,3 +190,20 @@ class TestResumo:
         assert "Philco — SUBINDO" in texto
         assert GRUPO_MIDEA in texto
         assert "06/09–12/09" in texto
+
+
+class TestRevisaoCubic:
+    def test_misto_vem_antes_de_subindo(self):
+        """3 altas e 2 quedas não é SUBINDO."""
+        df = _df(*[_serie(p, ["LG"], ["LG", "LG"]) for p in ("a", "b", "c")],
+                 *[_serie(p, ["LG", "LG"], ["LG"]) for p in ("d", "e")])
+        assert _status(radar_marcas(df, JANELA), "LG") == MISTO
+
+    def test_grupo_midea_ausente_nao_vira_grupo(self):
+        df = _df(_serie("a", ["Philco"], ["Philco", "Philco"]))
+        df["grupo_midea"] = None
+        assert GRUPO_MIDEA not in set(share_por_plataforma(df, JANELA)["marca_radar"])
+
+    def test_sem_plataforma_comparavel_e_sem_dado(self):
+        linhas = [l for l in _serie("a", ["LG"], ["LG"]) if l["data"] >= JANELA.inicio_recente.isoformat()]
+        assert _status(radar_marcas(_df(linhas), JANELA), "LG") == SEM_DADO

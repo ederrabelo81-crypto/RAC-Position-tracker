@@ -103,7 +103,8 @@ na Amazon (sem cache persistente: é observação do turno). Ambíguo = tem
 `marketplaceSellers` e não é "código de marketplace com um único seller", caso
 em que a buy box é necessariamente desse seller. São ~130 PDPs por turno
 (medido em 29–30/09/2026). Detalhes em `docs/learnings/scraping-patterns.md`.
-O preço da buy box no PDP ficou de fora: segue `averagePromotionalPrice`.
+O preço da buy box no PDP ficou de fora nesta etapa; passou a ser lido no
+JSON-LD do PDP em Out/2026 (ver "Preço" abaixo).
 
 **Outras pendências:**
 
@@ -114,8 +115,10 @@ O preço da buy box no PDP ficou de fora: segue `averagePromotionalPrice`.
   de todos eles (dentro do teto `LEROY_PDP_MAX_PER_RUN`).
 - ~~**Preço:** a coleta lê `averagePromotionalPrice`, uma **média** do índice.
   No item do print ficou em R$ 2.290,53 nos quatro turnos, contra R$ 2.339,00
-  à vista no PDP.~~ **Resolvido em Out/2026:** o preço sai do JSON-LD do PDP
-  (`utils/leroy_price.py`); ver `docs/learnings/scraping-patterns.md`.
+  à vista no PDP.~~ **Implementado em Out/2026 (código); validação no site
+  real pendente:** o preço sai do JSON-LD do PDP (`utils/leroy_price.py`);
+  conferir com `scripts/leroy_seller_probe.py --preco URL`. Ver
+  `docs/learnings/scraping-patterns.md`.
 - **Buy box com 2+ sellers:** hoje se assume que o primeiro item de
   `marketplaceSellers` é o vencedor. Isso nunca foi validado contra o PDP e,
   pelo que o print mostra, pode nem ser um 3P.

@@ -153,12 +153,14 @@ Nome do seller e vencedor da buy box são perguntas diferentes. Evidência de
 **média**, não o preço do site. Casos: item 3962339062 a R$ 2.290,53 contra
 R$ 2.339,00 no PDP; Split Vize Midea 12K quente/frio (371381) a R$ 1.091,25 por
 meses, abaixo do modelo só frio (R$ 1.552,81), virando o piso do 📅 Daily Price
-Vision com uma oferta que ninguém achava no site. Média que não se move é o
-sinal de oferta que não existe (indisponível, ou nunca existiu).
+Vision com uma oferta que ninguém achava no site. Nesses dois casos, a média
+parada por meses acompanhava uma oferta que não estava à venda pelo preço
+gravado — sinal para desconfiar, não regra.
 
 - O preço sai do **JSON-LD** do PDP (`utils/leroy_price.py`): `offers.price`/
   `lowPrice`, `availability`, e com várias ofertas a do vencedor da buy box.
-  O JSON-LD vem no SSR, então até o shell sem rótulo do `requests` serve.
+  **Hipótese, ainda não validada no site:** o JSON-LD viria no SSR, então até
+  o shell sem rótulo do `requests` serviria. Confirmar com `--preco` abaixo.
 - Os PDPs da buy box e da resolução de nome já trazem o preço; a passada
   `_resolve_precos_pdp` abre só os demais (~300 produtos distintos por turno em
   26–28/10/2026), com cache por execução e o mesmo espaçamento.

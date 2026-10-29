@@ -130,6 +130,8 @@ def leroy(tmp_path, monkeypatch):
     s._seller_cache = LeroySellerCache(path=tmp_path / "cache.json")
     s._buybox_pdp_enabled = True
     s._preco_pdp_enabled = True
+    # O padrão do .env não pode decidir o teste (LEROY_PRECO_MEDIA_FALLBACK=1).
+    monkeypatch.setattr(leroy_mod, "_PRECO_MEDIA_FALLBACK", False)
     s.pdps = {}
     s.abertos = []
     monkeypatch.setattr(s, "_random_delay", lambda **kw: None)
@@ -217,3 +219,33 @@ class TestPrecoNoScraper:
         _parse(leroy, hits)
         assert leroy._preco_abortado is True
         assert leroy._seller_metrics["preco_pdp_abertos"] == 3
+
+
+class TestRevisaoCubic:
+    """Achados da revisão do PR #413."""
+
+    def test_tipo_como_iri_completo(self):
+        p = _produto(_offer("2339"))
+        p["@type"] = "https://schema.org/Product"
+        assert extract_pdp_price(_pdp(p)).preco == 2339.0
+
+    def test_aggregate_com_filhas_sem_preco_usa_low_price(self):
+        agg = {"@type": "AggregateOffer", "lowPrice": "1899", "offers": [
+            {"@type": "Offer", "seller": {"name": "Loja X"}}]}
+        assert extract_pdp_price(_pdp(_produto(agg))).preco == 1899.0
+
+    def test_vencedor_sem_oferta_casada_fica_sem_preco(self):
+        ofertas = [_offer("2100", seller="Frio Total"), _offer("2339", seller="Refri Center")]
+        r = extract_pdp_price(_pdp(_produto(ofertas)), vencedor="LEROY MERLIN")
+        assert r.preco is None and r.camada == "ambiguo"
+
+    def test_primeiro_seller_listado_nao_vira_vencedor(self, leroy):
+        """2+ sellers sem leitura da buy box: preço não é atribuído ao 1º listado."""
+        leroy._buybox_pdp_enabled = False
+        ofertas = [_offer("2100", seller="Frio Total"), _offer("2339", seller="Leroy Merlin")]
+        leroy.pdps["p"] = _pdp(_produto(ofertas))
+        hit = _hit("3900000001", "/p", sellers=[SELLER_ID, "5be5eb765cb50968730358f4"])
+        leroy._seller_cache.put(SELLER_ID, "Frio Total")
+        rec = _parse(leroy, [hit])[0]
+        assert rec["Preço (R$)"] == 2100.0                     # menor, sinalizado
+        assert leroy._seller_metrics["preco_pdp_menor_oferta"] == 1

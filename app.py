@@ -13162,8 +13162,10 @@ def page_bestsellers() -> None:
 
     # ── Validação ─────────────────────────────────────────────────────────
     # ── Radar: quem está subindo (todas as marcas, não só a Midea) ────────
+    # Âncora no último dia COLETADO da série (não no fim do Período): as
+    # janelas do radar são fixas, como diz a legenda da aba.
     with tab_radar:
-        _bs_aba_radar(serie, dia, n, referencia_sel)
+        _bs_aba_radar(serie, serie["data"].max(), n, referencia_sel)
 
     with tab_val:
         st.subheader(f"Portões de qualidade · {dia:%d/%m/%Y}")
@@ -13352,7 +13354,10 @@ def query_clima(anos: int = 11) -> tuple:
             while True:
                 resp = (
                     client.table("clima_diario").select(",".join(COLUNAS))
-                    .gte("data", desde).order("data")
+                    .gte("data", desde)
+                    # Chave primária inteira: com só `data`, os 17+ empates do
+                    # dia deixam a paginação pular ou repetir linhas.
+                    .order("data").order("cidade").order("tipo")
                     .range(offset, offset + _SUPABASE_PAGE - 1).execute()
                 )
                 lote = resp.data or []
@@ -13377,6 +13382,8 @@ def query_clima(anos: int = 11) -> tuple:
     if _CLIMA_CSV.exists():
         df = pd.read_csv(_CLIMA_CSV, sep=";", encoding="utf-8-sig")
         df["data"] = pd.to_datetime(df["data"]).dt.date
+        # Mesma janela do banco: a normal não pode mudar com a fonte.
+        df = df[df["data"] >= pd.Timestamp(desde).date()]
         return df, f"CSV local · `{_CLIMA_CSV.name}`"
     return pd.DataFrame(), motivo or "tabela `clima_diario` vazia"
 
@@ -13394,6 +13401,13 @@ def page_clima() -> None:
         "calor acima do normal antecipa venda. Índice Brasil ponderado pela "
         "população das regiões (Censo 2022). Fonte: Open-Meteo (ERA5)."
     )
+
+    with st.sidebar:
+        if st.button("🔄 Recarregar clima", use_container_width=True, key="clima_reload"):
+            # Cache de 6 h: sem isto, um "vazio" lido antes da migração/backfill
+            # ficaria na tela por horas.
+            query_clima.clear()
+            st.rerun()
 
     bruto, origem = query_clima()
     if not len(bruto):

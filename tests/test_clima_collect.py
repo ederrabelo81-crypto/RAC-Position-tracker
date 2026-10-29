@@ -25,6 +25,10 @@ def test_diario_grava_csv_com_observado_e_previsao(tmp_path, monkeypatch, capsys
 
     def _get(url, params, tentativas=3):
         pedidos.append((url, params))
+        if url == cc._ARCHIVE:
+            inicio = date.fromisoformat(params["start_date"])
+            fim = date.fromisoformat(params["end_date"])
+            return _resposta(inicio, (fim - inicio).days + 1, tmax=27.0)
         return _resposta(hoje - timedelta(days=params["past_days"]), params["past_days"] + 16)
 
     monkeypatch.setattr(cc, "_get", _get)
@@ -33,9 +37,11 @@ def test_diario_grava_csv_com_observado_e_previsao(tmp_path, monkeypatch, capsys
 
     assert cc.main(["--sem-supabase", "--csv", str(csv)]) == 0
 
-    assert len(pedidos) == len(CIDADES)
-    assert all(u == cc._FORECAST for u, _ in pedidos)
+    # previsão + archive de D-15..D-6 (o ERA5 chega com ~5 dias de atraso)
+    assert sorted(u for u, _ in pedidos) == sorted([cc._FORECAST, cc._ARCHIVE] * len(CIDADES))
     df = cc.ler_csv(csv)
+    sp = df[(df["cidade"] == "São Paulo") & (df["data"] == hoje - timedelta(days=8))]
+    assert list(sp["fonte"]) == ["archive"]   # archive substitui a análise do modelo
     assert set(df["tipo"]) == {OBSERVADO, PREVISAO}
     assert df["cidade"].nunique() == len(CIDADES)
     saida = capsys.readouterr().out

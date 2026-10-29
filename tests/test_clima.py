@@ -199,9 +199,12 @@ def _pagina_clima_harness() -> None:
                            "fonte": "forecast"})
     clima_df = pd.DataFrame(linhas)
 
+    # Incrementos variáveis: proxy constante não tem correlação e a página
+    # cairia no "Sem pontos" sem exercitar o Spearman.
+    contador = np.cumsum([5 + (i % 7) * 3 for i in range(60)]) + 100
     bs = pd.DataFrame([
         {"data": (hoje - timedelta(days=60 - i)).isoformat(), "plataforma": "shopee",
-         "sku_plataforma": "S1", "reviews": 100 + i * 5, "referencia": "mais_vendidos"}
+         "sku_plataforma": "S1", "reviews": int(contador[i]), "referencia": "mais_vendidos"}
         for i in range(60)
     ])
 
@@ -223,7 +226,7 @@ def test_pagina_clima_renderiza():
     rotulos = [m.label for m in at.metric]
     assert "Sudeste · próx. 7d" in rotulos
     textos = " ".join(str(m.value) for m in at.markdown)
-    assert "Spearman" in textos or "Sem pontos" in textos
+    assert "Spearman" in textos
 
 
 class TestRevisaoCodex:
@@ -254,3 +257,12 @@ class TestRevisaoCodex:
         # 4 + 2 — e não max(1004, 12, 999) − max(1000, 10) com tudo misturado
         assert p.loc[date(2026, 10, 2), "avaliacoes_dia"] == 6.0
         assert p.loc[date(2026, 10, 2), "anuncios"] == 2
+
+
+def test_normal_ignora_observado_vindo_da_api_de_previsao():
+    hist = pd.concat([_obs(SP, date(ano, 10, 1), 31, 25.0) for ano in range(2022, 2025)])
+    # 2025 só veio da API de previsão (análise do modelo): não ensina a normal
+    hist = pd.concat([hist, _obs(SP, date(2025, 10, 1), 31, 40.0).assign(fonte="forecast")])
+    hoje = pd.concat([hist, _obs(SP, date(2026, 10, 1), 31, 30.0)])
+    out = com_anomalia(hoje)
+    assert out[out["data"] == date(2026, 10, 15)]["normal_tmax"].iloc[0] == 25.0

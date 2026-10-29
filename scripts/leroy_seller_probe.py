@@ -461,7 +461,8 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
     else:
         html = _fetch(alvo)
     if not html:
-        logger.error("PDP não chegou (bloqueio?). Tente com --browser.")
+        dica = "" if use_browser or Path(alvo).is_file() else " Tente com --browser."
+        logger.error(f"PDP não chegou (bloqueio?).{dica}")
         return 1
     if not Path(alvo).is_file():
         dump = Path(__file__).resolve().parent.parent / "logs" / "leroy_preco_probe.html"
@@ -474,7 +475,14 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
     for i, produto in enumerate(produtos, 1):
         print(f"  Product {i}: {str(produto.get('name'))[:70]}")
         ofertas = produto.get("offers")
-        for oferta in ofertas if isinstance(ofertas, list) else [ofertas]:
+        lista = ofertas if isinstance(ofertas, list) else [ofertas]
+        # Abre o AggregateOffer: é dentro dele que está o preço de cada
+        # lojista — o que a coleta escolhe e o que se confere na tela.
+        lista = lista + [
+            filha for o in lista if isinstance(o, dict) and isinstance(o.get("offers"), list)
+            for filha in o["offers"]
+        ]
+        for oferta in lista:
             if isinstance(oferta, dict):
                 seller = oferta.get("seller")
                 nome = seller.get("name") if isinstance(seller, dict) else seller

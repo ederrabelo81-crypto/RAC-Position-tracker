@@ -211,7 +211,7 @@ def com_anomalia(df: pd.DataFrame) -> pd.DataFrame:
     """
     Acrescenta ``normal_tmax`` e ``anomalia_tmax`` a cada linha.
 
-    A normal de uma linha é a média da máxima OBSERVADA da mesma cidade, nos
+    A normal de uma linha é a média da máxima OBSERVADA (archive/ERA5) da mesma cidade, nos
     anos ANTERIORES ao da linha, dentro de ± ``JANELA_NORMAL_DIAS`` dias do
     mesmo dia do ano. Usar o próprio ano contaminaria a normal com a anomalia
     que se quer medir.
@@ -228,7 +228,13 @@ def com_anomalia(df: pd.DataFrame) -> pd.DataFrame:
     out["_ano"] = pd.to_datetime(out["data"]).dt.year
     out["_doy"] = _dia_do_ano(out["data"])
 
-    obs = out[out["tipo"] == OBSERVADO][["cidade", "_ano", "_doy", "tmax"]].reset_index(drop=True)
+    # A normal só aprende com a reanálise (archive). Os dias passados que a API
+    # de previsão devolve (past_days) são análise do modelo, não ERA5: servem
+    # para a leitura da semana, nunca para a climatologia.
+    base_normal = out["tipo"] == OBSERVADO
+    if "fonte" in out.columns:
+        base_normal &= out["fonte"] == "archive"
+    obs = out[base_normal][["cidade", "_ano", "_doy", "tmax"]].reset_index(drop=True)
     # Média por (cidade, ano, dia do ano ± janela): expande cada observação
     # para os dias vizinhos, uma vez, e agrega.
     deslocamentos = np.arange(-JANELA_NORMAL_DIAS, JANELA_NORMAL_DIAS + 1)

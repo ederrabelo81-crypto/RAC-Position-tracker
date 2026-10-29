@@ -302,6 +302,7 @@ class LeroyMerlinScraper(BaseScraper):
             "preco_pdp_lido": 0,          # preço praticado lido no JSON-LD
             "preco_pdp_indisponivel": 0,  # PDP diz indisponível → sem preço
             "preco_pdp_abertos": 0,       # PDPs abertos SÓ pelo preço
+            "preco_pdp_menor_oferta": 0,  # 2+ ofertas sem casar o vencedor: ficou a menor
             "preco_sem_leitura": 0,       # sem PDP lido → sem preço (ou média)
             "preco_media_fallback": 0,    # gravou a média (LEROY_PRECO_MEDIA_FALLBACK=1)
         }
@@ -1218,7 +1219,12 @@ class LeroyMerlinScraper(BaseScraper):
 
             self._preco_budget -= 1
             self._seller_metrics["preco_pdp_abertos"] += 1
-            leitura = self._fetch_preco(url, info.get("seller"))
+            # Só um vencedor CONHECIDO escolhe a oferta: com 2+ sellers listados,
+            # `info["seller"]` é só o primeiro da lista, não quem ganhou.
+            vencedor = self._buybox_lidos.get(url) or (
+                info.get("seller") if info.get("qtd_sellers") == 1 else None
+            )
+            leitura = self._fetch_preco(url, vencedor)
             self._random_delay(min_s=_PDP_MIN_INTERVAL, max_s=_PDP_MAX_INTERVAL)
 
             if leitura is not None and leitura.lido:
@@ -1264,6 +1270,10 @@ class LeroyMerlinScraper(BaseScraper):
         leitura = self._precos_lidos.get(url or "")
         if leitura is not None and leitura.preco is not None:
             self._seller_metrics["preco_pdp_lido"] += 1
+            if leitura.camada == "jsonld_menor":
+                # Várias ofertas sem como casar com o vencedor: o preço é o
+                # menor delas — visível na métrica, não escolhido em silêncio.
+                self._seller_metrics["preco_pdp_menor_oferta"] += 1
             return leitura.preco
         if leitura is not None and leitura.disponivel is False:
             self._seller_metrics["preco_pdp_indisponivel"] += 1

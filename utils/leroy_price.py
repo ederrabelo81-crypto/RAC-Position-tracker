@@ -94,13 +94,15 @@ SEM_PRECO = PdpPrice(None, None, "sem_preco")
 
 
 def _tipos(node: dict) -> List[str]:
-    """``@type`` normalizado para lista minúscula (schema.org aceita str ou lista)."""
+    """
+    ``@type`` normalizado: lista minúscula do nome local.
+
+    schema.org aceita str ou lista, e o tipo pode vir como IRI completo
+    (``https://schema.org/Product``) ou prefixado (``schema:Product``).
+    """
     raw = node.get("@type")
-    if isinstance(raw, str):
-        return [raw.lower()]
-    if isinstance(raw, list):
-        return [str(t).lower() for t in raw]
-    return []
+    valores = raw if isinstance(raw, list) else [raw] if isinstance(raw, str) else []
+    return [str(t).rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1].lower() for t in valores]
 
 
 def _ld_payloads(html: str) -> List[Any]:
@@ -179,8 +181,13 @@ def _ofertas(produto: dict) -> List[dict]:
         if not isinstance(offer, dict):
             continue
         internas = offer.get("offers")
-        if "aggregateoffer" in _tipos(offer) and isinstance(internas, list) and internas:
-            ofertas.extend(o for o in internas if isinstance(o, dict))
+        filhas = [o for o in internas if isinstance(o, dict)] if isinstance(internas, list) else []
+        if "aggregateoffer" in _tipos(offer) and filhas:
+            ofertas.extend(filhas)
+            # Filhas sem preço (markup válido) não podem apagar o lowPrice do
+            # agregado: ele fica como reserva.
+            if all(_preco_oferta(o) is None for o in filhas):
+                ofertas.append(offer)
         else:
             ofertas.append(offer)
     return ofertas
@@ -270,6 +277,10 @@ def extract_pdp_price(html: str, vencedor: Optional[str] = None) -> PdpPrice:
         precos = [p for p in (_preco_oferta(o) for o in casadas) if p is not None]
         if precos:
             return PdpPrice(min(precos), _disponibilidade(casadas[0]), "jsonld_vencedor")
+        # As ofertas dizem o seller e nenhuma é do vencedor: o menor preço
+        # seria o de OUTRO lojista com a cara do vencedor — melhor sem preço.
+        if any(_seller_oferta(o) for o in disponiveis):
+            return PdpPrice(None, None, "ambiguo")
 
     com_preco = [(o, _preco_oferta(o)) for o in disponiveis]
     com_preco = [(o, p) for o, p in com_preco if p is not None]

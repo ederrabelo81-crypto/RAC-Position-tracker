@@ -68,6 +68,9 @@ CAINDO = "CAINDO"
 MISTO = "MISTO"
 ATENCAO = "ATENÇÃO"
 ESTAVEL = "ESTÁVEL"
+#: Nenhuma plataforma com as leituras mínimas nas duas janelas — não é
+#: "estável", é "não dá para dizer".
+SEM_DADO = "SEM DADO"
 
 
 @dataclass(frozen=True)
@@ -113,7 +116,11 @@ def _escopo(df: pd.DataFrame, janela: JanelaRadar) -> pd.DataFrame:
     )
 
     marca = out["marca"].astype("string").str.strip().fillna("Desconhecida")
-    grupo = out["grupo_midea"].astype(bool) if "grupo_midea" in out.columns else False
+    # NaN em astype(bool) vira True: sem o fillna, linha sem o flag cairia no grupo.
+    grupo = (
+        out["grupo_midea"].astype("boolean").fillna(False).astype(bool)
+        if "grupo_midea" in out.columns else False
+    )
     out["marca_radar"] = np.where(grupo, GRUPO_MIDEA, marca)
     return out[out["marca_radar"].str.lower() != "desconhecida"]
 
@@ -285,15 +292,17 @@ def radar_marcas(df: pd.DataFrame, janela: JanelaRadar) -> pd.DataFrame:
     Uma linha por marca com o veredito do radar e os sinais que o sustentam.
 
     Status:
+        - **MISTO**: subiu em 2+ E caiu em 2+ — a marca trocou de praça (em
+          12/09/2026 o Grupo Midea subiu em 3 e saiu do top 10 do Magalu).
+          Vem antes dos outros: 3 altas e 2 quedas não é "subindo";
         - **SUBINDO**: ganhou ≥ ``LIMIAR_PP`` de share de topo em 2+ plataformas,
-          mais do que as em que perdeu;
+          mais do que as em que perdeu (e perdeu em no máximo 1);
         - **CAINDO**: o espelho;
-        - **MISTO**: subiu em 2+ e caiu em 2+ — a marca trocou de praça (em
-          12/09/2026 o Grupo Midea subiu em 3 e saiu do top 10 do Magalu);
         - **ATENÇÃO**: subiu em 1 plataforma, sem cair em nenhuma, com salto
           ≥ ``LIMIAR_SALTO_PP`` ou tração de avaliações (≥ ``LIMIAR_TRACAO``×)
           ou de vendidos/mês — o começo de um SUBINDO;
-        - **ESTÁVEL**: o resto.
+        - **ESTÁVEL**: o resto, com ao menos 1 plataforma comparável;
+        - **SEM DADO**: nenhuma plataforma com leituras mínimas nas duas janelas.
 
     Args:
         df: série de mais vendidos (como lida pelo painel ou do banco).
@@ -342,12 +351,14 @@ def radar_marcas(df: pd.DataFrame, janela: JanelaRadar) -> pd.DataFrame:
             or (not pd.isna(tracao_v) and tracao_v >= 1.3)
         )
         salto = len(sobe) and sobe["delta_pp"].max() >= LIMIAR_SALTO_PP
-        if len(sobe) >= 2 and len(sobe) > len(cai):
+        if not len(comp):
+            status = SEM_DADO
+        elif len(sobe) >= 2 and len(cai) >= 2:
+            status = MISTO
+        elif len(sobe) >= 2 and len(sobe) > len(cai):
             status = SUBINDO
         elif len(cai) >= 2 and len(cai) > len(sobe):
             status = CAINDO
-        elif len(sobe) >= 2 and len(cai) >= 2:
-            status = MISTO
         elif len(sobe) == 1 and not len(cai) and (com_tracao or salto):
             status = ATENCAO
         else:
@@ -390,7 +401,7 @@ def radar_marcas(df: pd.DataFrame, janela: JanelaRadar) -> pd.DataFrame:
             "sinais": "; ".join(sinais),
         })
 
-    ordem = {SUBINDO: 0, ATENCAO: 1, MISTO: 2, CAINDO: 3, ESTAVEL: 4}
+    ordem = {SUBINDO: 0, ATENCAO: 1, MISTO: 2, CAINDO: 3, ESTAVEL: 4, SEM_DADO: 5}
     out = pd.DataFrame(linhas, columns=colunas)
     out["_ordem"] = out["status"].map(ordem)
     out = out.sort_values(
@@ -412,8 +423,8 @@ def resumo_texto(radar: pd.DataFrame, janela: JanelaRadar, limite: int = 6) -> s
         f"× {janela.inicio_base:%d/%m}–{janela.inicio_recente - timedelta(days=1):%d/%m}"
     )
     linhas = [cab]
-    destaque = radar[radar["status"].isin((SUBINDO, ATENCAO, CAINDO))].head(limite)
-    icone = {SUBINDO: "🔺", ATENCAO: "👀", MISTO: "🔀", CAINDO: "🔻", ESTAVEL: "▫️"}
+    destaque = radar[radar["status"].isin((SUBINDO, ATENCAO, MISTO, CAINDO))].head(limite)
+    icone = {SUBINDO: "🔺", ATENCAO: "👀", MISTO: "🔀", CAINDO: "🔻", ESTAVEL: "▫️", SEM_DADO: "⚪"}
     for _, linha in destaque.iterrows():
         linhas.append(f"{icone[linha['status']]} {linha['marca']} — {linha['status']}: {linha['sinais']}")
     if GRUPO_MIDEA not in set(destaque["marca"]):
