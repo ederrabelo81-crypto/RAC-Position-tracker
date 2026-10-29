@@ -30,6 +30,7 @@ Uso::
     python scripts/pipeline_watch.py --json logs/pipeline_status.json
     python scripts/pipeline_watch.py --sempre-notificar   # manda mesmo tudo OK
     python scripts/pipeline_watch.py --sem-queda-volume   # pula a checagem de volume
+    python scripts/pipeline_watch.py --sem-fontes-bestsellers  # pula a cobrança por fonte
 
 Além de "não rodou" e "zerada", cobra a **queda brusca de volume**: plataforma
 abaixo de 20% da sua mediana (mesmo turno, últimos 7 dias normais) em ≥2
@@ -37,12 +38,16 @@ turnos no mesmo dia. Foi o caso do Mercado Livre entre 09 e 14/10/2026, com
 0–136 linhas por turno contra ~5.000. Como quase nunca chegava a zero, nada
 alarmou durante cinco dias. Lógica pura em `utils/volume_drop.py`.
 
+E cobra **fonte por fonte de Mais Vendidos**: lista que sumiu enquanto as
+outras seguiam gravando (a Leroy Merlin parou em 07/10/2026 e o job do dia
+inteiro seguiu verde). Lógica pura em `bestsellers/cobertura.py`.
+
 Exit codes:
     0 — tudo dentro do contrato (ou só coisas ainda dentro da janela)
     1 — algum job crítico não executou, falhou ou executou sem dado; ou
         plataforma zerada/degradada há ≥3 dias
     2 — problemas não-críticos (atrasos, degradação de plataforma tolerante,
-        queda de volume há menos de 3 dias)
+        queda de volume há menos de 3 dias, fonte de Mais Vendidos parada)
     3 — supervisor CEGO: Supabase indisponível, não deu para olhar
 
     O 3 é deliberadamente distinto de 1: "não consegui olhar" nunca deve ser
@@ -65,6 +70,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from loguru import logger
 
+from bestsellers.cobertura import (
+    JANELA_DIAS as JANELA_FONTES_BS,
+    FonteMuda,
+    RelatorioCobertura,
+    classificar_fontes,
+)
 from utils.heartbeat import (
     STATUS_FAILED,
     STATUS_PARTIAL,
@@ -279,6 +290,19 @@ def _contar_bestsellers(client, dia: date) -> int:
     return resp.count or 0
 
 
+def _contar_clima(client, dia: date) -> int:
+    """Linhas de `clima_diario` gravadas no dia (a rodada regrava D-10..D+15)."""
+    resp = (
+        client.table("clima_diario")
+        .select("data", count="exact")
+        .gte("atualizado_em", dia.isoformat())
+        .lt("atualizado_em", (dia + timedelta(days=1)).isoformat())
+        .limit(1)
+        .execute()
+    )
+    return resp.count or 0
+
+
 def _linhas_do_job(client, job: JobSpec, dia: date) -> Optional[int]:
     """Quantas linhas o job deveria ter produzido e produziu.
 
@@ -293,6 +317,14 @@ def _linhas_do_job(client, job: JobSpec, dia: date) -> Optional[int]:
         return _contar_pricetrack(client, dia - timedelta(days=1))
     if job.destino == "bestsellers":
         return _contar_bestsellers(client, dia)
+    if job.destino == "clima_diario":
+        # Sondagem adicional: tabela ausente (migração 021 não aplicada) ou
+        # consulta quebrada não pode cegar o supervisor inteiro.
+        try:
+            return _contar_clima(client, dia)
+        except Exception as exc:
+            logger.warning(f"[Supervisor] clima_diario não sondável: {exc}")
+            return None
     return None
 
 
@@ -662,6 +694,87 @@ def varrer_quedas_avaliado(
     return [q for q in quedas if q.plataforma not in cronicas], bool(batidas)
 
 
+def varrer_fontes_bestsellers(dia: date) -> Optional[RelatorioCobertura]:
+    """Fontes de Mais Vendidos que pararam (ver `bestsellers/cobertura.py`).
+
+    Lê só o topo de cada lista (``rank <= 3``) — basta para saber se a fonte
+    gravou no dia, e mantém a leitura em poucas centenas de linhas. Fonte sem
+    linha na janela ganha uma consulta própria pelo último dia da história,
+    para separar "parou há mais de um mês" de "nunca coletou".
+
+    Checagem ADICIONAL, como a de volume: falha vira aviso e None, sem cegar
+    o supervisor.
+
+    Args:
+        dia: Último dia avaliado (inclusive).
+
+    Returns:
+        O relatório, ou None quando não deu para checar.
+    """
+    try:
+        from bestsellers.config import sources_ativos
+
+        fontes = {k: spec.nome for k, spec in sources_ativos().items()}
+        client = _client()
+        inicio = (dia - timedelta(days=JANELA_FONTES_BS)).isoformat()
+        leituras: List[Tuple[date, str]] = []
+        passo = 1000
+        for offset in range(0, 50_000, passo):
+            resp = (
+                client.table("bestsellers")
+                .select("data,plataforma")
+                .gte("data", inicio)
+                .lte("data", dia.isoformat())
+                .lte("rank", 3)
+                .order("data")
+                .order("id")  # chave total: paginação sem pular nem repetir
+                .range(offset, offset + passo - 1)
+                .execute()
+            )
+            lote = resp.data or []
+            leituras.extend(
+                (date.fromisoformat(str(r["data"])[:10]), str(r["plataforma"]))
+                for r in lote
+                if r.get("data") and r.get("plataforma")
+            )
+            if len(lote) < passo:
+                break
+
+        presentes = {p for _, p in leituras}
+        ultimos: Dict[str, Optional[date]] = {}
+        for chave in fontes:
+            if chave in presentes:
+                continue
+            resp = (
+                client.table("bestsellers")
+                .select("data")
+                .eq("plataforma", chave)
+                .lte("data", dia.isoformat())
+                .order("data", desc=True)
+                .limit(1)
+                .execute()
+            )
+            linhas = resp.data or []
+            ultimos[chave] = (
+                date.fromisoformat(str(linhas[0]["data"])[:10]) if linhas else None
+            )
+        return classificar_fontes(leituras, fontes, dia, ultimos)
+    except Exception as exc:
+        logger.warning(f"[Supervisor] Checagem de fontes de Mais Vendidos falhou: {exc}")
+        return None
+
+
+def _descrever_fonte(fonte: FonteMuda) -> str:
+    """``Leroy Merlin: 14 dia(s) de coleta sem a lista (último dado 07/10)``."""
+    ultimo = f"{fonte.ultimo_dia:%d/%m}" if fonte.ultimo_dia else "?"
+    # Último dado antes da janela: a contagem é só da janela, um piso.
+    qtd = f"≥ {fonte.dias_sem_dado}" if fonte.minimo else str(fonte.dias_sem_dado)
+    return (
+        f"{fonte.nome}: {qtd} dia(s) de coleta sem a lista "
+        f"(último dado {ultimo})"
+    )
+
+
 def _descrever_queda(queda: QuedaVolume) -> str:
     """``Abertura 68 (1% de 5.012), Tarde 0 (0% de 4.870)``."""
     return ", ".join(
@@ -679,6 +792,7 @@ def imprimir(
     degradacoes: List[Degradacao],
     dia: date,
     quedas: Optional[List[QuedaVolume]] = None,
+    fontes_bs: Optional[RelatorioCobertura] = None,
 ) -> None:
     """Imprime o relatório no terminal."""
     linha = "=" * 72
@@ -718,6 +832,14 @@ def imprimir(
             if queda.evidencia:
                 print(f"      ↳ {queda.evidencia}")
 
+    if fontes_bs is not None and (fontes_bs.mudas or fontes_bs.nunca_coletaram):
+        print("\n▸ Mais Vendidos — fontes fora da coleta")
+        for fonte in fontes_bs.mudas:
+            marcador = "🔴 CRÔNICO" if fonte.cronica else "🟠"
+            print(f"   {marcador} {_descrever_fonte(fonte)}")
+        if fontes_bs.nunca_coletaram:
+            print(f"   ⚪ nunca coletaram: {', '.join(fontes_bs.nunca_coletaram)}")
+
     print(f"\n{linha}\n")
 
 
@@ -726,17 +848,21 @@ def _formatar_telegram(
     degradacoes: List[Degradacao],
     dia: date,
     quedas: Optional[List[QuedaVolume]] = None,
+    fontes_mudas: Optional[List[FonteMuda]] = None,
 ) -> str:
     """Monta o alerta. Curto e acionável: o que quebrou e o comando que resolve."""
     problemas = [d for d in diagnosticos if d.estado in _PROBLEMAS]
     atrasos = [d for d in diagnosticos if d.estado == ATRASADO]
     cronicas = [g for g in degradacoes if g.cronica]
     quedas = quedas or []
+    fontes_mudas = fontes_mudas or []
 
     if problemas or cronicas or any(q.cronica for q in quedas):
         cabecalho = "🚨 <b>Pipeline RAC — falha de execução</b>"
     elif quedas:
         cabecalho = "🟠 <b>Pipeline RAC — queda de volume</b>"
+    elif fontes_mudas:
+        cabecalho = "🟠 <b>Pipeline RAC — fonte de Mais Vendidos parada</b>"
     elif atrasos:
         cabecalho = "🟡 <b>Pipeline RAC — atrasos</b>"
     else:
@@ -786,7 +912,19 @@ def _formatar_telegram(
                 linhas.append(f"      ↳ <code>{html.escape(queda.evidencia)}</code>")
         linhas.append("")
 
-    if not problemas and not atrasos and not cronicas and not quedas:
+    if fontes_mudas:
+        linhas.append("🥇 <b>Mais Vendidos — lista parada</b> (as outras seguem gravando)")
+        for fonte in fontes_mudas:
+            marcador = "🔴" if fonte.cronica else "🟠"
+            linhas.append(f"   {marcador} {html.escape(_descrever_fonte(fonte))}")
+        linhas.append(
+            "   ↳ <code>python scripts/collect_bestsellers.py --plataformas "
+            + html.escape(" ".join(f.plataforma for f in fontes_mudas))
+            + " --no-headless</code> (o log diz por que a lista veio vazia)"
+        )
+        linhas.append("")
+
+    if not problemas and not atrasos and not cronicas and not quedas and not fontes_mudas:
         ok = sum(1 for d in diagnosticos if d.estado == OK)
         linhas.append(f"{ok} job(s) executados dentro do contrato.")
 
@@ -834,6 +972,7 @@ def montar_json(
     agora: datetime,
     quedas: Optional[List[QuedaVolume]] = None,
     quedas_avaliadas: bool = True,
+    fontes_bs: Optional[RelatorioCobertura] = None,
 ) -> Dict[str, Any]:
     """Estado da pipeline em forma de dado.
 
@@ -854,6 +993,8 @@ def montar_json(
         "degradacoes": [g.to_dict() for g in degradacoes],
         "quedas_volume": [q.to_dict() for q in (quedas or [])],
         "quedas_volume_avaliadas": quedas_avaliadas,
+        # None = não avaliado (falha ou --sem-fontes-bestsellers), nunca "ok".
+        "bestsellers_fontes": fontes_bs.to_dict() if fontes_bs is not None else None,
     }
 
 
@@ -861,15 +1002,23 @@ def _exit_code(
     diagnosticos: List[Diagnostico],
     degradacoes: List[Degradacao],
     quedas: Optional[List[QuedaVolume]] = None,
+    fontes_mudas: Optional[List[FonteMuda]] = None,
 ) -> int:
     """Traduz o relatório em exit code (ver docstring do módulo)."""
     problemas = [d for d in diagnosticos if d.estado in _PROBLEMAS]
     quedas = quedas or []
+    fontes_mudas = fontes_mudas or []
     if any(d.critico for d in problemas):
         return 1
+    # Fonte de Mais Vendidos parada fica em 2 mesmo crônica: o job é
+    # SEV_IMPORTANTE, e exit 1 pinta o pipeline_guard de vermelho todo dia —
+    # "run vermelho todo dia é run que ninguém abre". O Telegram sai igual.
     if any(g.cronica for g in degradacoes) or any(q.cronica for q in quedas):
         return 1
-    if problemas or quedas or any(d.estado == ATRASADO for d in diagnosticos):
+    if (
+        problemas or quedas or fontes_mudas
+        or any(d.estado == ATRASADO for d in diagnosticos)
+    ):
         return 2
     return 0
 
@@ -905,6 +1054,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="pula a checagem de queda brusca de volume por plataforma",
     )
+    parser.add_argument(
+        "--sem-fontes-bestsellers",
+        action="store_true",
+        help="pula a cobrança fonte a fonte das listas de Mais Vendidos",
+    )
     args = parser.parse_args(argv)
 
     agora = now_brt()
@@ -933,7 +1087,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         quedas, quedas_avaliadas = varrer_quedas_avaliado(dia, degradacoes)
 
-    imprimir(diagnosticos, degradacoes, dia, quedas)
+    fontes_bs = None if args.sem_fontes_bestsellers else varrer_fontes_bestsellers(dia)
+    fontes_mudas = fontes_bs.mudas if fontes_bs is not None else []
+
+    imprimir(diagnosticos, degradacoes, dia, quedas, fontes_bs)
 
     if args.json_path:
         caminho = Path(args.json_path)
@@ -941,16 +1098,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         caminho.write_text(
             json.dumps(
                 montar_json(diagnosticos, degradacoes, dia, agora, quedas,
-                            quedas_avaliadas),
+                            quedas_avaliadas, fontes_bs),
                 ensure_ascii=False, indent=2,
             ),
             encoding="utf-8",
         )
         logger.info(f"[Supervisor] Estado gravado em {caminho}")
 
-    codigo = _exit_code(diagnosticos, degradacoes, quedas)
+    codigo = _exit_code(diagnosticos, degradacoes, quedas, fontes_mudas)
     if not args.no_notify and (codigo != 0 or args.sempre_notificar):
-        _enviar_telegram(_formatar_telegram(diagnosticos, degradacoes, dia, quedas))
+        _enviar_telegram(
+            _formatar_telegram(diagnosticos, degradacoes, dia, quedas, fontes_mudas)
+        )
 
     return codigo
 

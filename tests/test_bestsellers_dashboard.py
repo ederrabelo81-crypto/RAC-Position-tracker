@@ -595,3 +595,59 @@ def test_pagina_relevancia_isola_o_segmento() -> None:
 
 if __name__ == "__main__":  # execução standalone
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def _pagina_radar_harness() -> None:
+    """Renderiza a página com 35 dias: Philco sobe em Amazon e Mercado Livre."""
+    from datetime import date, timedelta
+
+    import streamlit as st
+
+    import app
+    from bestsellers.config import SOURCES
+    from bestsellers.models import BestSellerItem
+    from bestsellers.storage import to_dataframe
+
+    fim = date(2026, 9, 12)
+    linhas = []
+    for i in range(35):
+        dia = fim - timedelta(days=34 - i)
+        recente = i >= 28
+        for chave in ("amazon", "mercadolivre"):
+            spec = SOURCES[chave]
+            marcas = (["Philco"] * 4 if recente else ["Philco"]) + ["LG"] * 6
+            marcas += ["Midea"] * (10 - len(marcas))
+            for posicao, marca in enumerate(marcas, start=1):
+                item = BestSellerItem(
+                    rank=posicao,
+                    titulo=f"Ar Condicionado Split Inverter {marca} 12000 BTUs",
+                    preco=1700.0,
+                    sku_plataforma=f"{chave}-{posicao}",
+                )
+                linhas.append(item.to_row(
+                    data=dia.isoformat(), horario="09:30", run_id="run", spec=spec,
+                    url_coleta=spec.url_publica, endpoint=spec.url_publica,
+                ))
+    serie = to_dataframe(linhas)
+
+    def _fake(limit: int = 0):
+        return serie, "Supabase · tabela `bestsellers`", ""
+
+    _fake.clear = lambda: None  # type: ignore[attr-defined]
+    original = app.query_bestsellers
+    app.query_bestsellers = _fake  # type: ignore[assignment]
+    try:
+        app.page_bestsellers()
+    finally:
+        app.query_bestsellers = original
+
+
+def test_aba_radar_aponta_quem_sobe() -> None:
+    at = AppTest.from_function(_pagina_radar_harness)
+    at.run(timeout=RUN_TIMEOUT)
+    assert not at.exception, f"página estourou: {[str(e.value) for e in at.exception]}"
+
+    subindo = [m for m in at.metric if m.label == "🔺 Subindo"]
+    assert subindo and subindo[0].value == "1"
+    textos = " ".join(str(t.value) for t in at.text)
+    assert "Philco — SUBINDO" in textos

@@ -20,6 +20,7 @@ Uso:
     # Relatórios agregados (não coletam nada — leem o histórico)
     python scripts/collect_bestsellers.py --relatorio semanal
     python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6
+    python scripts/collect_bestsellers.py --relatorio radar --notificar  # quem está subindo
 
     # Backfill do histórico manual (exports .xlsx do Web Scraper)
     python scripts/collect_bestsellers.py --importar-xlsx ./uploads --data 2026-08-10
@@ -31,6 +32,7 @@ Códigos de saída:
 """
 
 import argparse
+import html
 import os
 import sys
 import uuid
@@ -43,7 +45,7 @@ from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bestsellers import metrics, report, storage, validate  # noqa: E402
+from bestsellers import metrics, radar, report, storage, validate  # noqa: E402
 from bestsellers.config import (  # noqa: E402
     HISTORICO_PATH,
     OUTPUT_DIR,
@@ -220,10 +222,17 @@ def executar_coleta(args: argparse.Namespace) -> int:
         marcas_monitoradas=BRANDS,
         n=args.top,
     )
+    resumo_radar = _radar_do_dia(preparado_master, data)
+    if resumo_radar:
+        # A 1ª linha do resumo já é o título do bloco ("📡 Radar de marcas · …").
+        titulo, _, corpo = resumo_radar.partition("\n")
+        texto += f"\n\n## {titulo}\n\n" + corpo.replace("\n", "  \n") + "\n"
     storage.salvar_relatorio(texto, data, args.output)
 
     if args.notificar:
         _notificar(report.resumo_telegram(preparado_hoje, ocorrencias, n=args.top))
+        if resumo_radar:
+            _notificar(html.escape(resumo_radar))
 
     _resumo_console(preparado_hoje, args.top)
 
@@ -250,6 +259,53 @@ def executar_coleta(args: argparse.Namespace) -> int:
     return 0
 
 
+def _radar_do_dia(historico: pd.DataFrame, data: str) -> str:
+    """Resumo do radar de marcas até ``data`` (vazio se não houver o que dizer).
+
+    Nunca derruba a coleta: o radar é leitura, e a série do dia já está salva.
+    """
+    try:
+        janela = radar.JanelaRadar(ate=pd.to_datetime(data).date())
+        return radar.resumo_texto(radar.radar_marcas(historico, janela), janela)
+    except Exception as exc:  # pragma: no cover - leitura nunca derruba a coleta
+        logger.warning(f"[Radar] Não calculado: {exc}")
+        return ""
+
+
+def executar_radar(args: argparse.Namespace, historico: pd.DataFrame) -> int:
+    """Radar de marcas: quem ocupa mais topo de ranking agora do que antes."""
+    ate = (
+        pd.to_datetime(args.data).date() if args.data
+        else historico["data"].max().date()
+    )
+    janela = radar.JanelaRadar(ate=ate)
+    tabela = radar.radar_marcas(historico, janela)
+    resumo = radar.resumo_texto(tabela, janela)
+
+    caminho = storage.caminho_relatorio(f"bestsellers_radar_{ate:%Y%m%d}.md", args.output)
+    corpo = [f"# {resumo.splitlines()[0]}", "", *[f"- {l}" for l in resumo.splitlines()[1:]], ""]
+    if len(tabela):
+        corpo += [
+            "## Todas as marcas", "",
+            "| Marca | Status | Subindo em | Caindo em | Sinais |",
+            "|---|---|---|---|---|",
+            *[
+                f"| {l.marca} | {l.status} | {l.plataformas_subindo or '—'} | "
+                f"{l.plataformas_caindo or '—'} | {l.sinais or '—'} |"
+                for l in tabela.itertuples()
+            ],
+            "", f"Tabela completa: `{caminho.with_suffix('.csv').name}`",
+        ]
+    caminho.write_text("\n".join(corpo) + "\n", encoding="utf-8")
+    tabela.to_csv(caminho.with_suffix(".csv"), index=False, encoding="utf-8-sig", sep=";")
+    logger.success(f"Radar: {caminho}")
+    print("\n" + resumo)
+
+    if args.notificar:
+        _notificar(html.escape(resumo))
+    return 0
+
+
 def executar_relatorio(args: argparse.Namespace) -> int:
     historico = metrics.preparar(storage.carregar_historico(args.historico))
     if not len(historico):
@@ -257,6 +313,8 @@ def executar_relatorio(args: argparse.Namespace) -> int:
             f"Histórico vazio ({args.historico}). Rode a coleta ao menos uma vez."
         )
         return 1
+    if args.relatorio == "radar":
+        return executar_radar(args, historico)
 
     periodo = (
         metrics.PERIODO_SEMANAL if args.relatorio == "semanal" else metrics.PERIODO_MENSAL
@@ -400,8 +458,11 @@ def _parse_args(argv=None) -> argparse.Namespace:
         "--notificar", action="store_true", help="Enviar resumo por Telegram."
     )
     parser.add_argument(
-        "--relatorio", choices=["semanal", "mensal"], default=None,
-        help="Gera o relatório agregado a partir do histórico (não coleta).",
+        "--relatorio", choices=["semanal", "mensal", "radar"], default=None,
+        help=(
+            "Gera o relatório agregado a partir do histórico (não coleta). "
+            "`radar`: marcas subindo/caindo no topo dos rankings (7 × 28 dias)."
+        ),
     )
     parser.add_argument(
         "--ultimos", type=int, default=8,

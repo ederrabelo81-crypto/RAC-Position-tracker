@@ -1,0 +1,108 @@
+name: Radar Meteorológico
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Clima diário por região (Open-Meteo) → tabela `clima_diario` + Telegram.
+#
+# Por que existe (Out/2026): frio e chuva no Sul/Sudeste derrubaram a venda de
+# ar, e o projeto não tinha como separar "o mercado parou" de "perdemos share".
+# Ar é compra puxada por calor; a série de clima, cruzada com os Mais Vendidos e
+# com o GfK, é o que transforma essa intuição em evidência (utils/clima.py).
+#
+# Diário: últimos 10 dias + previsão de 16 (um dia perdido se recupera sozinho
+# na rodada seguinte — por isso o job `gh_clima` é SEV_TOLERANTE).
+# Backfill: Run workflow com backfill=true (ERA5 desde 2016 — uma vez só; é o
+# que dá a normal climatológica e a anomalia).
+#
+# Horário: 08:47 UTC = 05:47 BRT. Minuto fora do :00 (regra 2 do
+# pipeline_registry: cron do Actions é best effort) e antes do briefing das 07h.
+#
+# Secrets: SUPABASE_URL, SUPABASE_KEY (service_role — a anon não grava),
+#          TELEGRAM_BOT_TOKEN, N8N_TELEGRAM_CHAT_ID, RAC_DB_DSN (opcional).
+# Requer a migração docs/migrations/021_clima_diario.sql aplicada.
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '47 8 * * *'
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: 'Backfill histórico (ERA5) em vez da rodada diária'
+        type: boolean
+        default: false
+      desde:
+        description: 'Início do backfill (AAAA-MM-DD)'
+        required: false
+        default: '2016-01-01'
+      notificar:
+        description: 'Enviar resumo no Telegram'
+        type: boolean
+        default: true
+
+env:
+  PYTHON_VERSION: '3.11'
+  TZ: America/Sao_Paulo
+
+concurrency:
+  group: clima-daily
+  cancel-in-progress: false
+
+jobs:
+  clima:
+    name: Clima diário por região
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RAC_JOB_ID: gh_clima
+      RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      N8N_TELEGRAM_CHAT_ID: ${{ secrets.N8N_TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      # Só o necessário: sem Playwright nem scrapers.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install supabase python-dotenv loguru requests pandas numpy tenacity psycopg2-binary
+
+      - name: Collect
+        env:
+          IN_BACKFILL: ${{ github.event.inputs.backfill }}
+          IN_DESDE: ${{ github.event.inputs.desde }}
+          IN_NOTIFICAR: ${{ github.event.inputs.notificar }}
+          EVENTO: ${{ github.event_name }}
+        run: |
+          ARGS=()
+          if [ "$IN_BACKFILL" = "true" ]; then
+            case "$IN_DESDE" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+              *) echo "::error title=Input inválido::desde='$IN_DESDE' não é AAAA-MM-DD"; exit 2 ;;
+            esac
+            ARGS+=(--backfill --desde "$IN_DESDE")
+          fi
+          # Cron notifica sempre; dispatch só se pedido.
+          if [ "$EVENTO" = "schedule" ] || [ "$IN_NOTIFICAR" = "true" ]; then
+            ARGS+=(--notificar)
+          fi
+          echo "python scripts/clima_collect.py ${ARGS[*]}"
+          python scripts/clima_collect.py "${ARGS[@]}"
+
+      - name: Upload CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clima-diario-${{ github.run_id }}
+          path: data/clima/clima_diario.csv
+          if-no-files-found: ignore
+          retention-days: 30

@@ -5,7 +5,7 @@
 > **Stack:** Python 3.10+, Playwright, curl_cffi, BeautifulSoup, Pandas, Supabase, Streamlit  
 > **Sub-projeto:** `magalu_shopee/` — Node.js/TypeScript + Puppeteer (Shopee — fallback)  
 > **Status:** ✅ Production | PC Coletor (Windows, IP residencial) + GitHub Actions (Amazon, PriceTrack, supervisão)  
-> **Versão:** v5.6 (Out/2026) | **Última atualização:** 24 de Outubro de 2026
+> **Versão:** v5.7 (Out/2026) | **Última atualização:** 29 de Outubro de 2026
 >
 > **Leia junto:** o `README.md` da raiz descreve o estado atual para quem chega
 > ao projeto (o que é, como instalar, como usar). Este arquivo guarda as
@@ -69,10 +69,14 @@ python utils/session_grabber.py --site shopee
 >
 > **Atualização (Out/2026):** o job `local_bestsellers` **já está** no
 > `pipeline_registry.py` (dias úteis, 09:30 BRT, deadline generoso), então um
-> dia em que a coleta INTEIRA não roda vira alerta no `pipeline_watch.py`. Ele
-> ainda **não cobra fonte por fonte** — a contagem é do dia todo —, por isso
-> as fontes mudas abaixo continuam sem alarme próprio. O passo que falta é
-> recadastrar `RAC_Bestsellers` no agendador.
+> dia em que a coleta INTEIRA não roda vira alerta no `pipeline_watch.py`.
+> **Desde 29/10/2026 ele também cobra fonte por fonte**
+> (`bestsellers/cobertura.py`): lista que fica fora de ≥ 2 dias de coleta
+> seguidos — dias em que OUTRAS fontes gravaram — vira alerta 🟠 no Telegram
+> (exit 2, mesmo crônica). Foi assim que a **Leroy Merlin, parada desde
+> 07/10/2026**, apareceu. As que nunca coletaram vão só para o relatório
+> (`nunca_coletaram` no JSON). O passo que falta é recadastrar
+> `RAC_Bestsellers` no agendador.
 >
 > **E somem.** Das 20 fontes de `bestsellers/config.py`, **7 não gravam uma
 > única linha**, e nunca gravaram em toda a história da tabela:
@@ -138,6 +142,20 @@ de datacenter muitos vêm bloqueados, a coleta oficial roda do PC coletor.
 **Regra dura:** ranking é ORDINAL — nunca soma entre plataformas, nunca vira
 share de mercado (isso vem de GfK/Neotrust). KPI: % Midea no top 10 por
 plataforma + delta vs período anterior.
+
+**📡 Radar de marcas (Out/2026) 🆕** — `bestsellers/radar.py`. O GfK de
+set/2026 mostrou Philco e Agratto ganhando share online; o sinal estava no
+banco semanas antes e o painel só media a Midea. O radar mede, para TODAS as
+marcas, o share de topo **dentro de cada plataforma** nos últimos 7 dias contra
+os 28 anteriores (semanas inteiras), e agrega só **em quantas plataformas** a
+marca subiu/caiu (±5 p.p.) — nunca soma posições. Status SUBINDO (2+ praças),
+ATENÇÃO (1 praça com salto ≥ 10 p.p. ou tração de avaliações/vendidos), MISTO,
+CAINDO. Sinais de tração: avaliações novas/dia (mesmo anúncio), vendidos/mês
+(só Shopee, base mensal), preço dos mesmos anúncios. Backtest em 12/09/2026:
+Philco SUBINDO, Agratto +13,5 p.p. no Magalu, Grupo Midea fora do top 10 do
+Magalu. Onde ler: aba **📡 Radar** da página 🥇 Mais Vendidos; seção no brief
+diário (e Telegram com `--notificar`); `python scripts/collect_bestsellers.py
+--relatorio radar [--data AAAA-MM-DD] [--notificar]`.
 
 **Adicionar dealer VTEX/HTML:** registrar a fonte em `bestsellers/config.py`
 (`SOURCES` com a `referencia` certa) e a `ColetaSpec` em `COLETA` — o coletor
@@ -557,6 +575,36 @@ para que as migrações com GRANT rodem **verbatim** em qualquer fornecedor.
 
 ---
 
+## Radar meteorológico — clima × venda (Out/2026) 🆕
+
+**Por quê:** frio e chuva no Sul/Sudeste em outubro, meta de novembro
+agressiva, e nenhum dado no projeto para separar "o mercado parou" de
+"perdemos share". Ar é compra puxada por calor; a hipótese ("semana mais
+quente que o normal antecipa venda") precisa de histórico, não de intuição.
+
+- **Coleta:** `scripts/clima_collect.py` (Open-Meteo, gratuito, sem chave) no
+  workflow `clima_daily.yml` (05:47 BRT, job `gh_clima`, SEV_TOLERANTE — cada
+  rodada pede os últimos 10 dias, então um dia perdido se recupera sozinho).
+  17 cidades (15 das 27 capitais + Campinas/Ribeirão Preto) em 5 regiões → tabela
+  `clima_diario` (migração `021_clima_diario.sql`) + `data/clima/clima_diario.csv`.
+- **Backfill (uma vez):** Actions → Radar Meteorológico → Run workflow com
+  `backfill=true` (ERA5 desde 2016). Sem ele não há normal nem anomalia.
+- **Lógica pura:** `utils/clima.py` — índice regional (média das cidades) e
+  Brasil ponderado pela população das regiões (Censo 2022); **anomalia** =
+  máxima − normal da mesma cidade, ±7 dias do dia do ano, só anos ANTERIORES
+  (≥ 3); proxy diário de venda = avaliações novas/dia nos Mais Vendidos;
+  Spearman com defasagem 0–14 dias sobre médias móveis de 7 dias; correlação
+  mensal com série externa (GfK/sell-out, CSV `mes;vendas`).
+- **Onde ler:** página **🌡️ Clima × Vendas** (INSIGHTS); Telegram diário;
+  `python scripts/clima_collect.py --correlacao [--vendas-csv gfk.csv]`.
+
+**Regras duras:** (1) previsão nunca vira observado (`tipo` separa; a normal só
+aprende com observado); (2) correlação com < 60 pontos ou |r| < 0,3 sai como
+"evidência FRACA" — hipótese, não regra; (3) sem 3 anos anteriores, sem
+anomalia (NaN, nunca uma "normal" de 1 ano).
+
+---
+
 ## Briefing/resumo diário — nunca consultar o banco de memória (Set/2026) 🆕
 
 **O que aconteceu:** a rotina agendada que publica o briefing diário no Notion
@@ -890,6 +938,7 @@ rac-position-tracker/
 │   ├── pricetrack_daily.yml     # Import PriceTrack D-1 (00:01/04:20/05:20 BRT)
 │   ├── pipeline_guard.yml       # Supervisor de execução (06:35/12:35/22:35 BRT)
 │   ├── watchdog.yml             # Validação de dado (20:30 BRT)
+│   ├── clima_daily.yml          # 🆕 Radar meteorológico (05:47 BRT) → clima_diario
 │   └── collect.yml              # Backup de coleta (manual dispatch only)
 │
 ├── .claude/                     # AI assistant documentation
@@ -1418,6 +1467,7 @@ python main.py --no-headless --platforms ml       # Visible browser (debug)
 python scripts/collect_bestsellers.py              # Coleta do dia + relatório Telegram
 python scripts/collect_bestsellers.py --relatorio semanal  # Evolução da semana
 python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6  # Últimos 6 meses
+python scripts/collect_bestsellers.py --relatorio radar --notificar  # Quem está subindo (7d × 28d)
 python scripts/collect_bestsellers.py --importar-xlsx ./uploads --data 2026-08-10  # Backfill histórico
 
 # Dashboard (interno, indústria)
@@ -1471,7 +1521,7 @@ python scripts/history_cli.py import-csv output/rac_monitoramento_*.csv --mirror
 |----------|--------|-------|
 | Mercado Livre | ✅ | Buy box + Loja Oficial; browser (default) ou `MLAPIScraper` (API oficial, requer `ML_APP_ID`/`ML_APP_SECRET` — usado **automaticamente** como fallback quando a keyword leva login gate). Gate: detecção é **evidência primeiro** (card na página vence a string); persistiu → HTML em `logs/ml_gate_*.html` e roteiro no log. Antídoto: `python scripts/setup_local_profile.py --site mercadolivre`. **Gate em série (Out/2026, incidente 09–14/10: 0–136 linhas/turno contra ~5.000):** navegação com Referer (home → pág. 1, SERP anterior → pág. 2); **FREIO** após 4 páginas gateadas seguidas, com as keywords adiadas para a **repescagem** no fim do turno (`main.py`, turno cravado no do início, esfriamento configurável em `RAC_RETRY_COOLDOWN_MIN`, padrão 30 min, `0` desliga; `RAC_RETRY_PASS=0` desliga); o reset de identidade **não** apaga cookies do perfil persistente do Chrome local; API oficial com 401/403 desliga na hora (sem retry). O motivo vai para o livro-razão (`detail` do heartbeat: `ML: 2/40 kw ok, 38 gate [...], API: ..., sessão: ...`). **Sessão expirada com cookies no perfil (quebra de 19–21/10/2026, 0 linha/turno):** o livro-razão dizia `sessão: logada` porque `_is_logged_in` só vê se o cookie de login EXISTE — o ML já não o aceitava e cobrava login/verificação de dispositivo em toda keyword. Conserto: relogar o perfil (`setup_local_profile.py --site mercadolivre`). Agora gate persistente com cookie de login vira `sessão: EXPIRADA (...)` no `detail` do heartbeat. **Defesa extra (mesmo PR #408):** se o ML redesenhar a SERP, `_has_serp_cards` aceita a página por ≥ 6 links para produtos MLB distintos e `_select_items` cai num seletor **estrutural**; log `usando fallback 'estrutural (links de produto MLB)'` = hora de atualizar `_SELECTORS`. Teste manual do ML no PowerShell só exercita o perfil persistente com `$env:RAC_LOCAL_CHROME="1"`; sem ela o caminho alternativo (Playwright próprio, sessão capturada se houver) não reproduz o turno agendado e pode levar gate |
 | Amazon | ✅ | `Qtd Sellers` de "X ofertas"; 1P vs 3P. **Buy box só existe no PDP** (a SERP não traz "Vendido por"). **Coletada no GitHub Actions** (Amazon-only, `collect_amazon_sellers.yml`, 3 turnos), NÃO no PC — dona da Amazon no `pipeline_registry` são os jobs `gh_amazon_*`. O job roda em modo **"observação do dia"** (`RAC_AMAZON_PDP_FRESH=1`): abre o PDP de **cada item, a cada run, SEM** o cache `data/amazon_sellers.json` (que congelaria o vendedor), nome canonizado — é o que dá buy box ao `seller_app`. Dois modos de resolução coexistem: `RAC_AMAZON_PDP_FRESH` (sem cache, lista inteira) e o antigo `RAC_AMAZON_PDP_BUYBOX=1` (com cache + teto de 40, para o painel interno). ⚠️ Não confundir com **Mais Vendidos** (`RAC_BESTSELLERS_AMAZON_PDP`) |
-| Leroy Merlin | ✅ | Algolia API; 1P vs 3P marketplace. Seller 3P vem como **ObjectId opaco** — resolvido via PDP ("Vendido e entregue por") com cache persistente em `data/leroy_sellers.json` (1 PDP por seller novo, não por produto). **Buy box por produto (Set/2026):** a oferta 1P da Leroy NÃO aparece em `marketplaceSellers`, então 3P listado ≠ buy box 3P — o PDP de cada produto ambíguo é aberto a cada execução (~130/turno, sem cache persistente) e o vencedor do rótulo é gravado (`LEROY_BUYBOX_PDP=0` desliga; ver `docs/learnings/scraping-patterns.md`). Diagnóstico: `python scripts/leroy_seller_probe.py --scan "<keyword>"` |
+| Leroy Merlin | ✅ | Algolia API; 1P vs 3P marketplace. Seller 3P vem como **ObjectId opaco** — resolvido via PDP ("Vendido e entregue por") com cache persistente em `data/leroy_sellers.json` (1 PDP por seller novo, não por produto). **Buy box por produto (Set/2026):** a oferta 1P da Leroy NÃO aparece em `marketplaceSellers`, então 3P listado ≠ buy box 3P — o PDP de cada produto ambíguo é aberto a cada execução (~130/turno, sem cache persistente) e o vencedor do rótulo é gravado (`LEROY_BUYBOX_PDP=0` desliga; ver `docs/learnings/scraping-patterns.md`). **Preço do PDP (Out/2026):** sai do JSON-LD do PDP (`utils/leroy_price.py`), não de `averagePromotionalPrice` — **média** do índice que congelou o Split Vize Midea 12K a R$ 1.091,25 por meses (piso falso do Daily Price Vision). Indisponível ou sem leitura → linha SEM preço (`LEROY_PRECO_MEDIA_FALLBACK=1` volta à média; `LEROY_PRECO_PDP=0` desliga). Validar: `leroy_seller_probe.py --preco "URL"`. Diagnóstico: `python scripts/leroy_seller_probe.py --scan "<keyword>"` |
 | Google Shopping | ⚠️ | reCAPTCHA no browser próprio/headless. **Antídoto (Ago/2026):** `RAC_LOCAL_CHROME=1` conecta no Chrome real logado via CDP (mesmo caminho de ML/CB), com warm-up na home e resolução manual do reCAPTCHA na janela (`RAC_GOOGLE_MANUAL_CAPTCHA=0` desliga; `..._TIMEOUT` ajusta a tolerância). `Qtd Sellers` = nº de lojas comparando |
 | Magalu | ✅ Python | `scrapers/magalu.py` — browser persistente (Akamai); seller 1P vs 3P. **Automatizado**. Extração em 3 parsers sobre o mesmo HTML: `__NEXT_DATA__` → RSC (`__next_f`, App Router) → cards do DOM. Muro de login (Ago/2026) é detectado e nomeado no log; antídoto: `python scripts/setup_local_profile.py --site magalu`. Diagnóstico pelo prefixo do dump em `logs/` (`login_`/`layout_`/`vazia_`) — ver `docs/cdp_magalu_collection.md` |
 | Casas Bahia | ✅ | `scrapers/casas_bahia.py` — VTEX intelligent-search + **warm-up de cookies Akamai** (session curl_cffi persistente); `sellers[]` → buy box (`sellerDefault`) |
@@ -1720,8 +1770,9 @@ filtrar por "Web Continental" não casa com as linhas gravadas como
 
 ---
 
-*Last updated: October 24, 2026 (v5.6)*  
-*Latest changes (24/10/2026): revisão das instruções contra o código. `README.md` reescrito como retrato do estado atual (o antigo, com o histórico de validações, foi para `docs/archive/README_HISTORICO_ATE_SET2026.md`); corrigidos aqui: Mais Vendidos segue coletado e `local_bestsellers` já está no registro (falta só a tarefa no agendador); estágios C/D do turno; briefing lê o Supabase (Session Pooler), não a Aiven; VM Oracle marcada como standby; workflows e módulos novos na árvore; contagem de testes (2.505 + 62 pulados, CI inclui `pricetrack_dashboard/tests`). `.claude/QUICK_START.md`, `.claude/ARCHITECTURE_MAP.md`, `docs/QUICK_REFERENCE.md` e `docs/INDEX.md` atualizados; textos do job `local_tier_migration` deixaram de falar em janela de 15 dias.*  
+*Last updated: October 29, 2026 (v5.7)*  
+*Latest changes (29/10/2026): preço da Leroy lido no JSON-LD do PDP (`utils/leroy_price.py`) no lugar da média `averagePromotionalPrice`; alarme fonte a fonte dos Mais Vendidos (`bestsellers/cobertura.py`, Leroy parada desde 07/10); 📡 radar de marcas em ascensão (`bestsellers/radar.py`); radar meteorológico clima × venda (`utils/clima.py`, `clima_daily.yml`, migração 021, página 🌡️ Clima × Vendas).*  
+*Anterior (24/10/2026): revisão das instruções contra o código. `README.md` reescrito como retrato do estado atual (o antigo, com o histórico de validações, foi para `docs/archive/README_HISTORICO_ATE_SET2026.md`); corrigidos aqui: Mais Vendidos segue coletado e `local_bestsellers` já está no registro (falta só a tarefa no agendador); estágios C/D do turno; briefing lê o Supabase (Session Pooler), não a Aiven; VM Oracle marcada como standby; workflows e módulos novos na árvore; contagem de testes (2.505 + 62 pulados, CI inclui `pricetrack_dashboard/tests`). `.claude/QUICK_START.md`, `.claude/ARCHITECTURE_MAP.md`, `docs/QUICK_REFERENCE.md` e `docs/INDEX.md` atualizados; textos do job `local_tier_migration` deixaram de falar em janela de 15 dias.*  
 *Anterior (30/09/2026): validação do dashboard contra o banco — o Overview virou **🏠 Cockpit do Trade** (share de prateleira da Midea Carrier nas buscas genéricas, batalha por keyword, defesa/conquista de marca, buy box das ofertas Midea, preço de vitrine por BTU, alertas e cobertura; `docs/COCKPIT_TRADE.md`), filtros globais passaram a valer para todas as páginas (Período único + Canal novo + herança de Plataformas/Marcas), keywords agrupadas por tipo de busca sem as vitrines de dealer, filtro de seller pelo seller efetivo (buy box), limpeza do sufixo "e mais" do Google Shopping e do byline de marca da Amazon, e fim da gravação dupla de cada turno do PC coletor (`utils/run_sidecar.py`). Ver a seção "Cockpit do Trade + filtros globais únicos".*  
 *Anterior (23/09/2026): correção pós-incidente — a janela quente voltou do Aiven para o **Supabase** em 22/09/2026 (`docs/RETORNO_SUPABASE.md`, `RAC_HOT_WINDOW_DAYS=2`), mas `docs/briefing_diario_prompt.md` e `docs/BRIEFING_LOCAL_SETUP.md` continuaram exigindo/documentando um conector Postgres apontado pra **Aiven** — o PASSO 0 chegava a proibir explicitamente o Supabase. Efeito: o conector local, se apontado (por essas instruções) pra Aiven, lê um banco congelado desde a virada (sem coleta nova) e reproduz o mesmo padrão de falso "outage" do incidente de 12–17/09. Corrigido: todos os pontos de `briefing_diario_prompt.md` que citavam "Aiven" como origem de dado (PASSO 0, 3, 5, 6, 7.3) agora dizem Supabase; `BRIEFING_LOCAL_SETUP.md` §1 reescrita para apontar o conector `postgres` pro **Session Pooler do Supabase** (conexão direta, sobrevive a uma restrição de cota na API REST — `docs/RETORNO_SUPABASE.md` §5.1) em vez da Aiven; comentários de `scripts/run_briefing_diario.bat` e `scripts/setup_briefing_scheduler.ps1` idem. Nova seção "Banco intercambiável" acima recebeu um aviso de reversão no topo, para não ser lida como estado atual. Também confirmado nesta sessão: o projeto Supabase (`ailbsczkrympslpjwwko`) segue com `status=ACTIVE_HEALTHY` e a conexão Postgres direta respondendo normalmente (banco em 125 MB, bem abaixo dos 500 MB) mesmo com o painel mostrando PostgREST/Auth "Unhealthy" e o banner "Services restricted" — condizente com a nota de `RETORNO_SUPABASE.md` §5.1 de que a reavaliação da cota pela plataforma leva minutos a algumas horas após o banco encolher, e não há ação de API/dashboard disponível para acelerá-la; se persistir muitas horas com o banco pequeno, checar Organization Settings → Billing para uma restrição distinta (billing), não de tamanho.*
 *Anterior (18/09/2026, 2): o briefing diário v2 completo foi movido para rodar **localmente** (Claude Code CLI headless no PC coletor) porque o Cowork/claude.ai não tem conector MCP Postgres genérico para o Aiven (só serviços com OAuth publicado no diretório, tipo Supabase/Neon). Novo `docs/briefing_diario_prompt.md` (prompt versionado, com as correções de schema já aplicadas), `scripts/run_briefing_diario.bat` + `scripts/setup_briefing_scheduler.ps1` (tarefa `RAC_Briefing_0700`, 07:00 BRT), `docs/BRIEFING_LOCAL_SETUP.md` (setup único: conector Postgres/Aiven read-only, conector Notion via OAuth, GitHub Pages). O painel deixou de ser Artifact da claude.ai (ferramenta ausente no Claude Code CLI) e virou página estática em `docs/painel/index.html`, publicada via GitHub Pages a cada push do próprio briefing.*

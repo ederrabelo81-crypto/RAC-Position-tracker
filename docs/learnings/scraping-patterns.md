@@ -146,3 +146,32 @@ Nome do seller e vencedor da buy box são perguntas diferentes. Evidência de
   Custo: ~130 PDPs por turno, com o mesmo espaçamento da resolução de nome.
 - Métricas no log de cada keyword: `buybox_pdp_abertos`, `buybox_leroy`,
   `buybox_3p`, `buybox_sem_leitura`, `resolved_via_buybox_pdp`.
+
+### Preço praticado = PDP, não a média do índice (Out/2026)
+
+`averagePromotionalPrice` (e `medianPromotionalPrice`) do índice é uma
+**média**, não o preço do site. Casos: item 3962339062 a R$ 2.290,53 contra
+R$ 2.339,00 no PDP; Split Vize Midea 12K quente/frio (371381) a R$ 1.091,25 por
+meses, abaixo do modelo só frio (R$ 1.552,81), virando o piso do 📅 Daily Price
+Vision com uma oferta que ninguém achava no site. Nesses dois casos, a média
+parada por meses acompanhava uma oferta que não estava à venda pelo preço
+gravado — sinal para desconfiar, não regra.
+
+- O preço sai do **JSON-LD** do PDP (`utils/leroy_price.py`): `offers.price`/
+  `lowPrice`, `availability`, e com várias ofertas a do vencedor da buy box.
+  **Hipótese, ainda não validada no site:** o JSON-LD viria no SSR, então até
+  o shell sem rótulo do `requests` serviria. Confirmar com `--preco` abaixo.
+- Os PDPs da buy box e da resolução de nome já trazem o preço; a passada
+  `_resolve_precos_pdp` abre só os demais (~300 produtos distintos por turno em
+  26–28/10/2026), com cache por execução e o mesmo espaçamento.
+- **Indisponível → sem preço** (a linha fica). **Sem leitura → sem preço**:
+  a média só volta com `LEROY_PRECO_MEDIA_FALLBACK=1` (contingência
+  consciente). `LEROY_PRECO_PDP=0` desliga tudo e volta ao comportamento antigo.
+- 8 PDPs seguidos sem preço abortam a passada com ERROR (layout novo ou
+  bloqueio). Teto: `LEROY_PRECO_MAX_PER_RUN` (padrão 600).
+- Métricas: `preco_pdp_lido`, `preco_pdp_indisponivel`, `preco_pdp_abertos`,
+  `preco_sem_leitura`, `preco_media_fallback`.
+- Validar contra o site: `python scripts/leroy_seller_probe.py --preco "URL"`
+  (ou `--browser`); salva `logs/leroy_preco_probe.html` para reprocessar.
+- ⚠️ `bestsellers/sources/leroy_merlin.py` (Mais Vendidos) ainda lê a média —
+  lá o preço é atributo secundário do ranking.

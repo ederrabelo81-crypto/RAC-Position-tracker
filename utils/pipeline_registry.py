@@ -285,6 +285,32 @@ JOBS: Tuple[JobSpec, ...] = (
             "pior que monitor nenhum, porque ninguém desconfia do silêncio."
         ),
     ),
+    JobSpec(
+        id="gh_clima",
+        nome="Radar meteorológico (Open-Meteo → clima_diario)",
+        executor=EXEC_ACTIONS,
+        workflow="clima_daily.yml",
+        gatilho=".github/workflows/clima_daily.yml (cron 08:47 UTC)",
+        comando="python scripts/clima_collect.py --notificar",
+        horario_brt=(5, 47),
+        dias=TODOS_OS_DIAS,
+        tolerancia_min=120,
+        deadline_min=360,
+        destino="clima_diario",
+        # Um dia perdido se recupera sozinho: cada rodada pede os últimos 10
+        # dias. Por isso tolerante — nunca vermelho por si.
+        severidade=SEV_TOLERANTE,
+        remediacao=(
+            "Actions → Radar Meteorológico → Run workflow "
+            "(ou: python scripts/clima_collect.py)"
+        ),
+        auto_heal="python scripts/clima_collect.py",
+        observacao=(
+            "Open-Meteo é gratuito e sem antibot: roda bem do IP do Actions. "
+            "O backfill histórico (desde 2016) é um disparo manual do mesmo "
+            "workflow com backfill=true."
+        ),
+    ),
     # ── GitHub Actions — coletor Amazon-only (buy box via PDP) ─────────────
     # A Amazon roda de IP de datacenter (diferente de ML/Magalu/Shopee/Casas
     # Bahia) e a leitura de buy box é cara (um PDP por item, toda execução) —
