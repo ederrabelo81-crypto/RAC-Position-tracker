@@ -224,3 +224,33 @@ def test_pagina_clima_renderiza():
     assert "Sudeste · próx. 7d" in rotulos
     textos = " ".join(str(m.value) for m in at.markdown)
     assert "Spearman" in textos or "Sem pontos" in textos
+
+
+class TestRevisaoCodex:
+    """Achados da revisão do PR #413."""
+
+    def test_previsao_vencida_sai_do_que_vem_por_ai(self):
+        from utils.clima import sem_previsao_vencida
+
+        hoje = date(2026, 10, 29)
+        df = pd.concat([
+            _obs(SP, date(2026, 10, 20), 1, 40.0).assign(tipo=PREVISAO),   # vencida
+            _obs(SP, date(2026, 10, 20), 1, 25.0),                         # observado
+            _obs(SP, date(2026, 10, 30), 1, 30.0).assign(tipo=PREVISAO),   # vigente
+        ])
+        out = sem_previsao_vencida(df, hoje)
+        assert list(zip(out["data"], out["tipo"])) == [
+            (date(2026, 10, 20), OBSERVADO), (date(2026, 10, 30), PREVISAO)]
+
+    def test_proxy_nao_junta_anuncios_sem_sku_nem_url(self):
+        bs = pd.DataFrame([
+            {"data": "2026-10-01", "plataforma": "amazon", "titulo": "Split A", "reviews": 1000},
+            {"data": "2026-10-01", "plataforma": "amazon", "titulo": "Split B", "reviews": 10},
+            {"data": "2026-10-02", "plataforma": "amazon", "titulo": "Split A", "reviews": 1004},
+            {"data": "2026-10-02", "plataforma": "amazon", "titulo": "Split B", "reviews": 12},
+            {"data": "2026-10-02", "plataforma": "amazon", "reviews": 999},  # sem identidade
+        ])
+        p = proxy_vendas_diario(bs).set_index("data")
+        # 4 + 2 — e não max(1004, 12, 999) − max(1000, 10) com tudo misturado
+        assert p.loc[date(2026, 10, 2), "avaliacoes_dia"] == 6.0
+        assert p.loc[date(2026, 10, 2), "anuncios"] == 2

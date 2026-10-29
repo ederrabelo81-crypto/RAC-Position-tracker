@@ -66,3 +66,56 @@ def test_nenhuma_cidade_responde(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "_get", lambda url, params, tentativas=3: None)
     monkeypatch.setattr(cc.time, "sleep", lambda s: None)
     assert cc.main(["--sem-supabase", "--csv", str(tmp_path / "x.csv")]) == 1
+
+
+class _Resp:
+    def __init__(self, data):
+        self.data = data
+
+
+class _ClientArchive:
+    """Banco falso: já tem o ERA5 de 27/10 em São Paulo; registra o upsert."""
+
+    def __init__(self):
+        self.upsert_lotes = []
+
+    def table(self, nome):
+        return self
+
+    def select(self, *a, **k):
+        return self
+
+    def eq(self, *a):
+        return self
+
+    def gte(self, *a):
+        return self
+
+    def lte(self, *a):
+        return self
+
+    def limit(self, *a):
+        return self
+
+    def execute(self):
+        return _Resp([{"data": "2026-10-27", "cidade": "São Paulo"}])
+
+    def upsert(self, lote, on_conflict=None):
+        self.upsert_lotes.append(lote)
+        return self
+
+
+def test_rodada_diaria_nao_sobrescreve_o_archive(monkeypatch):
+    client = _ClientArchive()
+    monkeypatch.setattr(cc, "_client", lambda: client)
+    novo = pd.DataFrame([
+        {"data": date(2026, 10, 27), "cidade": "São Paulo", "uf": "SP", "regiao": "Sudeste",
+         "tipo": OBSERVADO, "tmax": 20.0, "tmin": 15.0, "tmed": 17.5, "sensacao_max": 20.0,
+         "precip_mm": 0.0, "fonte": "forecast"},
+        {"data": date(2026, 10, 28), "cidade": "São Paulo", "uf": "SP", "regiao": "Sudeste",
+         "tipo": OBSERVADO, "tmax": 22.0, "tmin": 15.0, "tmed": 18.5, "sensacao_max": 22.0,
+         "precip_mm": 0.0, "fonte": "forecast"},
+    ])
+    assert cc.gravar_supabase(novo) == 1
+    gravadas = [r["data"] for lote in client.upsert_lotes for r in lote]
+    assert gravadas == ["2026-10-28"]

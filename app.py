@@ -13406,10 +13406,14 @@ def page_clima() -> None:
         )
         return
 
-    idx = clima.indice_regional(clima.com_anomalia(bruto))
+    hoje = pd.Timestamp(now_brt().date())
+    # Previsão de dia que já passou fica no banco (acerto da previsão), mas não
+    # é "o que vem por aí": sai antes de KPI e gráfico.
+    idx = clima.indice_regional(clima.com_anomalia(
+        clima.sem_previsao_vencida(bruto, hoje.date())
+    ))
     idx["data"] = pd.to_datetime(idx["data"])
     tem_normal = idx["anomalia_tmax"].notna().any()
-    hoje = pd.Timestamp(now_brt().date())
 
     regioes = [clima.BRASIL, "Sudeste", "Sul", "Centro-Oeste", "Nordeste", "Norte"]
     with st.sidebar:

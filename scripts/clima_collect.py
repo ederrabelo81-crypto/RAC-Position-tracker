@@ -58,6 +58,7 @@ from utils.clima import (  # noqa: E402
     ler_veredito,
     parse_open_meteo,
     proxy_vendas_diario,
+    sem_previsao_vencida,
 )
 from utils.text import now_brt  # noqa: E402
 
@@ -160,6 +161,37 @@ def _client():
     return _get_client()
 
 
+def _sem_sobrescrever_archive(client, df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Tira do lote observado-via-forecast as chaves que o banco já tem do archive.
+
+    A chave é ``(data, cidade, tipo)``: a rodada diária pede 10 dias passados à
+    API de previsão e os grava como observado — sem este filtro, o upsert
+    trocaria a reanálise ERA5 (revisada) pelo dado do modelo de previsão.
+    """
+    alvo = df[(df["fonte"] != "archive") & (df["tipo"] == OBSERVADO)]
+    if not len(alvo):
+        return df
+    resp = (
+        client.table(_TABELA).select("data,cidade")
+        .eq("fonte", "archive").eq("tipo", OBSERVADO)
+        .gte("data", min(alvo["data"]).isoformat())
+        .lte("data", max(alvo["data"]).isoformat())
+        .limit(5000).execute()
+    )
+    protegidas = {(str(r["data"])[:10], r["cidade"]) for r in (resp.data or [])}
+    if not protegidas:
+        return df
+    chave = df["data"].astype(str) + "|" + df["cidade"]
+    bloquear = (
+        (df["fonte"] != "archive") & (df["tipo"] == OBSERVADO)
+        & chave.isin({f"{d}|{c}" for d, c in protegidas})
+    )
+    if bloquear.any():
+        logger.info(f"[Clima] {int(bloquear.sum())} linha(s) já do archive preservadas.")
+    return df[~bloquear]
+
+
 def gravar_supabase(df: pd.DataFrame) -> int:
     """Upsert em `clima_diario`. Falha vira aviso: o CSV já guardou a coleta."""
     if not len(df):
@@ -168,6 +200,12 @@ def gravar_supabase(df: pd.DataFrame) -> int:
     if client is None:
         logger.warning("[Clima] Supabase não configurado — só CSV.")
         return 0
+    try:
+        df = _sem_sobrescrever_archive(client, df)
+    except Exception as exc:
+        # Sem saber o que é archive, não arrisca: grava só a previsão.
+        logger.warning(f"[Clima] Checagem do archive falhou ({exc}) — gravando só a previsão.")
+        df = df[(df["fonte"] == "archive") | (df["tipo"] == PREVISAO)]
     # `atualizado_em` vai explícito: no upsert, coluna omitida mantém o valor
     # antigo, e o supervisor (pipeline_watch) conta a rodada por este carimbo.
     carimbo = datetime.now(timezone.utc).isoformat()
@@ -230,7 +268,7 @@ def resumo(historico: pd.DataFrame, hoje: date) -> str:
     Texto curto: como foi a última semana e o que vem nos próximos 7 dias,
     por região, em anomalia contra a normal (quando há histórico para ela).
     """
-    idx = indice_regional(com_anomalia(historico))
+    idx = indice_regional(com_anomalia(sem_previsao_vencida(historico, hoje)))
     if not len(idx):
         return "🌡️ Radar de clima: sem dado."
     idx["data"] = pd.to_datetime(idx["data"]).dt.date

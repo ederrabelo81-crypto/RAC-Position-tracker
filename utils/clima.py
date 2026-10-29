@@ -159,6 +159,21 @@ def parse_open_meteo(
     return df[list(COLUNAS)].reset_index(drop=True)
 
 
+def sem_previsao_vencida(df: pd.DataFrame, hoje: date) -> pd.DataFrame:
+    """
+    Tira as linhas de previsão de dias que já passaram.
+
+    A tabela guarda a previsão mesmo depois do dia (chave inclui ``tipo``, e a
+    linha observada entra ao lado) — serve para medir acerto da previsão
+    depois. Quem lê "o que vem por aí" precisa só da previsão vigente: sem este
+    corte, a média dos "próximos 7 dias" mistura previsões velhas.
+    """
+    if not len(df):
+        return df
+    datas = pd.to_datetime(df["data"]).dt.date
+    return df[(df["tipo"] != PREVISAO) | (datas >= hoje)]
+
+
 def consolidar(*partes: pd.DataFrame) -> pd.DataFrame:
     """
     Junta leituras, uma linha por (data, cidade, tipo) — a mais recente vence.
@@ -327,10 +342,17 @@ def proxy_vendas_diario(bestsellers: pd.DataFrame) -> pd.DataFrame:
     if not len(df):
         return pd.DataFrame(columns=["data", "avaliacoes_dia", "anuncios"])
     df["data"] = pd.to_datetime(df["data"]).dt.normalize()
-    ident = df.get("sku_plataforma", pd.Series(index=df.index, dtype=object))
-    if "url_produto" in df.columns:
-        ident = ident.fillna(df["url_produto"])
-    df["item"] = df["plataforma"].astype(str) + "|" + ident.astype(str)
+    # Identidade do anúncio: SKU, senão URL, senão título. Sem nenhuma, a
+    # linha sai — juntar anúncios diferentes numa "história" só misturaria
+    # contadores de avaliações de produtos distintos.
+    ident = pd.Series(pd.NA, index=df.index, dtype="string")
+    for coluna in ("sku_plataforma", "url_produto", "titulo"):
+        if coluna in df.columns:
+            ident = ident.fillna(df[coluna].astype("string").str.strip().replace("", pd.NA))
+    df = df[ident.notna()].copy()
+    if not len(df):
+        return pd.DataFrame(columns=["data", "avaliacoes_dia", "anuncios"])
+    df["item"] = df["plataforma"].astype(str) + "|" + ident[ident.notna()]
 
     por_dia = df.groupby(["item", "data"])["reviews"].max().reset_index().sort_values(["item", "data"])
     por_dia["delta"] = por_dia.groupby("item")["reviews"].diff()
