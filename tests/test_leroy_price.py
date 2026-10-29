@@ -298,6 +298,11 @@ class _ChromeLocalFake:
 
 
 class TestBrowserDoPreco:
+    @pytest.fixture(autouse=True)
+    def _sem_chrome_local(self, monkeypatch):
+        # O .env do PC coletor liga RAC_LOCAL_CHROME: o teste não pode abrir o Chrome real.
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: False)
+
     def test_preco_nao_espera_o_rotulo(self):
         s = LeroyMerlinScraper()
         s._page = _PaginaFake()
@@ -366,3 +371,14 @@ class TestBrowserDoPreco:
         fonte._leroy._fetch_pdp_browser("https://x/p")
         fonte._fechar()
         assert local.fechada
+
+    def test_warmup_que_falha_e_retentado_com_teto(self, monkeypatch):
+        local = _PaginaFake("<html>local</html>")
+        chrome = _ChromeLocalFake(local)
+        chrome.warmup = lambda page, url, **kw: chrome.aquecido.append(url) or False
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(leroy_mod, "get_local_browser", lambda: chrome)
+        s = LeroyMerlinScraper()
+        for _ in range(5):
+            assert s._fetch_pdp_browser_preco("https://x/p") == "<html>local</html>"
+        assert len(chrome.aquecido) == leroy_mod._PDP_WARMUP_TENTATIVAS

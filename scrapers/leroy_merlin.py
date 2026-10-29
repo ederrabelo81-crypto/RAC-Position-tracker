@@ -134,6 +134,8 @@ _PDP_HYDRATE_TIMEOUT = float(os.environ.get("LEROY_PDP_HYDRATE_TIMEOUT", "10000"
 # e recarrega a página, sem pagar os 10s da hidratação do seller).
 _PRECO_LD_TIMEOUT = float(os.environ.get("LEROY_PRECO_LD_TIMEOUT", "4000") or 4000)
 _HOME_URL = "https://www.leroymerlin.com.br/"
+# Tentativas de warm-up da home por execução (cada uma custa até ~45s).
+_PDP_WARMUP_TENTATIVAS = 3
 
 # Marcadores de página de challenge/bloqueio. Akamai & cia costumam responder
 # HTTP 200 com um interstitial de JS, indistinguível de um PDP pelo tamanho.
@@ -287,7 +289,10 @@ class LeroyMerlinScraper(BaseScraper):
         # perfil com histórico, o que a Leroy aceita — o Chrome próprio do
         # BaseScraper (perfil zerado) leva challenge de ~1,5 KB (29/10/2026).
         self._pdp_local_page: Any = None
+        self._pdp_local_lb: Any = None
         self._pdp_local_indisponivel = False
+        self._pdp_local_aquecido = False
+        self._pdp_warmup_restantes = _PDP_WARMUP_TENTATIVAS
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -506,6 +511,7 @@ class LeroyMerlinScraper(BaseScraper):
         if self._pdp_local_page is not None:
             try:
                 if not self._pdp_local_page.is_closed():
+                    self._aquecer_pdp_local()
                     return self._pdp_local_page
             except Exception:
                 pass
@@ -515,8 +521,9 @@ class LeroyMerlinScraper(BaseScraper):
             page = lb.new_page() if lb is not None else None
             if page is not None:
                 page.set_default_timeout(30_000)
-                lb.warmup(page, _HOME_URL, host_key="leroymerlin")
+                self._pdp_local_lb = lb
                 self._pdp_local_page = page
+                self._aquecer_pdp_local()
                 logger.info(
                     f"[{self.platform_name}] PDPs no Chrome real local (perfil "
                     "compartilhado, IP residencial)"
@@ -529,6 +536,32 @@ class LeroyMerlinScraper(BaseScraper):
                 "não abriu — PDPs no browser próprio (sujeito a challenge)"
             )
         return self._page
+
+    def _aquecer_pdp_local(self) -> None:
+        """
+        Warm-up da home na aba local, até ``_PDP_WARMUP_TENTATIVAS`` vezes.
+
+        Falha de warm-up (rede, home lenta) não descarta a aba: o perfil
+        residencial ainda é o melhor caminho que existe. Mas também não fica
+        dada como aquecida — a próxima abertura de PDP tenta de novo, com teto
+        para não pagar 45s de goto em cada PDP de um turno sem rede.
+        """
+        if self._pdp_local_aquecido or self._pdp_warmup_restantes <= 0:
+            return
+        self._pdp_warmup_restantes -= 1
+        try:
+            self._pdp_local_aquecido = bool(
+                self._pdp_local_lb.warmup(
+                    self._pdp_local_page, _HOME_URL, host_key="leroymerlin"
+                )
+            )
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] Warm-up da home falhou: {exc}")
+        if not self._pdp_local_aquecido:
+            logger.warning(
+                f"[{self.platform_name}] Warm-up da home no Chrome local falhou "
+                f"({self._pdp_warmup_restantes} tentativa(s) restante(s))"
+            )
 
     def _abrir_pdp_browser(self, url: str, aguardar_rotulo: bool) -> Optional[str]:
         """

@@ -180,7 +180,7 @@ gravado — sinal para desconfiar, não regra.
   seller e preço) abrem numa aba do Chrome real compartilhado
   (`scrapers/local_browser.py`), com warm-up na home uma vez; sem Chrome local,
   caem no browser próprio. A passada de preço não espera o rótulo do seller —
-  só o `script[type="application/ld+json"]` (`LEROY_PRECO_LD_TIMEOUT`, 4 s).
+  só o `script[type="application/ld+json"]` (`LEROY_PRECO_LD_TIMEOUT`, em ms, padrão `4000`).
   No bloqueio o probe grava `logs/leroy_preco_bloqueio.html` e mostra o texto
   visível (qual anti-bot respondeu).
 - ⚠️ `bestsellers/sources/leroy_merlin.py` (Mais Vendidos) ainda lê a média —

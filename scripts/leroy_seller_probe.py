@@ -485,7 +485,10 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
         dump.write_text(html, encoding="utf-8")
         texto = " ".join(BeautifulSoup(html, "html.parser").get_text(" ").split())
         print(f"  Texto visível: {texto[:400]!r}")
-        if use_browser and os.environ.get("RAC_LOCAL_CHROME") != "1":
+        # Mesma regra de ativação da coleta (`is_local_chrome_enabled`).
+        if use_browser and os.environ.get("RAC_LOCAL_CHROME", "").strip().lower() not in (
+            "1", "true", "yes", "sim", "on"
+        ):
             logger.warning(
                 "Sem RAC_LOCAL_CHROME=1 o --browser usa o Chrome próprio (perfil "
                 "zerado), que a Leroy bloqueia; a coleta no PC usa o Chrome local."
@@ -527,7 +530,15 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
 
     vencedor = extract_buybox_winner(html)
     leitura = extract_pdp_price(html, vencedor)
-    print(f"\n  Buy box : {vencedor or '(rótulo não encontrado)'}")
+    if vencedor:
+        print(f"\n  Buy box : {vencedor}")
+    elif use_browser:
+        # O modo preço não espera o rótulo hidratar (como a coleta): a coleta
+        # escolhe a oferta pelo vencedor da passada de buy box, que aqui não roda.
+        print("\n  Buy box : (não esperada neste modo — a coleta usa o vencedor da "
+              "passada de buy box; com várias ofertas, o preço abaixo é o menor)")
+    else:
+        print("\n  Buy box : (rótulo não encontrado)")
     print(f"  Preço   : {leitura.preco}  (camada={leitura.camada}, disponivel={leitura.disponivel})")
     if not leitura.lido:
         if leitura.camada == "ambiguo":
