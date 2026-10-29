@@ -67,6 +67,8 @@ def parse_price_brazil(raw_text: Optional[str]) -> Optional[float]:
         1520.1
         >>> parse_price_brazil("125.0")
         125.0
+        >>> parse_price_brazil("2339")
+        2339.0
         >>> parse_price_brazil("")
         None
         >>> parse_price_brazil(None)
@@ -88,8 +90,12 @@ def parse_price_brazil(raw_text: Optional[str]) -> Optional[float]:
     # Extrai primeiro padrão monetário: R$ 1.994,91 ou R$1994,91 ou 1.994,91
     match = re.search(r'R\$\s*([\d.,]+)|([\d]+\.[\d]{3},[\d]{2})', raw_text)
     if not match:
-        # Tenta extrair número no formato brasileiro: NNNN,NN ou N.NNN,NN
-        match = re.search(r'(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)', raw_text)
+        # Tenta extrair número no formato brasileiro: N.NNN,NN ou NNNN,NN.
+        # O inteiro cru ("2339", comum em JSON-LD) precisa da 2ª alternativa:
+        # só com `\d{1,3}(?:\.\d{3})*` ele virava "233" (÷10).
+        match = re.search(
+            r'(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+(?:,\d{1,2})?)', raw_text
+        )
         if not match:
             return None
 
