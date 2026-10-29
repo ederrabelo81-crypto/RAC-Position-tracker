@@ -12,6 +12,7 @@ from test_bestsellers_radar import GRUPO_MIDEA, _df, _serie  # noqa: E402
 
 
 def test_relatorio_radar_grava_md_csv_e_notifica_escapado(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)  # o log do CLI vai para ./logs — fica no tmp
     df = _df(
         _serie("magazineluiza", ["Philco"], ["Philco", "Philco"]),
         _serie("mercadolivre", ["Philco"], ["Philco", "Philco"]),

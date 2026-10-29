@@ -22,7 +22,8 @@ Escreve no Supabase (precisa da migração 021 e de ``SUPABASE_KEY``
 service_role) E em ``data/clima/clima_diario.csv``: banco fora do ar ou sem a
 tabela não perde a coleta.
 
-Exit codes: 0 ok · 1 nenhuma cidade respondeu · 2 argumento inválido.
+Exit codes: 0 ok · 1 nenhuma cidade respondeu OU a gravação no Supabase falhou
+(pedida e não confirmada) · 2 argumento inválido.
 """
 
 from __future__ import annotations
@@ -442,8 +443,12 @@ def main(argv=None) -> int:
     if args.notificar:
         _notificar(texto)
 
-    cidades = novo["cidade"].nunique()
-    detalhe = f"{cidades}/{len(CIDADES)} cidades, {len(novo)} linhas"
+    # Cobertura pela fonte PRINCIPAL da rodada: no diário, a previsão (é ela
+    # que traz os 16 dias); o archive de D-15..D-6 sozinho não faz a cidade
+    # "coletada" — senão uma previsão perdida sairia SUCCESS.
+    principal = "archive" if args.backfill else "forecast"
+    cidades = novo.loc[novo["fonte"] == principal, "cidade"].nunique()
+    detalhe = f"{cidades}/{len(CIDADES)} cidades ({principal}), {len(novo)} linhas"
     if not banco_ok:
         # Coletou, mas o destino não recebeu: no Actions isso é perder o dia.
         _bater("FAILED", gravadas, f"{detalhe}; gravação no Supabase falhou")

@@ -143,7 +143,7 @@ def test_falha_no_banco_bate_failed_e_sai_1(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "_get", lambda url, params, tentativas=3: (
         _resposta(hoje - timedelta(days=2), 5) if url == cc._FORECAST else None))
     monkeypatch.setattr(cc.time, "sleep", lambda s: None)
-    monkeypatch.setattr(cc, "_client", lambda: None)   # sem Supabase
+    monkeypatch.setattr(cc, "_client", lambda: None)   # Supabase pedido, mas sem cliente
     assert cc.main(["--csv", str(tmp_path / "c.csv")]) == 1
     assert batidas == ["STARTED", "FAILED"]
 
@@ -153,3 +153,36 @@ def test_argumento_invalido_nao_abre_execucao(monkeypatch):
     monkeypatch.setattr(cc, "_bater", lambda status, *a, **k: batidas.append(status))
     assert cc.main(["--backfill", "--desde", "2026-10-10", "--ate", "2026-10-01"]) == 2
     assert batidas == []
+
+
+def test_upsert_recusado_devolve_falha(monkeypatch):
+    class _Recusa(_ClientArchive):
+        def execute(self):
+            if self.upsert_lotes:
+                raise RuntimeError("relation clima_diario does not exist")
+            return _Resp([])
+
+    monkeypatch.setattr(cc, "_client", lambda: _Recusa())
+    novo = pd.DataFrame([{
+        "data": date(2026, 10, 30), "cidade": "São Paulo", "uf": "SP", "regiao": "Sudeste",
+        "tipo": PREVISAO, "tmax": 30.0, "tmin": 20.0, "tmed": 25.0, "sensacao_max": 31.0,
+        "precip_mm": 0.0, "fonte": "forecast"}])
+    assert cc.gravar_supabase(novo) == (0, False)
+
+
+def test_previsao_perdida_nao_sai_success(tmp_path, monkeypatch):
+    """Archive respondeu, previsão não: a cidade não conta como coletada."""
+    hoje = cc.now_brt().date()
+    batidas = []
+    monkeypatch.setattr(cc, "_bater", lambda status, *a, **k: batidas.append(status))
+    monkeypatch.setattr(cc.time, "sleep", lambda s: None)
+
+    def _get(url, params, tentativas=3):
+        if url == cc._ARCHIVE:
+            inicio = date.fromisoformat(params["start_date"])
+            return _resposta(inicio, 10)
+        return None if params["latitude"] == CIDADES[0].lat else _resposta(hoje - timedelta(days=3), 19)
+
+    monkeypatch.setattr(cc, "_get", _get)
+    assert cc.main(["--sem-supabase", "--csv", str(tmp_path / "c.csv")]) == 0
+    assert batidas[-1] == "PARTIAL"

@@ -31,7 +31,9 @@ Regras duras
    ``InStoreOnly`` devolvem ``preco=None`` com ``disponivel=False`` — a linha
    continua na coleta (posição, share), mas não compete no piso.
 2. **Com várias ofertas, o preço é o do vencedor da buy box** quando o JSON-LD
-   diz o seller de cada uma. Sem como casar, fica o menor preço disponível e a
+   diz o seller de cada uma. Se as ofertas declaram seller e nenhuma é do
+   vencedor, o resultado é ``ambiguo``, SEM preço (seria o de outro lojista).
+   Só quando as ofertas não declaram seller fica o menor preço disponível, e a
    camada diz isso (``jsonld_menor``) — nunca um preço escolhido em silêncio.
 3. **Dois ``Product`` diferentes no mesmo PDP = ambíguo**, sem preço. Escolher
    o primeiro gravaria o preço de um produto relacionado com a cara do item.
@@ -76,8 +78,9 @@ class PdpPrice:
         disponivel: True/False quando o JSON-LD declara; None quando omite.
         camada: de onde veio — ``jsonld`` (oferta única), ``jsonld_vencedor``
             (oferta casada com o vencedor da buy box), ``jsonld_menor`` (várias
-            ofertas sem como casar), ``indisponivel``, ``ambiguo`` ou
-            ``sem_preco``.
+            ofertas SEM seller declarado — ficou a menor), ``indisponivel``,
+            ``ambiguo`` (sellers declarados sem casar com o vencedor, ou dois
+            Products diferentes) ou ``sem_preco``.
     """
 
     preco: Optional[float]

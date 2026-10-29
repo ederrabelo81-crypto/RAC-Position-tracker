@@ -510,11 +510,20 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
     print(f"\n  Buy box : {vencedor or '(rótulo não encontrado)'}")
     print(f"  Preço   : {leitura.preco}  (camada={leitura.camada}, disponivel={leitura.disponivel})")
     if not leitura.lido:
-        logger.warning(
-            "Sem preço no JSON-LD: com os padrões a coleta gravaria a linha SEM preço "
-            "(LEROY_PRECO_MEDIA_FALLBACK=1 ou LEROY_PRECO_PDP=0 gravam a média). "
-            "Mande logs/leroy_preco_probe.html para ajustar utils/leroy_price.py."
-        )
+        if leitura.camada == "ambiguo":
+            # Há preço no JSON-LD; o que falta é casar a oferta com o vencedor
+            # (ou há dois Products). Não é o parser — é a leitura da buy box.
+            logger.warning(
+                "JSON-LD com preço, mas ambíguo: as ofertas não casam com o "
+                f"vencedor ({vencedor or 'não lido'}) ou há Products diferentes. "
+                "Confira o rótulo 'Vendido e entregue por' e o seller de cada oferta acima."
+            )
+        else:
+            logger.warning(
+                "Sem preço no JSON-LD: com os padrões a coleta gravaria a linha SEM preço "
+                "(LEROY_PRECO_MEDIA_FALLBACK=1 ou LEROY_PRECO_PDP=0 gravam a média). "
+                "Mande logs/leroy_preco_probe.html para ajustar utils/leroy_price.py."
+            )
         return 1
     return 0
 
