@@ -12424,6 +12424,97 @@ def _bs_cards_kpi(kpi_dia: pd.DataFrame, specs: dict, n: int) -> None:
                 )
 
 
+def _bs_aba_radar(serie: pd.DataFrame, dia, n: int, referencia_sel: str) -> None:
+    """Aba 📡 Radar: marcas ganhando/perdendo topo de ranking (7 × 28 dias).
+
+    Existe porque o sinal da Philco e da Agratto (GfK de setembro/2026) estava
+    no banco semanas antes e o painel só media a Midea. Lógica pura e regras
+    em `bestsellers/radar.py`.
+    """
+    from bestsellers import radar
+    from bestsellers.config import REFERENCIA_MAIS_VENDIDOS
+
+    st.subheader("📡 Radar de marcas — quem está subindo")
+    if referencia_sel != REFERENCIA_MAIS_VENDIDOS:
+        st.info(
+            "O radar só lê listas de **Mais Vendidos** — relevância não é "
+            "venda. Troque a referência na barra lateral.",
+            icon="🧭",
+        )
+        return
+
+    janela = radar.JanelaRadar(ate=pd.Timestamp(dia).date(), top_n=n)
+    tabela = radar.radar_marcas(serie, janela)
+    st.caption(
+        f"Share de topo (% do top {n}) de cada marca **dentro de cada "
+        f"plataforma**, últimos 7 dias ({janela.inicio_recente:%d/%m}–"
+        f"{janela.ate:%d/%m}) contra os 28 anteriores. Uma plataforma conta "
+        f"como subindo/caindo a partir de ±{radar.LIMIAR_PP:.0f} p.p. "
+        "(meia posição, em média). Nada soma posições entre plataformas: o que "
+        "se agrega é **em quantas** a marca subiu. Período da barra lateral não "
+        "se aplica (as janelas são fixas); o filtro de plataformas, sim."
+    )
+    if not len(tabela):
+        st.info(
+            "Sem leituras suficientes nas duas janelas (mínimo de 3 dias em "
+            "cada, por plataforma).",
+            icon="ℹ️",
+        )
+        return
+
+    contagem = tabela["status"].value_counts()
+    cols = st.columns(4)
+    for col, (status, rotulo) in zip(cols, [
+        (radar.SUBINDO, "🔺 Subindo"), (radar.ATENCAO, "👀 Atenção"),
+        (radar.MISTO, "🔀 Misto"), (radar.CAINDO, "🔻 Caindo"),
+    ]):
+        col.metric(rotulo, int(contagem.get(status, 0)))
+
+    st.text(radar.resumo_texto(tabela, janela))
+
+    exibir = tabela.rename(columns={
+        "marca": "Marca", "status": "Status",
+        "plataformas_subindo": "Subindo em", "plataformas_caindo": "Caindo em",
+        "n_comparaveis": "Plataformas comparáveis",
+        "aval_dia_base": "Avaliações/dia (28d)", "aval_dia_recente": "Avaliações/dia (7d)",
+        "vendidos_mes_base": "Vendidos/mês Shopee (28d)",
+        "vendidos_mes_recente": "Vendidos/mês Shopee (7d)",
+        "preco_var_pct": "Preço Δ% (mesmos anúncios)", "sinais": "Sinais",
+    })[[
+        "Marca", "Status", "Subindo em", "Caindo em", "Plataformas comparáveis",
+        "Avaliações/dia (28d)", "Avaliações/dia (7d)",
+        "Vendidos/mês Shopee (28d)", "Vendidos/mês Shopee (7d)",
+        "Preço Δ% (mesmos anúncios)", "Sinais",
+    ]]
+    st.dataframe(exibir, use_container_width=True, hide_index=True)
+    _csv_download_btn(exibir, f"bestsellers_radar_{janela.ate:%Y-%m-%d}.csv", key="bs_radar_csv")
+
+    detalhe = radar.share_por_plataforma(serie, janela)
+    detalhe = detalhe[detalhe["comparavel"]]
+    if len(detalhe):
+        marcas = tabela["marca"].tolist()
+        padrao = [m for m in marcas if m in set(
+            tabela.loc[tabela["status"] != radar.ESTAVEL, "marca"]
+        )][:6] or marcas[:3]
+        sel = st.multiselect("Marcas no mapa", marcas, default=padrao, key="bs_radar_marcas")
+        mapa = detalhe[detalhe["marca_radar"].isin(sel)].assign(
+            Plataforma=lambda d: d["plataforma"].map(lambda k: _bs_nome(k, _bs_specs()))
+        )
+        if len(mapa):
+            fig = px.bar(
+                mapa, x="delta_pp", y="Plataforma", color="marca_radar",
+                orientation="h", barmode="group",
+                labels={"delta_pp": "Δ share de topo (p.p.)", "marca_radar": "Marca"},
+                title="Variação do share de topo por plataforma (7d × 28d)",
+                hover_data={"share_base": True, "share_recente": True,
+                            "rank_base": True, "rank_recente": True},
+            )
+            fig.add_vline(x=radar.LIMIAR_PP, line_dash="dot", line_color="#16a34a")
+            fig.add_vline(x=-radar.LIMIAR_PP, line_dash="dot", line_color="#dc2626")
+            _apply_chart_style(fig)
+            st.plotly_chart(fig, use_container_width=True)
+
+
 def page_bestsellers() -> None:
     """Página 🥇 Mais Vendidos — a única variável de RESULTADO da coleta.
 
@@ -12740,9 +12831,9 @@ def page_bestsellers() -> None:
 
     st.divider()
 
-    tab_kpi, tab_evo, tab_rank, tab_comp, tab_val, tab_brief = st.tabs([
+    tab_kpi, tab_evo, tab_rank, tab_comp, tab_radar, tab_val, tab_brief = st.tabs([
         f"🎯 KPI top {n}", "📈 Evolução", "🏁 Ranking do dia",
-        "🥊 Competição", "🩺 Validação", "📄 Brief",
+        "🥊 Competição", "📡 Radar", "🩺 Validação", "📄 Brief",
     ])
 
     # ── KPI do dia + série diária ─────────────────────────────────────────
@@ -13070,6 +13161,10 @@ def page_bestsellers() -> None:
                 )
 
     # ── Validação ─────────────────────────────────────────────────────────
+    # ── Radar: quem está subindo (todas as marcas, não só a Midea) ────────
+    with tab_radar:
+        _bs_aba_radar(serie, dia, n, referencia_sel)
+
     with tab_val:
         st.subheader(f"Portões de qualidade · {dia:%d/%m/%Y}")
         if not ocorrencias:

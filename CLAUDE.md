@@ -69,10 +69,14 @@ python utils/session_grabber.py --site shopee
 >
 > **Atualização (Out/2026):** o job `local_bestsellers` **já está** no
 > `pipeline_registry.py` (dias úteis, 09:30 BRT, deadline generoso), então um
-> dia em que a coleta INTEIRA não roda vira alerta no `pipeline_watch.py`. Ele
-> ainda **não cobra fonte por fonte** — a contagem é do dia todo —, por isso
-> as fontes mudas abaixo continuam sem alarme próprio. O passo que falta é
-> recadastrar `RAC_Bestsellers` no agendador.
+> dia em que a coleta INTEIRA não roda vira alerta no `pipeline_watch.py`.
+> **Desde 29/10/2026 ele também cobra fonte por fonte**
+> (`bestsellers/cobertura.py`): lista que fica fora de ≥ 2 dias de coleta
+> seguidos — dias em que OUTRAS fontes gravaram — vira alerta 🟠 no Telegram
+> (exit 2, mesmo crônica). Foi assim que a **Leroy Merlin, parada desde
+> 07/10/2026**, apareceu. As que nunca coletaram vão só para o relatório
+> (`nunca_coletaram` no JSON). O passo que falta é recadastrar
+> `RAC_Bestsellers` no agendador.
 >
 > **E somem.** Das 20 fontes de `bestsellers/config.py`, **7 não gravam uma
 > única linha**, e nunca gravaram em toda a história da tabela:
@@ -138,6 +142,20 @@ de datacenter muitos vêm bloqueados, a coleta oficial roda do PC coletor.
 **Regra dura:** ranking é ORDINAL — nunca soma entre plataformas, nunca vira
 share de mercado (isso vem de GfK/Neotrust). KPI: % Midea no top 10 por
 plataforma + delta vs período anterior.
+
+**📡 Radar de marcas (Out/2026) 🆕** — `bestsellers/radar.py`. O GfK de
+set/2026 mostrou Philco e Agratto ganhando share online; o sinal estava no
+banco semanas antes e o painel só media a Midea. O radar mede, para TODAS as
+marcas, o share de topo **dentro de cada plataforma** nos últimos 7 dias contra
+os 28 anteriores (semanas inteiras), e agrega só **em quantas plataformas** a
+marca subiu/caiu (±5 p.p.) — nunca soma posições. Status SUBINDO (2+ praças),
+ATENÇÃO (1 praça com salto ≥ 10 p.p. ou tração de avaliações/vendidos), MISTO,
+CAINDO. Sinais de tração: avaliações novas/dia (mesmo anúncio), vendidos/mês
+(só Shopee, base mensal), preço dos mesmos anúncios. Backtest em 12/09/2026:
+Philco SUBINDO, Agratto +13,5 p.p. no Magalu, Grupo Midea fora do top 10 do
+Magalu. Onde ler: aba **📡 Radar** da página 🥇 Mais Vendidos; seção no brief
+diário (e Telegram com `--notificar`); `python scripts/collect_bestsellers.py
+--relatorio radar [--data AAAA-MM-DD] [--notificar]`.
 
 **Adicionar dealer VTEX/HTML:** registrar a fonte em `bestsellers/config.py`
 (`SOURCES` com a `referencia` certa) e a `ColetaSpec` em `COLETA` — o coletor
@@ -1418,6 +1436,7 @@ python main.py --no-headless --platforms ml       # Visible browser (debug)
 python scripts/collect_bestsellers.py              # Coleta do dia + relatório Telegram
 python scripts/collect_bestsellers.py --relatorio semanal  # Evolução da semana
 python scripts/collect_bestsellers.py --relatorio mensal --ultimos 6  # Últimos 6 meses
+python scripts/collect_bestsellers.py --relatorio radar --notificar  # Quem está subindo (7d × 28d)
 python scripts/collect_bestsellers.py --importar-xlsx ./uploads --data 2026-08-10  # Backfill histórico
 
 # Dashboard (interno, indústria)

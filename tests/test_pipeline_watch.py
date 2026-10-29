@@ -392,3 +392,37 @@ class TestQuedaDeVolume:
         pw.varrer_quedas(DIA)
         assert {"local_manha", "local_tarde", "local_noite"} <= pedidos["ids"]
         assert "gh_pricetrack_d1" not in pedidos["ids"]
+
+
+class TestFontesBestsellers:
+    """Lista de Mais Vendidos parada enquanto as outras gravam (Leroy, 07/10/2026)."""
+
+    @staticmethod
+    def _fonte(dias):
+        from bestsellers.cobertura import FonteMuda
+        return FonteMuda("leroymerlin", "Leroy Merlin", date(2026, 10, 7), dias)
+
+    def test_fonte_muda_vira_exit_2(self):
+        assert _exit_code([Diagnostico(COLETA_GH, OK, "ok")], [], [], [self._fonte(2)]) == 2
+
+    def test_fonte_cronica_fica_em_exit_2(self):
+        """Job SEV_IMPORTANTE: não pinta o pipeline_guard de vermelho todo dia."""
+        assert _exit_code([Diagnostico(COLETA_GH, OK, "ok")], [], [], [self._fonte(15)]) == 2
+
+    def test_telegram_nomeia_a_fonte_e_o_comando(self):
+        texto = _formatar_telegram(
+            [Diagnostico(COLETA_GH, OK, "ok")], [], DIA, [], [self._fonte(2)]
+        )
+        assert "fonte de Mais Vendidos parada" in texto
+        assert "Leroy Merlin: 2 dia(s) de coleta sem a lista (último dado 07/10)" in texto
+        assert "--plataformas leroymerlin" in texto
+        assert "tudo no contrato" not in texto
+
+    def test_falha_na_checagem_nao_cega_o_supervisor(self, monkeypatch):
+        import scripts.pipeline_watch as pw
+
+        def _quebra():
+            raise RuntimeError("sem banco")
+
+        monkeypatch.setattr(pw, "_client", _quebra)
+        assert pw.varrer_fontes_bestsellers(DIA) is None
