@@ -13320,6 +13320,208 @@ def page_pricetrack_precos() -> None:
     render_page(embedded=True)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 🌡️ Clima × Vendas — radar meteorológico (tabela `clima_diario`, Out/2026)
+# ─────────────────────────────────────────────────────────────────────────────
+# Lógica pura em `utils/clima.py`; coleta em `scripts/clima_collect.py`
+# (workflow clima_daily.yml). A pergunta: o calor (acima do normal) antecipa
+# venda de ar? A página mostra o clima por região — observado e previsão de 16
+# dias — e mede a correlação com o proxy de venda dos Mais Vendidos.
+
+_CLIMA_CSV = Path(__file__).resolve().parent / "data" / "clima" / "clima_diario.csv"
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner="Carregando clima…")
+def query_clima(anos: int = 11) -> tuple:
+    """`clima_diario` dos últimos ``anos`` (banco; CSV local como reserva).
+
+    A janela longa é proposital: a anomalia precisa da normal dos anos
+    anteriores (`utils.clima.com_anomalia`).
+
+    Returns:
+        `(df, origem)` — `origem` diz de onde veio, ou o motivo de não ter vindo.
+    """
+    from utils.clima import COLUNAS
+
+    desde = (pd.Timestamp.today() - pd.DateOffset(years=anos)).date().isoformat()
+    client = _get_supabase()
+    if client is not None:
+        linhas: list = []
+        try:
+            offset = 0
+            while True:
+                resp = (
+                    client.table("clima_diario").select(",".join(COLUNAS))
+                    .gte("data", desde).order("data")
+                    .range(offset, offset + _SUPABASE_PAGE - 1).execute()
+                )
+                lote = resp.data or []
+                linhas.extend(lote)
+                if len(lote) < _SUPABASE_PAGE:
+                    break
+                offset += _SUPABASE_PAGE
+        except Exception as exc:
+            linhas = []
+            motivo = f"banco: {exc}"
+        else:
+            motivo = ""
+        if linhas:
+            df = pd.DataFrame(linhas)
+            for coluna in ("tmax", "tmin", "tmed", "sensacao_max", "precip_mm"):
+                df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
+            df["data"] = pd.to_datetime(df["data"]).dt.date
+            return df, "Supabase · `clima_diario`"
+    else:
+        motivo = "Supabase não configurado"
+
+    if _CLIMA_CSV.exists():
+        df = pd.read_csv(_CLIMA_CSV, sep=";", encoding="utf-8-sig")
+        df["data"] = pd.to_datetime(df["data"]).dt.date
+        return df, f"CSV local · `{_CLIMA_CSV.name}`"
+    return pd.DataFrame(), motivo or "tabela `clima_diario` vazia"
+
+
+def page_clima() -> None:
+    """Página 🌡️ Clima × Vendas — temperatura por região e efeito na venda."""
+    from utils import clima
+    from utils.text import now_brt
+
+    st.title("🌡️ Clima × Vendas")
+    st.caption(
+        "Ar condicionado é compra puxada por calor. Esta página mostra a "
+        "temperatura máxima por região — **observada** e **prevista** (16 dias) "
+        "— contra a **normal** da mesma época nos anos anteriores, e mede se o "
+        "calor acima do normal antecipa venda. Índice Brasil ponderado pela "
+        "população das regiões (Censo 2022). Fonte: Open-Meteo (ERA5)."
+    )
+
+    bruto, origem = query_clima()
+    if not len(bruto):
+        st.warning(
+            f"Sem dado de clima ({origem}). Aplique "
+            "`docs/migrations/021_clima_diario.sql` e rode o workflow "
+            "**Radar Meteorológico** (Actions) com `backfill=true` uma vez — "
+            "depois ele roda sozinho todo dia às 05:47.",
+            icon="🌡️",
+        )
+        return
+
+    idx = clima.indice_regional(clima.com_anomalia(bruto))
+    idx["data"] = pd.to_datetime(idx["data"])
+    tem_normal = idx["anomalia_tmax"].notna().any()
+    hoje = pd.Timestamp(now_brt().date())
+
+    regioes = [clima.BRASIL, "Sudeste", "Sul", "Centro-Oeste", "Nordeste", "Norte"]
+    with st.sidebar:
+        st.subheader("Filtros — Clima")
+        regiao = st.selectbox("Região", regioes, key="clima_regiao")
+        dias_hist = st.slider("Histórico no gráfico (dias)", 30, 365, 90, step=15, key="clima_dias")
+
+    if not tem_normal:
+        st.info(
+            "Sem normal climatológica ainda (precisa de ≥ "
+            f"{clima.MIN_ANOS_NORMAL} anos): rode o backfill para ver anomalias.",
+            icon="ℹ️",
+        )
+
+    # ── KPIs: semana passada × próxima semana ─────────────────────────────
+    obs = idx[idx["tipo"] == clima.OBSERVADO]
+    prev = idx[idx["tipo"] == clima.PREVISAO]
+    medida = "anomalia_tmax" if tem_normal else "tmax"
+    rotulo = "vs normal" if tem_normal else "máx"
+    cols = st.columns(len(regioes))
+    for col, reg in zip(cols, regioes):
+        passado = obs[(obs["regiao"] == reg) & (obs["data"] >= hoje - pd.Timedelta(days=7))][medida].mean()
+        futuro = prev[(prev["regiao"] == reg) & (prev["data"] <= hoje + pd.Timedelta(days=7))][medida].mean()
+        valor = f"{futuro:+.1f}°C" if tem_normal else f"{futuro:.1f}°C"
+        delta = (futuro - passado) if pd.notna(futuro) and pd.notna(passado) else None
+        col.metric(
+            f"{reg} · próx. 7d", valor if pd.notna(futuro) else "—",
+            delta=f"{delta:+.1f}°C vs últ. 7d" if delta is not None else None,
+            help=f"Média da máxima ({rotulo}) prevista para os próximos 7 dias.",
+        )
+
+    # ── Série: observado, previsão e normal ───────────────────────────────
+    serie = idx[(idx["regiao"] == regiao) & (idx["data"] >= hoje - pd.Timedelta(days=dias_hist))]
+    if len(serie):
+        import plotly.graph_objects as go
+
+        fig = go.Figure()
+        o = serie[serie["tipo"] == clima.OBSERVADO]
+        p = serie[serie["tipo"] == clima.PREVISAO]
+        fig.add_trace(go.Scatter(x=o["data"], y=o["tmax"], name="Máxima observada", mode="lines"))
+        fig.add_trace(go.Scatter(x=p["data"], y=p["tmax"], name="Máxima prevista",
+                                 mode="lines+markers", line={"dash": "dash"}))
+        if tem_normal:
+            # Normal = máxima − anomalia, já ponderada no índice da região.
+            n = serie.assign(normal=serie["tmax"] - serie["anomalia_tmax"])
+            n = n.sort_values("tipo").drop_duplicates("data")
+            fig.add_trace(go.Scatter(x=n["data"], y=n["normal"], name="Normal da época",
+                                     mode="lines", line={"dash": "dot", "color": "#94a3b8"}))
+        fig.update_layout(title=f"Temperatura máxima — {regiao}", yaxis_title="°C")
+        _apply_chart_style(fig)
+        st.plotly_chart(fig, use_container_width=True)
+
+    if tem_normal:
+        prox = prev[(prev["regiao"] != clima.BRASIL)]
+        if len(prox):
+            fig_a = px.bar(
+                prox, x="data", y="anomalia_tmax", color="regiao", barmode="group",
+                labels={"data": "Dia", "anomalia_tmax": "°C acima/abaixo do normal", "regiao": "Região"},
+                title="Previsão: anomalia da máxima por região (próximos 16 dias)",
+            )
+            _apply_chart_style(fig_a)
+            st.plotly_chart(fig_a, use_container_width=True)
+
+    # ── Clima × venda ─────────────────────────────────────────────────────
+    st.subheader("🔬 O calor antecipa a venda?")
+    st.caption(
+        "Proxy diário de venda: **avaliações novas por dia** nos anúncios das "
+        "listas de Mais Vendidos (mesmo anúncio, leituras consecutivas). As "
+        "duas séries passam por média móvel de 7 dias (tira o ciclo da semana) "
+        "e a correlação de Spearman é medida com a venda atrasada de 0 a 14 "
+        "dias em relação ao clima."
+    )
+    df_bs, _, _ = query_bestsellers()
+    proxy = clima.proxy_vendas_diario(df_bs) if len(df_bs) else pd.DataFrame()
+    if len(proxy):
+        clima_reg = obs[obs["regiao"] == regiao].set_index("data")[medida]
+        vendas = proxy.set_index("data")["avaliacoes_dia"]
+        vendas.index = pd.to_datetime(vendas.index)
+        corr = clima.correlacao_defasada(clima_reg, vendas)
+        st.markdown(f"**{regiao}:** {clima.ler_veredito(corr)}")
+        if corr:
+            tab = pd.DataFrame([c.__dict__ for c in corr])
+            fig_c = px.bar(
+                tab, x="defasagem", y="spearman",
+                labels={"defasagem": "Venda N dias depois do clima", "spearman": "Spearman"},
+                title="Correlação clima × avaliações/dia, por defasagem",
+                hover_data=["pontos"],
+            )
+            fig_c.add_hline(y=0.3, line_dash="dot", line_color="#16a34a")
+            fig_c.add_hline(y=-0.3, line_dash="dot", line_color="#dc2626")
+            _apply_chart_style(fig_c, hovermode="closest")
+            st.plotly_chart(fig_c, use_container_width=True)
+    else:
+        st.info("Sem leituras de Mais Vendidos com contador de avaliações.", icon="ℹ️")
+
+    st.markdown("**Série mensal externa (GfK / sell-out)** — o histórico longo é que prova a hipótese.")
+    arquivo = st.file_uploader(
+        "CSV com colunas `mes` (AAAA-MM) e `vendas` (unidades, valor ou share)",
+        type=["csv"], key="clima_vendas_csv",
+    )
+    if arquivo is not None:
+        try:
+            vendas_m = pd.read_csv(arquivo, sep=None, engine="python")
+            res = clima.correlacao_mensal(idx.assign(data=idx["data"].dt.date), vendas_m, regiao)
+            st.markdown(f"**Mensal × {arquivo.name} ({regiao}):** " + clima.ler_veredito([res] if res else []))
+        except Exception as exc:
+            st.error(f"Não consegui ler o CSV: {exc}")
+
+    st.caption(f"Fonte dos dados: {origem}. Correlação não é causalidade — e com "
+               f"menos de {clima.MIN_PONTOS_CORRELACAO} pontos é hipótese, não regra.")
+
+
 PAGES = {
     "🏠 Cockpit do Trade":         page_overview,
     "📅 Daily Price Vision":       page_daily_vision,
@@ -13329,6 +13531,7 @@ PAGES = {
     "📊 Market Analytics":         page_market_analytics,
     "💰 Preços 9K/12K":            page_pricetrack_precos,
     "🥇 Mais Vendidos":            page_bestsellers,
+    "🌡️ Clima × Vendas":           page_clima,
     "🗂️ Ficha do Produto":         page_product_sheet,
     "🏆 BuyBox Position":          page_buybox_position,
     "👑 Share of Buy Box":         page_share_of_buybox,
@@ -13354,6 +13557,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "📊 Market Analytics",
         "💰 Preços 9K/12K",
         "🥇 Mais Vendidos",
+        "🌡️ Clima × Vendas",
         "🗂️ Ficha do Produto",
         "🏆 BuyBox Position",
         "👑 Share of Buy Box",

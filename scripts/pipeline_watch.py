@@ -290,6 +290,19 @@ def _contar_bestsellers(client, dia: date) -> int:
     return resp.count or 0
 
 
+def _contar_clima(client, dia: date) -> int:
+    """Linhas de `clima_diario` gravadas no dia (a rodada regrava D-10..D+15)."""
+    resp = (
+        client.table("clima_diario")
+        .select("data", count="exact")
+        .gte("atualizado_em", dia.isoformat())
+        .lt("atualizado_em", (dia + timedelta(days=1)).isoformat())
+        .limit(1)
+        .execute()
+    )
+    return resp.count or 0
+
+
 def _linhas_do_job(client, job: JobSpec, dia: date) -> Optional[int]:
     """Quantas linhas o job deveria ter produzido e produziu.
 
@@ -304,6 +317,8 @@ def _linhas_do_job(client, job: JobSpec, dia: date) -> Optional[int]:
         return _contar_pricetrack(client, dia - timedelta(days=1))
     if job.destino == "bestsellers":
         return _contar_bestsellers(client, dia)
+    if job.destino == "clima_diario":
+        return _contar_clima(client, dia)
     return None
 
 

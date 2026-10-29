@@ -575,6 +575,36 @@ para que as migrações com GRANT rodem **verbatim** em qualquer fornecedor.
 
 ---
 
+## Radar meteorológico — clima × venda (Out/2026) 🆕
+
+**Por quê:** frio e chuva no Sul/Sudeste em outubro, meta de novembro
+agressiva, e nenhum dado no projeto para separar "o mercado parou" de
+"perdemos share". Ar é compra puxada por calor; a hipótese ("semana mais
+quente que o normal antecipa venda") precisa de histórico, não de intuição.
+
+- **Coleta:** `scripts/clima_collect.py` (Open-Meteo, gratuito, sem chave) no
+  workflow `clima_daily.yml` (05:47 BRT, job `gh_clima`, SEV_TOLERANTE — cada
+  rodada pede os últimos 10 dias, então um dia perdido se recupera sozinho).
+  17 cidades (capitais + Campinas/Ribeirão Preto) em 5 regiões → tabela
+  `clima_diario` (migração `021_clima_diario.sql`) + `data/clima/clima_diario.csv`.
+- **Backfill (uma vez):** Actions → Radar Meteorológico → Run workflow com
+  `backfill=true` (ERA5 desde 2016). Sem ele não há normal nem anomalia.
+- **Lógica pura:** `utils/clima.py` — índice regional (média das cidades) e
+  Brasil ponderado pela população das regiões (Censo 2022); **anomalia** =
+  máxima − normal da mesma cidade, ±7 dias do dia do ano, só anos ANTERIORES
+  (≥ 3); proxy diário de venda = avaliações novas/dia nos Mais Vendidos;
+  Spearman com defasagem 0–14 dias sobre médias móveis de 7 dias; correlação
+  mensal com série externa (GfK/sell-out, CSV `mes;vendas`).
+- **Onde ler:** página **🌡️ Clima × Vendas** (INSIGHTS); Telegram diário;
+  `python scripts/clima_collect.py --correlacao [--vendas-csv gfk.csv]`.
+
+**Regras duras:** (1) previsão nunca vira observado (`tipo` separa; a normal só
+aprende com observado); (2) correlação com < 60 pontos ou |r| < 0,3 sai como
+"evidência FRACA" — hipótese, não regra; (3) sem 3 anos anteriores, sem
+anomalia (NaN, nunca uma "normal" de 1 ano).
+
+---
+
 ## Briefing/resumo diário — nunca consultar o banco de memória (Set/2026) 🆕
 
 **O que aconteceu:** a rotina agendada que publica o briefing diário no Notion
@@ -908,6 +938,7 @@ rac-position-tracker/
 │   ├── pricetrack_daily.yml     # Import PriceTrack D-1 (00:01/04:20/05:20 BRT)
 │   ├── pipeline_guard.yml       # Supervisor de execução (06:35/12:35/22:35 BRT)
 │   ├── watchdog.yml             # Validação de dado (20:30 BRT)
+│   ├── clima_daily.yml          # 🆕 Radar meteorológico (05:47 BRT) → clima_diario
 │   └── collect.yml              # Backup de coleta (manual dispatch only)
 │
 ├── .claude/                     # AI assistant documentation
