@@ -90,6 +90,10 @@ def _fetch(url: str, timeout: float = 20.0) -> Optional[str]:
         logger.error(
             f"Resposta inutilizável: HTTP {resp.status_code}, {len(resp.text or '')} bytes"
         )
+        # O corpo do bloqueio diz QUAL anti-bot respondeu — não descartar mudo.
+        texto = " ".join(BeautifulSoup(resp.text or "", "html.parser").get_text(" ").split())
+        if texto:
+            print(f"  Texto visível: {texto[:400]!r}")
         return None
     return resp.text
 

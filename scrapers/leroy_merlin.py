@@ -499,8 +499,8 @@ class LeroyMerlinScraper(BaseScraper):
         Aba onde os PDPs são abertos: a do Chrome local quando ligado, senão a
         do browser próprio.
 
-        A Leroy não precisa de browser para a busca (Algolia), então a sessão
-        de browser existe só para os PDPs — e é exatamente nos PDPs que o
+        A busca sai do Algolia; o browser próprio fica para o fallback de busca
+        (DOM/XHR) e os screenshots. Os PDPs são outra história: é neles que o
         perfil zerado do browser próprio leva challenge. Com
         ``RAC_LOCAL_CHROME=1`` a aba é aberta (uma vez, com warm-up na home) no
         Chrome compartilhado, o mesmo que destravou Magalu e Casas Bahia.
