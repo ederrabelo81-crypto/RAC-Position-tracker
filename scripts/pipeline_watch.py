@@ -767,8 +767,10 @@ def varrer_fontes_bestsellers(dia: date) -> Optional[RelatorioCobertura]:
 def _descrever_fonte(fonte: FonteMuda) -> str:
     """``Leroy Merlin: 14 dia(s) de coleta sem a lista (último dado 07/10)``."""
     ultimo = f"{fonte.ultimo_dia:%d/%m}" if fonte.ultimo_dia else "?"
+    # Último dado antes da janela: a contagem é só da janela, um piso.
+    qtd = f"≥ {fonte.dias_sem_dado}" if fonte.minimo else str(fonte.dias_sem_dado)
     return (
-        f"{fonte.nome}: {fonte.dias_sem_dado} dia(s) de coleta sem a lista "
+        f"{fonte.nome}: {qtd} dia(s) de coleta sem a lista "
         f"(último dado {ultimo})"
     )
 

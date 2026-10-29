@@ -464,6 +464,19 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
         dica = "" if use_browser or Path(alvo).is_file() else " Tente com --browser."
         logger.error(f"PDP não chegou (bloqueio?).{dica}")
         return 1
+    if not Path(alvo).is_file() and (
+        len(html) < 20_000 or any(m in html.lower() for m in ("px-captcha", "challenge-form",
+                                                              "captcha-delivery", "access denied",
+                                                              "acesso negado", "unusual traffic"))
+    ):
+        # Mesmo critério de `LeroyMerlinScraper._looks_like_pdp`: challenge com
+        # HTTP 200 não é "PDP sem preço" — o parser não tem culpa.
+        logger.error(
+            f"Resposta não parece um PDP ({len(html):,} bytes ou página de "
+            "challenge) — bloqueio, não falta de preço."
+            + ("" if use_browser else " Tente com --browser.")
+        )
+        return 1
     if not Path(alvo).is_file():
         dump = Path(__file__).resolve().parent.parent / "logs" / "leroy_preco_probe.html"
         dump.parent.mkdir(parents=True, exist_ok=True)
@@ -498,7 +511,8 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
     print(f"  Preço   : {leitura.preco}  (camada={leitura.camada}, disponivel={leitura.disponivel})")
     if not leitura.lido:
         logger.warning(
-            "Sem preço no JSON-LD: a coleta gravaria a linha SEM preço. "
+            "Sem preço no JSON-LD: com os padrões a coleta gravaria a linha SEM preço "
+            "(LEROY_PRECO_MEDIA_FALLBACK=1 ou LEROY_PRECO_PDP=0 gravam a média). "
             "Mande logs/leroy_preco_probe.html para ajustar utils/leroy_price.py."
         )
         return 1

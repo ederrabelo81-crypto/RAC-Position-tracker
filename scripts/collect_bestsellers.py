@@ -224,7 +224,9 @@ def executar_coleta(args: argparse.Namespace) -> int:
     )
     resumo_radar = _radar_do_dia(preparado_master, data)
     if resumo_radar:
-        texto += "\n\n## 📡 Radar de marcas\n\n" + resumo_radar.replace("\n", "  \n") + "\n"
+        # A 1ª linha do resumo já é o título do bloco ("📡 Radar de marcas · …").
+        titulo, _, corpo = resumo_radar.partition("\n")
+        texto += f"\n\n## {titulo}\n\n" + corpo.replace("\n", "  \n") + "\n"
     storage.salvar_relatorio(texto, data, args.output)
 
     if args.notificar:

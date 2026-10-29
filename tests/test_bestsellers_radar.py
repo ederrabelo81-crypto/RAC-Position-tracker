@@ -186,7 +186,9 @@ class TestResumo:
             _serie("b", ["Philco"], ["Philco", "Philco"]),
             _serie("c", [GRUPO_MIDEA], [GRUPO_MIDEA]),
         )
-        texto = resumo_texto(radar_marcas(df, JANELA), JANELA)
+        radar = radar_marcas(df, JANELA)
+        assert _status(radar, GRUPO_MIDEA) == ESTAVEL   # 10% → 10% na plataforma c
+        texto = resumo_texto(radar, JANELA)
         assert "Philco — SUBINDO" in texto
         assert GRUPO_MIDEA in texto
         assert "06/09–12/09" in texto
@@ -207,3 +209,17 @@ class TestRevisaoCubic:
     def test_sem_plataforma_comparavel_e_sem_dado(self):
         linhas = [l for l in _serie("a", ["LG"], ["LG"]) if l["data"] >= JANELA.inicio_recente.isoformat()]
         assert _status(radar_marcas(_df(linhas), JANELA), "LG") == SEM_DADO
+
+
+def test_ordem_sem_somar_entre_plataformas():
+    """Quem cai em mais plataformas vem primeiro; a ordem não soma deltas."""
+    df = _df(
+        _serie("a", ["LG", "LG"], []), _serie("b", ["LG", "LG"], []),
+        _serie("c", ["LG", "LG"], []),
+        _serie("d", ["TCL"] * 9, ["TCL"]), _serie("e", ["TCL"] * 9, ["TCL"]),
+    )
+    radar = radar_marcas(df, JANELA)
+    caindo = radar[radar["status"] == CAINDO]["marca"].tolist()
+    assert caindo == ["LG", "TCL"]                  # 3 praças antes de 2 (mesmo com queda menor)
+    assert "soma_delta_pp" not in radar.columns
+    assert radar.set_index("marca").loc["TCL", "maior_queda_pp"] == -80.0

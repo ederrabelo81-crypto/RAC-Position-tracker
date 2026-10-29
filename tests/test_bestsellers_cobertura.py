@@ -102,3 +102,20 @@ class TestRegra:
         d = classificar_fontes(leituras, _nomes("a", "b"), self.D[-1]).to_dict()
         assert d["fontes_mudas"][0]["plataforma"] == "b"
         assert d["dias_de_coleta_avaliados"] == len(self.D)
+
+
+class TestRevisaoCubic:
+    D = [date(2026, 10, d) for d in (19, 20, 21, 22, 23)]
+
+    def test_ultimo_dado_antes_da_janela_e_piso(self):
+        leituras = [(d, "a") for d in self.D]
+        rel = classificar_fontes(leituras, _nomes("a", "b"), self.D[-1],
+                                 ultimos_dias={"b": date(2026, 6, 1)})
+        assert rel.mudas[0].minimo is True
+        assert rel.mudas[0].to_dict()["dias_sem_dado_e_minimo"] is True
+
+    def test_ultimo_dado_depois_do_dia_avaliado_nao_conta(self):
+        leituras = [(d, "a") for d in self.D]
+        rel = classificar_fontes(leituras, _nomes("a", "b"), self.D[2],
+                                 ultimos_dias={"b": date(2026, 10, 25)})
+        assert rel.nunca_coletaram == ["b"]

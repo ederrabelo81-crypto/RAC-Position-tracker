@@ -1212,7 +1212,9 @@ class LeroyMerlinScraper(BaseScraper):
 
         for hit, info in zip(hits, seller_info):
             url = self._extract_algolia_url(hit)
-            if not url or url in self._precos_lidos:
+            # URL que a buy box já tentou neste run (mesmo sem chegar) não é
+            # reaberta: um produto bloqueado não paga dois PDPs.
+            if not url or url in self._precos_lidos or url in self._buybox_lidos:
                 continue
             if self._preco_abortado or self._preco_budget <= 0:
                 continue
@@ -1227,7 +1229,9 @@ class LeroyMerlinScraper(BaseScraper):
             leitura = self._fetch_preco(url, vencedor)
             self._random_delay(min_s=_PDP_MIN_INTERVAL, max_s=_PDP_MAX_INTERVAL)
 
-            if leitura is not None and leitura.lido:
+            # Ambíguo é página legível com JSON-LD — não é bloqueio nem layout
+            # novo, então não conta para abortar a passada.
+            if leitura is not None and (leitura.lido or leitura.camada == "ambiguo"):
                 self._preco_falhas_seguidas = 0
                 continue
             self._preco_falhas_seguidas += 1

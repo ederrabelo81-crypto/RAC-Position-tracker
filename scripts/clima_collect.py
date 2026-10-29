@@ -34,7 +34,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import requests
@@ -199,14 +199,21 @@ def _sem_sobrescrever_archive(client, df: pd.DataFrame) -> pd.DataFrame:
     return df[~bloquear]
 
 
-def gravar_supabase(df: pd.DataFrame) -> int:
-    """Upsert em `clima_diario`. Falha vira aviso: o CSV já guardou a coleta."""
+def gravar_supabase(df: pd.DataFrame) -> Tuple[int, bool]:
+    """
+    Upsert em `clima_diario`.
+
+    Returns:
+        ``(gravadas, ok)``. ``ok`` é False quando o banco não pôde ser escrito
+        (sem cliente ou upsert recusado) — o chamador não pode bater SUCCESS:
+        no Actions o CSV do runner é descartado, então o banco é o destino.
+    """
     if not len(df):
-        return 0
+        return 0, True
     client = _client()
     if client is None:
-        logger.warning("[Clima] Supabase não configurado — só CSV.")
-        return 0
+        logger.error("[Clima] Supabase não configurado — nada foi gravado no banco.")
+        return 0, False
     try:
         df = _sem_sobrescrever_archive(client, df)
     except Exception as exc:
@@ -229,13 +236,13 @@ def gravar_supabase(df: pd.DataFrame) -> int:
             client.table(_TABELA).upsert(lote, on_conflict="data,cidade,tipo").execute()
             gravadas += len(lote)
     except Exception as exc:
-        logger.warning(
+        logger.error(
             f"[Clima] Supabase recusou ({gravadas} gravadas): {exc} — a tabela "
             "existe? docs/migrations/021_clima_diario.sql; chave service_role?"
         )
-    else:
-        logger.success(f"[Clima] Supabase: {gravadas:,} linha(s) em {_TABELA}")
-    return gravadas
+        return gravadas, False
+    logger.success(f"[Clima] Supabase: {gravadas:,} linha(s) em {_TABELA}")
+    return gravadas, True
 
 
 def ler_supabase(desde: date) -> pd.DataFrame:
@@ -409,11 +416,13 @@ def main(argv=None) -> int:
         print("\n" + texto)
         return 0
 
-    _bater("STARTED", detalhe="backfill" if args.backfill else "diário")
+    # Argumento inválido sai ANTES do STARTED: senão o livro-razão ficaria com
+    # uma execução aberta que nunca fecha (TRAVADO no supervisor).
     ate = args.ate or (hoje - timedelta(days=1))
     if args.backfill and args.desde > ate:
         logger.error("--desde depois de --ate")
         return 2
+    _bater("STARTED", detalhe="backfill" if args.backfill else "diário")
 
     novo = coletar(args.backfill, args.desde, ate, args.dias_passados, hoje)
     if not len(novo):
@@ -422,7 +431,7 @@ def main(argv=None) -> int:
         return 1
 
     historico = gravar_csv(novo, caminho)
-    gravadas = 0 if args.sem_supabase else gravar_supabase(novo)
+    gravadas, banco_ok = (0, True) if args.sem_supabase else gravar_supabase(novo)
 
     # A normal precisa do histórico: o CSV local pode ser só desta máquina
     # (runner do Actions começa vazio), então o banco completa.
@@ -434,10 +443,15 @@ def main(argv=None) -> int:
         _notificar(texto)
 
     cidades = novo["cidade"].nunique()
+    detalhe = f"{cidades}/{len(CIDADES)} cidades, {len(novo)} linhas"
+    if not banco_ok:
+        # Coletou, mas o destino não recebeu: no Actions isso é perder o dia.
+        _bater("FAILED", gravadas, f"{detalhe}; gravação no Supabase falhou")
+        return 1
     _bater(
         "SUCCESS" if cidades == len(CIDADES) else "PARTIAL",
-        gravadas or len(novo),
-        f"{cidades}/{len(CIDADES)} cidades, {len(novo)} linhas",
+        gravadas if not args.sem_supabase else len(novo),
+        detalhe,
     )
     return 0
 

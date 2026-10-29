@@ -47,6 +47,9 @@ class FonteMuda:
     ultimo_dia: Optional[date]
     dias_sem_dado: int
     dias_perdidos: List[date] = field(default_factory=list)
+    #: O último dado é anterior à janela avaliada: ``dias_sem_dado`` conta só
+    #: os dias de coleta DA JANELA — é um piso, não o total.
+    minimo: bool = False
 
     @property
     def cronica(self) -> bool:
@@ -60,6 +63,7 @@ class FonteMuda:
             "nome": self.nome,
             "ultimo_dia": self.ultimo_dia.isoformat() if self.ultimo_dia else None,
             "dias_sem_dado": self.dias_sem_dado,
+            "dias_sem_dado_e_minimo": self.minimo,
             "cronica": self.cronica,
         }
 
@@ -114,15 +118,21 @@ def classificar_fontes(
     mudas: List[FonteMuda] = []
     nunca: List[str] = []
 
+    inicio_janela = ordenados[0] if ordenados else None
     for chave, nome in fontes.items():
         dias = por_fonte.get(chave)
         ultimo = max(dias) if dias else ultimos_dias.get(chave)
+        # Último dia depois do avaliado (rodada histórica com --data) não
+        # serve de "último dado" — tiraria a fonte da auditoria daquele dia.
+        if ultimo is not None and ultimo > ate:
+            ultimo = None
         if ultimo is None:
             nunca.append(chave)
             continue
         perdidos = [d for d in ordenados if d > ultimo]
         if len(perdidos) >= DIAS_PARA_MUDA:
-            mudas.append(FonteMuda(chave, nome, ultimo, len(perdidos), perdidos))
+            minimo = inicio_janela is not None and ultimo < inicio_janela
+            mudas.append(FonteMuda(chave, nome, ultimo, len(perdidos), perdidos, minimo))
 
     mudas.sort(key=lambda m: (-m.dias_sem_dado, m.plataforma))
     return RelatorioCobertura(mudas, sorted(nunca), len(ordenados))

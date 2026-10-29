@@ -437,3 +437,11 @@ def test_clima_sem_tabela_nao_cega_o_supervisor():
             raise RuntimeError("relation clima_diario does not exist")
 
     assert pw._linhas_do_job(_Quebra(), JOBS_POR_ID["gh_clima"], DIA) is None
+
+
+def test_descricao_marca_piso_quando_o_ultimo_dado_e_antigo():
+    from bestsellers.cobertura import FonteMuda
+    from scripts.pipeline_watch import _descrever_fonte
+
+    f = FonteMuda("x", "Fonte X", date(2026, 6, 1), 22, minimo=True)
+    assert "≥ 22 dia(s)" in _descrever_fonte(f)

@@ -84,6 +84,7 @@ class _ClientArchive:
 
     def __init__(self):
         self.upsert_lotes = []
+        self.filtros = []
 
     def table(self, nome):
         return self
@@ -92,12 +93,15 @@ class _ClientArchive:
         return self
 
     def eq(self, *a):
+        self.filtros.append(("eq",) + a)
         return self
 
     def gte(self, *a):
+        self.filtros.append(("gte",) + a)
         return self
 
     def lte(self, *a):
+        self.filtros.append(("lte",) + a)
         return self
 
     def limit(self, *a):
@@ -122,6 +126,30 @@ def test_rodada_diaria_nao_sobrescreve_o_archive(monkeypatch):
          "tipo": OBSERVADO, "tmax": 22.0, "tmin": 15.0, "tmed": 18.5, "sensacao_max": 22.0,
          "precip_mm": 0.0, "fonte": "forecast"},
     ])
-    assert cc.gravar_supabase(novo) == 1
+    assert cc.gravar_supabase(novo) == (1, True)
     gravadas = [r["data"] for lote in client.upsert_lotes for r in lote]
     assert gravadas == ["2026-10-28"]
+    # a checagem pergunta só pelo observado do archive, no intervalo do lote
+    assert ("eq", "fonte", "archive") in client.filtros
+    assert ("eq", "tipo", OBSERVADO) in client.filtros
+    assert ("gte", "data", "2026-10-27") in client.filtros
+    assert ("lte", "data", "2026-10-28") in client.filtros
+
+
+def test_falha_no_banco_bate_failed_e_sai_1(tmp_path, monkeypatch):
+    hoje = cc.now_brt().date()
+    batidas = []
+    monkeypatch.setattr(cc, "_bater", lambda status, *a, **k: batidas.append(status))
+    monkeypatch.setattr(cc, "_get", lambda url, params, tentativas=3: (
+        _resposta(hoje - timedelta(days=2), 5) if url == cc._FORECAST else None))
+    monkeypatch.setattr(cc.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cc, "_client", lambda: None)   # sem Supabase
+    assert cc.main(["--csv", str(tmp_path / "c.csv")]) == 1
+    assert batidas == ["STARTED", "FAILED"]
+
+
+def test_argumento_invalido_nao_abre_execucao(monkeypatch):
+    batidas = []
+    monkeypatch.setattr(cc, "_bater", lambda status, *a, **k: batidas.append(status))
+    assert cc.main(["--backfill", "--desde", "2026-10-10", "--ate", "2026-10-01"]) == 2
+    assert batidas == []

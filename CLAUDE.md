@@ -585,7 +585,7 @@ quente que o normal antecipa venda") precisa de histórico, não de intuição.
 - **Coleta:** `scripts/clima_collect.py` (Open-Meteo, gratuito, sem chave) no
   workflow `clima_daily.yml` (05:47 BRT, job `gh_clima`, SEV_TOLERANTE — cada
   rodada pede os últimos 10 dias, então um dia perdido se recupera sozinho).
-  17 cidades (capitais + Campinas/Ribeirão Preto) em 5 regiões → tabela
+  17 cidades (15 das 27 capitais + Campinas/Ribeirão Preto) em 5 regiões → tabela
   `clima_diario` (migração `021_clima_diario.sql`) + `data/clima/clima_diario.csv`.
 - **Backfill (uma vez):** Actions → Radar Meteorológico → Run workflow com
   `backfill=true` (ERA5 desde 2016). Sem ele não há normal nem anomalia.

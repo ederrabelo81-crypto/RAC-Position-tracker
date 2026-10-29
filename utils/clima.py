@@ -188,7 +188,9 @@ def consolidar(*partes: pd.DataFrame) -> pd.DataFrame:
     df["data"] = pd.to_datetime(df["data"]).dt.date
     df["_prio"] = (df["fonte"] == "archive").astype(int)
     df = (
-        df.sort_values("_prio")
+        # Ordenação ESTÁVEL: dentro da mesma prioridade, a ordem de chegada
+        # decide — a parte mais recente (última passada) vence no keep="last".
+        df.sort_values("_prio", kind="stable")
         .drop_duplicates(subset=["data", "cidade", "tipo"], keep="last")
         .drop(columns="_prio")
     )

@@ -315,7 +315,7 @@ def radar_marcas(df: pd.DataFrame, janela: JanelaRadar) -> pd.DataFrame:
     """
     colunas = [
         "marca", "status", "plataformas_subindo", "plataformas_caindo",
-        "n_subindo", "n_caindo", "n_comparaveis", "soma_delta_pp",
+        "n_subindo", "n_caindo", "n_comparaveis", "maior_alta_pp", "maior_queda_pp",
         "aval_dia_base", "aval_dia_recente", "tracao_avaliacoes",
         "vendidos_mes_base", "vendidos_mes_recente", "tracao_vendidos",
         "preco_var_pct", "sinais",
@@ -390,7 +390,9 @@ def radar_marcas(df: pd.DataFrame, janela: JanelaRadar) -> pd.DataFrame:
             "n_subindo": len(sobe),
             "n_caindo": len(cai),
             "n_comparaveis": len(comp),
-            "soma_delta_pp": round(float(comp["delta_pp"].sum()), 1) if len(comp) else np.nan,
+            # Maior variação NUMA plataforma — nunca soma entre plataformas.
+            "maior_alta_pp": float(sobe["delta_pp"].max()) if len(sobe) else np.nan,
+            "maior_queda_pp": float(cai["delta_pp"].min()) if len(cai) else np.nan,
             "aval_dia_base": round(float(a_base), 1) if not pd.isna(a_base) else np.nan,
             "aval_dia_recente": round(float(a_rec), 1) if not pd.isna(a_rec) else np.nan,
             "tracao_avaliacoes": tracao_a,
@@ -404,9 +406,14 @@ def radar_marcas(df: pd.DataFrame, janela: JanelaRadar) -> pd.DataFrame:
     ordem = {SUBINDO: 0, ATENCAO: 1, MISTO: 2, CAINDO: 3, ESTAVEL: 4, SEM_DADO: 5}
     out = pd.DataFrame(linhas, columns=colunas)
     out["_ordem"] = out["status"].map(ordem)
+    # Força do sinal na direção do status: para quem cai, mais plataformas
+    # caindo e a queda mais funda primeiro; para os demais, o espelho.
+    caindo = out["status"] == CAINDO
+    out["_n"] = np.where(caindo, out["n_caindo"], out["n_subindo"])
+    out["_mag"] = np.where(caindo, -out["maior_queda_pp"], out["maior_alta_pp"]).astype(float)
     out = out.sort_values(
-        ["_ordem", "n_subindo", "soma_delta_pp"], ascending=[True, False, False]
-    ).drop(columns="_ordem")
+        ["_ordem", "_n", "_mag"], ascending=[True, False, False], na_position="last"
+    ).drop(columns=["_ordem", "_n", "_mag"])
     return out.reset_index(drop=True)
 
 
