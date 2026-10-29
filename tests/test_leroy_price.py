@@ -382,3 +382,16 @@ class TestBrowserDoPreco:
         for _ in range(5):
             assert s._fetch_pdp_browser_preco("https://x/p") == "<html>local</html>"
         assert len(chrome.aquecido) == leroy_mod._PDP_WARMUP_TENTATIVAS
+
+    def test_aba_nova_apos_reconexao_reaquece(self, monkeypatch):
+        morta = _PaginaFake(erro_goto=Exception("Target page, context or browser has been closed"))
+        nova = _PaginaFake("<html>nova</html>")
+        paginas = [morta, nova]
+        chrome = _ChromeLocalFake(None)
+        chrome.new_page = lambda: paginas.pop(0)
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(leroy_mod, "get_local_browser", lambda: chrome)
+        s = LeroyMerlinScraper()
+        s._fetch_pdp_browser_preco("https://x/p")
+        s._fetch_pdp_browser_preco("https://x/q")
+        assert len(chrome.aquecido) == 2  # uma por aba

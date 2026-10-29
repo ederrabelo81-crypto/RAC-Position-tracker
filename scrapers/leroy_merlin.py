@@ -523,6 +523,11 @@ class LeroyMerlinScraper(BaseScraper):
                 page.set_default_timeout(30_000)
                 self._pdp_local_lb = lb
                 self._pdp_local_page = page
+                # Aba nova pode ser de um Chrome reconectado, cujo warm-up o
+                # LocalBrowser já esqueceu. Reavalia; no mesmo Chrome o
+                # `warmup` é idempotente por host e não navega de novo.
+                self._pdp_local_aquecido = False
+                self._pdp_warmup_restantes = max(self._pdp_warmup_restantes, 1)
                 self._aquecer_pdp_local()
                 logger.info(
                     f"[{self.platform_name}] PDPs no Chrome real local (perfil "
