@@ -173,5 +173,15 @@ gravado — sinal para desconfiar, não regra.
   `preco_sem_leitura`, `preco_media_fallback`.
 - Validar contra o site: `python scripts/leroy_seller_probe.py --preco "URL"`
   (ou `--browser`); salva `logs/leroy_preco_probe.html` para reprocessar.
+- **Bloqueio dos PDPs (29/10/2026):** do PC coletor, `requests` levou HTTP 403
+  (784 bytes) e o Chrome próprio do Playwright (perfil zerado) um challenge de
+  1.566 bytes — o probe com `--browser` nunca usou o Chrome local, mesmo com
+  `RAC_LOCAL_CHROME=1`. Agora, com a variável ligada, os PDPs (buy box, nome do
+  seller e preço) abrem numa aba do Chrome real compartilhado
+  (`scrapers/local_browser.py`), com warm-up na home uma vez; sem Chrome local,
+  caem no browser próprio. A passada de preço não espera o rótulo do seller —
+  só o `script[type="application/ld+json"]` (`LEROY_PRECO_LD_TIMEOUT`, 4 s).
+  No bloqueio o probe grava `logs/leroy_preco_bloqueio.html` e mostra o texto
+  visível (qual anti-bot respondeu).
 - ⚠️ `bestsellers/sources/leroy_merlin.py` (Mais Vendidos) ainda lê a média —
   lá o preço é atributo secundário do ranking.
