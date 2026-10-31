@@ -36,6 +36,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import MAX_PAGES, LOGS_DIR
 from scrapers.base import BaseScraper
+from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
+from scrapers.playwright_runtime import is_target_closed
 from utils.leroy_sellers import (
     LEROY_CANONICAL,
     SELLER_LABEL_PATTERN,
@@ -127,6 +129,13 @@ _PRECO_MAX_FALHAS_SEGUIDAS = 8
 
 # Tempo máximo esperando o bloco de seller hidratar no browser.
 _PDP_HYDRATE_TIMEOUT = float(os.environ.get("LEROY_PDP_HYDRATE_TIMEOUT", "10000") or 10000)
+# PDP aberto SÓ pelo preço: o JSON-LD vem no SSR, então não há rótulo a esperar —
+# só o bloco ``ld+json`` existir (curto: cobre o challenge que se resolve sozinho
+# e recarrega a página, sem pagar os 10s da hidratação do seller).
+_PRECO_LD_TIMEOUT = float(os.environ.get("LEROY_PRECO_LD_TIMEOUT", "4000") or 4000)
+_HOME_URL = "https://www.leroymerlin.com.br/"
+# Tentativas de warm-up da home por execução (cada uma custa até ~45s).
+_PDP_WARMUP_TENTATIVAS = 3
 
 # Marcadores de página de challenge/bloqueio. Akamai & cia costumam responder
 # HTTP 200 com um interstitial de JS, indistinguível de um PDP pelo tamanho.
@@ -276,6 +285,14 @@ class LeroyMerlinScraper(BaseScraper):
         self._precos_lidos: Dict[str, PdpPrice] = {}
         self._preco_falhas_seguidas = 0
         self._preco_abortado = False
+        # Aba dos PDPs no Chrome local (RAC_LOCAL_CHROME=1): IP residencial e
+        # perfil com histórico, o que a Leroy aceita — o Chrome próprio do
+        # BaseScraper (perfil zerado) leva challenge de ~1,5 KB (29/10/2026).
+        self._pdp_local_page: Any = None
+        self._pdp_local_lb: Any = None
+        self._pdp_local_indisponivel = False
+        self._pdp_local_aquecido = False
+        self._pdp_warmup_restantes = _PDP_WARMUP_TENTATIVAS
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -477,55 +494,177 @@ class LeroyMerlinScraper(BaseScraper):
             )
         return None
 
-    def _fetch_pdp_browser(self, url: str) -> Optional[str]:
+    def _pagina_pdp(self) -> Any:
         """
-        Caminho pesado: carrega o PDP no browser Playwright já aberto, que
-        carrega cookies e fingerprint reais.
+        Aba onde os PDPs são abertos: a do Chrome local quando ligado, senão a
+        do browser próprio.
+
+        A busca sai do Algolia; o browser próprio fica para o fallback de busca
+        (DOM/XHR) e os screenshots. Os PDPs são outra história: é neles que o
+        perfil zerado do browser próprio leva challenge. Com
+        ``RAC_LOCAL_CHROME=1`` a aba é aberta (uma vez, com warm-up na home) no
+        Chrome compartilhado, o mesmo que destravou Magalu e Casas Bahia.
+
+        Returns:
+            Página Playwright, ou None quando não há browser nenhum.
+        """
+        if self._pdp_local_page is not None:
+            try:
+                if not self._pdp_local_page.is_closed():
+                    self._aquecer_pdp_local()
+                    return self._pdp_local_page
+            except Exception:
+                pass
+            self._pdp_local_page = None
+        if not self._pdp_local_indisponivel and is_local_chrome_enabled():
+            lb = get_local_browser()
+            page = lb.new_page() if lb is not None else None
+            if page is not None:
+                page.set_default_timeout(30_000)
+                self._pdp_local_lb = lb
+                self._pdp_local_page = page
+                # Aba nova pode ser de um Chrome reconectado, cujo warm-up o
+                # LocalBrowser já esqueceu. Reavalia; no mesmo Chrome o
+                # `warmup` é idempotente por host e não navega de novo.
+                self._pdp_local_aquecido = False
+                self._pdp_warmup_restantes = max(self._pdp_warmup_restantes, 1)
+                self._aquecer_pdp_local()
+                logger.info(
+                    f"[{self.platform_name}] PDPs no Chrome real local (perfil "
+                    "compartilhado, IP residencial)"
+                )
+                return page
+            # Uma vez por execução: sem Chrome local agora, sem insistir a cada PDP.
+            self._pdp_local_indisponivel = True
+            logger.warning(
+                f"[{self.platform_name}] RAC_LOCAL_CHROME ligado mas o Chrome local "
+                "não abriu — PDPs no browser próprio (sujeito a challenge)"
+            )
+        return self._page
+
+    def _aquecer_pdp_local(self) -> None:
+        """
+        Warm-up da home na aba local, até ``_PDP_WARMUP_TENTATIVAS`` vezes.
+
+        Falha de warm-up (rede, home lenta) não descarta a aba: o perfil
+        residencial ainda é o melhor caminho que existe. Mas também não fica
+        dada como aquecida — a próxima abertura de PDP tenta de novo, com teto
+        para não pagar 45s de goto em cada PDP de um turno sem rede.
+        """
+        if self._pdp_local_aquecido or self._pdp_warmup_restantes <= 0:
+            return
+        self._pdp_warmup_restantes -= 1
+        try:
+            self._pdp_local_aquecido = bool(
+                self._pdp_local_lb.warmup(
+                    self._pdp_local_page, _HOME_URL, host_key="leroymerlin"
+                )
+            )
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] Warm-up da home falhou: {exc}")
+        if not self._pdp_local_aquecido:
+            logger.warning(
+                f"[{self.platform_name}] Warm-up da home no Chrome local falhou "
+                f"({self._pdp_warmup_restantes} tentativa(s) restante(s))"
+            )
+
+    def _abrir_pdp_browser(self, url: str, aguardar_rotulo: bool) -> Optional[str]:
+        """
+        Carrega o PDP no browser e devolve o HTML.
 
         Args:
             url: URL absoluta do PDP.
+            aguardar_rotulo: espera o "Vendido e entregue por" hidratar (buy box
+                e nome do seller). False para o preço, que está no JSON-LD do
+                SSR — esperar o rótulo custaria até 10s por PDP à toa.
 
         Returns:
             HTML renderizado, ou None se não houver browser ou a navegação falhar.
         """
-        if self._page is None:
+        page = self._pagina_pdp()
+        if page is None:
             return None
         try:
-            self._page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         except Exception as exc:
+            if page is self._pdp_local_page and is_target_closed(exc):
+                # Janela do Chrome local fechada: a próxima chamada reabre.
+                self._pdp_local_page = None
             logger.debug(f"[{self.platform_name}] PDP via browser falhou: {exc}")
             return None
 
-        # O PDP é Next.js: no `domcontentloaded` só existe o shell, e o bloco
-        # "Vendido e entregue por" ainda não foi hidratado. Ler content() aqui
-        # devolve HTML sem seller nenhum — era isso que fazia 100% das
-        # resoluções falharem em produção (jul/2026). Espera o texto aparecer.
-        try:
-            # Mesmo padrão que o parser e o probe usam (fonte única em
-            # utils.leroy_sellers): divergir aqui faz o diagnóstico dizer
-            # "hidratou" onde esta espera não reconhece, e gasta o timeout
-            # inteiro mais o fallback de rede em cada PDP.
-            self._page.wait_for_function(
-                f"() => /{SELLER_LABEL_PATTERN}/i.test(document.body.innerText)",
-                timeout=_PDP_HYDRATE_TIMEOUT,
-            )
-        except Exception:
-            # Não é fatal: o payload do App Router pode trazer o seller mesmo
-            # sem o texto renderizado. Dá uma última chance à rede acalmar.
-            logger.debug(
-                f"[{self.platform_name}] Rótulo de seller não hidratou em "
-                f"{_PDP_HYDRATE_TIMEOUT:.0f}ms — seguindo com o HTML disponível"
-            )
+        if not aguardar_rotulo:
             try:
-                self._page.wait_for_load_state("networkidle", timeout=5_000)
+                page.wait_for_selector(
+                    'script[type="application/ld+json"]',
+                    state="attached",
+                    timeout=_PRECO_LD_TIMEOUT,
+                )
             except Exception:
-                pass
+                logger.debug(
+                    f"[{self.platform_name}] PDP sem JSON-LD em "
+                    f"{_PRECO_LD_TIMEOUT:.0f}ms — seguindo com o HTML disponível"
+                )
+        else:
+            # O PDP é Next.js: no `domcontentloaded` só existe o shell, e o
+            # bloco "Vendido e entregue por" ainda não foi hidratado. Ler
+            # content() aqui devolve HTML sem seller nenhum — era isso que fazia
+            # 100% das resoluções falharem em produção (jul/2026).
+            try:
+                # Mesmo padrão que o parser e o probe usam (fonte única em
+                # utils.leroy_sellers): divergir aqui faz o diagnóstico dizer
+                # "hidratou" onde esta espera não reconhece, e gasta o timeout
+                # inteiro mais o fallback de rede em cada PDP.
+                page.wait_for_function(
+                    f"() => /{SELLER_LABEL_PATTERN}/i.test(document.body.innerText)",
+                    timeout=_PDP_HYDRATE_TIMEOUT,
+                )
+            except Exception:
+                # Não é fatal: o payload do App Router pode trazer o seller
+                # mesmo sem o texto renderizado. Última chance à rede acalmar.
+                logger.debug(
+                    f"[{self.platform_name}] Rótulo de seller não hidratou em "
+                    f"{_PDP_HYDRATE_TIMEOUT:.0f}ms — seguindo com o HTML disponível"
+                )
+                try:
+                    page.wait_for_load_state("networkidle", timeout=5_000)
+                except Exception:
+                    pass
 
         try:
-            return self._page.content()
+            return page.content()
         except Exception as exc:
             logger.debug(f"[{self.platform_name}] content() do PDP falhou: {exc}")
             return None
+
+    def _fetch_pdp_browser(self, url: str) -> Optional[str]:
+        """PDP no browser esperando o rótulo do seller (buy box / nome do seller)."""
+        return self._abrir_pdp_browser(url, aguardar_rotulo=True)
+
+    def _fetch_pdp_browser_preco(self, url: str) -> Optional[str]:
+        """PDP no browser só pelo preço: sem esperar o rótulo do seller."""
+        return self._abrir_pdp_browser(url, aguardar_rotulo=False)
+
+    def fechar_pdp_local(self) -> None:
+        """
+        Fecha a aba dos PDPs no Chrome local, se aberta.
+
+        A aba é nossa; a janela é compartilhada e fechada no fim da coleta
+        (close_local_browser). Público porque quem usa o scraper sem o context
+        manager (Mais Vendidos) também abre a aba e precisa fechá-la — senão o
+        Chrome persistente acumula uma aba por execução.
+        """
+        if self._pdp_local_page is not None:
+            try:
+                if not self._pdp_local_page.is_closed():
+                    self._pdp_local_page.close()
+            except Exception:
+                pass
+            self._pdp_local_page = None
+
+    def _close(self) -> None:
+        self.fechar_pdp_local()
+        super()._close()
 
     @staticmethod
     def _looks_like_pdp(html: str) -> bool:
@@ -1165,7 +1304,8 @@ class LeroyMerlinScraper(BaseScraper):
 
     def _fetch_preco(self, url: str, vencedor: Optional[str]) -> Optional[PdpPrice]:
         """
-        Abre o PDP só pelo preço: ``requests`` primeiro, browser se não chegou.
+        Abre o PDP só pelo preço: ``requests`` primeiro, browser (sem esperar o
+        rótulo do seller) se não chegou.
 
         Args:
             url: URL absoluta do PDP.
@@ -1177,7 +1317,7 @@ class LeroyMerlinScraper(BaseScraper):
         strategies = []
         if self._pdp_requests_strikes < 3:
             strategies.append(self._fetch_pdp_requests)
-        strategies.append(self._fetch_pdp_browser)
+        strategies.append(self._fetch_pdp_browser_preco)
 
         leitura: Optional[PdpPrice] = None
         for fetch in strategies:

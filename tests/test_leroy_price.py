@@ -136,6 +136,7 @@ def leroy(tmp_path, monkeypatch):
     s.abertos = []
     monkeypatch.setattr(s, "_random_delay", lambda **kw: None)
     monkeypatch.setattr(s, "_fetch_pdp_browser", lambda url: None)
+    monkeypatch.setattr(s, "_fetch_pdp_browser_preco", lambda url: None)
 
     def fetch(url):
         s.abertos.append(url)
@@ -249,3 +250,148 @@ class TestRevisaoCubic:
         rec = _parse(leroy, [hit])[0]
         assert rec["Preço (R$)"] == 2100.0                     # menor, sinalizado
         assert leroy._seller_metrics["preco_pdp_menor_oferta"] == 1
+
+
+class _PaginaFake:
+    """Página Playwright mínima: registra o que foi esperado."""
+
+    def __init__(self, html="<html>pdp</html>", erro_goto=None):
+        self.html, self.erro_goto = html, erro_goto
+        self.esperas, self.fechada = [], False
+
+    def goto(self, url, **kw):
+        if self.erro_goto:
+            raise self.erro_goto
+
+    def wait_for_selector(self, sel, **kw):
+        self.esperas.append(("ld+json", sel))
+
+    def wait_for_function(self, js, **kw):
+        self.esperas.append(("rotulo", js))
+
+    def wait_for_load_state(self, *a, **kw):
+        self.esperas.append(("rede", a))
+
+    def content(self):
+        return self.html
+
+    def set_default_timeout(self, ms):
+        pass
+
+    def is_closed(self):
+        return self.fechada
+
+    def close(self):
+        self.fechada = True
+
+
+class _ChromeLocalFake:
+    def __init__(self, pagina):
+        self.pagina, self.aquecido = pagina, []
+
+    def new_page(self):
+        return self.pagina
+
+    def warmup(self, page, url, **kw):
+        self.aquecido.append(url)
+        return True
+
+
+class TestBrowserDoPreco:
+    @pytest.fixture(autouse=True)
+    def _sem_chrome_local(self, monkeypatch):
+        # O .env do PC coletor liga RAC_LOCAL_CHROME: o teste não pode abrir o Chrome real.
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: False)
+
+    def test_preco_nao_espera_o_rotulo(self):
+        s = LeroyMerlinScraper()
+        s._page = _PaginaFake()
+        assert s._fetch_pdp_browser_preco("https://x/p") == "<html>pdp</html>"
+        assert [tipo for tipo, _ in s._page.esperas] == ["ld+json"]
+
+    def test_buybox_segue_esperando_o_rotulo(self):
+        s = LeroyMerlinScraper()
+        s._page = _PaginaFake()
+        s._fetch_pdp_browser("https://x/p")
+        assert s._page.esperas[0][0] == "rotulo"
+
+    def test_fetch_preco_usa_o_caminho_sem_rotulo(self, monkeypatch):
+        s = LeroyMerlinScraper()
+        s._pdp_requests_strikes = 3  # requests fora
+        chamados = []
+        monkeypatch.setattr(s, "_fetch_pdp_browser", lambda u: chamados.append("rotulo"))
+        monkeypatch.setattr(s, "_fetch_pdp_browser_preco", lambda u: chamados.append("preco"))
+        s._fetch_preco("https://x/p", None)
+        assert chamados == ["preco"]
+
+    def test_chrome_local_abre_os_pdps(self, monkeypatch):
+        local, propria = _PaginaFake("<html>local</html>"), _PaginaFake("<html>propria</html>")
+        chrome = _ChromeLocalFake(local)
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(leroy_mod, "get_local_browser", lambda: chrome)
+        s = LeroyMerlinScraper()
+        s._page = propria
+        assert s._fetch_pdp_browser_preco("https://x/p") == "<html>local</html>"
+        assert s._fetch_pdp_browser_preco("https://x/q") == "<html>local</html>"
+        assert chrome.aquecido == [leroy_mod._HOME_URL]  # warm-up uma vez só
+        s._close()
+        assert local.fechada
+
+    def test_sem_chrome_local_cai_no_browser_proprio(self, monkeypatch):
+        chamadas = []
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(leroy_mod, "get_local_browser", lambda: chamadas.append(1))
+        s = LeroyMerlinScraper()
+        s._page = _PaginaFake("<html>propria</html>")
+        assert s._fetch_pdp_browser_preco("https://x/p") == "<html>propria</html>"
+        s._fetch_pdp_browser_preco("https://x/q")
+        assert len(chamadas) == 1  # não insiste a cada PDP
+
+    def test_janela_local_fechada_reabre_na_proxima(self, monkeypatch):
+        morta = _PaginaFake(erro_goto=Exception("Target page, context or browser has been closed"))
+        nova = _PaginaFake("<html>nova</html>")
+        paginas = [morta, nova]
+        chrome = _ChromeLocalFake(None)
+        chrome.new_page = lambda: paginas.pop(0)
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(leroy_mod, "get_local_browser", lambda: chrome)
+        s = LeroyMerlinScraper()
+        assert s._fetch_pdp_browser_preco("https://x/p") is None
+        assert s._fetch_pdp_browser_preco("https://x/q") == "<html>nova</html>"
+
+    def test_mais_vendidos_fecha_a_aba_local(self, monkeypatch):
+        """Sem context manager não há `_close()`: o `_fechar` da fonte fecha a aba."""
+        from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers
+
+        local = _PaginaFake("<html>local</html>")
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(leroy_mod, "get_local_browser", lambda: _ChromeLocalFake(local))
+        fonte = LeroyMerlinBestSellers()
+        fonte._abrir()
+        fonte._leroy._fetch_pdp_browser("https://x/p")
+        fonte._fechar()
+        assert local.fechada
+
+    def test_warmup_que_falha_e_retentado_com_teto(self, monkeypatch):
+        local = _PaginaFake("<html>local</html>")
+        chrome = _ChromeLocalFake(local)
+        chrome.warmup = lambda page, url, **kw: chrome.aquecido.append(url) or False
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(leroy_mod, "get_local_browser", lambda: chrome)
+        s = LeroyMerlinScraper()
+        for _ in range(5):
+            assert s._fetch_pdp_browser_preco("https://x/p") == "<html>local</html>"
+        assert len(chrome.aquecido) == leroy_mod._PDP_WARMUP_TENTATIVAS
+
+    def test_aba_nova_apos_reconexao_reaquece(self, monkeypatch):
+        morta = _PaginaFake(erro_goto=Exception("Target page, context or browser has been closed"))
+        nova = _PaginaFake("<html>nova</html>")
+        paginas = [morta, nova]
+        chrome = _ChromeLocalFake(None)
+        chrome.new_page = lambda: paginas.pop(0)
+        monkeypatch.setattr(leroy_mod, "is_local_chrome_enabled", lambda: True)
+        monkeypatch.setattr(leroy_mod, "get_local_browser", lambda: chrome)
+        s = LeroyMerlinScraper()
+        s._fetch_pdp_browser_preco("https://x/p")
+        s._fetch_pdp_browser_preco("https://x/q")
+        assert len(chrome.aquecido) == 2  # uma por aba

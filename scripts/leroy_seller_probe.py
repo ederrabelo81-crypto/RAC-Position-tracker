@@ -40,6 +40,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from collections import Counter
@@ -49,6 +50,7 @@ from typing import Any, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import requests
+from bs4 import BeautifulSoup
 from loguru import logger
 
 from utils.leroy_price import _ld_payloads, _produtos, extract_pdp_price
@@ -88,6 +90,10 @@ def _fetch(url: str, timeout: float = 20.0) -> Optional[str]:
         logger.error(
             f"Resposta inutilizável: HTTP {resp.status_code}, {len(resp.text or '')} bytes"
         )
+        # O corpo do bloqueio diz QUAL anti-bot respondeu — não descartar mudo.
+        texto = " ".join(BeautifulSoup(resp.text or "", "html.parser").get_text(" ").split())
+        if texto:
+            print(f"  Texto visível: {texto[:400]!r}")
         return None
     return resp.text
 
@@ -183,9 +189,13 @@ def _diagnose_html(html: str, seller_id: Optional[str]) -> None:
         print(f"  {texto[:600]!r}")
 
 
-def _fetch_via_browser(url: str, headless: bool = True) -> Optional[str]:
+def _fetch_via_browser(url: str, headless: bool = True, preco: bool = False) -> Optional[str]:
     """
-    Baixa o PDP pelo Playwright, com a mesma espera de hidratação da coleta.
+    Baixa o PDP pelo browser da coleta, com a mesma espera da coleta.
+
+    Com ``RAC_LOCAL_CHROME=1`` o PDP abre no Chrome real local (perfil
+    compartilhado), como na coleta; sem ela, no Chrome próprio do Playwright.
+    ``preco=True`` não espera o rótulo do seller (o preço vem no JSON-LD do SSR).
 
     Falha de inicialização do browser (Playwright sem chromium instalado, por
     exemplo) é reportada como erro controlado, igual ao caminho via requests —
@@ -197,6 +207,8 @@ def _fetch_via_browser(url: str, headless: bool = True) -> Optional[str]:
         from scrapers.leroy_merlin import LeroyMerlinScraper
 
         with LeroyMerlinScraper(headless=headless) as scraper:
+            if preco:
+                return scraper._fetch_pdp_browser_preco(url)
             return scraper._fetch_pdp_browser(url)
     except Exception as exc:
         logger.error(
@@ -457,7 +469,7 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
     if Path(alvo).is_file():
         html: Optional[str] = Path(alvo).read_text(encoding="utf-8", errors="replace")
     elif use_browser:
-        html = _fetch_via_browser(alvo, headless=headless)
+        html = _fetch_via_browser(alvo, headless=headless, preco=True)
     else:
         html = _fetch(alvo)
     if not html:
@@ -470,11 +482,26 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
                                                               "acesso negado", "unusual traffic"))
     ):
         # Mesmo critério de `LeroyMerlinScraper._looks_like_pdp`: challenge com
-        # HTTP 200 não é "PDP sem preço" — o parser não tem culpa.
+        # HTTP 200 não é "PDP sem preço" — o parser não tem culpa. O dump fica:
+        # é a única evidência de QUAL anti-bot respondeu.
+        dump = Path(__file__).resolve().parent.parent / "logs" / "leroy_preco_bloqueio.html"
+        dump.parent.mkdir(parents=True, exist_ok=True)
+        dump.write_text(html, encoding="utf-8")
+        texto = " ".join(BeautifulSoup(html, "html.parser").get_text(" ").split())
+        print(f"  Texto visível: {texto[:400]!r}")
+        # Mesma regra de ativação da coleta (`is_local_chrome_enabled`).
+        if use_browser and os.environ.get("RAC_LOCAL_CHROME", "").strip().lower() not in (
+            "1", "true", "yes", "sim", "on"
+        ):
+            logger.warning(
+                "Sem RAC_LOCAL_CHROME=1 o --browser usa o Chrome próprio (perfil "
+                "zerado), que a Leroy bloqueia; a coleta no PC usa o Chrome local."
+            )
         logger.error(
             f"Resposta não parece um PDP ({len(html):,} bytes ou página de "
             "challenge) — bloqueio, não falta de preço."
             + ("" if use_browser else " Tente com --browser.")
+            + f" HTML em {dump}."
         )
         return 1
     if not Path(alvo).is_file():
@@ -507,7 +534,15 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
 
     vencedor = extract_buybox_winner(html)
     leitura = extract_pdp_price(html, vencedor)
-    print(f"\n  Buy box : {vencedor or '(rótulo não encontrado)'}")
+    if vencedor:
+        print(f"\n  Buy box : {vencedor}")
+    elif use_browser:
+        # O modo preço não espera o rótulo hidratar (como a coleta): a coleta
+        # escolhe a oferta pelo vencedor da passada de buy box, que aqui não roda.
+        print("\n  Buy box : (não esperada neste modo — a coleta usa o vencedor da "
+              "passada de buy box; com várias ofertas, o preço abaixo é o menor)")
+    else:
+        print("\n  Buy box : (rótulo não encontrado)")
     print(f"  Preço   : {leitura.preco}  (camada={leitura.camada}, disponivel={leitura.disponivel})")
     if not leitura.lido:
         if leitura.camada == "ambiguo":
