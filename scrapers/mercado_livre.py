@@ -596,10 +596,10 @@ class MLScraper(BaseScraper):
                 "RENOVADA no turno (tinha expirado; relogin automático com "
                 "ML_EMAIL/ML_PASSWORD passou)"
             )
-        relogin = (
-            f"; relogin automático: {self._relogin_status}"
-            if self._relogin_status else ""
-        )
+        status = self._relogin_status
+        if self._relogin_ok:  # passou, mas houve gate de login depois
+            status = "passou, mas o ML voltou a pedir login"
+        relogin = f"; relogin automático: {status}" if status else ""
         # O contador vem antes: ele registra a evidência no momento do gate,
         # e o cookie pode sumir depois disso sem desfazer o diagnóstico.
         if self._gate_while_logged:
@@ -609,8 +609,8 @@ class MLScraper(BaseScraper):
                 "relogar: python scripts/setup_local_profile.py --site mercadolivre)"
             )
         if not self._is_logged_in():
-            return "anônima"
-        return "logada"
+            return "anônima" + relogin
+        return "logada" + relogin
 
     def _log_session_state(self) -> None:
         """Diz no log se a coleta começa autenticada — o gate depende disso."""
@@ -2001,7 +2001,10 @@ class MLScraper(BaseScraper):
 
         self._relogin_status = {
             ml_login.ENVIADO: "credenciais aceitas",
-            ml_login.DESAFIO: "o ML pediu código/2FA/verificação (relogar à mão)",
+            ml_login.DESAFIO: (
+                "o ML não concluiu o login (código/2FA/verificação ou "
+                "credencial recusada — relogar à mão)"
+            ),
             ml_login.FORM_AUSENTE: "formulário de login não encontrado",
             ml_login.SEM_CREDENCIAIS: "sem ML_EMAIL/ML_PASSWORD no .env",
         }.get(resultado, "falhou ao preencher o formulário")
@@ -2029,7 +2032,7 @@ class MLScraper(BaseScraper):
             self._dismiss_cep_popup()
             if not self._is_login_gate(confirm=True):
                 self._relogin_ok = True
-                self._relogin_status = "passou, mas o ML voltou a pedir login"
+                self._relogin_status = "OK"
                 self._gate_failures = 0
                 logger.success(
                     f"[{self.platform_name}] Relogin automático renovou a sessão "

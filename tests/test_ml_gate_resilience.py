@@ -347,9 +347,19 @@ class TestReloginAutomatico:
         chamadas: List[int] = []
 
         def fake(page: Any, email: str, senha: str) -> str:
+            assert (email, senha) == ("conta@exemplo.com", "segredo")
             chamadas.append(1)
             if libera:
-                page.html = _SERP_HTML
+                # A SERP só aparece na PRÓXIMA navegação: prova que o scraper
+                # refaz a busca depois do login.
+                goto_original = page.goto
+
+                def goto_pos_login(url: str, **kw: Any) -> None:
+                    goto_original(url, **kw)
+                    page.html = _SERP_HTML
+                    page.goto = goto_original  # só a 1ª navegação pós-login
+
+                page.goto = goto_pos_login
             return resultado
 
         monkeypatch.setattr(ml_mod.ml_login, "fazer_login_ml", fake)
@@ -358,7 +368,10 @@ class TestReloginAutomatico:
     def test_relogin_libera_a_serp(self, expirada: MLScraper, monkeypatch) -> None:
         chamadas = self._login(monkeypatch, ml_mod.ml_login.ENVIADO)
         url = MLScraper._build_url("kw", 0)
+        antes = len(expirada._page.gotos)
         assert expirada._goto_serp(url, "kw", 1) is True
+        # tentativas antes do login (gateadas) + 1 navegação depois do login
+        assert len(expirada._page.gotos) == antes + ml_mod._GATE_RETRIES + 2
         assert chamadas == [1]
         assert expirada._gate_failures == 0
         assert expirada._gate_reason_counts == {}
@@ -375,7 +388,7 @@ class TestReloginAutomatico:
         assert chamadas == [1]
         linha = expirada.run_diagnostics()
         assert "sessão: EXPIRADA" in linha
-        assert "relogin automático: o ML pediu código/2FA" in linha
+        assert "relogin automático: o ML não concluiu o login" in linha
 
     def test_gate_de_novo_depois_do_relogin_volta_a_expirada(
         self, expirada: MLScraper, monkeypatch
@@ -428,6 +441,14 @@ class TestReloginAutomatico:
         expirada._local_active = False
         assert expirada._goto_serp(MLScraper._build_url("kw", 0), "kw", 1) is False
         assert chamadas == []
+
+    def test_perfil_anonimo_mostra_desfecho(self, expirada: MLScraper, monkeypatch) -> None:
+        self._login(monkeypatch, ml_mod.ml_login.DESAFIO, libera=False)
+        expirada._context.cookies.return_value = []
+        expirada._goto_serp(MLScraper._build_url("kw", 0), "kw", 1)
+        assert "sessão: anônima; relogin automático: o ML não concluiu" in (
+            expirada.run_diagnostics()
+        )
 
     def test_captcha_nao_dispara_relogin(self, expirada: MLScraper, monkeypatch) -> None:
         chamadas = self._login(monkeypatch, ml_mod.ml_login.ENVIADO)

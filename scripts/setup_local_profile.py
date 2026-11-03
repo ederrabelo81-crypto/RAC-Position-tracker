@@ -74,6 +74,7 @@ from scrapers.local_browser import (  # noqa: E402
     _resolve_profile_dir,
 )
 from utils.ml_login import (  # noqa: E402
+    DESAFIO,
     ERRO,
     FORM_AUSENTE,
     ML_EMAIL_FIELD,
@@ -210,6 +211,13 @@ def _ml_auto_login(port: int) -> bool:
             print(
                 "  [--auto] Não achei o formulário de login. Clique em 'Entre' "
                 "na janela do Chrome e faça manualmente."
+            )
+            return False
+        if resultado == DESAFIO:
+            print(
+                "  [--auto] O ML não concluiu o login sozinho (código/2FA, "
+                "verificação de dispositivo ou credencial recusada). "
+                f"Termine na janela do Chrome. Página atual: {page.url[:90]}"
             )
             return False
         if resultado == ERRO:

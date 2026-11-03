@@ -25,7 +25,10 @@ resultado é ``DESAFIO`` e quem chama devolve o caso para o relogin manual.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Tuple
+
+from loguru import logger
 
 # Abrimos a HOME/rota de conta, não uma rota de login hardcoded: o ML troca o
 # caminho do fluxo (`/jms/mlb/lgz/msl/login` virou 404 em 31/07/2026) e uma URL
@@ -50,6 +53,10 @@ ML_CODE_FIELD = (
 # testados UM A UM (não em união com `.first`, que entrega quem vier primeiro
 # no DOM, podendo ser um card promocional apontando para a rota velha).
 # Todos excluem `/msl/`: é justamente o caminho que virou 404 em 31/07/2026.
+# URL ainda dentro do fluxo de login depois do envio = login não concluído
+# (desafio com markup que não conhecemos, ou credencial recusada).
+_LOGIN_FLOW_URL_RE = re.compile(r"/lgz/|/login|/jms/|account-verification|/gz/", re.I)
+
 ML_LOGIN_LINK_SELECTORS = (
     "a[data-link-id='login']",
     "a[href*='/lgz/']:not([href*='/msl/'])",
@@ -59,8 +66,8 @@ ML_LOGIN_LINK_SELECTORS = (
 )
 
 # Resultados de `fazer_login_ml`.
-ENVIADO = "ENVIADO"            # credenciais aceitas, nenhum desafio na tela
-DESAFIO = "DESAFIO"            # código/2FA/verificação ou senha recusada
+ENVIADO = "ENVIADO"            # saiu do fluxo de login, nenhum desafio na tela
+DESAFIO = "DESAFIO"            # código/2FA/verificação ou credencial recusada
 FORM_AUSENTE = "FORM_AUSENTE"  # não achei o formulário de login
 SEM_CREDENCIAIS = "SEM_CREDENCIAIS"
 ERRO = "ERRO"
@@ -71,6 +78,13 @@ def credenciais_ml() -> Tuple[str, str]:
     return (
         os.getenv("ML_EMAIL", "").strip(),
         os.getenv("ML_PASSWORD", "").strip(),
+    )
+
+
+def _log_falha(etapa: str, exc: Exception) -> None:
+    """Registra tipo e mensagem curta da exceção (nunca credenciais)."""
+    logger.warning(
+        f"[ML login] {etapa} falhou: {type(exc).__name__}: {str(exc)[:160]}"
     )
 
 
@@ -101,8 +115,8 @@ def abrir_login_ml(page: Any) -> bool:
     """
     try:
         page.goto(ML_ACCOUNT_URL, wait_until="domcontentloaded", timeout=45_000)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_falha("rota de conta", exc)
     if tem_campo_email(page):
         return True
 
@@ -111,7 +125,11 @@ def abrir_login_ml(page: Any) -> bool:
             page.goto(ML_HOME, wait_until="domcontentloaded", timeout=45_000)
             page.locator(seletor).first.click(timeout=6_000)
             page.wait_for_load_state("domcontentloaded")
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                f"[ML login] link {seletor!r} não levou ao login: "
+                f"{type(exc).__name__}"
+            )
             continue
         if tem_campo_email(page):
             return True
@@ -156,7 +174,8 @@ def fazer_login_ml(page: Any, email: str, senha: str) -> str:
 
         if not _visivel(page, ML_PASSWORD_FIELD, 15_000):
             # Sem campo de senha depois do e-mail: o ML desviou para código
-            # por e-mail/app ou verificação — não há o que preencher.
+            # por e-mail/app, verificação, ou recusou o usuário — em todos os
+            # casos não há o que preencher e o desfecho é de humano.
             return DESAFIO
 
         campo_senha = page.locator(ML_PASSWORD_FIELD).first
@@ -165,9 +184,18 @@ def fazer_login_ml(page: Any, email: str, senha: str) -> str:
         page.locator("button[type='submit']").first.click(timeout=10_000)
         page.wait_for_load_state("domcontentloaded")
         _pausa(page, 3_000)
-    except Exception:
+    except Exception as exc:
+        _log_falha("preenchimento do formulário", exc)
         return ERRO
 
     if _visivel(page, ML_CODE_FIELD, 2_000) or _visivel(page, ML_PASSWORD_FIELD, 1_000):
+        return DESAFIO
+    # Sucesso precisa de evidência positiva: ter saído do fluxo de login.
+    # Ficar nele com markup desconhecido não é "credenciais aceitas".
+    try:
+        url = page.url or ""
+    except Exception:
+        url = ""
+    if _LOGIN_FLOW_URL_RE.search(url):
         return DESAFIO
     return ENVIADO

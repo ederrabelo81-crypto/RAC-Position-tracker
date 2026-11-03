@@ -34,7 +34,7 @@ class _Loc:
             self.page.avanca()
 
     def type(self, texto: str, delay: Any = None) -> None:
-        self.page.digitado.append(self.sel)
+        self.page.digitado.append((self.sel, texto))
 
 
 class _Page:
@@ -44,12 +44,15 @@ class _Page:
         self.etapas = etapas
         self.visiveis = etapas[0]
         self.cliques: List[str] = []
-        self.digitado: List[str] = []
+        self.digitado: List[Any] = []
         self.url = "https://www.mercadolivre.com.br/"
+        self.url_final = "https://www.mercadolivre.com.br/"
 
     def avanca(self) -> None:
         self.etapas = self.etapas[1:] or self.etapas
         self.visiveis = self.etapas[0]
+        if len(self.etapas) == 1:
+            self.url = self.url_final
 
     def goto(self, url: str, **_k: Any) -> None:
         self.url = url
@@ -70,7 +73,14 @@ E, S, C = ml_login.ML_EMAIL_FIELD, ml_login.ML_PASSWORD_FIELD, ml_login.ML_CODE_
 def test_login_completo_e_enviado() -> None:
     page = _Page([{E}, {S}, set()])
     assert ml_login.fazer_login_ml(page, "a@b.c", "x") == ml_login.ENVIADO
-    assert page.digitado == [E, S]
+    assert page.digitado == [(E, "a@b.c"), (S, "x")]
+
+
+def test_continua_no_fluxo_de_login_nao_e_enviado() -> None:
+    # nenhum campo conhecido, mas a URL não saiu do login: desafio desconhecido
+    page = _Page([{E}, {S}, set()])
+    page.url_final = "https://www.mercadolivre.com.br/jms/mlb/lgz/challenge"
+    assert ml_login.fazer_login_ml(page, "a@b.c", "x") == ml_login.DESAFIO
 
 
 def test_codigo_depois_da_senha_e_desafio() -> None:
