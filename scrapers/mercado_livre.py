@@ -593,7 +593,7 @@ class MLScraper(BaseScraper):
         # pode apagar o cookie de login antes de cobrar de novo.
         if self._relogin_ok and not self._login_gate_after_relogin:
             return (
-                "RENOVADA no turno (tinha expirado; relogin automático com "
+                "RENOVADA no turno (relogin automático com "
                 "ML_EMAIL/ML_PASSWORD passou)"
             )
         status = self._relogin_status

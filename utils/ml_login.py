@@ -44,10 +44,9 @@ ML_EMAIL_FIELD = "input[name='user_id'], input#user_id, input[type='email']"
 ML_PASSWORD_FIELD = "input[name='password'], input#password, input[type='password']"
 
 # Campo de código (2FA / e-mail / SMS) — sinal de desafio que exige humano.
-ML_CODE_FIELD = (
-    "input[autocomplete='one-time-code'], input[name='code'], "
-    "input[name*='code' i]"
-)
+# Só marcadores de código único: `name*='code'` casaria `zip_code` (CEP) da
+# página pós-login e transformaria um login bem-sucedido em DESAFIO.
+ML_CODE_FIELD = "input[autocomplete='one-time-code'], input[name='code']"
 
 # Candidatos ao link de login da home, do mais explícito ao mais genérico —
 # testados UM A UM (não em união com `.first`, que entrega quem vier primeiro
