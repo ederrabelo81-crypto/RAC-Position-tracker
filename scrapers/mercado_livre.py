@@ -604,7 +604,7 @@ class MLScraper(BaseScraper):
         # e o cookie pode sumir depois disso sem desfazer o diagnóstico.
         if self._gate_while_logged:
             return (
-                f"EXPIRADA (cookies de login presentes, mas o ML pediu "
+                f"EXPIRADA (sessão recusada: o ML pediu "
                 f"login/verificação em {self._gate_while_logged} pág.{relogin}; "
                 "relogar: python scripts/setup_local_profile.py --site mercadolivre)"
             )
