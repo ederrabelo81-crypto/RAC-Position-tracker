@@ -407,7 +407,7 @@ class MLScraper(BaseScraper):
     # Relogin automático: None = não tentado nesta run; senão, o desfecho.
     _relogin_status: Optional[str] = None
     _relogin_ok: bool = False
-    _gate_logged_at_relogin: int = 0
+    _login_gate_after_relogin: int = 0
     collection_aborted: bool = False
     deferred_keywords: Optional[List[str]] = None
     retry_pass: bool = False
@@ -444,7 +444,7 @@ class MLScraper(BaseScraper):
         self._api_status = None
         self._relogin_status = None
         self._relogin_ok = False
-        self._gate_logged_at_relogin = 0
+        self._login_gate_after_relogin = 0
         # Telemetria e freio do gate (ver `_GATE_ABORT_STREAK`).
         self._kw_ok = 0
         self._kw_gated = 0
@@ -589,7 +589,9 @@ class MLScraper(BaseScraper):
         # O relogin automático que passou vem primeiro: a sessão EXPIROU, mas
         # o turno a renovou — o alerta não deve mandar ninguém relogar.
         # (Se o ML voltou a pedir login depois do relogin, vale o EXPIRADA.)
-        if self._relogin_ok and self._gate_while_logged <= self._gate_logged_at_relogin:
+        # Conta qualquer gate de login pós-relogin, com ou sem cookie: o ML
+        # pode apagar o cookie de login antes de cobrar de novo.
+        if self._relogin_ok and not self._login_gate_after_relogin:
             return (
                 "RENOVADA no turno (tinha expirado; relogin automático com "
                 "ML_EMAIL/ML_PASSWORD passou)"
@@ -1914,8 +1916,10 @@ class MLScraper(BaseScraper):
             reason.startswith("login/verificação de dispositivo")
             or reason.startswith("URL de gate")
         )
+        if login_gate and self._relogin_ok:
+            self._login_gate_after_relogin += 1
         try:
-            if login_gate and self._is_logged_in():
+            if login_gate and (self._is_logged_in() or self._relogin_ok):
                 self._gate_while_logged += 1
         except Exception:
             pass
@@ -2026,7 +2030,6 @@ class MLScraper(BaseScraper):
             if not self._is_login_gate(confirm=True):
                 self._relogin_ok = True
                 self._relogin_status = "passou, mas o ML voltou a pedir login"
-                self._gate_logged_at_relogin = self._gate_while_logged
                 self._gate_failures = 0
                 logger.success(
                     f"[{self.platform_name}] Relogin automático renovou a sessão "

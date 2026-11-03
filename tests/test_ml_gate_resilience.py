@@ -386,6 +386,18 @@ class TestReloginAutomatico:
         assert expirada._goto_serp(MLScraper._build_url("kw2", 0), "kw2", 1) is False
         assert "sessão: EXPIRADA" in expirada.run_diagnostics()
 
+    def test_gate_sem_cookie_depois_do_relogin_volta_a_expirada(
+        self, expirada: MLScraper, monkeypatch
+    ) -> None:
+        self._login(monkeypatch, ml_mod.ml_login.ENVIADO)
+        assert expirada._goto_serp(MLScraper._build_url("kw", 0), "kw", 1) is True
+        expirada._context.cookies.return_value = []  # ML apagou o login
+        expirada._page.html = _GATE_HTML
+        assert expirada._goto_serp(MLScraper._build_url("kw2", 0), "kw2", 1) is False
+        linha = expirada.run_diagnostics()
+        assert "RENOVADA" not in linha
+        assert "sessão: EXPIRADA" in linha
+
     def test_credenciais_aceitas_mas_gate_segue(self, expirada: MLScraper, monkeypatch) -> None:
         self._login(monkeypatch, ml_mod.ml_login.ENVIADO, libera=False)
         assert expirada._goto_serp(MLScraper._build_url("kw", 0), "kw", 1) is False
