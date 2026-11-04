@@ -1,0 +1,1573 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "PriceTrack API Externa",
+    "version": "1.2.0",
+    "description": "APIs externas do PriceTrack para acesso a dados de ofertas e fretes coletados via scraping."
+  },
+  "servers": [
+    {
+      "url": "https://api.pricetrack.com.br",
+      "description": "Servidor de Produção"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "token"
+      }
+    },
+    "schemas": {
+      "Offer": {
+        "type": "object",
+        "description": "Informações detalhadas sobre a oferta coletada, incluindo preços, status e dados do produto.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Identificação única do produto coletado",
+            "example": "12345"
+          },
+          "title": {
+            "type": "string",
+            "description": "Nome do produto do link coletado",
+            "example": "Smartphone XYZ 128GB"
+          },
+          "category": {
+            "type": "string",
+            "description": "Categoria do produto",
+            "example": "Eletrônicos"
+          },
+          "subcategory": {
+            "type": "string",
+            "description": "Subcategoria do produto",
+            "example": "Celulares"
+          },
+          "spotPrice": {
+            "type": "number",
+            "description": "Preço à vista coletado",
+            "example": 2500
+          },
+          "forwardPrice": {
+            "type": "number",
+            "description": "Preço parcelado coletado",
+            "example": 2700
+          },
+          "installmentNumber": {
+            "type": "number",
+            "description": "Número de parcelas coletado",
+            "example": 12
+          },
+          "installmentValue": {
+            "type": "number",
+            "description": "Valor da parcela coletado",
+            "example": 225
+          },
+          "priceFrom": {
+            "type": "number",
+            "description": "Preço sugerido (RRP)",
+            "example": 3000
+          },
+          "pixPrice": {
+            "type": "number",
+            "description": "Preço exclusivo PIX/boleto (pode diferir do preço à vista)",
+            "example": 2450,
+            "nullable": true
+          },
+          "seller": {
+            "type": "string",
+            "description": "Vendedor da oferta",
+            "example": "Loja Oficial"
+          },
+          "brand": {
+            "type": "string",
+            "description": "Marca do produto",
+            "example": "Samsung"
+          },
+          "family": {
+            "type": "string",
+            "nullable": true,
+            "description": "Família do produto",
+            "example": "Galaxy S"
+          },
+          "color": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cor do produto",
+            "example": "Preto"
+          },
+          "marketplace": {
+            "type": "string",
+            "description": "Nome do marketplace",
+            "example": "Mercado Livre"
+          },
+          "screenshotUrl": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true,
+            "description": "Link da página de visualização do print (`{FRONTEND_URL}/pt-BR/pictures/{id}/{collectionDate}`), com marca d'água. Prints com mais de 90 dias (contando hoje) não são exibidos. `null` quando a oferta não tem print.",
+            "example": "https://app.pricetrack.com.br/pt-BR/pictures/1a2b3c4d-0000-0000-0000-000000000000/2026-04-29"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "AVAILABLE",
+              "UNAVAILABLE"
+            ],
+            "description": "Status da coleta",
+            "example": "AVAILABLE"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL da oferta no marketplace",
+            "example": "https://mercadolivre.com.br/oferta-smartphone"
+          },
+          "collectionDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Data da coleta (YYYY-MM-DD)",
+            "example": "2025-06-18"
+          },
+          "collectionHour": {
+            "type": "string",
+            "description": "Hora da coleta (HH)",
+            "example": "14"
+          },
+          "collectionHourExecution": {
+            "type": "string",
+            "nullable": true,
+            "description": "Horário de execução da coleta (HH:MM:SS)",
+            "example": "14:32:10"
+          },
+          "productName": {
+            "type": "string",
+            "description": "Nome do produto",
+            "example": "Smartphone XYZ"
+          },
+          "sku": {
+            "type": "string",
+            "description": "SKU do produto",
+            "example": "SKU-12345"
+          }
+        }
+      },
+      "Shipping": {
+        "type": "object",
+        "description": "Informações sobre o frete de um produto, como custo e prazo de entrega.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Identificação única da coleta",
+            "example": "12345"
+          },
+          "title": {
+            "type": "string",
+            "description": "Nome do produto do link coletado",
+            "example": "Smartphone XYZ 128GB"
+          },
+          "category": {
+            "type": "string",
+            "description": "Categoria do produto",
+            "example": "Eletrônicos"
+          },
+          "subcategory": {
+            "type": "string",
+            "description": "Subcategoria do produto",
+            "example": "Celulares"
+          },
+          "brand": {
+            "type": "string",
+            "description": "Marca do produto",
+            "example": "Samsung"
+          },
+          "family": {
+            "type": "string",
+            "nullable": true,
+            "description": "Família do produto",
+            "example": "Galaxy S"
+          },
+          "marketplace": {
+            "type": "string",
+            "description": "Nome do marketplace",
+            "example": "Mercado Livre"
+          },
+          "seller": {
+            "type": "string",
+            "description": "Vendedor da oferta",
+            "example": "Loja Oficial"
+          },
+          "cep": {
+            "type": "string",
+            "description": "CEP da coleta",
+            "example": "01001-000"
+          },
+          "transporterType": {
+            "type": "string",
+            "description": "Tipo de transporte",
+            "example": "Normal"
+          },
+          "shippingCost": {
+            "type": "number",
+            "description": "Custo do frete",
+            "example": 15.9
+          },
+          "deadline": {
+            "type": "integer",
+            "description": "Prazo de entrega",
+            "example": 5
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "AVAILABLE",
+              "UNAVAILABLE"
+            ],
+            "description": "Status da coleta",
+            "example": "AVAILABLE"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL da oferta no marketplace",
+            "example": "https://mercadolivre.com.br/oferta-smartphone"
+          },
+          "collectionDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Data da coleta (YYYY-MM-DD)",
+            "example": "2025-06-18"
+          },
+          "collectionHour": {
+            "type": "string",
+            "description": "Hora da coleta (HH)",
+            "example": "14"
+          },
+          "productName": {
+            "type": "string",
+            "description": "Nome do produto",
+            "example": "Smartphone XYZ"
+          },
+          "sku": {
+            "type": "string",
+            "description": "SKU do produto",
+            "example": "SKU-12345"
+          }
+        }
+      },
+      "Meta": {
+        "type": "object",
+        "description": "Metadados da paginação para resposta de múltiplos itens.",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Página atual",
+            "example": 1
+          },
+          "take": {
+            "type": "integer",
+            "description": "Registros retornados por página",
+            "example": 10
+          },
+          "pageCount": {
+            "type": "integer",
+            "description": "Número total de páginas",
+            "example": 5
+          },
+          "hasNextPage": {
+            "type": "boolean",
+            "description": "Indica se existe próxima página",
+            "example": true
+          },
+          "hasPreviousPage": {
+            "type": "boolean",
+            "description": "Indica se existe página anterior",
+            "example": false
+          }
+        }
+      },
+      "Error401": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Código do erro",
+            "example": 401
+          },
+          "message": {
+            "type": "string",
+            "description": "Mensagem do erro",
+            "example": "Acesso não autorizado"
+          },
+          "details": {
+            "type": "object",
+            "description": "Detalhes adicionais sobre o erro",
+            "example": {
+              "field": "collectionDate",
+              "message": "Data inválida"
+            }
+          }
+        }
+      },
+      "Error409": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Código do erro",
+            "example": 409
+          },
+          "message": {
+            "type": "string",
+            "description": "Mensagem do erro",
+            "example": "Nenhuma tabela de coleta encontrada"
+          },
+          "details": {
+            "type": "object",
+            "description": "Detalhes adicionais sobre o erro",
+            "example": {
+              "field": "collectionDate",
+              "message": "Data inválida"
+            }
+          }
+        }
+      },
+      "Error400": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "example": 400
+          },
+          "message": {
+            "type": "string",
+            "example": "collectionDate must be in YYYY-MM-DD format"
+          }
+        }
+      },
+      "Error403": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "example": 403
+          },
+          "message": {
+            "type": "string",
+            "example": "O export não pertence a esta organização"
+          }
+        }
+      },
+      "Error404": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "example": 404
+          },
+          "message": {
+            "type": "string",
+            "example": "Export não encontrado"
+          }
+        }
+      },
+      "Error429": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "example": 429
+          },
+          "message": {
+            "type": "string",
+            "example": "Limite de exports concorrentes atingido (máx. 3). Aguarde os exports pendentes finalizarem."
+          }
+        }
+      },
+      "ExportRequestOffers": {
+        "type": "object",
+        "required": [
+          "collectionDate"
+        ],
+        "description": "Filtros para criação de um export em massa de ofertas (formato NDJSON gzipado).",
+        "properties": {
+          "collectionDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Data da coleta (YYYY-MM-DD). Obrigatório.",
+            "example": "2026-04-29"
+          },
+          "marketplaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Lista opcional de marketplaces para filtrar.",
+            "example": [
+              "Amazon",
+              "Mercado Livre"
+            ]
+          },
+          "skus": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "description": "Lista opcional de SKUs a exportar (até 1000). Comparação exata com o campo `sku` de cada linha — para produtos sem SKU, o valor desse campo é a família. Com o filtro, só as ofertas desses produtos são lidas, o que deixa o export de cada dia muito mais rápido do que o dia inteiro. Recomendado para quem precisa de vários dias de poucos produtos.",
+            "example": [
+              "42AFVCI12S5",
+              "42AFVCI18S5"
+            ]
+          },
+          "collectionHourExecutionRange": {
+            "type": "string",
+            "pattern": "^\\d{2}:\\d{2}-\\d{2}:\\d{2}$",
+            "description": "Faixa opcional de horário de execução da coleta no formato HH:MM-HH:MM.",
+            "example": "00:00-03:00"
+          },
+          "proofFilter": {
+            "type": "string",
+            "enum": [
+              "WITH_PROOF",
+              "WITHOUT_PROOF",
+              "ALL"
+            ],
+            "description": "Filtro opcional de comprovação por oferta. WITH_PROOF (padrão) = somente ofertas com print; WITHOUT_PROOF = somente sem print; ALL = com e sem comprovação.",
+            "default": "WITH_PROOF",
+            "example": "WITH_PROOF"
+          }
+        }
+      },
+      "ExportRequestShipping": {
+        "type": "object",
+        "required": [
+          "collectionDate"
+        ],
+        "description": "Filtros para criação de um export em massa de fretes (formato NDJSON gzipado).",
+        "properties": {
+          "collectionDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Data da coleta (YYYY-MM-DD). Obrigatório.",
+            "example": "2026-04-29"
+          },
+          "marketplaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Lista opcional de marketplaces para filtrar.",
+            "example": [
+              "Amazon",
+              "Mercado Livre"
+            ]
+          },
+          "collectionHourExecutionRange": {
+            "type": "string",
+            "pattern": "^\\d{2}:\\d{2}-\\d{2}:\\d{2}$",
+            "description": "Faixa opcional de horário de execução da coleta no formato HH:MM-HH:MM.",
+            "example": "00:00-03:00"
+          }
+        }
+      },
+      "ExportCreateResponse": {
+        "type": "object",
+        "description": "Resposta ao criar um export em massa.",
+        "properties": {
+          "exportId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identificador do export. Use no GET /exports-external/{exportId} para consultar status.",
+            "example": "550e8400-e29b-41d4-a716-446655440000"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending"
+            ],
+            "description": "Status inicial do export."
+          },
+          "statusUrl": {
+            "type": "string",
+            "description": "Caminho para consultar o status do export.",
+            "example": "/exports-external/550e8400-e29b-41d4-a716-446655440000"
+          }
+        }
+      },
+      "ExportStatusResponse": {
+        "type": "object",
+        "description": "Status atual de um export em massa. Quando concluído, inclui a URL pré-assinada para download.",
+        "properties": {
+          "exportId": {
+            "type": "string",
+            "format": "uuid",
+            "example": "550e8400-e29b-41d4-a716-446655440000"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "processing",
+              "DONE",
+              "FAILED"
+            ],
+            "description": "Estado do processamento do export.",
+            "example": "DONE"
+          },
+          "progress": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Progresso aproximado (0-100). Atualizado a cada ~50.000 linhas processadas.",
+            "example": 100
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "EXTERNAL_COLLECTS_OFFERS",
+              "EXTERNAL_COLLECTS_SHIPPING"
+            ],
+            "description": "Tipo de export."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Quando o export foi criado."
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Quando o processamento começou."
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Quando o export foi finalizado (DONE ou FAILED)."
+          },
+          "filters": {
+            "type": "object",
+            "description": "Filtros usados ao criar o export.",
+            "example": {
+              "collectionDate": "2026-04-29",
+              "marketplaces": [
+                "Amazon"
+              ],
+              "collectionHourExecutionRange": "00:00-03:00"
+            }
+          },
+          "format": {
+            "type": "string",
+            "description": "Formato do arquivo gerado.",
+            "example": "ndjson.gz"
+          },
+          "rowCount": {
+            "type": "integer",
+            "description": "Total de linhas exportadas (preenchido apenas após DONE).",
+            "example": 1523000
+          },
+          "fileSizeBytes": {
+            "type": "integer",
+            "description": "Tamanho do arquivo em bytes (preenchido apenas após DONE).",
+            "example": 234567890
+          },
+          "downloadUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL pré-assinada para download direto do arquivo (válida por 1 hora). Presente apenas quando status=DONE.",
+            "example": "https://storage.../exports-external/.../arquivo.ndjson.gz?X-Amz-Signature=..."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Quando a downloadUrl expira."
+          }
+        }
+      },
+      "ExportListMeta": {
+        "type": "object",
+        "description": "Metadados de paginação para a listagem de exports.",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "example": 1
+          },
+          "take": {
+            "type": "integer",
+            "example": 20
+          },
+          "total": {
+            "type": "integer",
+            "example": 153
+          },
+          "hasNextPage": {
+            "type": "boolean",
+            "example": true
+          },
+          "hasPreviousPage": {
+            "type": "boolean",
+            "example": false
+          }
+        }
+      },
+      "ExportListResponse": {
+        "type": "object",
+        "description": "Lista paginada de exports da organização, ordenada do mais recente para o mais antigo.",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExportStatusResponse"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ExportListMeta"
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "ApiKeyAuth": []
+    }
+  ],
+  "paths": {
+    "/collects-offers-external": {
+      "get": {
+        "summary": "Listar ofertas coletadas",
+        "description": "Retorna ofertas baseadas em filtros avançados de produto e preço.",
+        "parameters": [
+          {
+            "name": "collectionDate",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "example": "2025-06-18"
+            },
+            "description": "Data da coleta (Obrigatório)"
+          },
+          {
+            "name": "searchTitle",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "Iphone 15"
+            },
+            "description": "Termo de busca utilizado na coleta"
+          },
+          {
+            "name": "marketplace",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Mercado Livre"
+              ]
+            },
+            "description": "Lista de marketplaces"
+          },
+          {
+            "name": "seller",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Loja Oficial"
+              ]
+            },
+            "description": "Lista de vendedores"
+          },
+          {
+            "name": "color",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Preto"
+              ]
+            },
+            "description": "Cores do produto"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "AVAILABLE"
+              ]
+            },
+            "description": "Status da coleta"
+          },
+          {
+            "name": "collectionHourRange",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "00:00-23:59"
+            },
+            "description": "Intervalo de horas da coleta"
+          },
+          {
+            "name": "spotPriceMin",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "example": 1000
+            },
+            "description": "Preço à vista mínimo"
+          },
+          {
+            "name": "spotPriceMax",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "example": 5000
+            },
+            "description": "Preço à vista máximo"
+          },
+          {
+            "name": "forwardPriceMin",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "example": 1200
+            },
+            "description": "Preço parcelado mínimo"
+          },
+          {
+            "name": "forwardPriceMax",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "example": 6000
+            },
+            "description": "Preço parcelado máximo"
+          },
+          {
+            "name": "productsName",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Smartphone XYZ"
+              ]
+            },
+            "description": "Lista de nomes de produtos"
+          },
+          {
+            "name": "productCategory",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Eletrônicos"
+              ]
+            },
+            "description": "Categorias de produto"
+          },
+          {
+            "name": "productSubcategory",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Celulares"
+              ]
+            },
+            "description": "Subcategorias de produto"
+          },
+          {
+            "name": "productBrand",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Samsung"
+              ]
+            },
+            "description": "Marcas de produto"
+          },
+          {
+            "name": "productFamily",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Galaxy S"
+              ]
+            },
+            "description": "Famílias de produto"
+          },
+          {
+            "name": "productSku",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "SKU-12345"
+              ]
+            },
+            "description": "Lista de SKUs"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "example": 1
+            },
+            "description": "Número da página"
+          },
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "example": 10
+            },
+            "description": "Itens por página"
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ASC",
+                "DESC"
+              ],
+              "example": "ASC"
+            },
+            "description": "Ordenação (ASC ou DESC)"
+          },
+          {
+            "name": "orderByColumn",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "spotPrice"
+            },
+            "description": "Coluna para ordenação"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sucesso",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Offer"
+                      }
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Não autorizado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error401"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nenhuma tabela de coleta encontrada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error409"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/collects-shipping-external": {
+      "get": {
+        "summary": "Listar fretes coletados",
+        "description": "Retorna informações de frete baseadas em filtros logísticos e de produto.",
+        "parameters": [
+          {
+            "name": "collectionDate",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "example": "2025-06-18"
+            },
+            "description": "Data da coleta (Obrigatório)"
+          },
+          {
+            "name": "searchTitle",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "Geladeira Frost Free"
+            },
+            "description": "Termo de busca utilizado na coleta"
+          },
+          {
+            "name": "marketplace",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Magalu"
+              ]
+            },
+            "description": "Lista de marketplaces"
+          },
+          {
+            "name": "seller",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Loja Oficial"
+              ]
+            },
+            "description": "Lista de vendedores"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "AVAILABLE"
+              ]
+            },
+            "description": "Status da coleta"
+          },
+          {
+            "name": "collectionHourRange",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "00:00-23:59"
+            },
+            "description": "Intervalo de horas da coleta"
+          },
+          {
+            "name": "cep",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "01001-000"
+              ]
+            },
+            "description": "Lista de CEPs consultados"
+          },
+          {
+            "name": "costMin",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "example": 10
+            },
+            "description": "Custo mínimo de frete"
+          },
+          {
+            "name": "costMax",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "example": 100
+            },
+            "description": "Custo máximo de frete"
+          },
+          {
+            "name": "transporterType",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Normal"
+              ]
+            },
+            "description": "Tipos de transportadora/modalidade"
+          },
+          {
+            "name": "deadline",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "example": [
+                5
+              ]
+            },
+            "description": "Prazos de entrega (em dias)"
+          },
+          {
+            "name": "productsName",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Geladeira X"
+              ]
+            },
+            "description": "Lista de nomes de produtos"
+          },
+          {
+            "name": "productCategory",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Eletrodomésticos"
+              ]
+            },
+            "description": "Categorias de produto"
+          },
+          {
+            "name": "productSubcategory",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Refrigeradores"
+              ]
+            },
+            "description": "Subcategorias de produto"
+          },
+          {
+            "name": "productBrand",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Brastemp"
+              ]
+            },
+            "description": "Marcas de produto"
+          },
+          {
+            "name": "productFamily",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "Inox Series"
+              ]
+            },
+            "description": "Famílias de produto"
+          },
+          {
+            "name": "productSku",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "example": [
+                "REF-123"
+              ]
+            },
+            "description": "Lista de SKUs"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "example": 1
+            },
+            "description": "Número da página"
+          },
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "example": 10
+            },
+            "description": "Itens por página"
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ASC",
+                "DESC"
+              ],
+              "example": "ASC"
+            },
+            "description": "Ordenação (ASC ou DESC)"
+          },
+          {
+            "name": "orderByColumn",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "shippingCost"
+            },
+            "description": "Coluna para ordenação"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sucesso",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Shipping"
+                      }
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Não autorizado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error401"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nenhuma tabela de coleta encontrada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error409"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/exports-external/collects-offers": {
+      "post": {
+        "summary": "Criar export em massa de ofertas (NDJSON.gz)",
+        "description": "Cria um job assíncrono que gera um arquivo NDJSON gzipado com TODAS as ofertas coletadas no dia informado, aplicando filtros opcionais. Retorna imediatamente um exportId; o cliente deve fazer polling em GET /exports-external/{exportId} até status=DONE para obter a URL de download.\n\nIdeal para grandes volumes de dados (centenas de milhares ou milhões de linhas) — alternativa ao endpoint paginado /collects-offers-external.\n\nPara poucos produtos, envie `skus`: o export lê só as ofertas deles, em vez do dia inteiro.\n\nLimite: máximo de 3 exports concorrentes (pending/processing) por organização.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportRequestOffers"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Export aceito e enfileirado para processamento.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Filtros inválidos (data fora do intervalo permitido, formato incorreto, etc.).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Não autorizado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error401"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Limite de exports concorrentes atingido.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error429"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/exports-external/collects-offers-v2": {
+      "post": {
+        "summary": "Criar export em massa de ofertas via Redis (NDJSON.gz) [V2]",
+        "description": "Versão 2 do endpoint de export em massa de ofertas. Lê os dados diretamente do cache Redis (price_matrix), eliminando I/O nas tabelas particionadas do PostgreSQL durante a janela de coleta ativa.\n\nMesmo contrato de request e resposta que POST /exports-external/collects-offers (V1). Retorna imediatamente um exportId; polling em GET /exports-external/{exportId} até status=DONE.\n\n**Diferenças em relação ao V1:**\n- `title` (título da oferta) → sempre `null` (não armazenado no Redis)\n- `collection_hour` → sempre `null`\n- `collection_hour_execution` → truncado em HH:MM (segundos não armazenados)\n- `url` → resolvido via lookup na partição do dia (disponível, porém em batch)\n- Janela de datas limitada à retenção do Redis (últimos 90 dias, contando hoje)\n\nLimite: máximo de 3 exports concorrentes (pending/processing) por organização.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportRequestOffers"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Export aceito e enfileirado para processamento.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Filtros inválidos — inclui data fora da janela de retenção do Redis (use o V1 para datas mais antigas).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Não autorizado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error401"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Limite de exports concorrentes atingido.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error429"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/exports-external/collects-shipping": {
+      "post": {
+        "summary": "Criar export em massa de fretes (NDJSON.gz)",
+        "description": "Cria um job assíncrono que gera um arquivo NDJSON gzipado com TODOS os fretes coletados no dia informado. Mesmo padrão de uso do export de ofertas.\n\nLimite: máximo de 3 exports concorrentes (pending/processing) por organização.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportRequestShipping"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Export aceito e enfileirado para processamento.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Filtros inválidos.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Não autorizado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error401"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Limite de exports concorrentes atingido.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error429"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/exports-external": {
+      "get": {
+        "summary": "Listar exports em massa da organização",
+        "description": "Retorna a lista paginada de todos os exports em massa solicitados pela organização (autenticada via header `token`), ordenados do mais recente para o mais antigo. A posição 0 do array `data` é sempre o export mais recente — útil para acompanhar o último export disparado sem precisar guardar IDs localmente.\n\nCada item tem o mesmo shape do GET por ID (`/exports-external/{exportId}`) e, quando `status=DONE`, já vem com `downloadUrl` (presigned, válida por 1h) — evitando uma segunda chamada para baixar o arquivo.",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "example": 1
+            },
+            "description": "Número da página (1-indexed)."
+          },
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20,
+              "example": 20
+            },
+            "description": "Quantidade de itens por página (máx. 100)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista de exports.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Parâmetros de paginação inválidos.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Não autorizado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error401"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/exports-external/{exportId}": {
+      "get": {
+        "summary": "Consultar status de um export em massa",
+        "description": "Retorna o status atual do export. Quando status=DONE, inclui downloadUrl (URL pré-assinada com TTL de 1 hora) para download direto do arquivo NDJSON.gz. O cliente deve fazer polling neste endpoint até obter status=DONE ou status=FAILED.",
+        "parameters": [
+          {
+            "name": "exportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "ID do export retornado por POST /exports-external/collects-offers ou /collects-shipping."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status atual do export.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Não autorizado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "O export pertence a outra organização.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error403"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Export não encontrado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error404"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

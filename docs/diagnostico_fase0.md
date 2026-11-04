@@ -1,0 +1,135 @@
+# Painel "Diagnóstico" — relatório da Fase 0 (descoberta)
+
+> 04/11/2026. Nenhum código de produção foi escrito nesta fase. O OpenAPI
+> 1.2.0 foi salvo em `docs/pricetrack_openapi_1.2.0.yaml` (o arquivo é JSON,
+> que também é YAML válido).
+
+## 1. O que já existe no repositório
+
+O prompt original parte de "o PriceTrack entra hoje via importador de
+markdown/xlsx". **Isso está desatualizado**: o import via API 1.2.0 já roda em
+produção há meses.
+
+| Peça | Onde | Estado |
+|---|---|---|
+| Cliente tipado da API | `pricetrack_api/` (`client.py`, `http.py`, `exports.py`, `journal.py`, `models.py`, `normalize.py`) | ✅ produção, 88 testes sem rede |
+| Retry/backoff + jitter, 401/400/409/429 tipados | `pricetrack_api/http.py`, `exceptions.py` | ✅ |
+| Até 3 exports em voo, polling, renovação da `downloadUrl` (TTL 1h) | `pricetrack_api/exports.py` (`ExportManager`) | ✅ |
+| Adoção de export órfão (anti-429) | `pricetrack_api/journal.py` → `imports/pricetrack/api/exports_state.json` | ✅ |
+| Import diário D-1 → `pricetrack_daily` | `scripts/pricetrack_api_import.py` (1.375 linhas) | ✅ |
+| Agendamento | `.github/workflows/pricetrack_daily.yml` — escada 00:01 / 04:20 / 05:20 BRT + portão 06:35 (`pipeline_guard.yml`) | ✅ |
+| Importador antigo md/xlsx | `pricetrack_importer/` | ✅ continua como fallback |
+| Clientes Supabase | escrita: `utils/supabase_client._get_client()` (service_role do `.env`); leitura no painel: `app.py::_get_supabase()`; adaptador Postgres: `utils/db.py` | ✅ |
+| Páginas Streamlit | **arquivo único** `app.py` (13.683 linhas), dicionário `PAGES` + `_NAV_GROUPS`. **Não existe diretório `pages/`** | — |
+
+**Consequência para a Fase 1:** não faz sentido criar um `pricetrack_api/` novo
+— já existe com esse nome e cobre cliente, exports, polling, 429 e diário. A
+Fase 1 vira **extensão** dele (ver §5).
+
+## 2. OpenAPI 1.2.0 — confirmações
+
+- Base URL: `https://api.pricetrack.com.br`.
+- Auth: `ApiKeyAuth`, header **`token`** (bate com `PRICETRACK_AUTH_HEADER`).
+- `Offer` (schema documentado, camelCase): `id, title, category, subcategory,
+  spotPrice, forwardPrice, installmentNumber, installmentValue, priceFrom,
+  pixPrice, seller, brand, family, color, marketplace, screenshotUrl, status,
+  url, collectionDate, collectionHour, collectionHourExecution, productName,
+  sku`.
+- **O NDJSON do export vem em snake_case** (`spot_price`, `pix_price`,
+  `collection_hour`…), não camelCase — já tratado no importador.
+- **Não há campo de BTU, tecnologia (Inverter/On-Off), ciclo ou voltagem** no
+  schema. Características terão de ser derivadas (catálogo
+  `produtos_catalogo`, `pricetrack_dashboard/peer.py`, `shelf_insights.extract_btu`
+  no título). A confirmar no NDJSON real.
+- **Não há id de seller** no `Offer` — só o nome. A regra "seller vazio →
+  `3P:<id>`" não tem de onde tirar o id.
+- `proofFilter` existe só no corpo do export de **ofertas** (V1 e V2), padrão
+  `WITH_PROOF`. V2 lê do Redis, só os últimos 90 dias, `title` e
+  `collection_hour` = null.
+
+## 3. Schema real de `pricetrack_daily` (consultado em 04/11/2026)
+
+Colunas: `id, collection_date, brand, sku, title (NOT NULL), marketplace,
+seller, seller_canonical, min_price, avg_price, mode_price, max_price,
+spread_pct (gerada), is_midea_group (gerada), imported_at, source_file, turno
+(Diário/Manhã/Tarde), price_basis, last_price, last_hour, spot_min_price,
+pix_min_price, obs_count, unavailable_count`.
+
+**Chave única:** `(collection_date, turno, brand, sku, marketplace, seller)` —
+não `(sku, marketplace, seller, collection_date)` como no prompt. Um upsert
+com o `on_conflict` do prompt **falharia** (não há constraint com essas
+colunas). O Diagnóstico deve ler `turno = 'Diário'`.
+
+Conteúdo hoje:
+
+| | |
+|---|---|
+| Janela no banco | 21/10 → 03/11/2026 (14 dias) |
+| Linhas | 496.242 (≈ 3 turnos × ~13 mil/dia) |
+| `price_basis` | 100% `best_cash` nessa janela |
+| Marketplaces/dia | 62–64 |
+| **Tamanho da tabela** | **257 MB** |
+| **Tamanho do banco** | **637 MB — acima da cota de 500 MB do free tier** |
+
+Ofertas (`sku|seller`) por marketplace em 03/11, turno Diário, só AR
+CONDICIONADO: Magazine Luiza 1.880 · Mercado Livre 1.852 · Carrefour 1.436 ·
+Casas Bahia 1.276 · Fast Shop 1.226 · Amazon 897 · Leroy Merlin 669 ·
+Americanas 569 · Web Continental 448 · Lojas Colombo 431.
+
+## 4. Achados que mudam o plano
+
+1. **O import de produção não envia `proofFilter`** (`ExportRequest.to_body`
+   só manda `collectionDate`, `marketplaces`, `collectionHourExecutionRange`).
+   Portanto cai em `WITH_PROOF` e **subconta ofertas** desde sempre. Isso afeta
+   o Diagnóstico e também tudo que já lê `pricetrack_daily`
+   (Daily Price Vision, Top Movers, Preços 9K/12K…). Mudar para `ALL` vai
+   gerar degrau de volume no dia da troca — precisa ser decisão consciente e
+   carimbada (como foi o `price_basis`).
+2. **Espaço no banco.** O banco está em 637 MB (cota 500 MB; ver
+   `docs/RETORNO_SUPABASE.md` §5.2). Guardar 31 dias de RAC para o Diagnóstico,
+   com colunas novas e com `ALL` (mais linhas), **não cabe** no desenho atual.
+   Os 3 turnos triplicam a tabela; o Diagnóstico só precisa do Diário.
+3. **Agregação por dia já existe.** Várias execuções no dia já colapsam em
+   `min_price` (menor entre spot e PIX, só AVAILABLE), `last_price` e
+   `obs_count` — é o "menor preço à vista + n_coletas" pedido.
+4. **Agenda.** As regras do `pipeline_registry` pedem um dono por janela e
+   nunca minuto `0`. D-0 às 23:40 lê um dia ainda em coleta (o PriceTrack
+   coleta 24h); o D-1 já fecha às 00:01/04:20/05:20. Um V2 de D-0 serviria só
+   como prévia.
+5. **Âncora `42EZVQA09M5`.** Hoje há 2.828 linhas desse SKU em
+   `pricetrack_daily` (14 dias × 3 turnos). Preciso saber **quais janelas** da
+   Tabela Detalhada dão 701/772 para reproduzir a consulta.
+6. **Página.** Não há `pages/`; a página entra como `page_diagnostico` em
+   `app.py` (lógica pura num módulo testável, p.ex. `utils/diagnostico.py`),
+   usando `_page_period()` e `_inherit_global(...)` como mandam as regras do
+   Cockpit.
+
+## 5. Mapeamento NDJSON → `pricetrack_daily` (proposta)
+
+| NDJSON | Coluna | Situação |
+|---|---|---|
+| `collection_date` | `collection_date` | existe |
+| `brand` (upper) | `brand` | existe |
+| `sku` | `sku` | existe (sem SKU = rejeitada hoje) |
+| `product_name` / `title` | `title` | existe; no V2 usar `product_name` |
+| `marketplace` | `marketplace` | existe |
+| `seller` | `seller`, `seller_canonical` | existe |
+| min(`spot_price`,`pix_price`) AVAILABLE | `min_price`, `last_price`, … | existe |
+| `category` | **`category`** | nova |
+| `subcategory` | **`subcategory`** | nova (bloco 3 e filtro) |
+| `family` | **`family`** | nova |
+| `forward_price` | **`forward_min_price`** | nova (diagnóstico; nunca vira preço) |
+| `screenshot_url` não nulo | **`has_proof`** (bool / contagem) | nova — separa WITH/WITHOUT proof |
+| `url` | **`url`** | nova (drill-down) — pesa em disco |
+| derivado do catálogo/título | **`btu`, `tecnologia`, `ciclo`, `voltagem`** | novas, derivadas, não vêm da API |
+
+Alternativa ao inchar `pricetrack_daily`: tabela estreita
+`pricetrack_diag_daily` só com Diário e as colunas do Diagnóstico.
+
+## 6. O que faltou na Fase 0 e por quê
+
+O passo 3 (export V2 de teste com `proofFilter: "ALL"`) **não foi executado**:
+o container da sessão não tem `PRICETRACK_API_KEY` nem NDJSON em cache
+(`imports/pricetrack/api/raw/` vazio). Ficam pendentes: lista real de colunas
+do NDJSON, valores distintos de `category`/`subcategory`/`marketplace`,
+presença de características e o tamanho do degrau `WITH_PROOF` → `ALL`.
