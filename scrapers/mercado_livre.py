@@ -59,6 +59,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config import MAX_PAGES, PAGE_TIMEOUT
 from scrapers.base import BaseScraper
 from scrapers.local_browser import get_local_browser, is_local_chrome_enabled
+from utils import ml_login
 from utils.text import parse_offer_count, parse_rating, parse_review_count
 
 
@@ -307,6 +308,17 @@ _GATE_STREAK_ALERT = 3
 # das outras plataformas (~3h de esfriamento), em vez de perdidas.
 _GATE_ABORT_STREAK = 4
 
+# Relogin automático (Nov/2026). A sessão do perfil expirou três vezes em duas
+# semanas (19–21/10, 25–27/10, 31/10–03/11): o diagnóstico já dizia
+# "sessão: EXPIRADA", mas o conserto esperava alguém relogar o perfil na mão e
+# o ML ficava dias a 0–700 linhas/turno contra ~12 mil. No primeiro gate de
+# login persistente do turno, o scraper preenche o login com ML_EMAIL/
+# ML_PASSWORD do .env (o mesmo fluxo do `setup_local_profile.py --auto`) e
+# refaz a SERP. UMA tentativa por run e nunca na repescagem — no máximo 3
+# logins por dia; 2FA/código por e-mail não é atravessado (volta para o
+# relogin manual). `RAC_ML_AUTO_RELOGIN=0` desliga.
+_ENV_AUTO_RELOGIN = "RAC_ML_AUTO_RELOGIN"
+
 
 # ---------------------------------------------------------------------------
 # Estado acumulado entre as páginas de UMA keyword
@@ -392,6 +404,10 @@ class MLScraper(BaseScraper):
     _gate_while_logged: int = 0
     _gate_reason_counts: Optional[Counter] = None
     _api_status: Optional[str] = None
+    # Relogin automático: None = não tentado nesta run; senão, o desfecho.
+    _relogin_status: Optional[str] = None
+    _relogin_ok: bool = False
+    _login_gate_after_relogin: int = 0
     collection_aborted: bool = False
     deferred_keywords: Optional[List[str]] = None
     retry_pass: bool = False
@@ -426,6 +442,9 @@ class MLScraper(BaseScraper):
         # Fallback pela API oficial: None = ainda não tentado, False = indisponível.
         self._api_scraper = None
         self._api_status = None
+        self._relogin_status = None
+        self._relogin_ok = False
+        self._login_gate_after_relogin = 0
         # Telemetria e freio do gate (ver `_GATE_ABORT_STREAK`).
         self._kw_ok = 0
         self._kw_gated = 0
@@ -567,17 +586,31 @@ class MLScraper(BaseScraper):
         continuavam lá. Gate persistente COM cookie de login é exatamente esse
         caso, e o conserto é relogar o perfil.
         """
+        # O relogin automático que passou vem primeiro: a sessão EXPIROU, mas
+        # o turno a renovou — o alerta não deve mandar ninguém relogar.
+        # (Se o ML voltou a pedir login depois do relogin, vale o EXPIRADA.)
+        # Conta qualquer gate de login pós-relogin, com ou sem cookie: o ML
+        # pode apagar o cookie de login antes de cobrar de novo.
+        if self._relogin_ok and not self._login_gate_after_relogin:
+            return (
+                "RENOVADA no turno (relogin automático com "
+                "ML_EMAIL/ML_PASSWORD passou)"
+            )
+        status = self._relogin_status
+        if self._relogin_ok:  # passou, mas houve gate de login depois
+            status = "passou, mas o ML voltou a pedir login"
+        relogin = f"; relogin automático: {status}" if status else ""
         # O contador vem antes: ele registra a evidência no momento do gate,
         # e o cookie pode sumir depois disso sem desfazer o diagnóstico.
         if self._gate_while_logged:
             return (
-                f"EXPIRADA (cookies de login presentes, mas o ML pediu "
-                f"login/verificação em {self._gate_while_logged} pág.; relogar: "
-                "python scripts/setup_local_profile.py --site mercadolivre)"
+                f"EXPIRADA (sessão recusada: o ML pediu "
+                f"login/verificação em {self._gate_while_logged} pág.{relogin}; "
+                "relogar: python scripts/setup_local_profile.py --site mercadolivre)"
             )
         if not self._is_logged_in():
-            return "anônima"
-        return "logada"
+            return "anônima" + relogin
+        return "logada" + relogin
 
     def _log_session_state(self) -> None:
         """Diz no log se a coleta começa autenticada — o gate depende disso."""
@@ -1797,6 +1830,8 @@ class MLScraper(BaseScraper):
             "conserto:\n"
             "  1) Logue o perfil dedicado (resolve o device-verification):\n"
             "     python scripts/setup_local_profile.py --site mercadolivre\n"
+            "     (com ML_EMAIL/ML_PASSWORD no .env o turno tenta relogar sozinho"
+            f" — desta vez: {self._relogin_status or 'não tentado'})\n"
             "  2) Confira o HTML salvo em logs/ml_gate_*.html — se ele tiver "
             "cards de produto, o problema é de detecção, não de bloqueio.\n"
             "  3) Sem Chrome local (VM/Actions), capture uma sessão:\n"
@@ -1874,8 +1909,6 @@ class MLScraper(BaseScraper):
                 )
                 self._random_delay()
 
-        self._gate_failures += 1
-        self._count_gate_reason(self._last_gate_reason)
         # Só login/verificação de dispositivo indica sessão recusada. Captcha,
         # WAF ou redirecionamento para a home não pedem relogin.
         reason = self._last_gate_reason or ""
@@ -1883,11 +1916,21 @@ class MLScraper(BaseScraper):
             reason.startswith("login/verificação de dispositivo")
             or reason.startswith("URL de gate")
         )
+        if login_gate and self._relogin_ok:
+            self._login_gate_after_relogin += 1
         try:
-            if login_gate and self._is_logged_in():
+            if login_gate and (self._is_logged_in() or self._relogin_ok):
                 self._gate_while_logged += 1
         except Exception:
             pass
+
+        # Sessão recusada: renova o login no próprio turno e refaz a SERP,
+        # em vez de esperar dias por um relogin manual.
+        if login_gate and self._recover_with_relogin(url, referer, keyword, page):
+            return True
+
+        self._gate_failures += 1
+        self._count_gate_reason(self._last_gate_reason)
         evidencia = self._dump_gate_evidence(keyword, page)
         logger.error(
             f"[{self.platform_name}] Login gate persistente após "
@@ -1903,6 +1946,106 @@ class MLScraper(BaseScraper):
             logger.debug(f"[{self.platform_name}] Reset de identidade falhou: {exc}")
         if self._gate_failures >= _GATE_STREAK_ALERT:
             self._log_gate_recovery_hint()
+        return False
+
+    # ------------------------------------------------------------------
+    # Relogin automático (sessão do perfil expirada)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _auto_relogin_enabled() -> bool:
+        """Relogin ligado por padrão; `RAC_ML_AUTO_RELOGIN=0` desliga."""
+        return os.getenv(_ENV_AUTO_RELOGIN, "1").strip().lower() not in (
+            "0", "false", "no", "nao", "off"
+        )
+
+    def _try_auto_relogin(self) -> bool:
+        """
+        Faz login no ML com ML_EMAIL/ML_PASSWORD, uma vez por run.
+
+        Só no Chrome local: é o perfil PERSISTENTE, então o login renovado vale
+        também para os turnos seguintes. No Playwright próprio o contexto é
+        descartável — logar ali gastaria uma tentativa de login por run sem
+        deixar nada. Nunca na repescagem: se o login da 1ª passada não
+        resolveu, outro na mesma hora só soma tentativa à conta.
+
+        Returns:
+            True se as credenciais foram aceitas sem desafio na tela.
+        """
+        if self._relogin_status is not None or self.retry_pass:
+            return False
+        if not self._local_active:
+            return False
+        if not self._auto_relogin_enabled():
+            self._relogin_status = f"desligado ({_ENV_AUTO_RELOGIN}=0)"
+            return False
+        email, senha = ml_login.credenciais_ml()
+        if not email or not senha:
+            self._relogin_status = "sem ML_EMAIL/ML_PASSWORD no .env"
+            logger.warning(
+                f"[{self.platform_name}] Sessão recusada pelo ML e sem "
+                "ML_EMAIL/ML_PASSWORD no .env — sem relogin automático. "
+                "Configure as duas para o turno se recuperar sozinho."
+            )
+            return False
+
+        logger.warning(
+            f"[{self.platform_name}] ML pediu login/verificação: tentando "
+            "relogin automático do perfil (uma vez por turno)."
+        )
+        try:
+            resultado = ml_login.fazer_login_ml(self._page, email, senha)
+        except Exception as exc:  # nunca derruba a coleta
+            logger.debug(f"[{self.platform_name}] Relogin estourou: {exc}")
+            resultado = ml_login.ERRO
+
+        self._relogin_status = {
+            ml_login.ENVIADO: "credenciais aceitas",
+            ml_login.DESAFIO: (
+                "o ML não concluiu o login (código/2FA/verificação ou "
+                "credencial recusada — relogar à mão)"
+            ),
+            ml_login.FORM_AUSENTE: "formulário de login não encontrado",
+            ml_login.SEM_CREDENCIAIS: "sem ML_EMAIL/ML_PASSWORD no .env",
+        }.get(resultado, "falhou ao preencher o formulário")
+        if resultado != ml_login.ENVIADO:
+            logger.error(
+                f"[{self.platform_name}] Relogin automático não concluiu: "
+                f"{self._relogin_status}."
+            )
+        return resultado == ml_login.ENVIADO
+
+    def _recover_with_relogin(
+        self, url: str, referer: Optional[str], keyword: str, page: int
+    ) -> bool:
+        """
+        Gate de login persistente: reloga e refaz a SERP uma vez.
+
+        Returns:
+            True se, depois do login, a SERP carregou utilizável.
+        """
+        if not self._try_auto_relogin():
+            return False
+        try:
+            self._goto_with_referer(url, referer or _ML_HOME)
+            self._wait_for_network_idle()
+            self._dismiss_cep_popup()
+            if not self._is_login_gate(confirm=True):
+                self._relogin_ok = True
+                self._relogin_status = "OK"
+                self._gate_failures = 0
+                logger.success(
+                    f"[{self.platform_name}] Relogin automático renovou a sessão "
+                    f"— SERP de '{keyword}' (pág. {page}) liberada."
+                )
+                return True
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] SERP pós-relogin falhou: {exc}")
+        self._relogin_status = "credenciais aceitas, mas a SERP seguiu com gate"
+        logger.error(
+            f"[{self.platform_name}] Relogin automático enviado, mas a SERP "
+            "seguiu com gate — relogue o perfil à mão."
+        )
         return False
 
     # ------------------------------------------------------------------
