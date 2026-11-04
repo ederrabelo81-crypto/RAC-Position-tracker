@@ -616,3 +616,73 @@ class TestSupabaseClientResolucao:
         monkeypatch.setattr(ptai, "create_client", _nao_deveria, raising=False)
         with pytest.raises(EnvironmentError):
             ptai._supabase_client()
+
+
+# ── --gaps-only × histórico frio (04/11/2026) ───────────────────────────────
+# A poda noturna tira do banco os dias fora da janela quente e os grava no
+# Parquet; o heal das 05:20 reimportava esses dias como "buracos" e o banco
+# voltava a ter ~14 dias de pricetrack_daily.
+
+class TestGapsOnlyRespeitaHistoricoFrio:
+    def _rodar(self, monkeypatch, no_banco, no_parquet, cutoff):
+        capturado = {}
+        monkeypatch.setattr(ptai, "load_progress", lambda: {"completed": [], "skipped": []})
+        monkeypatch.setattr(ptai, "date_exists", lambda ds, dry_run=False: ds in no_banco)
+        monkeypatch.setattr(ptai, "_cold_history_days", lambda: (set(no_parquet), cutoff))
+
+        def _prefetch(token, dates, concurrent):
+            capturado["datas"] = list(dates)
+            return {}
+
+        monkeypatch.setattr(ptai, "prefetch_exports", _prefetch)
+        monkeypatch.setattr(ptai, "_process_date", lambda *a, **k: None, raising=False)
+        try:
+            ptai.run("tok", date(2026, 10, 30), date(2026, 11, 3), no_upload=True,
+                     gaps_only=True)
+        except Exception:
+            pass  # só interessa a lista de datas enviada ao download
+        return capturado.get("datas", [])
+
+    def test_dia_podado_que_esta_no_parquet_nao_e_reimportado(self, monkeypatch):
+        datas = self._rodar(
+            monkeypatch,
+            no_banco={"2026-11-02", "2026-11-03"},
+            no_parquet={"2026-10-30", "2026-10-31", "2026-11-01"},
+            cutoff=date(2026, 11, 2),
+        )
+        assert datas == []
+
+    def test_buraco_real_fora_da_janela_ainda_e_curado(self, monkeypatch):
+        datas = self._rodar(
+            monkeypatch,
+            no_banco={"2026-11-02", "2026-11-03"},
+            no_parquet={"2026-10-30", "2026-11-01"},      # falta 31/10 nos dois
+            cutoff=date(2026, 11, 2),
+        )
+        assert datas == ["2026-10-31"]
+
+    def test_dia_da_janela_quente_ausente_do_banco_e_curado(self, monkeypatch):
+        datas = self._rodar(
+            monkeypatch,
+            no_banco={"2026-11-02"},
+            no_parquet={"2026-10-30", "2026-10-31", "2026-11-01", "2026-11-03"},
+            cutoff=date(2026, 11, 2),
+        )
+        assert datas == ["2026-11-03"]
+
+    def test_historico_ilegivel_volta_ao_comportamento_antigo(self, monkeypatch):
+        datas = self._rodar(
+            monkeypatch,
+            no_banco={"2026-11-02", "2026-11-03"},
+            no_parquet=set(),
+            cutoff=None,
+        )
+        assert datas == ["2026-10-30", "2026-10-31", "2026-11-01"]
+
+
+def test_is_cold_day_bordas():
+    corte = date(2026, 11, 2)
+    assert ptai._is_cold_day(date(2026, 11, 1), {"2026-11-01"}, corte)
+    assert not ptai._is_cold_day(date(2026, 11, 2), {"2026-11-02"}, corte)
+    assert not ptai._is_cold_day(date(2026, 11, 1), set(), corte)
+    assert not ptai._is_cold_day(date(2026, 11, 1), {"2026-11-01"}, None)

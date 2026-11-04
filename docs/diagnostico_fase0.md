@@ -133,3 +133,52 @@ o container da sessão não tem `PRICETRACK_API_KEY` nem NDJSON em cache
 (`imports/pricetrack/api/raw/` vazio). Ficam pendentes: lista real de colunas
 do NDJSON, valores distintos de `category`/`subcategory`/`marketplace`,
 presença de características e o tamanho do degrau `WITH_PROOF` → `ALL`.
+
+## 7. Decisões do mantenedor (04/11/2026) e o que mudou
+
+| Tema | Decisão | Consequência |
+|---|---|---|
+| `proofFilter` | Irrelevante para o que consumimos — desconsiderar | O export segue sem o campo (padrão da API). Nada muda em produção |
+| Storage | Supabase é crítico; nele fica só D-1, o resto vai como Parquet ao Drive | O Diagnóstico **não** lê 31 dias do Supabase: lê o Parquet (ver abaixo) |
+| Agenda | Mantida como definida | Sem job novo de D-0 |
+| Export de teste | Roda no PC coletor | `scripts/pricetrack_discovery.py` (só leitura) |
+
+### Por que o banco estava com 14 dias de `pricetrack_daily`
+
+A regra de "só a janela quente no banco" já existia (`RAC_HOT_WINDOW_DAYS=2`
+= hoje + D-1) e a poda noturna (`history_cli.py tier`, estágio D) rodava com
+sucesso todo dia. O problema estava no degrau das 05:20 do
+`pricetrack_daily.yml`: o `--gaps-only` ("auto-heal de 14 dias") procurava
+buracos **só no banco**, achava os 12 dias que a poda acabara de levar ao
+Parquet e os **reimportava**. Toda manhã a tabela voltava a ter ~14 dias
+(257 MB de 637 MB do banco), e de quebra o heal gastava exports à toa.
+
+Correção (`scripts/pricetrack_api_import.py::_is_cold_day`): no
+`--gaps-only`, um dia **fora** da janela quente que já está no histórico frio
+não é buraco. Dia ausente dos dois lados continua sendo curado; dia da janela
+quente ausente do banco também. Se o histórico estiver ilegível, o heal volta
+ao comportamento antigo (gasta espaço, mas não perde dia). Efeito esperado:
+`pricetrack_daily` cai de ~14 para 2 dias (≈ 37 MB) após a próxima poda,
+sem apagar nada além do que a poda já apaga hoje.
+
+### Arquitetura revisada do Diagnóstico
+
+- **Fonte:** Parquet no Drive, não RPC no Supabase. A Fase 2 ("funções SQL")
+  vira um módulo Python puro (`utils/diagnostico.py`) com as mesmas fórmulas,
+  testado com pandas.
+- **Dado:** `pricetrack_daily` não tem categoria, subcategoria, família nem
+  status por oferta. Em vez de inchar a tabela, o importador grava um dataset
+  novo no histórico frio (`pricetrack_offers`, uma linha por oferta-dia, só
+  as colunas do Diagnóstico) a partir do NDJSON **que ele já baixa** — sem
+  export extra e sem tocar no Supabase.
+- **Página:** `page_diagnostico` em `app.py`, lendo o Parquet com cache.
+
+### Sobre a "âncora 42EZVQA09M5"
+
+O prompt pedia que, após a ingestão, `COUNT(*)` desse SKU nas janelas da
+Tabela Detalhada continuasse 701 / 772. É só um teste de regressão: provar
+que mexer no import não alterou o que o Top Movers já mostra. Como não há
+registro de onde vieram esses números (e o banco agora guarda 2 dias, então
+as janelas antigas nem estão lá), a proposta é trocar por uma checagem
+reproduzível: contagem de linhas por dia de `pricetrack_daily` antes e depois
+de cada mudança no importador.
