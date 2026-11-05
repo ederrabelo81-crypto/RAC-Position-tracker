@@ -756,3 +756,19 @@ def test_insert_sem_migracao_007_grava_sem_as_colunas_novas(monkeypatch):
 
     assert ptai.insert_rows(registros) == 3
     assert gravados == [{"sku": "S0"}, {"sku": "S1"}, {"sku": "S2"}]
+
+
+def test_cold_history_days_com_backend_local_conta_como_indisponivel(monkeypatch):
+    """Sem Drive o get_store() cai no disco local vazio: isso é "não sei"."""
+    import utils.history as hist
+    from utils.history.backends import LocalBackend
+
+    class _StoreLocal:
+        backend = LocalBackend.__new__(LocalBackend)
+
+        def days(self, dataset):
+            return []
+
+    monkeypatch.setattr(hist, "get_store", lambda: _StoreLocal())
+    dias, corte = ptai._cold_history_days()
+    assert dias is None and corte is not None

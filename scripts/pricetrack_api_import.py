@@ -793,8 +793,15 @@ def _cold_history_days() -> Tuple[Optional[Set[str]], Optional[date]]:
 
     try:
         from utils.history import DATASET_PRICETRACK, get_store
+        from utils.history.backends import GoogleDriveBackend
 
-        days = {d.isoformat() for d in get_store().days(DATASET_PRICETRACK)}
+        store = get_store()
+        # `get_store()` cai em silêncio no disco local quando o Drive falta ou
+        # falha ao iniciar. No runner do Actions esse disco está vazio: um
+        # conjunto vazio ali significa "não sei", não "o Parquet não tem nada".
+        if not isinstance(getattr(store, "backend", None), GoogleDriveBackend):
+            raise RuntimeError("histórico frio não está no Drive (backend local)")
+        days = {d.isoformat() for d in store.days(DATASET_PRICETRACK)}
         return days, hot_window_start()
     except Exception as exc:
         logger.warning(
