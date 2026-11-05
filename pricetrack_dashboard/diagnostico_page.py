@@ -95,8 +95,9 @@ def _drill(df: pd.DataFrame, pontos: list, fig, coluna_serie: str, rotulo: str) 
     sel = df[[(d, s) in alvos for d, s in zip(df["dia"], df[coluna_serie])]]
     with st.expander(f"🔎 {len(sel):,} anúncio(s) no ponto selecionado ({rotulo})", expanded=True):
         st.dataframe(
-            sel.sort_values("preco")[["dia", "marketplace", "brand", "sku", "title", "seller", "preco"]]
-            .rename(columns={"brand": "marca", "title": "produto", "preco": "menor preço à vista"}),
+            sel.sort_values("preco")[["dia", "marketplace", "brand", "brand_original", "sku", "title", "seller", "preco"]]
+            .rename(columns={"brand": "marca", "brand_original": "marca no PriceTrack",
+                             "title": "produto", "preco": "menor preço à vista"}),
             hide_index=True, use_container_width=True,
             column_config={"menor preço à vista": st.column_config.NumberColumn(format="R$ %.2f")},
         )

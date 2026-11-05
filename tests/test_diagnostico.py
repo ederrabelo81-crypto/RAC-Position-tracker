@@ -195,3 +195,22 @@ def test_teto_de_30k_btu_vale_mesmo_sem_filtro_de_subcategoria():
     f = dg.prepare_frame(pd.DataFrame([_linha(D1, CB, "M36", "LOJA A", 6000, title=t36),
                                        _linha(D1, CB, "M12", "LOJA A", 2000)]))
     assert dg.apply_filters(f, subcategorias=None, tecnologias=None)["sku"].tolist() == ["M12"]
+
+
+def test_grupo_midea_somado_sob_midea_com_grafia_original_preservada():
+    linhas = [
+        _linha(D1, CB, "M12", "LOJA A", 2000, brand="MIDEA"),
+        _linha(D1, CB, "M18", "LOJA A", 2500, brand="MIDEA CARRIER",
+               title=T_MIDEA.replace("12000", "18000").replace("M12", "M18")),
+        _linha(D1, CB, "S09", "LOJA B", 1700, brand="SPRINGER CARRIER MIDEA",
+               title=T_MIDEA.replace("12000", "9000").replace("M12", "S09")),
+        _linha(D1, CB, "L12", "LOJA A", 1500, brand="LG", title=T_LG),
+    ]
+    f = dg.apply_filters(dg.prepare_frame(pd.DataFrame(linhas)))
+    assert set(f["brand"]) == {"MIDEA", "LG"}
+    assert set(f.loc[f["brand"] == "MIDEA", "brand_original"]) == {
+        "MIDEA", "MIDEA CARRIER", "SPRINGER CARRIER MIDEA"}
+    marca = dg.anuncios_por_dimensao(f, CB, "marca")
+    assert dict(zip(marca["grupo"], marca["qtd"]))["MIDEA"] == 3
+    minimo = dg.preco_minimo_por_marca(f, CB)
+    assert minimo.loc[minimo["marca"] == "MIDEA", "preco_min"].item() == 1700

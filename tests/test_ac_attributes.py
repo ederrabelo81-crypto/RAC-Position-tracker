@@ -65,3 +65,18 @@ def test_loja_de_marca_sai_do_mercado():
         ["MIDEA", "SPRINGER MIDEA", "GREE"],
     )
     assert lojas == {"MIDEA", "LG", "BRASTEMP"}
+
+
+@pytest.mark.parametrize("bruta", [
+    "MIDEA", "MIDEA CARRIER", "SPRINGER CARRIER MIDEA", "SPRINGER MIDEA",
+    "CARRIER", "SPRINGER", " midea  carrier ",
+])
+def test_grupo_midea_vira_um_rotulo(bruta):
+    assert aa.normalize_brand(bruta) == "MIDEA"
+
+
+@pytest.mark.parametrize("bruta,esperada", [
+    ("LG", "LG"), ("gree", "GREE"), ("ELGIN", "ELGIN"), (None, ""),
+])
+def test_outras_marcas_ficam_como_estao(bruta, esperada):
+    assert aa.normalize_brand(bruta) == esperada

@@ -36,9 +36,22 @@ CICLO_FRIO = "FRIO"
 #: (descoberta de 05/11/2026). Somadas às marcas do próprio dado, para pegar
 #: também a loja de uma marca que não aparece na amostra de ar-condicionado.
 LOJAS_DE_MARCA_CONHECIDAS = frozenset({
-    "MIDEA", "LG", "SAMSUNG", "PHILCO", "CONSUL", "ELECTROLUX",
-    "BRASTEMP", "PANASONIC", "BRITÂNIA",
+    "MIDEA", "CARRIER", "SPRINGER", "LG", "SAMSUNG", "PHILCO", "CONSUL",
+    "ELECTROLUX", "BRASTEMP", "PANASONIC", "BRITÂNIA",
 })
+
+#: Rótulo único do grupo Midea Carrier (decisão do mantenedor, 05/11/2026).
+MARCA_GRUPO_MIDEA = "MIDEA"
+#: Grafias do grupo no PriceTrack: MIDEA, MIDEA CARRIER, SPRINGER CARRIER
+#: MIDEA, SPRINGER MIDEA, CARRIER, SPRINGER. Em ar-condicionado no Brasil,
+#: "MIDEA", "CARRIER" e "SPRINGER" só aparecem como marcas do grupo.
+_RE_GRUPO_MIDEA = re.compile(r"\b(MIDEA|CARRIER|SPRINGER)\b")
+
+
+def normalize_brand(brand: Optional[str]) -> str:
+    """Marca em maiúsculas, com toda grafia do grupo Midea Carrier → ``MIDEA``."""
+    marca = " ".join(str(brand or "").upper().split())
+    return MARCA_GRUPO_MIDEA if _RE_GRUPO_MIDEA.search(marca) else marca
 
 _RE_BTU = re.compile(r"(\d{1,2}[.\s]?\d{3})\s*BTU", re.IGNORECASE)
 _RE_INVERTER = re.compile(r"\bINVERTER\b", re.IGNORECASE)

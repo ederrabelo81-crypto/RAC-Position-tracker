@@ -64,7 +64,11 @@ categoria.
   qual é medido. `incluir_foco=True` inverte, para comparar com a tela.
 - **Lojas de fabricante fora da mediana**: ali o fabricante controla o preço
   sozinho (decisão de 05/11/2026). `excluir_lojas_marca=False` inverte.
-- **Marca**: comparada como o PriceTrack grava (`MIDEA` ≠ `SPRINGER MIDEA`).
+- **Marca**: o grupo Midea Carrier aparece sob um rótulo só, **MIDEA** — `MIDEA
+  CARRIER`, `SPRINGER CARRIER MIDEA`, `SPRINGER MIDEA`, `CARRIER` e `SPRINGER`
+  viram `MIDEA` (`utils.ac_attributes.normalize_brand`, decisão de
+  05/11/2026). A grafia do PriceTrack segue em `brand_original` (drill-down e
+  export). As demais marcas ficam como o PriceTrack grava.
 
 Validação contra a tela do PriceTrack: tolerância de ±2% nas contagens, preço
 exato e ±0,5 p.p. nos percentuais, sempre com âncoras de ar-condicionado.

@@ -83,7 +83,11 @@ def prepare_frame(raw: pd.DataFrame, mapping: Optional[dict] = None) -> pd.DataF
     if "turno" in df.columns:
         df = df[df["turno"].fillna("Diário") == "Diário"]
     df["dia"] = pd.to_datetime(df["collection_date"]).dt.date
-    df["brand"] = df["brand"].fillna("").astype(str).str.strip().str.upper()
+    # Grupo Midea Carrier sob um rótulo só (MIDEA CARRIER, SPRINGER CARRIER
+    # MIDEA, CARRIER… → MIDEA); a grafia do PriceTrack fica em brand_original.
+    df["brand_original"] = df["brand"].fillna("").astype(str).str.strip().str.upper()
+    unicas = df["brand_original"].unique()
+    df["brand"] = df["brand_original"].map({m: aa.normalize_brand(m) for m in unicas})
     df["marketplace"] = df["marketplace"].fillna("").astype(str).str.strip().str.upper()
     df["seller_raw"] = df["seller"].fillna("").astype(str).str.strip()
     canon = df["seller_canonical"] if "seller_canonical" in df.columns else df["seller"]
@@ -121,7 +125,7 @@ def prepare_frame(raw: pd.DataFrame, mapping: Optional[dict] = None) -> pd.DataF
         df.loc[falta, "subcategory"] = titulos.map(por_titulo).fillna("")
     df = aa.add_attributes(df, "title")
     return df[[
-        "dia", "marketplace", "sku", "seller", "brand", "title", "subcategory",
+        "dia", "marketplace", "sku", "seller", "brand", "brand_original", "title", "subcategory",
         "btu", "tecnologia", "ciclo", "voltagem", "preco",
     ]].reset_index(drop=True)
 
@@ -168,7 +172,7 @@ def load_frame(store: Any, inicio: date, fim: date, dataset: str = "pricetrack",
 
 def _frame_vazio() -> pd.DataFrame:
     return pd.DataFrame(columns=[
-        "dia", "marketplace", "sku", "seller", "brand", "title", "subcategory",
+        "dia", "marketplace", "sku", "seller", "brand", "brand_original", "title", "subcategory",
         "btu", "tecnologia", "ciclo", "voltagem", "preco",
     ])
 
