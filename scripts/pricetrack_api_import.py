@@ -741,6 +741,39 @@ def date_exists(collection_date: str, dry_run: bool = False) -> bool:
         return False
 
 
+def _is_cold_day(day: date, cold_days: Set[str], cutoff: Optional[date]) -> bool:
+    """True se o dia saiu do banco pela poda e já vive no histórico frio.
+
+    Sem isto o `--gaps-only` do 3º degrau (05:20 BRT) via como "buraco" todo
+    dia que a poda noturna (`history_cli.py tier`) acabara de levar ao Parquet
+    e o reimportava no Supabase — `pricetrack_daily` ficava sempre com ~14
+    dias (257 MB em 04/11/2026) em vez da janela quente de 2, e o banco
+    passava da cota. Dia DENTRO da janela quente ausente do banco continua
+    sendo buraco de verdade, mesmo que exista no Parquet.
+    """
+    return cutoff is not None and day < cutoff and day.isoformat() in cold_days
+
+
+def _cold_history_days() -> Tuple[Set[str], Optional[date]]:
+    """Dias de PriceTrack no histórico frio e o início da janela quente.
+
+    Falha ao ler o histórico devolve ``(set(), None)``: o heal volta ao
+    comportamento antigo (reimporta o que falta no banco). Custa espaço por um
+    dia, mas nunca deixa um dia sem cópia nenhuma.
+    """
+    try:
+        from utils.history import DATASET_PRICETRACK, get_store, hot_window_start
+
+        days = {d.isoformat() for d in get_store().days(DATASET_PRICETRACK)}
+        return days, hot_window_start()
+    except Exception as exc:
+        logger.warning(
+            f"[gaps-only] histórico frio ilegível ({exc}); buracos serão "
+            f"medidos só pelo banco."
+        )
+        return set(), None
+
+
 def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
     """Insere registros em lotes de _BATCH_SIZE. Retorna total inserido."""
     if dry_run:
@@ -1131,6 +1164,12 @@ def run(
     # (limit 1), evitando o bug de paginação do select global.
     dates_to_process: List[str] = []
     skipped_existing = 0
+    skipped_cold = 0
+    # gaps_only: dia fora da janela quente que já está no Parquet NÃO é buraco
+    # — foi a poda noturna que o tirou do banco, de propósito.
+    cold_days, cold_cutoff = (
+        _cold_history_days() if gaps_only else (set(), None)
+    )
     cur = start
     while cur <= end:
         ds = cur.isoformat()
@@ -1142,6 +1181,8 @@ def run(
             skipped_existing += 1
         elif date_exists(ds, dry_run=dry_run):
             skipped_existing += 1
+        elif _is_cold_day(cur, cold_days, cold_cutoff):
+            skipped_cold += 1
         else:
             dates_to_process.append(ds)
         cur += timedelta(days=1)
@@ -1150,6 +1191,8 @@ def run(
         logger.info(
             f"[gaps-only] {len(dates_to_process)} data(s) ausente(s) em "
             f"[{start} → {end}]: {', '.join(dates_to_process) or 'nenhuma'}"
+            + (f"; {skipped_cold} já no histórico frio (fora da janela quente)"
+               if skipped_cold else "")
         )
 
     total = len(dates_to_process)
