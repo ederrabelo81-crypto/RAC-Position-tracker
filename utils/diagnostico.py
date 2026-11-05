@@ -27,8 +27,10 @@ COLUNAS_LEITURA = (
     "collection_date", "turno", "brand", "sku", "title", "subcategory",
     "marketplace", "seller", "seller_canonical", "min_price", "imported_at",
 )
-#: Chave única de ``pricetrack_daily`` sem o turno (o frame é só "Diário").
-CHAVE = ["dia", "brand", "sku", "marketplace", "seller_raw"]
+#: Chave única de ``pricetrack_daily`` sem o turno. Usa a marca CRUA: o grupo
+#: Midea só é unificado depois da deduplicação, senão duas grafias do mesmo
+#: SKU se anulariam por recência antes da escolha do menor preço.
+CHAVE = ["dia", "brand_original", "sku", "marketplace", "seller_raw"]
 TODAS = "TODAS"
 #: Coluna com a chave da partição Parquet de origem de cada linha.
 COL_PARTICAO = "_particao"

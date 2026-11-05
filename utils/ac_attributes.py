@@ -181,8 +181,14 @@ def brand_store_marketplaces(marketplaces: Iterable[str], brands: Iterable[str])
     O PriceTrack lista a loja oficial do fabricante como marketplace. Ali o
     fabricante define o preço sozinho, então ela não entra na mediana do
     mercado do Diagnóstico (decisão do mantenedor, 05/11/2026). Casamento
-    exato, em maiúsculas, contra as marcas do próprio dado.
+    exato, em maiúsculas, contra as marcas do próprio dado — comparado também
+    depois de ``normalize_brand``, para que uma loja chamada "MIDEA CARRIER"
+    ou "SPRINGER MIDEA" seja reconhecida como loja do grupo.
     """
     marcas = {str(b).strip().upper() for b in brands if b and str(b).strip()}
     marcas |= LOJAS_DE_MARCA_CONHECIDAS
-    return {m for m in marketplaces if m and str(m).strip().upper() in marcas}
+    marcas |= {normalize_brand(b) for b in marcas}
+    return {
+        m for m in marketplaces
+        if m and (str(m).strip().upper() in marcas or normalize_brand(m) in marcas)
+    }

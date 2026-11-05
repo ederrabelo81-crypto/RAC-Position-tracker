@@ -214,3 +214,38 @@ def test_grupo_midea_somado_sob_midea_com_grafia_original_preservada():
     assert dict(zip(marca["grupo"], marca["qtd"]))["MIDEA"] == 3
     minimo = dg.preco_minimo_por_marca(f, CB)
     assert minimo.loc[minimo["marca"] == "MIDEA", "preco_min"].item() == 1700
+
+
+@pytest.mark.parametrize("alias", [
+    "MIDEA", "MIDEA CARRIER", "SPRINGER CARRIER MIDEA", "SPRINGER MIDEA", "CARRIER", "SPRINGER",
+])
+def test_todas_as_grafias_do_grupo_viram_midea_no_frame(alias):
+    f = dg.prepare_frame(pd.DataFrame([_linha(D1, CB, "M12", "LOJA A", 2000, brand=alias)]))
+    assert (f["brand"].item(), f["brand_original"].item()) == ("MIDEA", alias)
+
+
+def test_mesmo_sku_com_duas_grafias_do_grupo_fica_com_o_menor_preco():
+    """Dedup pela marca crua: a mais recente não apaga a outra grafia antes do mínimo."""
+    a = _linha(D1, CB, "M12", "LOJA A", 1800, brand="MIDEA", imported_at="2026-11-01T00:00:00Z")
+    b = _linha(D1, CB, "M12", "LOJA A", 2100, brand="SPRINGER MIDEA", imported_at="2026-11-02T00:00:00Z")
+    f = dg.prepare_frame(pd.DataFrame([a, b]))
+    assert f[["brand", "preco"]].values.tolist() == [["MIDEA", 1800]]
+
+
+@pytest.mark.parametrize("loja", ["CARRIER", "SPRINGER", "MIDEA CARRIER", "SPRINGER MIDEA"])
+def test_lojas_do_grupo_ficam_fora_da_mediana(loja):
+    linhas = [
+        _linha(D1, CB, "M12", "LOJA A", 1900),
+        _linha(D1, ML, "M12", "ML1", 2200),
+        _linha(D1, MG, "M12", "MG1", 2000),
+        _linha(D1, loja, "M12", loja, 900),       # loja própria, barata: não pode puxar a mediana
+    ]
+    med = dg.mediana_mercado(dg.prepare_frame(pd.DataFrame(linhas)), CB)
+    assert med["mediana_mercado"].item() == 2100
+    assert med["n_marketplaces"].item() == 2
+
+
+def test_carrefour_nao_e_confundido_com_carrier():
+    linhas = [_linha(D1, CB, "M12", "LOJA A", 1900), _linha(D1, "CARREFOUR", "M12", "C1", 2000)]
+    med = dg.mediana_mercado(dg.prepare_frame(pd.DataFrame(linhas)), CB)
+    assert med["n_marketplaces"].item() == 1
