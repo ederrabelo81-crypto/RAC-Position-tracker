@@ -381,6 +381,17 @@ def _baixar_export(dia: date, versao: str, destino: Path, timeout_min: int) -> P
             time.sleep(60)
 
     logger.info(f"Export {versao.upper()} {job.export_id} criado para {dia}. Aguardando…")
+    return _baixar_job(client, _esperar_terminar(client, job, timeout_min), destino)
+
+
+def _esperar_terminar(client: Any, job: Any, timeout_min: int,
+                      dormir: Any = time.sleep) -> Any:
+    """Faz polling do export até DONE/FAILED, com intervalo crescente (5s → 60s).
+
+    Raises:
+        TimeoutError: o export não terminou no prazo. Ele segue rodando na
+            API; a mensagem traz o id para retomar com ``--export-id``.
+    """
     inicio = time.monotonic()
     espera = 5.0
     while not job.is_terminal:
@@ -390,12 +401,11 @@ def _baixar_export(dia: date, versao: str, destino: Path, timeout_min: int) -> P
                 f"(último status {job.status}). Ele continua rodando na API; "
                 f"rode de novo mais tarde com --export-id {job.export_id}."
             )
-        time.sleep(espera)
+        dormir(espera)
         espera = min(espera * 1.5, 60.0)
         job = client.get_export(job.export_id)
         logger.info(f"  status={job.status} progresso={job.progress}")
-
-    return _baixar_job(client, job, destino)
+    return job
 
 
 def _baixar_job(client: Any, job: Any, destino: Path) -> Path:
@@ -407,11 +417,13 @@ def _baixar_job(client: Any, job: Any, destino: Path) -> Path:
     return destino
 
 
-def _baixar_por_id(export_id: str, destino: Path) -> Path:
+def _baixar_por_id(export_id: str, destino: Path, timeout_min: int) -> Path:
+    """Retoma um export existente: espera terminar (se ainda roda) e baixa."""
     from pricetrack_api import PriceTrackClient, PriceTrackSettings
 
     client = PriceTrackClient(PriceTrackSettings.from_env())
-    return _baixar_job(client, client.get_export(export_id), destino)
+    job = _esperar_terminar(client, client.get_export(export_id), timeout_min)
+    return _baixar_job(client, job, destino)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -439,7 +451,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         arquivo = _OUT_DIR / f"offers-{dia.isoformat()}-{versao}.ndjson.gz"
         rotulo = versao
         if args.export_id:
-            _baixar_por_id(args.export_id, arquivo)
+            _baixar_por_id(args.export_id, arquivo, args.timeout_min)
         elif arquivo.exists():
             logger.info(f"Reaproveitando download anterior: {arquivo}")
         else:

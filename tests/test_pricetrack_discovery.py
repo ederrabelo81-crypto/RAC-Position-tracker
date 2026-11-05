@@ -85,3 +85,39 @@ def test_versao_auto_respeita_janela_do_redis():
     assert pd_._versao_efetiva("auto", date(2026, 11, 3), hoje) == "v2"
     assert pd_._versao_efetiva("auto", date(2026, 7, 1), hoje) == "v1"
     assert pd_._versao_efetiva("v1", date(2026, 11, 3), hoje) == "v1"
+
+
+class _Job:
+    def __init__(self, status):
+        self.status = status
+        self.export_id = "abc"
+        self.progress = None
+
+    @property
+    def is_terminal(self):
+        return self.status in ("DONE", "FAILED")
+
+
+def test_esperar_terminar_faz_polling_ate_done():
+    sequencia = iter([_Job("PROCESSING"), _Job("DONE")])
+
+    class _Cliente:
+        chamadas = 0
+
+        def get_export(self, _id):
+            _Cliente.chamadas += 1
+            return next(sequencia)
+
+    job = pd_._esperar_terminar(_Cliente(), _Job("PENDING"), 5, dormir=lambda s: None)
+    assert job.status == "DONE"
+    assert _Cliente.chamadas == 2
+
+
+def test_esperar_terminar_estoura_prazo_com_id_para_retomar():
+    class _Cliente:
+        def get_export(self, _id):
+            return _Job("PROCESSING")
+
+    import pytest
+    with pytest.raises(TimeoutError, match="--export-id abc"):
+        pd_._esperar_terminar(_Cliente(), _Job("PENDING"), 0, dormir=lambda s: None)

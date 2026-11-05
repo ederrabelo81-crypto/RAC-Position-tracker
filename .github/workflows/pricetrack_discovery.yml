@@ -36,8 +36,14 @@ on:
 permissions:
   contents: read
 
+# Mesmo grupo do import diário (`pricetrack_daily.yml`) e do portão do
+# `pipeline_guard.yml`: a descoberta espera o import terminar em vez de
+# disputar com ele os 3 slots de export da organização. Atenção: o GitHub
+# guarda só UM run pendente por grupo — disparar a descoberta enquanto um
+# degrau do import já espera na fila cancela esse degrau pendente. Por isso
+# não dispare perto de 00:01 / 04:20 / 05:20 BRT.
 concurrency:
-  group: pricetrack-discovery
+  group: pricetrack-exports
   cancel-in-progress: false
 
 jobs:
