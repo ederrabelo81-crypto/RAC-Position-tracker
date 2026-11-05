@@ -197,3 +197,36 @@ Hi-Wall Inverter.**
   30.000 BTU, ventiladores, climatizadores, peças) não entra nunca.
 - A validação contra a tela do PriceTrack usa âncoras de ar-condicionado; a
   âncora de lavadoras/refrigeradores (20/10) foi descartada.
+
+## 9. Resultado da descoberta (export V2 de 03/11/2026)
+
+Rodado pelo workflow `pricetrack_discovery.yml` (run 41944880672).
+
+- 143.037 linhas no dia, 53.458 de AR CONDICIONADO. Subcategorias de AC:
+  HI-WALL 36.546 · CASSETE 6.851 · TETO 5.351 · JANELA 4.046 · PORTÁTIL 256 ·
+  PAREDE 205 · DUTO 203.
+- Sem campo de BTU/tecnologia/ciclo/voltagem. O `product_name` segue padrão
+  fixo do catálogo e dá BTU (100%), voltagem (96%), INVERTER (87%) e ciclo
+  ("QUENTE/FRIO" ou "FRIO").
+- **O nome não identifica Hi-Wall**: o AI Ecomaster da Midea (`42EZVCA..`) se
+  chama "AR CONDICIONADO SPLIT 18000 BTU…". A subcategoria precisa vir do campo
+  `subcategory` — daí a migração 007.
+- V2 não traz `status`; o V1 traz, mas o PriceTrack só exporta oferta à venda
+  (0 indisponíveis em `pricetrack_daily`). Anúncio ativo = presente no export.
+- V1 e V2 trazem as mesmas ofertas (SKU × seller por marketplace bate com
+  `pricetrack_daily`), mas o V1 tem ~10× mais observações por oferta. A
+  produção segue no V1.
+- Lojas próprias de fabricante aparecem como marketplace (MIDEA, LG, SAMSUNG,
+  PHILCO, CONSUL…) e ficam fora da mediana de mercado do Diagnóstico.
+
+## 10. Fase 1 — o que entrou
+
+- `migrations/007_pricetrack_subcategory.sql` (aplicada em 05/11/2026):
+  `subcategory` e `family` em `pricetrack_daily`, nullable.
+- `scripts/pricetrack_api_import.py` grava as duas a partir do export. Sem a
+  migração, grava sem elas com WARNING (não perde o dia).
+- `utils/ac_attributes.py`: BTU/tecnologia/ciclo/voltagem do nome; de-para
+  SKU → subcategoria para classificar o histórico anterior ao campo; máscara do
+  escopo padrão (Hi-Wall + Inverter + ≤ 30.000 BTU); lojas de marca.
+- As colunas novas chegam ao Parquet pela poda (`select *`); partições antigas
+  sem elas são lidas normalmente e classificadas pelo de-para.
