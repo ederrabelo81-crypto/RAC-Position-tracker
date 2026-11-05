@@ -122,7 +122,12 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests pandas supabase python-dotenv loguru psycopg2-binary
+          # pyarrow + google-api-python-client/google-auth: histórico frio no
+          # Drive. Sem eles o import nunca gravava a partição do dia
+          # ("histórico frio NÃO gravou partição") e o heal (--gaps-only) não
+          # enxergava os dias já podados para o Parquet (05/11/2026).
+          pip install requests pandas supabase python-dotenv loguru psycopg2-binary \
+                      pyarrow google-api-python-client google-auth
 
       # ── 4. Parâmetros do run (schedule vs. manual) ─────────────────────────
       - name: Set run parameters
