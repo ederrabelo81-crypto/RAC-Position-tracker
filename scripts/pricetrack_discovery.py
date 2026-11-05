@@ -22,7 +22,6 @@ em memória.
 Uso (no PC coletor, com PRICETRACK_API_KEY no .env):
     python scripts/pricetrack_discovery.py                       # ontem, export V2
     python scripts/pricetrack_discovery.py --data 2026-11-03 --versao v1
-    python scripts/pricetrack_discovery.py --data 2026-10-20 --categorias "LAVADORAS,REFRIGERADOR"
     python scripts/pricetrack_discovery.py --arquivo imports/pricetrack/api/raw/offers-2026-11-03.ndjson.gz
 """
 from __future__ import annotations

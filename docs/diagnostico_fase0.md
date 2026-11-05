@@ -182,3 +182,18 @@ registro de onde vieram esses números (e o banco agora guarda 2 dias, então
 as janelas antigas nem estão lá), a proposta é trocar por uma checagem
 reproduzível: contagem de linhas por dia de `pricetrack_daily` antes e depois
 de cada mudança no importador.
+
+## 8. Regra dura de escopo (04/11/2026)
+
+**O Diagnóstico só apresenta ar-condicionado, com foco total em Split
+Hi-Wall Inverter.**
+
+- Nenhuma outra linha de produto (lavadoras, refrigeradores etc.) aparece em
+  gráfico, tabela, filtro ou export — nem como "TODAS".
+- O recorte padrão de todas as visões é **Split Hi-Wall Inverter**. Outras
+  subcategorias de AR CONDICIONADO (Janela, Portátil, Piso-Teto, On-Off) só
+  entram se o usuário escolher no filtro.
+- Fora do escopo RAC (Cassete, Duto, Multi-Split, VRF, Chiller, acima de
+  30.000 BTU, ventiladores, climatizadores, peças) não entra nunca.
+- A validação contra a tela do PriceTrack usa âncoras de ar-condicionado; a
+  âncora de lavadoras/refrigeradores (20/10) foi descartada.
