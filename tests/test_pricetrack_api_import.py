@@ -686,3 +686,60 @@ def test_is_cold_day_bordas():
     assert not ptai._is_cold_day(date(2026, 11, 2), {"2026-11-02"}, corte)
     assert not ptai._is_cold_day(date(2026, 11, 1), set(), corte)
     assert not ptai._is_cold_day(date(2026, 11, 1), {"2026-11-01"}, None)
+
+
+# ── Migração 007: subcategoria e família (painel Diagnóstico, Nov/2026) ─────
+
+class TestSubcategoriaNoAgregado:
+    def test_subcategoria_e_familia_viajam_com_o_grupo(self):
+        df = pd.DataFrame([
+            _offer(subcategory="hi-wall", family="42MACA09S5"),
+            _offer(subcategory="HI-WALL", family="42MACA09S5", price=1899.90),
+        ])
+        agg, _ = ptai.aggregate_offers(df, "2026-11-04")
+        diario = agg[agg["turno"] == "Diário"].iloc[0]
+        assert diario["subcategory"] == "HI-WALL"
+        assert diario["family"] == "42MACA09S5"
+
+    def test_sem_campo_vira_nulo_e_nao_string_vazia(self):
+        # Ausente no agregado (NaN/None); `_process_date` converte para NULL.
+        agg, _ = ptai.aggregate_offers(pd.DataFrame([_offer()]), "2026-11-04")
+        assert pd.isna(agg.iloc[0]["subcategory"])
+        assert pd.isna(agg.iloc[0]["family"])
+
+
+class _ErroColunaAusente(Exception):
+    pass
+
+
+class _TabelaFalsa:
+    def __init__(self, registro):
+        self.registro = registro
+        self._lote = None
+
+    def upsert(self, lote, on_conflict):
+        self._lote = lote
+        return self
+
+    def execute(self):
+        if any("subcategory" in r for r in self._lote):
+            raise _ErroColunaAusente(
+                "PGRST204 Could not find the 'subcategory' column of 'pricetrack_daily'"
+            )
+        self.registro.extend(self._lote)
+
+
+def test_insert_sem_migracao_007_grava_sem_as_colunas_novas(monkeypatch):
+    gravados: list = []
+
+    class _Cliente:
+        def table(self, _nome):
+            return _TabelaFalsa(gravados)
+
+    monkeypatch.setattr(ptai, "_banco_disponivel", lambda: True)
+    monkeypatch.setattr(ptai, "_supabase_client", lambda: _Cliente())
+    monkeypatch.setattr(ptai, "_BATCH_SIZE", 2)
+    registros = [{"sku": f"S{i}", "subcategory": "HI-WALL", "family": "F"} for i in range(3)]
+
+    assert ptai.insert_rows(registros) == 3
+    assert gravados == [{"sku": "S0"}, {"sku": "S1"}, {"sku": "S2"}]

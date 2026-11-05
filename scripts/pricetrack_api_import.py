@@ -217,6 +217,10 @@ _MARKETPLACE_FIELDS = ("marketplace", "market", "loja_marketplace")
 _SELLER_FIELDS = ("seller", "vendedor", "store", "loja")
 _CATEGORY_FIELDS = ("category", "categoria", "product_category", "productcategory")
 _HOUR_FIELDS = ("collection_hour", "collectionhour")
+# Atributos de PRODUTO que o Diagnóstico precisa e o título não dá: o AI
+# Ecomaster da Midea é Hi-Wall e se chama só "SPLIT" (descoberta 05/11/2026).
+_SUBCATEGORY_FIELDS = ("subcategory", "productsubcategory", "product_subcategory")
+_FAMILY_FIELDS = ("family", "productfamily", "product_family")
 
 # Categorias de ar condicionado aceitas (uppercase, comparação exata).
 # Configurável via --categories na CLI.
@@ -247,6 +251,11 @@ _DIAGNOSTIC_REASONS = frozenset({"FORWARD_PRICE_ONLY"})
 
 # Colunas da migração 006. Sem elas o import ABORTA (ver `insert_rows`): uma
 # linha corrigida sem carimbo de base é pior que import nenhum.
+# Colunas da migração 007 (Diagnóstico). Ao contrário da 006, a ausência delas
+# NÃO aborta: a linha sem subcategoria continua certa, só fica sem um atributo
+# que o de-para SKU → subcategoria recupera depois. Perder o dia seria pior.
+_MIGRATION_007_COLUMNS = ("subcategory", "family")
+
 _MIGRATION_006_COLUMNS = (
     "price_basis", "last_price", "last_hour",
     "spot_min_price", "pix_min_price", "obs_count", "unavailable_count",
@@ -454,6 +463,8 @@ def aggregate_offers(
         "brand": _pick_text(df, lookup, _BRAND_FIELDS).str.upper(),
         "sku": _pick_text(df, lookup, _SKU_FIELDS),
         "title": _pick_text(df, lookup, _TITLE_FIELDS),
+        "subcategory": _pick_text(df, lookup, _SUBCATEGORY_FIELDS).str.upper(),
+        "family": _pick_text(df, lookup, _FAMILY_FIELDS),
         "marketplace": _pick_text(df, lookup, _MARKETPLACE_FIELDS),
         "seller": _pick_text(df, lookup, _SELLER_FIELDS),
     })
@@ -548,6 +559,9 @@ def aggregate_offers(
         # indisponíveis): grupo 100% indisponível fica sem preço, mas não pode
         # ficar sem título — `title` é NOT NULL na tabela.
         titles = rows.groupby(group_keys)["title"].agg(_title_of).rename("title")
+        # Mesmo critério do título (o mais frequente do grupo). São atributos
+        # do produto: na prática um valor só por SKU.
+        attrs = rows.groupby(group_keys)[["subcategory", "family"]].agg(_title_of)
 
         # `last_price` = o preço da ÚLTIMA coleta da janela, que é o que o
         # painel do PriceTrack exibe ("Preço exibido: última coleta"). Sem ele
@@ -571,8 +585,11 @@ def aggregate_offers(
         # preços NULL — a listagem existiu (share of shelf), só não competiu
         # por preço. Foi o que a base antiga escondeu ao somar indisponível
         # dentro do mínimo de mercado.
-        a = pd.concat([titles, stats, last, unav_count], axis=1).reset_index()
+        a = pd.concat([titles, attrs, stats, last, unav_count], axis=1).reset_index()
         a["title"] = a["title"].fillna("")
+        # Vazio vira NULL na tabela: "sem subcategoria" ≠ subcategoria "".
+        for col in ("subcategory", "family"):
+            a[col] = a[col].where(a[col].fillna("").astype(str).str.strip() != "", None)
         a["obs_count"] = a["obs_count"].fillna(0).astype(int)
         a["unavailable_count"] = a["unavailable_count"].fillna(0).astype(int)
         a["collection_date"] = collection_date
@@ -597,6 +614,7 @@ def aggregate_offers(
 
     return agg[[
         "collection_date", "turno", "brand", "sku", "title",
+        "subcategory", "family",
         "marketplace", "seller", "seller_canonical",
         "min_price", "avg_price", "mode_price", "max_price",
         "price_basis", "last_price", "last_hour",
@@ -787,8 +805,11 @@ def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
 
     client = _supabase_client()
     inserted = 0
+    sem_007 = False
     for i in range(0, len(records), _BATCH_SIZE):
         batch = records[i : i + _BATCH_SIZE]
+        if sem_007:
+            batch = [_without(r, _MIGRATION_007_COLUMNS) for r in batch]
         try:
             # Upsert idempotente: o conflict target casa a UNIQUE de
             # pricetrack_daily (migration 003 inclui `turno`), então
@@ -800,6 +821,20 @@ def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
             ).execute()
             inserted += len(batch)
         except Exception as e:
+            if not sem_007 and _is_unknown_column_error(e, _MIGRATION_007_COLUMNS):
+                logger.warning(
+                    "pricetrack_daily sem as colunas da migração 007 "
+                    f"({', '.join(_MIGRATION_007_COLUMNS)}) — gravando sem elas. "
+                    "Aplique migrations/007_pricetrack_subcategory.sql."
+                )
+                sem_007 = True
+                batch = [_without(r, _MIGRATION_007_COLUMNS) for r in batch]
+                client.table(_TABLE).upsert(
+                    batch,
+                    on_conflict="collection_date,turno,brand,sku,marketplace,seller",
+                ).execute()
+                inserted += len(batch)
+                continue
             if _is_unknown_column_error(e):
                 # Migração 006 ausente. Abortamos em vez de gravar sem as
                 # colunas novas: uma linha `best_cash` sem o carimbo
@@ -818,6 +853,11 @@ def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
                 ) from e
             logger.error(f"Erro ao inserir lote {i//_BATCH_SIZE + 1}: {e}")
     return inserted
+
+
+def _without(record: Dict, columns: Tuple[str, ...]) -> Dict:
+    """Cópia do registro sem as colunas dadas."""
+    return {k: v for k, v in record.items() if k not in columns}
 
 
 def purge_stale_basis(collection_date: str, dry_run: bool = False) -> int:
@@ -874,13 +914,15 @@ def purge_stale_basis(collection_date: str, dry_run: bool = False) -> int:
         return 0
 
 
-def _is_unknown_column_error(exc: Exception) -> bool:
+def _is_unknown_column_error(
+    exc: Exception, columns: Tuple[str, ...] = _MIGRATION_006_COLUMNS
+) -> bool:
     """True se o erro do PostgREST é 'coluna X não existe' (PGRST204/42703)."""
     text = str(exc).lower()
     return any(
         marker in text
         for marker in ("pgrst204", "42703", "could not find", "does not exist")
-    ) and any(col in text for col in _MIGRATION_006_COLUMNS)
+    ) and any(col in text for col in columns)
 
 
 def log_import(
