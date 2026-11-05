@@ -1,0 +1,98 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# PriceTrack — descoberta do export (manual, só leitura)
+#
+# Roda scripts/pricetrack_discovery.py com a PRICETRACK_API_KEY dos secrets e
+# publica o relatório (.md + .json) como artefato. Fase 0 do painel
+# Diagnóstico (docs/diagnostico_fase0.md).
+#
+# Só leitura: NÃO recebe credencial de banco nem de Drive — não há como gravar
+# no Supabase daqui. O único efeito externo é o próprio export na API do
+# PriceTrack, que ocupa 1 dos 3 slots da organização até terminar.
+#
+# Uso: GitHub → Actions → "PriceTrack — Descoberta do export" → Run workflow.
+# Não rodar perto das 00:01/04:20/05:20 BRT (import diário), para não disputar
+# slot de export com ele.
+# ══════════════════════════════════════════════════════════════════════════════
+name: PriceTrack — Descoberta do export
+
+on:
+  workflow_dispatch:
+    inputs:
+      data:
+        description: 'Data da coleta YYYY-MM-DD (vazio = ontem)'
+        required: false
+        default: ''
+      versao:
+        description: 'Endpoint do export'
+        required: false
+        default: 'v2'
+        type: choice
+        options: [v2, v1, auto]
+      export_id:
+        description: 'Id de um export já existente (opcional — retoma sem criar outro)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# Mesmo grupo do import diário (`pricetrack_daily.yml`) e do portão do
+# `pipeline_guard.yml`: a descoberta espera o import terminar em vez de
+# disputar com ele os 3 slots de export da organização. Atenção: o GitHub
+# guarda só UM run pendente por grupo — disparar a descoberta enquanto um
+# degrau do import já espera na fila cancela esse degrau pendente. Por isso
+# não dispare perto de 00:01 / 04:20 / 05:20 BRT.
+concurrency:
+  group: pricetrack-exports
+  cancel-in-progress: false
+
+jobs:
+  discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TZ: America/Sao_Paulo
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests loguru python-dotenv
+
+      - name: Run discovery
+        env:
+          PRICETRACK_API_KEY: ${{ secrets.PRICETRACK_API_KEY }}
+          IN_DATA: ${{ inputs.data }}
+          IN_VERSAO: ${{ inputs.versao }}
+          IN_EXPORT_ID: ${{ inputs.export_id }}
+        run: |
+          ARGS=(--versao "$IN_VERSAO" --timeout-min 100)
+          if [ -n "$IN_DATA" ]; then ARGS+=(--data "$IN_DATA"); fi
+          if [ -n "$IN_EXPORT_ID" ]; then ARGS+=(--export-id "$IN_EXPORT_ID"); fi
+          python scripts/pricetrack_discovery.py "${ARGS[@]}"
+
+      - name: Publish summary
+        if: success()
+        run: |
+          for f in logs/pricetrack_discovery_*.md; do
+            [ -f "$f" ] && cat "$f" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      # Só o relatório: o NDJSON bruto (centenas de MB) não sobe.
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pricetrack-discovery-${{ github.run_id }}
+          path: |
+            logs/pricetrack_discovery_*.md
+            logs/pricetrack_discovery_*.json
+          retention-days: 14
+          if-no-files-found: warn
