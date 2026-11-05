@@ -14,18 +14,29 @@ decisões: `docs/diagnostico_fase0.md`.
   subcategorias de AC só por escolha no filtro; o teto de 30.000 BTU vale
   sempre.
 - Subcategoria vem do campo da API (migração 007). Linhas anteriores a
-  05/11/2026 são classificadas pelo de-para SKU → subcategoria; SKU sem
-  de-para fica **fora** (na dúvida, não entra).
+  05/11/2026 são classificadas pelo de-para SKU → subcategoria, montado com os
+  **14 dias mais recentes** do histórico (`load_subcategory_map`, à parte do
+  período do painel — senão um período antigo sairia vazio). Sem de-para, vale
+  o nome quando ele declara a subcategoria ("HI WALL", "CASSETE", "PISO TETO",
+  "JANELA", "PORTÁTIL", "DUTO"); "SPLIT" sozinho não basta. Sem nenhum dos
+  dois, o SKU fica **fora** (na dúvida, não entra).
 
 ## Fonte
 
 Histórico Parquet de `pricetrack_daily` no Drive, turno **Diário**, lido dia a
 dia (`load_frame`). O Supabase guarda só 2 dias (janela quente).
 
-Uma linha do frame = **anúncio-dia**: (dia, marketplace, SKU, seller) com
-`preco` = `min_price`, o menor preço à vista do dia (menor entre spot e PIX,
-base `best_cash`). Duplicatas de partição ficam com a importação mais recente.
-Seller = `seller_canonical`, senão `seller`. Linha sem preço sai.
+Uma linha do frame = **anúncio-dia**: (dia, marketplace, SKU, seller
+canônico) com `preco` = `min_price`, o menor preço à vista do dia (menor entre
+spot e PIX, base `best_cash`). Seller = `seller_canonical`, senão `seller`;
+duas grafias do mesmo lojista viram uma linha, com o menor preço.
+
+Duplicatas de partição: o mesmo dia pode estar na partição do import
+(`__run-import`) e na da poda (`__run-tier…`). A poda apaga a do import ao
+migrar o dia, então se as duas existem a do import veio depois (reimportação)
+e **vence**; dentro da mesma partição, `imported_at` mais recente. A
+deduplicação vem **antes** do filtro de preço: se a versão mais nova não tem
+preço, a linha sai — a antiga não volta.
 
 O PriceTrack só exporta oferta à venda (0 indisponíveis observados), então
 **anúncio ativo = anúncio presente no dia**.

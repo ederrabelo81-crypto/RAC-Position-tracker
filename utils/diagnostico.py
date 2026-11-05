@@ -15,7 +15,7 @@ padrão Split Hi-Wall Inverter até 30.000 BTU (``utils.ac_attributes``).
 from __future__ import annotations
 
 import math
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Iterable, List, Optional, Sequence
 
 import pandas as pd
@@ -30,18 +30,49 @@ COLUNAS_LEITURA = (
 #: Chave única de ``pricetrack_daily`` sem o turno (o frame é só "Diário").
 CHAVE = ["dia", "brand", "sku", "marketplace", "seller_raw"]
 TODAS = "TODAS"
+#: Coluna com a chave da partição Parquet de origem de cada linha.
+COL_PARTICAO = "_particao"
+#: Partição gravada pelo import (``write_history``, run_id estável "import").
+#: A poda (``history_cli.py tier``) apaga esta partição ao migrar o dia; se as
+#: duas coexistem, a de import veio DEPOIS (reimportação) e é a mais nova.
+_RUN_IMPORT = "__run-import"
+#: Dias recentes lidos para montar o de-para SKU → subcategoria.
+DIAS_DEPARA = 14
+#: Palavras do NOME que identificam a subcategoria sem ambiguidade. Último
+#: recurso para SKU sem de-para: "SPLIT" sozinho NÃO entra (o Ecomaster é
+#: Hi-Wall e o nome não diz) — na dúvida, fica fora.
+_SUB_PELO_NOME = (
+    ("HI-WALL", r"HI[\s-]?WALL"),
+    ("CASSETE", r"CASSETE"),
+    ("TETO", r"PISO[\s-]?TETO|\bTETO\b"),
+    ("JANELA", r"\bJANELA\b"),
+    ("PORTÁTIL", r"PORT[AÁ]TIL"),
+    ("DUTO", r"\bDUTO\b"),
+)
 
 
 # ── Carregamento ────────────────────────────────────────────────────────────
 
-def prepare_frame(raw: pd.DataFrame) -> pd.DataFrame:
+def subcategoria_pelo_nome(titulo: Optional[str]) -> str:
+    """Subcategoria quando o nome a declara sem ambiguidade; senão ``""``."""
+    import re
+    texto = str(titulo or "").upper()
+    for sub, padrao in _SUB_PELO_NOME:
+        if re.search(padrao, texto):
+            return sub
+    return ""
+
+
+def prepare_frame(raw: pd.DataFrame, mapping: Optional[dict] = None) -> pd.DataFrame:
     """Normaliza linhas cruas de ``pricetrack_daily`` no frame de anúncios-dia.
 
     * só turno ``Diário`` (o dia inteiro; Manhã/Tarde são recortes do mesmo dado);
     * deduplica pela chave única, ficando com a importação mais recente — o
       Parquet pode ter o mesmo dia em duas partições (import + poda);
     * seller = ``seller_canonical`` quando houver, senão ``seller``;
-    * subcategoria vazia preenchida pelo de-para SKU → subcategoria;
+    * subcategoria vazia preenchida pelo de-para SKU → subcategoria (o do
+      próprio frame somado a ``mapping``, lido de dias recentes) e, por último,
+      pelo nome quando ele declara a subcategoria;
     * atributos (BTU, tecnologia, ciclo, voltagem) lidos do título;
     * descarta linha sem preço (não compete em preço nem conta como anúncio
       com preço — o PriceTrack só exporta oferta à venda).
@@ -59,15 +90,32 @@ def prepare_frame(raw: pd.DataFrame) -> pd.DataFrame:
     df["seller"] = canon.fillna("").astype(str).str.strip()
     df.loc[df["seller"] == "", "seller"] = df["seller_raw"]
     df["preco"] = pd.to_numeric(df["min_price"], errors="coerce")
-    df = df[df["preco"].notna() & (df["preco"] > 0)]
 
-    if "imported_at" in df.columns:
-        df = df.sort_values("imported_at", kind="mergesort", na_position="first")
+    # Dedup ANTES do filtro de preço: a versão mais nova decide, mesmo que
+    # ela diga "sem preço". Recência: partição do import (reimportação) acima
+    # da partição da poda; dentro dela, ``imported_at``.
+    df["_rank_particao"] = (
+        df[COL_PARTICAO].astype(str).str.contains(_RUN_IMPORT, regex=False).astype(int)
+        if COL_PARTICAO in df.columns else 0
+    )
+    ordem = ["_rank_particao"] + (["imported_at"] if "imported_at" in df.columns else [])
+    df = df.sort_values(ordem, kind="mergesort", na_position="first")
     df = df.drop_duplicates(CHAVE, keep="last")
+    df = df[df["preco"].notna() & (df["preco"] > 0)]
+    # Grão do frame = seller CANÔNICO: duas grafias do mesmo lojista viram uma
+    # linha, com o menor preço do dia.
+    df = df.sort_values("preco", kind="mergesort").drop_duplicates(
+        ["dia", "marketplace", "sku", "seller"], keep="first"
+    )
 
     if "subcategory" not in df.columns:
         df["subcategory"] = None
-    df = aa.fill_subcategory(df, aa.subcategory_map(df))
+    depara = dict(mapping or {})
+    depara.update(aa.subcategory_map(df))
+    df = aa.fill_subcategory(df, depara)
+    falta = df["subcategory"] == ""
+    if falta.any():
+        df.loc[falta, "subcategory"] = df.loc[falta, "title"].map(subcategoria_pelo_nome)
     df = aa.add_attributes(df, "title")
     return df[[
         "dia", "marketplace", "sku", "seller", "brand", "title", "subcategory",
@@ -75,22 +123,44 @@ def prepare_frame(raw: pd.DataFrame) -> pd.DataFrame:
     ]].reset_index(drop=True)
 
 
-def load_frame(store: Any, inicio: date, fim: date, dataset: str = "pricetrack") -> pd.DataFrame:
+def load_subcategory_map(store: Any, ate: date, dias: int = DIAS_DEPARA,
+                         dataset: str = "pricetrack") -> dict:
+    """De-para SKU → subcategoria dos ``dias`` mais recentes até ``ate``.
+
+    Lido à parte do período do painel: um período inteiro anterior a
+    05/11/2026 (migração 007) não tem nenhuma subcategoria gravada, e o de-para
+    só do período sairia vazio — o filtro Hi-Wall esvaziaria a página.
+    """
+    partes: List[pd.DataFrame] = []
+    inicio = ate - timedelta(days=dias)
+    for _dia, frame in store.read_days(dataset, start=inicio, end=ate, columns=["sku", "subcategory"]):
+        if "subcategory" in frame.columns:
+            partes.append(frame[["sku", "subcategory"]])
+    if not partes:
+        return {}
+    return aa.subcategory_map(pd.concat(partes, ignore_index=True))
+
+
+def load_frame(store: Any, inicio: date, fim: date, dataset: str = "pricetrack",
+               mapping: Optional[dict] = None) -> pd.DataFrame:
     """Lê o histórico [inicio, fim] dia a dia e devolve o frame preparado.
 
     ``store`` é um ``utils.history.HistoryStore`` (ou objeto com ``read_days``).
     Cada dia é filtrado ao turno Diário antes de juntar, para não segurar os
-    três turnos na memória do Streamlit Cloud.
+    três turnos na memória do Streamlit Cloud. ``mapping``: de-para SKU →
+    subcategoria de fora do período (``load_subcategory_map``).
     """
     partes: List[pd.DataFrame] = []
-    for _dia, frame in store.read_days(dataset, start=inicio, end=fim, columns=list(COLUNAS_LEITURA)):
+    for _dia, frame in store.read_days(dataset, start=inicio, end=fim,
+                                       columns=list(COLUNAS_LEITURA),
+                                       partition_column=COL_PARTICAO):
         if "turno" in frame.columns:
             frame = frame[frame["turno"].fillna("Diário") == "Diário"]
         if not frame.empty:
             partes.append(frame)
     if not partes:
         return _frame_vazio()
-    return prepare_frame(pd.concat(partes, ignore_index=True))
+    return prepare_frame(pd.concat(partes, ignore_index=True), mapping)
 
 
 def _frame_vazio() -> pd.DataFrame:

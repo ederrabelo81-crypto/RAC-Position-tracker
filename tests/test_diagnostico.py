@@ -126,7 +126,7 @@ def test_exportar_datas_iso(frame):
 
 def test_load_frame_le_dia_a_dia_e_ignora_outros_turnos():
     class _Store:
-        def read_days(self, dataset, start, end, columns):
+        def read_days(self, dataset, start, end, columns, partition_column=None):
             assert dataset == "pricetrack"
             yield D1, pd.DataFrame([_linha(D1, CB, "M12", "LOJA A", 2000),
                                     _linha(D1, CB, "M12", "LOJA A", 1, turno="Tarde")])
@@ -140,3 +140,58 @@ def test_frame_vazio_nao_quebra_metricas():
     assert dg.ofertas_por_marketplace(vazio, CB).empty
     assert dg.produtos_agressivos(vazio, CB).empty
     assert dg.profundidade_por_marca(vazio, CB).empty
+
+
+# ── Apontamentos de revisão do PR #424 ──────────────────────────────────────
+
+def test_depara_de_fora_do_periodo_classifica_historico_sem_subcategoria():
+    """Período inteiro anterior à migração 007: nenhuma linha tem subcategoria."""
+    antigas = pd.DataFrame([_linha(D1, CB, "M12", "LOJA A", 2000, sub=None)])
+    sem_mapa = dg.apply_filters(dg.prepare_frame(antigas))
+    assert sem_mapa.empty                          # "SPLIT" sozinho não basta
+    com_mapa = dg.apply_filters(dg.prepare_frame(antigas, mapping={"M12": "HI-WALL"}))
+    assert com_mapa["sku"].tolist() == ["M12"]
+
+
+def test_load_subcategory_map_le_dias_recentes():
+    class _Store:
+        def read_days(self, dataset, start, end, columns):
+            assert columns == ["sku", "subcategory"] and (end - start).days == dg.DIAS_DEPARA
+            yield D4, pd.DataFrame({"sku": ["M12", "C24"], "subcategory": ["HI-WALL", "CASSETE"]})
+
+    assert dg.load_subcategory_map(_Store(), D4) == {"M12": "HI-WALL", "C24": "CASSETE"}
+
+
+def test_nome_declarado_vale_quando_nao_ha_depara():
+    linha = _linha(D1, CB, "H09", "LOJA A", 2000, sub=None,
+                   title="AR CONDICIONADO SPLIT HI WALL INVERTER 9000 BTUS FRIO - HISENSE - 220V - H09")
+    assert dg.prepare_frame(pd.DataFrame([linha]))["subcategory"].tolist() == ["HI-WALL"]
+
+
+def test_reimportacao_vence_a_particao_da_poda_mesmo_sem_imported_at():
+    tier = _linha(D1, CB, "M12", "LOJA A", 2000,
+                  _particao="pricetrack/data=2026-11-01__run-tier1102.parquet")
+    reimport = _linha(D1, CB, "M12", "LOJA A", 1700, imported_at=None,
+                      _particao="pricetrack/data=2026-11-01__run-import.parquet")
+    for ordem in ([tier, reimport], [reimport, tier]):
+        assert dg.prepare_frame(pd.DataFrame(ordem))["preco"].tolist() == [1700]
+
+
+def test_versao_nova_sem_preco_nao_ressuscita_a_antiga():
+    antiga = _linha(D1, CB, "M12", "LOJA A", 2000, imported_at="2026-11-01T00:00:00Z")
+    nova = _linha(D1, CB, "M12", "LOJA A", None, imported_at="2026-11-02T00:00:00Z")
+    assert dg.prepare_frame(pd.DataFrame([antiga, nova])).empty
+
+
+def test_duas_grafias_do_mesmo_seller_viram_uma_linha():
+    a = _linha(D1, CB, "M12", "friopecas", 2000, seller_canonical="Friopeças")
+    b = _linha(D1, CB, "M12", "FRIOPECAS OFICIAL", 1950, seller_canonical="Friopeças")
+    f = dg.prepare_frame(pd.DataFrame([a, b]))
+    assert f[["seller", "preco"]].values.tolist() == [["Friopeças", 1950]]
+
+
+def test_teto_de_30k_btu_vale_mesmo_sem_filtro_de_subcategoria():
+    t36 = "AR CONDICIONADO SPLIT HI WALL 36000 BTU FRIO - INVERTER - MIDEA - 220V - M36"
+    f = dg.prepare_frame(pd.DataFrame([_linha(D1, CB, "M36", "LOJA A", 6000, title=t36),
+                                       _linha(D1, CB, "M12", "LOJA A", 2000)]))
+    assert dg.apply_filters(f, subcategorias=None, tecnologias=None)["sku"].tolist() == ["M12"]
