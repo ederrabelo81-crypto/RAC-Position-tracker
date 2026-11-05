@@ -13312,6 +13312,82 @@ def page_bestsellers() -> None:
 # Page registry & grouped navigation
 # ---------------------------------------------------------------------------
 
+class _LeituraIncompleta(Exception):
+    """Leitura do histórico com partição ilegível: o resultado NÃO vai ao cache.
+
+    `HistoryStore` registra a partição ruim e segue (`last_read_errors`). Um
+    resultado parcial em cache ficaria horas no ar como se fosse completo — um
+    de-para vazio, por exemplo, esvaziaria o filtro Hi-Wall. Levantar dentro da
+    função cacheada impede o cache; quem chama usa o parcial e avisa.
+    """
+
+    def __init__(self, resultado, store):
+        super().__init__("leitura incompleta do histórico")
+        self.resultado = resultado
+        self.store = store
+
+
+@st.cache_data(ttl=900, show_spinner="Lendo o histórico do PriceTrack…")
+def _query_diagnostico_cached(inicio: date, fim: date, mapping: dict) -> pd.DataFrame:
+    from utils import diagnostico as dg
+    store = _history_store()
+    frame = dg.load_frame(store, inicio, fim, mapping=mapping)
+    if getattr(store, "last_read_errors", None):
+        raise _LeituraIncompleta(frame, store)
+    return frame
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def _query_subcategory_map_cached(hoje: date) -> dict:
+    from utils import diagnostico as dg
+    store = _history_store()
+    mapa = dg.load_subcategory_map(store, hoje)
+    if getattr(store, "last_read_errors", None):
+        raise _LeituraIncompleta(mapa, store)
+    return mapa
+
+
+def query_subcategory_map() -> dict:
+    """De-para SKU → subcategoria dos últimos 14 dias do histórico.
+
+    Separado do período do painel: um período anterior a 05/11/2026 não tem
+    subcategoria gravada, e sem este de-para o filtro Hi-Wall o esvaziaria.
+    Leitura incompleta não é cacheada (ver `_LeituraIncompleta`).
+    """
+    try:
+        return _query_subcategory_map_cached(date.today())
+    except _LeituraIncompleta as exc:
+        _avisar_particoes_ilegiveis(exc.store)
+        return exc.resultado
+
+
+def query_diagnostico(inicio: date, fim: date) -> pd.DataFrame:
+    """Frame de anúncios-dia do PriceTrack para a página 🩻 Diagnóstico.
+
+    Lê o histórico Parquet (Drive) dia a dia, só o turno Diário — o Supabase
+    guarda 2 dias, e o Diagnóstico precisa de semanas (docs/diagnostico.md).
+    Não aplica os filtros globais de Plataformas/Marcas: o painel compara o
+    foco com o mercado inteiro, e recortar antes distorceria mediana e top 10.
+    """
+    try:
+        return _query_diagnostico_cached(inicio, fim, query_subcategory_map())
+    except _LeituraIncompleta as exc:
+        _avisar_particoes_ilegiveis(exc.store)
+        return exc.resultado
+
+
+def page_diagnostico() -> None:
+    """Página 🩻 Diagnóstico — reprodução da aba do PriceTrack, só ar-condicionado.
+
+    Padrão Split Hi-Wall Inverter até 30.000 BTU. Período = filtro global.
+    Página em `pricetrack_dashboard/diagnostico_page.py`, contas em
+    `utils/diagnostico.py`.
+    """
+    from pricetrack_dashboard.diagnostico_page import render
+    inicio, fim = _page_period()
+    render(query_diagnostico, inicio, fim)
+
+
 def page_pricetrack_precos() -> None:
     """Página 💰 Preços 9K/12K — hook ao vivo na API do PriceTrack.
 
@@ -13550,6 +13626,7 @@ PAGES = {
     "📈 Price Evolution":           page_price_evolution,
     "📊 Market Analytics":         page_market_analytics,
     "💰 Preços 9K/12K":            page_pricetrack_precos,
+    "🩻 Diagnóstico":               page_diagnostico,
     "🥇 Mais Vendidos":            page_bestsellers,
     "🌡️ Clima × Vendas":           page_clima,
     "🗂️ Ficha do Produto":         page_product_sheet,
@@ -13576,6 +13653,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "📈 Price Evolution",
         "📊 Market Analytics",
         "💰 Preços 9K/12K",
+        "🩻 Diagnóstico",
         "🥇 Mais Vendidos",
         "🌡️ Clima × Vendas",
         "🗂️ Ficha do Produto",
