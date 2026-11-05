@@ -670,14 +670,24 @@ class TestGapsOnlyRespeitaHistoricoFrio:
         )
         assert datas == ["2026-11-03"]
 
-    def test_historico_ilegivel_volta_ao_comportamento_antigo(self, monkeypatch):
-        datas = self._rodar(
-            monkeypatch,
-            no_banco={"2026-11-02", "2026-11-03"},
-            no_parquet=set(),
-            cutoff=None,
-        )
-        assert datas == ["2026-10-30", "2026-10-31", "2026-11-01"]
+    def test_historico_ilegivel_cura_so_a_janela_quente(self, monkeypatch):
+        """Drive ilegível: não reimporta dia antigo (o banco é o recurso crítico)."""
+        monkeypatch.setattr(ptai, "_cold_history_days", lambda: (None, date(2026, 11, 2)))
+        capturado = {}
+        monkeypatch.setattr(ptai, "load_progress", lambda: {"completed": [], "skipped": []})
+        monkeypatch.setattr(ptai, "date_exists", lambda ds, dry_run=False: ds == "2026-11-02")
+
+        def _prefetch(token, dates, concurrent):
+            capturado["datas"] = list(dates)
+            return {}
+
+        monkeypatch.setattr(ptai, "prefetch_exports", _prefetch)
+        try:
+            ptai.run("tok", date(2026, 10, 30), date(2026, 11, 3), no_upload=True,
+                     gaps_only=True)
+        except Exception:
+            pass
+        assert capturado["datas"] == ["2026-11-03"]
 
 
 def test_is_cold_day_bordas():
@@ -686,6 +696,9 @@ def test_is_cold_day_bordas():
     assert not ptai._is_cold_day(date(2026, 11, 2), {"2026-11-02"}, corte)
     assert not ptai._is_cold_day(date(2026, 11, 1), set(), corte)
     assert not ptai._is_cold_day(date(2026, 11, 1), {"2026-11-01"}, None)
+    # histórico ilegível (None): fora da janela = frio; dentro da janela = não
+    assert ptai._is_cold_day(date(2026, 11, 1), None, corte)
+    assert not ptai._is_cold_day(date(2026, 11, 2), None, corte)
 
 
 # ── Migração 007: subcategoria e família (painel Diagnóstico, Nov/2026) ─────
