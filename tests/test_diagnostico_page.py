@@ -109,5 +109,10 @@ def test_leitura_incompleta_do_historico_nao_fica_em_cache(monkeypatch) -> None:
 
     monkeypatch.setattr(app, "_history_store", lambda: bom)
     assert app.query_subcategory_map() == {"B": "HI-WALL"}   # releu: o parcial não ficou
-    assert app.query_subcategory_map() == {"B": "HI-WALL"}   # o completo, sim
+
+    def _sem_leitura():
+        raise AssertionError("o completo deveria vir do cache")
+
+    monkeypatch.setattr(app, "_history_store", _sem_leitura)
+    assert app.query_subcategory_map() == {"B": "HI-WALL"}   # o completo, sim, do cache
     app._query_subcategory_map_cached.clear()

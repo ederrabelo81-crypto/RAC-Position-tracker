@@ -199,8 +199,9 @@ def render(carregar: Callable[[date, date], pd.DataFrame], inicio: date, fim: da
     _bloco_preco_minimo(recorte, foco, marca_foco)
     _bloco_profundidade(recorte, foco, marca_foco, kw)
     _bloco_agressivos(recorte, foco, kw)
+    skus_recorte = set(recorte["sku"])
     _bloco_comparador(recorte, foco, {k: v for k, v in rotulo_por_sku.items()
-                                      if k in set(recorte["sku"])})
+                                      if k in skus_recorte})
     _bloco_exportar(recorte, foco, inicio, fim)
 
 
