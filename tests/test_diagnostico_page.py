@@ -79,3 +79,35 @@ def test_pagina_registrada_no_menu_insights() -> None:
 
     assert app.PAGES["🩻 Diagnóstico"] is app.page_diagnostico
     assert "🩻 Diagnóstico" in app._NAV_GROUPS["INSIGHTS"]
+
+
+def test_leitura_incompleta_do_historico_nao_fica_em_cache(monkeypatch) -> None:
+    """Drive falhou numa partição: o de-para parcial é usado, mas não cacheado."""
+    import pandas as pd
+
+    import app
+
+    class _Store:
+        def __init__(self, sku, erros):
+            self.sku, self.last_read_errors = sku, erros
+
+        def read_days(self, dataset, start, end, columns, partition_column=None):
+            self.last_read_errors = list(self.erros_da_vez)
+            yield end, pd.DataFrame({"sku": [self.sku], "subcategory": ["HI-WALL"]})
+
+    ruim = _Store("A", [])
+    ruim.erros_da_vez = [("pricetrack/data=2026-11-03__run-import.parquet", "download recusado")]
+    bom = _Store("B", [])
+    bom.erros_da_vez = []
+    avisos: list = []
+    monkeypatch.setattr(app, "_avisar_particoes_ilegiveis", lambda s: avisos.append(s))
+    app._query_subcategory_map_cached.clear()
+
+    monkeypatch.setattr(app, "_history_store", lambda: ruim)
+    assert app.query_subcategory_map() == {"A": "HI-WALL"}
+    assert avisos == [ruim]
+
+    monkeypatch.setattr(app, "_history_store", lambda: bom)
+    assert app.query_subcategory_map() == {"B": "HI-WALL"}   # releu: o parcial não ficou
+    assert app.query_subcategory_map() == {"B": "HI-WALL"}   # o completo, sim
+    app._query_subcategory_map_cached.clear()

@@ -115,7 +115,10 @@ def prepare_frame(raw: pd.DataFrame, mapping: Optional[dict] = None) -> pd.DataF
     df = aa.fill_subcategory(df, depara)
     falta = df["subcategory"] == ""
     if falta.any():
-        df.loc[falta, "subcategory"] = df.loc[falta, "title"].map(subcategoria_pelo_nome)
+        titulos = df.loc[falta, "title"]
+        unicos = pd.Series(titulos.dropna().unique())
+        por_titulo = dict(zip(unicos, unicos.map(subcategoria_pelo_nome)))
+        df.loc[falta, "subcategory"] = titulos.map(por_titulo).fillna("")
     df = aa.add_attributes(df, "title")
     return df[[
         "dia", "marketplace", "sku", "seller", "brand", "title", "subcategory",
