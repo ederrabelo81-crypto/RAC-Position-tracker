@@ -13312,6 +13312,40 @@ def page_bestsellers() -> None:
 # Page registry & grouped navigation
 # ---------------------------------------------------------------------------
 
+@st.cache_data(ttl=900, show_spinner="Lendo o histórico do PriceTrack…")
+def query_diagnostico(inicio: date, fim: date) -> pd.DataFrame:
+    """Frame de anúncios-dia do PriceTrack para a página 🩻 Diagnóstico.
+
+    Lê o histórico Parquet (Drive) dia a dia, só o turno Diário — o Supabase
+    guarda 2 dias, e o Diagnóstico precisa de semanas (docs/diagnostico.md).
+    """
+    from utils import diagnostico as dg
+    return dg.load_frame(_history_store(), inicio, fim, mapping=query_subcategory_map())
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def query_subcategory_map() -> dict:
+    """De-para SKU → subcategoria dos últimos 14 dias do histórico.
+
+    Separado do período do painel: um período anterior a 05/11/2026 não tem
+    subcategoria gravada, e sem este de-para o filtro Hi-Wall o esvaziaria.
+    """
+    from utils import diagnostico as dg
+    return dg.load_subcategory_map(_history_store(), date.today())
+
+
+def page_diagnostico() -> None:
+    """Página 🩻 Diagnóstico — reprodução da aba do PriceTrack, só ar-condicionado.
+
+    Padrão Split Hi-Wall Inverter até 30.000 BTU. Período = filtro global.
+    Página em `pricetrack_dashboard/diagnostico_page.py`, contas em
+    `utils/diagnostico.py`.
+    """
+    from pricetrack_dashboard.diagnostico_page import render
+    inicio, fim = _page_period()
+    render(query_diagnostico, inicio, fim)
+
+
 def page_pricetrack_precos() -> None:
     """Página 💰 Preços 9K/12K — hook ao vivo na API do PriceTrack.
 
@@ -13550,6 +13584,7 @@ PAGES = {
     "📈 Price Evolution":           page_price_evolution,
     "📊 Market Analytics":         page_market_analytics,
     "💰 Preços 9K/12K":            page_pricetrack_precos,
+    "🩻 Diagnóstico":               page_diagnostico,
     "🥇 Mais Vendidos":            page_bestsellers,
     "🌡️ Clima × Vendas":           page_clima,
     "🗂️ Ficha do Produto":         page_product_sheet,
@@ -13576,6 +13611,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "📈 Price Evolution",
         "📊 Market Analytics",
         "💰 Preços 9K/12K",
+        "🩻 Diagnóstico",
         "🥇 Mais Vendidos",
         "🌡️ Clima × Vendas",
         "🗂️ Ficha do Produto",

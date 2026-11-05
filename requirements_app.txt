@@ -31,6 +31,8 @@ tabulate>=0.9.0
 # import, cai no except e o painel exibe só o que o banco devolveu, sem erro
 # visível. Ver docs/HISTORICO_DRIVE.md.
 pyarrow>=15.0.0
+# Export XLSX da página 🩻 Diagnóstico
+openpyxl>=3.1.0
 google-api-python-client>=2.100.0
 google-auth>=2.30.0
 google-auth-oauthlib>=1.2.0
