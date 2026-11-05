@@ -97,10 +97,15 @@ def add_attributes(df: pd.DataFrame, title_col: str = "title") -> pd.DataFrame:
     """Devolve cópia com ``btu``, ``tecnologia``, ``ciclo`` e ``voltagem``."""
     out = df.copy()
     titulos = out[title_col] if title_col in out.columns else pd.Series("", index=out.index)
-    out["btu"] = titulos.map(parse_btu).astype("Int64")
-    out["tecnologia"] = titulos.map(parse_tecnologia)
-    out["ciclo"] = titulos.map(parse_ciclo)
-    out["voltagem"] = titulos.map(parse_voltagem)
+    # Regex por título ÚNICO (alguns milhares) e não por linha (centenas de
+    # milhares num mês): mesmo resultado, uma fração do tempo no Streamlit.
+    unicos = pd.Series(titulos.dropna().unique())
+    for coluna, parser in (
+        ("btu", parse_btu), ("tecnologia", parse_tecnologia),
+        ("ciclo", parse_ciclo), ("voltagem", parse_voltagem),
+    ):
+        out[coluna] = titulos.map(dict(zip(unicos, unicos.map(parser))))
+    out["btu"] = pd.to_numeric(out["btu"], errors="coerce").astype("Int64")
     return out
 
 
