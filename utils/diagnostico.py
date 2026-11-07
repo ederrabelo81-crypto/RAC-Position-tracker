@@ -32,6 +32,12 @@ COLUNAS_LEITURA = (
 #: SKU se anulariam por recência antes da escolha do menor preço.
 CHAVE = ["dia", "brand_original", "sku", "marketplace", "seller_raw"]
 TODAS = "TODAS"
+#: Versão das regras de ``prepare_frame``. Entra na chave do cache do app.py:
+#: o ``st.cache_data`` só se invalida quando muda o corpo da função cacheada,
+#: não quando muda uma regra aqui — sem isto, o painel podia seguir mostrando
+#: um frame preparado pela regra anterior. Suba a cada mudança de regra.
+#: 2 = grupo Midea Carrier unificado como MIDEA (05/11/2026).
+FRAME_VERSAO = 2
 #: Coluna com a chave da partição Parquet de origem de cada linha.
 COL_PARTICAO = "_particao"
 #: Partição gravada pelo import (``write_history``, run_id estável "import").

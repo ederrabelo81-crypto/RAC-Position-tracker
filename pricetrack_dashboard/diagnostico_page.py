@@ -112,7 +112,9 @@ def render(carregar: Callable[[date, date], pd.DataFrame], inicio: date, fim: da
     st.title("🩻 Diagnóstico")
     st.caption(
         "Ar-condicionado · padrão **Split Hi-Wall Inverter até 30.000 BTU** · "
-        "fonte: PriceTrack (histórico no Drive) · fórmulas em `docs/diagnostico.md`"
+        "grupo Midea Carrier (Midea, Midea Carrier, Springer, Carrier) como **MIDEA** · "
+        f"fonte: PriceTrack (histórico no Drive) · regras v{dg.FRAME_VERSAO} · "
+        "fórmulas em `docs/diagnostico.md`"
     )
 
     base = carregar(inicio, fim)

@@ -13328,7 +13328,9 @@ class _LeituraIncompleta(Exception):
 
 
 @st.cache_data(ttl=900, show_spinner="Lendo o histórico do PriceTrack…")
-def _query_diagnostico_cached(inicio: date, fim: date, mapping: dict) -> pd.DataFrame:
+def _query_diagnostico_cached(inicio: date, fim: date, mapping: dict,
+                              versao: int = 0) -> pd.DataFrame:
+    """``versao`` = ``dg.FRAME_VERSAO``: só existe para entrar na chave do cache."""
     from utils import diagnostico as dg
     store = _history_store()
     frame = dg.load_frame(store, inicio, fim, mapping=mapping)
@@ -13370,7 +13372,9 @@ def query_diagnostico(inicio: date, fim: date) -> pd.DataFrame:
     foco com o mercado inteiro, e recortar antes distorceria mediana e top 10.
     """
     try:
-        return _query_diagnostico_cached(inicio, fim, query_subcategory_map())
+        from utils import diagnostico as dg
+        return _query_diagnostico_cached(inicio, fim, query_subcategory_map(),
+                                         versao=dg.FRAME_VERSAO)
     except _LeituraIncompleta as exc:
         _avisar_particoes_ilegiveis(exc.store)
         return exc.resultado
