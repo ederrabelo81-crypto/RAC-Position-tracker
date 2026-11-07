@@ -116,3 +116,34 @@ def test_leitura_incompleta_do_historico_nao_fica_em_cache(monkeypatch) -> None:
     monkeypatch.setattr(app, "_history_store", _sem_leitura)
     assert app.query_subcategory_map() == {"B": "HI-WALL"}   # o completo, sim, do cache
     app._query_subcategory_map_cached.clear()
+
+
+def _harness_grupo_midea() -> None:
+    from datetime import date, timedelta
+
+    import pandas as pd
+
+    from pricetrack_dashboard.diagnostico_page import render
+    from utils import diagnostico as dg
+
+    hoje = date.today()
+    dia = (hoje - timedelta(days=1)).isoformat()
+    titulo = "AR CONDICIONADO SPLIT {btu} BTU FRIO X - INVERTER - {m} - 220V - {s}"
+    linhas = []
+    for i, marca in enumerate(["MIDEA", "MIDEA CARRIER", "SPRINGER CARRIER MIDEA", "CARRIER", "LG"]):
+        sku = f"S{i}"
+        linhas.append(dict(collection_date=dia, turno="Diário", brand=marca, sku=sku,
+                           title=titulo.format(btu=12000, m=marca, s=sku), subcategory="HI-WALL",
+                           marketplace="CASAS BAHIA", seller="LOJA", seller_canonical="LOJA",
+                           min_price=2000 + i))
+    frame = dg.prepare_frame(pd.DataFrame(linhas))
+    render(lambda i, f: frame, hoje - timedelta(days=7), hoje)
+
+
+def test_seletor_de_marca_mostra_o_grupo_midea_como_uma_marca_so() -> None:
+    at = AppTest.from_function(_harness_grupo_midea)
+    at.run(timeout=RUN_TIMEOUT)
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert at.selectbox(key="dg_marca").options == ["LG", "MIDEA"]
+    assert at.selectbox(key="dg_marca").value == "MIDEA"
+    assert any("regras v2" in c.value for c in at.caption)
