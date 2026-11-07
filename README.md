@@ -361,7 +361,8 @@ Midea, preço de vitrine por BTU, alertas e cobertura) + 22 páginas:
 - **ADMIN:** 🤖 Automação (limpeza/normalização/de-para sem interação) · 🧬 Família & SKU
 
 Os filtros globais (Período, Canal, Plataformas, Marcas) valem para **todas**
-as páginas. Definições: [`docs/COCKPIT_TRADE.md`](docs/COCKPIT_TRADE.md) e
+as páginas, **exceto o 🩻 Diagnóstico**, que usa só o Período (ele compara o
+marketplace foco com o mercado inteiro). Definições: [`docs/COCKPIT_TRADE.md`](docs/COCKPIT_TRADE.md) e
 [`docs/DASHBOARD_FILTERS.md`](docs/DASHBOARD_FILTERS.md).
 
 #### 🩻 Diagnóstico (Nov/2026)
