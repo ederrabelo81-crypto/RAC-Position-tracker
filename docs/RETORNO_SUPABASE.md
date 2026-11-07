@@ -434,11 +434,11 @@ batida FAILED, para o `pipeline_watch` cobrar.
 
 | Parcela | Normal | Pico |
 |---|---|---|
-| `seller_offer_daily` + `coverage`, 62 dias × ~3,3 MB | ~205 MB | — |
+| `seller_offer_daily` + `coverage`, 30 dias × ~3,6 MB (62 até 07/11/2026) | ~110 MB | — |
 | `coletas` (2–3 dias) | ~65 MB | ~90 MB |
 | `pricetrack_daily` (2 dias × 3 turnos) | ~31 MB | ~100 MB¹ |
 | `rac_monitoramento` + `bestsellers` + resto + schemas do Supabase | ~75 MB | ~75 MB |
-| **Total** | **~375 MB (folga ~125 MB, 25%)** | **~470 MB** |
+| **Total** | **~280 MB (folga ~220 MB, 44%)** com 30 dias de seller (era ~395 MB com 62) | **~375 MB** |
 
 ¹ Medido no mesmo dia: um reimport do PriceTrack dos dias 15–19/10 levou a
 tabela a 190 mil linhas / 96 MB durante a manhã. Esses dias estão fora da
@@ -468,10 +468,10 @@ FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 6;
   (29/10/2026):** o fato do seller é **reprocessado de `coletas`**
   (`refresh_seller_offer_daily(data)`), então só os 2 dias quentes são
   *reconstruíveis* — as linhas materializadas antes disso só existem no banco
-  (ou no Parquet, depois da poda). A retenção é **62 dias**
-  (`RAC_SELLER_RETENTION_DAYS`, piso 16): o slider "Janela (dias)" do
-  `seller_app` vai até 60 e é ancorado no último dia com dado, então a janela
-  cheia pede hoje − 61. A estimativa original deste parágrafo (~56 MB para 90
+  (ou no Parquet, depois da poda). A retenção é **30 dias** desde 07/11/2026
+  (era 62; `RAC_SELLER_RETENTION_DAYS`, piso 16): o slider "Janela (dias)" do
+  `seller_app` vai até 28 (era 60) e é ancorado no último dia com dado, então
+  a janela cheia pede hoje − 29. A estimativa original deste parágrafo (~56 MB para 90
   dias) estava errada por ~5×: o custo medido foi **~3,6 MB/dia** (heap +
   7 índices), e em 47 dias a tabela chegou a 243 MB.
 

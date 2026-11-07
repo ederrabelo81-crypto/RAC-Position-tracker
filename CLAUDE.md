@@ -489,7 +489,8 @@ linha por SKU) e o "vs ontem" do 📅 Daily Price Vision. `_price_data`
 > `pricetrack_daily` com 2 dias (20 MB) sob 111 MB de índice; um `REINDEX
 > TABLE CONCURRENTLY` em três tabelas levou o banco a 336 MB sem apagar linha.
 > O estágio D agora (a) poda `seller_offer_daily`/`seller_coverage_daily` na
-> retenção **própria** de 62 dias (`RAC_SELLER_RETENTION_DAYS`, exporta →
+> retenção **própria** de 30 dias (`RAC_SELLER_RETENTION_DAYS`; era 62 até
+> 07/11/2026, reduzida com o banco em 640 MB), exporta →
 > confere a partição → apaga), e (b) chama a RPC `compactar_indices`
 > (migração 022) ao fim. **Regra dura:** `DELETE` não devolve disco nem
 > encolhe índice — toda tabela podada por DELETE entra na lista branca da
@@ -1422,8 +1423,8 @@ GDRIVE_FOLDER_ID=...
 
 # Janela quente do Supabase (padrão 2) e backend alternativo (vazio = Supabase)
 RAC_HOT_WINDOW_DAYS=2
-# Retenção própria do fato do seller_app no banco (padrão 62, piso 16)
-RAC_SELLER_RETENTION_DAYS=62
+# Retenção própria do fato do seller_app no banco (padrão 30, piso 16)
+RAC_SELLER_RETENTION_DAYS=30
 RAC_DB_DSN=
 
 # Chrome real logado via CDP no PC coletor

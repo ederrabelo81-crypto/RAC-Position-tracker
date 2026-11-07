@@ -8,7 +8,7 @@ Em 29/10/2026 o banco passou da cota do free tier (561 MB contra 500).
 all --confirm`) passou a:
 
 * podar `seller_offer_daily`/`seller_coverage_daily` na retenção PRÓPRIA
-  (`RAC_SELLER_RETENTION_DAYS`, 62 dias), nunca na janela quente de 2 dias de
+  (`RAC_SELLER_RETENTION_DAYS`, 30 dias), nunca na janela quente de 2 dias de
   `coletas`;
 * exportar → reler → conferir a contagem EXATA da partição → só então apagar;
 * compactar os índices ao fim (RPC `compactar_indices`, migração 022).
@@ -150,7 +150,7 @@ def _args(**over) -> argparse.Namespace:
 class TestRetencaoSeller:
     def test_default(self, monkeypatch):
         monkeypatch.delenv("RAC_SELLER_RETENTION_DAYS", raising=False)
-        assert seller_retention_days() == DEFAULT_SELLER_RETENTION_DAYS == 62
+        assert seller_retention_days() == DEFAULT_SELLER_RETENTION_DAYS == 30
 
     def test_env(self, monkeypatch):
         monkeypatch.setenv("RAC_SELLER_RETENTION_DAYS", "90")
@@ -168,21 +168,30 @@ class TestRetencaoSeller:
 
     def test_inicio_inclui_hoje(self, monkeypatch):
         monkeypatch.delenv("RAC_SELLER_RETENTION_DAYS", raising=False)
-        assert seller_retention_start(date(2026, 10, 29)) == date(2026, 8, 29)
+        assert seller_retention_start(date(2026, 10, 29)) == date(2026, 9, 30)
 
     def test_retencao_cobre_o_slider_inteiro_do_seller_app(self, monkeypatch):
         """O slider vai até N dias ancorado no último dia com dado
         (`desde = max_data - dias`), e a coleta costuma estar um dia atrás:
         a janela cheia pede hoje − (N + 1). Se alguém subir o teto do slider
         sem subir a retenção, a metade de cima do slider volta a ser inerte."""
-        monkeypatch.delenv("RAC_SELLER_RETENTION_DAYS", raising=False)
-        fonte = (_ROOT / "seller_app" / "app.py").read_text(encoding="utf-8")
-        teto = re.search(r"return max\(4, min\((\d+), span\)\)", fonte)
-        assert teto, "_dias_max mudou de forma — atualize este teste"
-        slider_max = int(teto.group(1))
+        pytest.importorskip("streamlit", reason="dashboard não instalado neste ambiente")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_seller_app_retencao", _ROOT / "seller_app" / "app.py")
+        app = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(app)
         hoje = date(2026, 10, 29)
-        desde_mais_antigo = (hoje - timedelta(days=1)) - timedelta(days=slider_max)
-        assert seller_retention_start(hoje) <= desde_mais_antigo
+        historico_longo = (date(2020, 1, 1), hoje - timedelta(days=1))
+        for retencao in (None, "30", "90"):
+            if retencao is None:
+                monkeypatch.delenv("RAC_SELLER_RETENTION_DAYS", raising=False)
+            else:
+                monkeypatch.setenv("RAC_SELLER_RETENTION_DAYS", retencao)
+            slider_max = app._dias_max(historico_longo)
+            desde_mais_antigo = (hoje - timedelta(days=1)) - timedelta(days=slider_max)
+            assert seller_retention_start(hoje) <= desde_mais_antigo, retencao
 
     def test_piso_cobre_a_janela_padrao(self):
         fonte = (_ROOT / "seller_app" / "app.py").read_text(encoding="utf-8")

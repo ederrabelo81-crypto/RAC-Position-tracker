@@ -116,8 +116,8 @@ def seller_retention_start(today: Optional[date] = None) -> date:
     Mesma convenção de `hot_window_start`: a retenção inclui hoje.
 
     Example:
-        >>> seller_retention_start(date(2026, 10, 29))   # retenção de 62 dias
-        datetime.date(2026, 8, 29)
+        >>> seller_retention_start(date(2026, 10, 29))   # retenção de 30 dias
+        datetime.date(2026, 9, 30)
     """
     ref = today or date.today()
     return ref - timedelta(days=seller_retention_days() - 1)

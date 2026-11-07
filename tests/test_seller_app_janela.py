@@ -57,12 +57,23 @@ def test_dias_max_amarrado_ao_historico_real():
         "seria inerte e o histórico não mudaria, que é o bug")
 
 
-def test_dias_max_limites():
-    """Piso 4 (garante min<max no slider) e teto 60 (dado longo)."""
+def test_dias_max_limites(monkeypatch):
+    """Piso 4 (garante min<max no slider) e teto 28 (dado longo; retenção 30)."""
+    monkeypatch.delenv("RAC_SELLER_RETENTION_DAYS", raising=False)
     m = _mod()
-    assert m._dias_max((None, None)) == 60, "sem dado, teto genérico"
+    assert m._dias_max((None, None)) == 28, "sem dado, teto genérico"
     assert m._dias_max((date(2026, 9, 4), date(2026, 9, 4))) == 4, "1 dia → piso 4"
-    assert m._dias_max((date(2020, 1, 1), date(2026, 9, 4))) == 60, "muito dado → 60"
+    assert m._dias_max((date(2020, 1, 1), date(2026, 9, 4))) == 28, "muito dado → 28"
+
+
+def test_dias_max_segue_a_retencao_configurada(monkeypatch):
+    """Retenção maior no banco → o slider alcança esse histórico."""
+    m = _mod()
+    monkeypatch.setenv("RAC_SELLER_RETENTION_DAYS", "90")
+    assert m._dias_max((date(2020, 1, 1), date(2026, 9, 4))) == 88
+    assert m._dias_max((None, None)) == 88
+    monkeypatch.setenv("RAC_SELLER_RETENTION_DAYS", "abc")
+    assert m._dias_max((date(2020, 1, 1), date(2026, 9, 4))) == 28, "inválida → padrão"
 
 
 def test_janela_ancora_no_ultimo_dia_com_dado():
