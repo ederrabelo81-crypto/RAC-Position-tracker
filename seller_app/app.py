@@ -34,6 +34,7 @@ Segredos (`.streamlit/secrets.toml` local, ou o painel do Streamlit Cloud):
 """
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
 
 import pandas as pd
@@ -192,8 +193,23 @@ def intervalo_dados() -> tuple[date | None, date | None]:
     return _borda(False), _borda(True)
 
 
+def _teto_retencao() -> int:
+    """Maior janela que a retenção do banco sustenta: retenção − 2 (padrão 28).
+
+    Lê `RAC_SELLER_RETENTION_DAYS` do ambiente — o mesmo nome que a poda usa
+    (`utils/history/store.py`); o app não importa `utils` porque é publicado
+    sozinho. Ausente ou inválida → 30 (o padrão da poda). Com retenção
+    maior, o slider alcança o histórico que o banco de fato guarda.
+    """
+    try:
+        retencao = int(os.environ.get("RAC_SELLER_RETENTION_DAYS", "") or 30)
+    except ValueError:
+        retencao = 30
+    return max(4, retencao - 2)
+
+
 def _dias_max(intervalo: tuple[date | None, date | None]) -> int:
-    """Teto do slider = dias de histórico que EXISTEM (limitado a [4, 28]).
+    """Teto do slider = dias de histórico que EXISTEM (limitado a [4, retenção − 2]).
 
     Fixar o teto em 60 fazia a metade de cima do slider ser inerte quando o
     histórico é curto — a origem do sintoma relatado. Amarrar o teto ao span
@@ -201,15 +217,16 @@ def _dias_max(intervalo: tuple[date | None, date | None]) -> int:
     conforme a coleta acumula dias. O piso 4 garante `min < max` para o
     `st.slider` (o mínimo é 3) mesmo com um ou dois dias só de dado.
 
-    Teto 28 (era 60): o banco guarda 30 dias do fato do seller desde
+    Teto padrão 28 (era 60): o banco guarda 30 dias do fato do seller desde
     07/11/2026 (`RAC_SELLER_RETENTION_DAYS`), e a janela cheia ancorada no
-    último dia com dado pede hoje − (teto + 1).
+    último dia com dado pede hoje − (teto + 1). Ver `_teto_retencao`.
     """
+    teto = _teto_retencao()
     min_data, max_data = intervalo
     if not min_data or not max_data:
-        return 28
+        return teto
     span = (max_data - min_data).days + 1
-    return max(4, min(28, span))
+    return max(4, min(teto, span))
 
 
 def _janela(dias: int, intervalo: tuple[date | None, date | None]) -> date:
