@@ -82,12 +82,12 @@ DEFAULT_HOT_WINDOW_DAYS = 2
 
 #: Retenção própria de `seller_offer_daily`/`seller_coverage_daily` no banco.
 #:
-#: Sai do que o `seller_app` lê: o slider "Janela (dias)" vai até 60 e é
+#: Sai do que o `seller_app` lê: o slider "Janela (dias)" vai até 28 e é
 #: ancorado no último dia COM dado (`seller_app/app.py::_dias_max`/`_janela`,
 #: `desde = max_data - dias`). Com a coleta um dia atrás de hoje, a janela
-#: cheia precisa de hoje − 61 → hoje: 62 dias. Em 29/10/2026 o fato custava
-#: ~3,6 MB/dia depois do REINDEX — 62 dias ≈ 225 MB, com o banco inteiro em
-#: ~390 MB contra os 500 MB do free tier.
+#: cheia precisa de hoje − 29 → hoje: 30 dias. O fato custa ~3,6 MB/dia
+#: depois do REINDEX (29/10/2026) — 30 dias ≈ 108 MB. Até 07/11/2026 eram 62
+#: dias (slider até 60, ≈ 225 MB).
 #:
 #: 07/11/2026: reduzida para 30 dias por decisão do mantenedor — o banco
 #: passou da cota (640 MB) e o fato do seller era a maior tabela (217 MB). O

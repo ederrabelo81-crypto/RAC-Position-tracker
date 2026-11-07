@@ -434,11 +434,11 @@ batida FAILED, para o `pipeline_watch` cobrar.
 
 | Parcela | Normal | Pico |
 |---|---|---|
-| `seller_offer_daily` + `coverage`, 30 dias × ~3,3 MB (62 até 07/11/2026) | ~100 MB | — |
+| `seller_offer_daily` + `coverage`, 30 dias × ~3,6 MB (62 até 07/11/2026) | ~110 MB | — |
 | `coletas` (2–3 dias) | ~65 MB | ~90 MB |
 | `pricetrack_daily` (2 dias × 3 turnos) | ~31 MB | ~100 MB¹ |
 | `rac_monitoramento` + `bestsellers` + resto + schemas do Supabase | ~75 MB | ~75 MB |
-| **Total** | **~270 MB (folga ~230 MB, 46%)** com 30 dias de seller (era ~375 MB com 62) | **~365 MB** |
+| **Total** | **~280 MB (folga ~220 MB, 44%)** com 30 dias de seller (era ~395 MB com 62) | **~375 MB** |
 
 ¹ Medido no mesmo dia: um reimport do PriceTrack dos dias 15–19/10 levou a
 tabela a 190 mil linhas / 96 MB durante a manhã. Esses dias estão fora da

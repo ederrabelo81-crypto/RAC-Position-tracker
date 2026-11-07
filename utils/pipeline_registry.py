@@ -552,7 +552,7 @@ JOBS: Tuple[JobSpec, ...] = (
         # MANUTENÇÃO: a batida SUCCESS/FAILED já diz tudo, sem sondar destino.
         destino=(
             "poda fora da janela quente: coletas + pricetrack_daily (2 dias) e "
-            "seller_offer/coverage_daily (retenção própria, 62 dias) → histórico "
+            "seller_offer/coverage_daily (retenção própria, 30 dias) → histórico "
             "frio (Drive) + compactação de índice"
         ),
         severidade=SEV_IMPORTANTE,
@@ -572,7 +572,7 @@ JOBS: Tuple[JobSpec, ...] = (
             "Editor; daí em diante esta batida noturna mantém a janela quente "
             "(RAC_HOT_WINDOW_DAYS, 2 dias desde 22/09/2026). Desde 29/10/2026 "
             "também poda os fatos do seller_app na retenção própria "
-            "(RAC_SELLER_RETENTION_DAYS, 62) e compacta os índices pela RPC "
+            "(RAC_SELLER_RETENTION_DAYS, 30; era 62 até 07/11/2026) e compacta os índices pela RPC "
             "compactar_indices (migração 022) — sem ela o DELETE não devolve "
             "disco e a cota estourou com ~330 MB de dado (561 MB no total)."
         ),
