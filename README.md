@@ -5,7 +5,7 @@ condicionado nos marketplaces e dealers brasileiros, com preço consolidado via
 **PriceTrack** e painéis Streamlit para a indústria (Midea Carrier) e para o
 lojista.
 
-**Status:** ✅ Produção | **Versão:** v5.6 | **Atualizado em:** 24/10/2026
+**Status:** ✅ Produção | **Versão:** v5.8 | **Atualizado em:** 07/11/2026
 
 > O histórico de mudanças, incidentes e validações operacionais até
 > Set/2026 foi preservado em
@@ -48,6 +48,9 @@ por dia, o projeto registra:
 - **Avaliações** — nota e volume de reviews.
 - **Preço de vitrine** — secundário; a série de preço de referência é do PriceTrack.
 - **Mais Vendidos** — a única variável de *resultado* (ranking ordinal) no nível do SKU.
+- **Diagnóstico de preço e sortimento** — reprodução da aba Diagnóstico do
+  PriceTrack, só ar-condicionado, padrão Split Hi-Wall Inverter.
+- **Clima × vendas** — temperatura por região contra o proxy de venda dos Mais Vendidos.
 
 Fluxo de dados:
 
@@ -61,7 +64,7 @@ CSV (output/)  ─┬─► Parquet do histórico frio (Google Drive com GDRIVE_
    ↓
 heartbeat (pipeline_heartbeat) → supervisor → Telegram
    ↓
-app.py (🏠 Cockpit do Trade + 20 páginas) · seller_app/ (lojista) · pricetrack_dashboard/
+app.py (🏠 Cockpit do Trade + 22 páginas) · seller_app/ (lojista) · pricetrack_dashboard/
 ```
 
 ---
@@ -73,7 +76,8 @@ app.py (🏠 Cockpit do Trade + 20 páginas) · seller_app/ (lojista) · pricetr
 | **PC coletor Windows** (IP residencial) | Oferta/posição de **todas as plataformas exceto Amazon** + 33 dealers | 08:00 (Abertura), 14:00 (Tarde), 20:00 (Fechamento) |
 | **PC coletor** — estágios pós-coleta | Materialização do `seller_offer_daily` (todo turno) e poda Supabase → Drive (só à noite) | após cada turno |
 | **GitHub Actions** — `collect_amazon_sellers.yml` | **Amazon-only**, abrindo o PDP de cada item para ler a buy box | 08:00 / 14:00 / 20:00 (+ resgate às :40) |
-| **GitHub Actions** — `pricetrack_daily.yml` | Import do PriceTrack D-1 | 00:01, 04:20, 05:20 (escada de tentativas) |
+| **GitHub Actions** — `pricetrack_daily.yml` | Import do PriceTrack D-1 (+ subcategoria do produto) e auto-heal | 00:01, 04:20, 05:20 (escada de tentativas) — o cron do Actions chega a atrasar ~7 h |
+| **GitHub Actions** — `clima_daily.yml` | Radar meteorológico (Open-Meteo, 17 cidades) → `clima_diario` | 05:47 |
 | **GitHub Actions** — `pipeline_guard.yml` / `watchdog.yml` | Supervisor de execução / validação de dado | 06:35, 12:35, 22:35 / 20:30 |
 | **PC coletor** — `RAC_Briefing_0700` | Briefing diário (Claude Code headless → Notion + painel estático) | 07:00 |
 | Oracle VM | ⏸️ standby — não coleta | — |
@@ -100,11 +104,11 @@ reprova órfã ou dono duplicado. Mapa completo: [`docs/MAPA_COLETAS.md`](docs/M
 
 | Plataforma | Status | Executor | Como coleta |
 |------------|--------|----------|-------------|
-| Mercado Livre | ✅ | PC | Browser com perfil Chrome dedicado; buy box + Loja Oficial. Gate de login detectado por evidência, freio após 4 páginas gateadas e repescagem no fim do turno. Fallback automático para a API oficial (`ML_APP_ID`/`ML_APP_SECRET`). Sessão expirada aparece como `sessão: EXPIRADA` no heartbeat |
+| Mercado Livre | ✅ | PC | Browser com perfil Chrome dedicado; buy box + Loja Oficial. Gate de login detectado por evidência, freio após 4 páginas gateadas e repescagem no fim do turno. Fallback automático para a API oficial (`ML_APP_ID`/`ML_APP_SECRET`). Sessão expirada: **relogin automático** uma vez por turno com `ML_EMAIL`/`ML_PASSWORD` (`utils/ml_login.py`; `RAC_ML_AUTO_RELOGIN=0` desliga) — desfecho no heartbeat (`sessão: RENOVADA no turno` ou `EXPIRADA (…)`) |
 | Amazon | ✅ | Actions | SERP + PDP de cada item (buy box), `Qtd Sellers` de "X ofertas", 1P vs 3P |
 | Magalu | ✅ | PC | Chrome local via CDP (`RAC_LOCAL_CHROME=1`) com auto-recuperação → fallback `curl_cffi`; parsers `__NEXT_DATA__` → RSC → DOM |
 | Casas Bahia | ✅ | PC | VTEX Intelligent Search + warm-up Akamai; `sellers[]` → buy box |
-| Leroy Merlin | ✅ | PC | API Algolia; seller 3P resolvido no PDP (cache `data/leroy_sellers.json`) e buy box por produto no PDP |
+| Leroy Merlin | ✅ | PC | API Algolia; seller 3P resolvido no PDP (cache `data/leroy_sellers.json`) e buy box por produto no PDP. Preço lido do JSON-LD do PDP (`utils/leroy_price.py`), não da média do índice; com `RAC_LOCAL_CHROME=1` os PDPs abrem no Chrome real |
 | Google Shopping | ⚠️ | PC | reCAPTCHA no headless; com `RAC_LOCAL_CHROME=1` usa o Chrome real logado |
 | Shopee | 🟡 | PC | API v4 + sessão do perfil logado; best-effort sem proxy BR |
 | Dealers (33 ativos) | ✅ | PC | `DealerScraper` + `DEALER_CONFIGS` (VTEX, WooCommerce, custom); 3 em `on_hold` |
@@ -152,6 +156,8 @@ RAC_DB_DSN=
 
 # Janela quente no Supabase (padrão 2 dias)
 RAC_HOT_WINDOW_DAYS=2
+# Retenção própria dos fatos do seller_app no banco (padrão 62, piso 16)
+RAC_SELLER_RETENTION_DAYS=62
 
 # Histórico frio no Google Drive — gerado por scripts/gdrive_setup.py
 GDRIVE_CLIENT_ID=...
@@ -273,6 +279,13 @@ python scripts/collect_bestsellers.py --importar-xlsx ./uploads --data 2026-08-1
   Só **Casas Bahia** é prioridade (marketplace).
 - **Amazon:** o PDP de cada item do ranking é aberto a cada execução
   (`RAC_BESTSELLERS_AMAZON_PDP=0` desliga).
+- **Cobertura fonte a fonte** (`bestsellers/cobertura.py`): lista fora de ≥ 2
+  dias de coleta seguidos — em dias em que outras fontes gravaram — vira alerta
+  no `pipeline_watch.py`.
+- **📡 Radar de marcas** (`bestsellers/radar.py`): share de topo de **todas** as
+  marcas, por plataforma, nos últimos 7 dias contra os 28 anteriores; status
+  SUBINDO / ATENÇÃO / MISTO / CAINDO. Aba 📡 Radar na página 🥇 Mais Vendidos e
+  `python scripts/collect_bestsellers.py --relatorio radar [--notificar]`.
 - **Regra dura:** ranking é ORDINAL — nunca soma entre plataformas, nunca vira
   share de mercado. KPI: % Midea no top 10 por plataforma + delta.
 
@@ -293,6 +306,7 @@ python -m pricetrack_api exports                              # quem segura os 3
 python scripts/pricetrack_audit.py                            # coletas Python × PriceTrack (ontem)
 python scripts/pricetrack_capacity_audit.py --desde 2026-10-23 --ate 2026-10-23   # cobertura 9K/12K (sku+title)
 python -m pricetrack_importer arquivo.md                      # import manual md/xlsx
+python scripts/pricetrack_discovery.py                        # descoberta só leitura do export (ontem, V2)
 ```
 
 - **Base de preço explícita (`price_basis`):** `best_cash` = menor entre à
@@ -300,6 +314,18 @@ python -m pricetrack_importer arquivo.md                      # import manual md
 - **Reimport interrompível:** o id do export fica em
   `imports/pricetrack/api/exports_state.json` e a execução seguinte adota o
   export em voo em vez de duplicá-lo.
+- **Subcategoria do produto** (migração `007_pricetrack_subcategory.sql`): o
+  import grava `subcategory` (HI-WALL, CASSETE, TETO, JANELA, PORTÁTIL, PAREDE,
+  DUTO) e `family`. O nome do produto **não** identifica Hi-Wall — o AI
+  Ecomaster da Midea se chama só "SPLIT" —, por isso o campo vem da API.
+- **Auto-heal sem reimportar o que foi podado:** o `--gaps-only` (05:20) não
+  trata como buraco um dia fora da janela quente que já está no Parquet do
+  Drive; se o Drive estiver ilegível, cura só a janela quente. O Supabase é o
+  recurso crítico — antes disso o heal devolvia ao banco ~12 dias por manhã.
+- **Descoberta do export** (só leitura): `python scripts/pricetrack_discovery.py`
+  (precisa de `PRICETRACK_API_KEY`) ou o workflow manual
+  **PriceTrack — Descoberta do export** (relatório no resumo do run). Mostra
+  colunas, marketplaces, categorias/subcategorias e ofertas por marketplace.
 - ⏳ **Pendente:** reimport dos 36 dias com base antiga (roda no PC coletor).
 - **Série de preço = uma fonte:** um gráfico nunca costura PriceTrack e
   coletas na mesma linha (`utils/price_series.py`).
@@ -323,18 +349,59 @@ streamlit run app.py
 
 Home **🏠 Cockpit do Trade** (share de prateleira da Midea Carrier nas buscas
 genéricas, batalha por keyword, defesa/conquista de marca, buy box das ofertas
-Midea, preço de vitrine por BTU, alertas e cobertura) + 20 páginas:
+Midea, preço de vitrine por BTU, alertas e cobertura) + 22 páginas:
 
 - **INSIGHTS:** 📅 Daily Price Vision · 🚨 Top Movers · 📊 Results · 📈 Price
-  Evolution · 📊 Market Analytics · 💰 Preços 9K/12K · 🥇 Mais Vendidos ·
-  🗂️ Ficha do Produto · 🏆 BuyBox Position · 👑 Share of Buy Box · ⭐ Reputação &
-  Avaliações · 📣 SoV Patrocinado · 🛡️ Price Compliance · 📦 Availability
+  Evolution · 📊 Market Analytics · 💰 Preços 9K/12K · 🩻 Diagnóstico ·
+  🥇 Mais Vendidos · 🌡️ Clima × Vendas · 🗂️ Ficha do Produto · 🏆 BuyBox
+  Position · 👑 Share of Buy Box · ⭐ Reputação & Avaliações · 📣 SoV
+  Patrocinado · 🛡️ Price Compliance · 📦 Availability
 - **OPERAÇÕES:** 📧 Email Digest · 🔔 Price Anomalies · 📂 Import History · 🩺 Data Health
 - **ADMIN:** 🤖 Automação (limpeza/normalização/de-para sem interação) · 🧬 Família & SKU
 
 Os filtros globais (Período, Canal, Plataformas, Marcas) valem para **todas**
 as páginas. Definições: [`docs/COCKPIT_TRADE.md`](docs/COCKPIT_TRADE.md) e
 [`docs/DASHBOARD_FILTERS.md`](docs/DASHBOARD_FILTERS.md).
+
+#### 🩻 Diagnóstico (Nov/2026)
+
+Reprodução da aba **Diagnóstico** do PriceTrack, **só ar-condicionado**, com
+recorte padrão **Split Hi-Wall Inverter até 30.000 BTU** (outras subcategorias
+de AC só por escolha no filtro; o teto de 30.000 BTU vale sempre).
+
+- **Fonte:** histórico Parquet de `pricetrack_daily` no Drive, turno Diário —
+  o Supabase guarda só 2 dias. Período = filtro global da barra lateral.
+- **Filtros:** marketplace foco (padrão Casas Bahia), marca foco (padrão
+  Midea), subcategoria, tecnologia, BTU, ciclo, produtos × marca.
+- **Blocos:** ofertas foco × mercado (top 10 + foco) · anúncios por marca
+  (Qtd./%) · preço mínimo por marca · profundidade vs. mediana de mercado ·
+  produtos mais agressivos (com sparkline) · comparador · export CSV/XLSX.
+  Clique num ponto abre os anúncios daquele dia.
+- **Grupo Midea Carrier = MIDEA:** `MIDEA CARRIER`, `SPRINGER CARRIER MIDEA`,
+  `SPRINGER MIDEA`, `CARRIER` e `SPRINGER` aparecem como uma marca só; a grafia
+  do PriceTrack segue em "marca no PriceTrack" (drill-down e export).
+- **Mediana de mercado:** por padrão sem o foco e sem lojas próprias de
+  fabricante (MIDEA, LG, SAMSUNG…), configurável na página.
+- **Cache:** o cabeçalho mostra `regras vN` (`utils.diagnostico.FRAME_VERSAO`);
+  mudou a regra, mudou a versão, e o cache se renova.
+
+Código: `utils/diagnostico.py` (contas), `utils/ac_attributes.py` (BTU,
+tecnologia, ciclo, voltagem, escopo, marca), `pricetrack_dashboard/diagnostico_page.py`
+(página). Fórmulas: [`docs/diagnostico.md`](docs/diagnostico.md); descoberta e
+decisões: [`docs/diagnostico_fase0.md`](docs/diagnostico_fase0.md).
+
+#### 🌡️ Clima × Vendas (Out/2026)
+
+Temperatura por região (17 cidades, Open-Meteo) e anomalia contra a normal dos
+anos anteriores, cruzada com o proxy de venda dos Mais Vendidos (Spearman com
+defasagem de 0–14 dias). Correlação fraca (< 60 pontos ou |r| < 0,3) sai como
+hipótese, não regra.
+
+```bash
+python scripts/clima_collect.py                  # últimos 10 dias + previsão
+python scripts/clima_collect.py --backfill       # ERA5 desde 2016 (uma vez; sem ele não há normal)
+python scripts/clima_collect.py --correlacao [--vendas-csv gfk.csv]
+```
 
 ### `seller_app/` — Track Position Seller (painel do lojista)
 
@@ -386,6 +453,13 @@ Ver [`pricetrack_dashboard/README.md`](pricetrack_dashboard/README.md).
 - **Poda automática:** toda noite o estágio D roda
   `history_cli.py tier --dataset all --confirm --heartbeat` (lê → grava
   Parquet → relê e confere → só então apaga). Job `local_tier_migration`.
+  Os fatos do `seller_app` têm retenção **própria** de 62 dias
+  (`RAC_SELLER_RETENTION_DAYS`), e o estágio termina com a RPC
+  `compactar_indices` (migração 022): `DELETE` não devolve disco nem encolhe
+  índice.
+- **Import do PriceTrack no Actions** grava o dia também no Parquet do Drive
+  (o workflow instala `pyarrow` e `google-api-python-client`), então o painel
+  🩻 Diagnóstico vê D-1 sem esperar a poda.
 - **Banco intercambiável:** `utils/db.py` imita a API do `supabase-py` sobre
   psycopg2; `RAC_DB_DSN` preenchido aponta tudo para um Postgres direto (hoje
   só rollback para a Aiven).
@@ -432,10 +506,18 @@ derruba a coleta (espelho em `logs/heartbeat.jsonl`).
 |----------|---------|--------|
 | `tests.yml` | todo PR + push em `main` | `pytest` (Python 3.11, sem secrets) |
 | `collect_amazon_sellers.yml` | cron 3 turnos (+ resgate) + manual | Coleta Amazon-only com buy box do PDP |
-| `pricetrack_daily.yml` | cron 00:01 / 04:20 / 05:20 BRT + manual | Import PriceTrack D-1 + auto-heal de 14 dias |
+| `pricetrack_daily.yml` | cron 00:01 / 04:20 / 05:20 BRT + manual | Import PriceTrack D-1 + auto-heal de 14 dias (sem reimportar dia já podado) |
+| `pricetrack_discovery.yml` | **só manual** | Descoberta só leitura do export PriceTrack (relatório no resumo do run) |
+| `clima_daily.yml` | cron 05:47 BRT + manual (`backfill=true`) | Radar meteorológico → `clima_diario` |
 | `pipeline_guard.yml` | cron 06:35 / 12:35 / 22:35 BRT | Supervisor de execução (`pipeline_watch`, portão do briefing) |
 | `watchdog.yml` | cron 20:30 BRT | Validação de dado (`daily_status_check.py`) |
 | `collect.yml` | **só manual** | Backup de coleta (cron desligado desde Set/2026) |
+
+O cron do Actions é *best effort* e tem atrasado horas (o degrau das 00:01
+chegou a rodar às 07:39 BRT). Para não esperar, dispare à mão em Actions →
+**Run workflow**. `pricetrack_daily.yml` e `pricetrack_discovery.yml` dividem o
+grupo de concorrência `pricetrack-exports` (3 exports por organização na API):
+não dispare a descoberta perto dos degraus do import.
 
 Secrets usados: `SUPABASE_URL`, `SUPABASE_KEY` (service_role),
 `PRICETRACK_API_KEY`, `TELEGRAM_BOT_TOKEN`, `N8N_TELEGRAM_CHAT_ID`, `GDRIVE_*`.
@@ -481,7 +563,7 @@ pip install pytest
 pytest tests/ pricetrack_api/tests pricetrack_importer/tests pricetrack_dashboard/tests -q
 ```
 
-Validado em 24/10/2026: **2.505 passaram, 62 pulados** (~75 s). A suíte é
+Validado em 07/11/2026: **2.774 passaram, 62 pulados** (~80 s). A suíte é
 hermética — nenhum teste abre browser e os de integração se pulam sem
 `SUPABASE_URL`. Antes de mexer num scraper, rode também a plataforma com
 `--no-headless` e `python scripts/smoke_test.py` (1 keyword × 1 página por
@@ -494,19 +576,21 @@ plataforma).
 ```
 main.py                 CLI de coleta (registry de scrapers, CSV, Drive, Supabase, heartbeat)
 config.py               keywords, plataformas ativas, marcas, delays
-app.py                  dashboard interno (Cockpit + 20 páginas)
+app.py                  dashboard interno (Cockpit + 22 páginas)
 scrapers/               um scraper por plataforma + base.py, local_browser.py, playwright_runtime.py, dealers.py
-bestsellers/            Mais Vendidos (sources artesanais + vtex_generic/html_generic)
+bestsellers/            Mais Vendidos (sources artesanais + vtex_generic/html_generic, radar, cobertura)
 seller_app/             Track Position Seller (app separado, só-leitura)
 pricetrack_api/         cliente tipado da API PriceTrack
 pricetrack_importer/    importador md/xlsx do PriceTrack
-pricetrack_dashboard/   dashboard de preço 9K/12K
+pricetrack_dashboard/   dashboard de preço 9K/12K + página 🩻 Diagnóstico (diagnostico_page.py)
 utils/                  text, brands, seller_names, offer_identity, offer_kind, shelf_insights,
-                        price_series, keyword_taxonomy, pipeline_registry, volume_drop, db, history/ …
+                        price_series, keyword_taxonomy, pipeline_registry, volume_drop, db, history/,
+                        diagnostico, ac_attributes, clima, leroy_price, ml_login …
 scripts/                agendamento Windows (.bat/.ps1), supervisão, PriceTrack, histórico, diagnóstico
-migrations/             SQL do PriceTrack (001–006)
-docs/migrations/        SQL de coletas/bestsellers/heartbeat/seller (001–020)
-.github/workflows/      tests, collect_amazon_sellers, pricetrack_daily, pipeline_guard, watchdog, collect
+migrations/             SQL do PriceTrack (001–007)
+docs/migrations/        SQL de coletas/bestsellers/heartbeat/seller/clima (001–022)
+.github/workflows/      tests, collect_amazon_sellers, pricetrack_daily, pricetrack_discovery,
+                        clima_daily, pipeline_guard, watchdog, collect
 magalu_shopee/          sub-projeto Node/TS (fallback Shopee)
 docs/                   documentação técnica (índice em docs/INDEX.md)
 .claude/                guias para sessões de IA (erros comuns, quick start, mapa)
@@ -537,6 +621,9 @@ referência, fora do fluxo atual.
 | Turno errado | `python scripts/fix_turno.py --confirm` |
 | `seller_app` vazio sem erro | Secret `SELLER` numa grafia aposentada — use o nome canônico atual |
 | Playwright sem browser | `python -m playwright install chromium` |
+| 🩻 Diagnóstico mostra regra antiga (ex.: Midea em várias grafias) | O app ainda roda o código anterior: Streamlit Cloud → **Manage app → Reboot**; local → pare o `streamlit run app.py`, `git pull` e suba de novo. Confira `regras vN` no cabeçalho |
+| 🩻 Diagnóstico "Sem dado do PriceTrack no período" | Histórico no Drive inacessível ou import de D-1 atrasado: veja o status do histórico no rodapé da barra lateral e o run do `pricetrack_daily.yml` |
+| `pricetrack_daily` com muitos dias / banco acima da cota | O heal reimportou dias podados (Drive ilegível no Actions). Poda imediata no PC: `python scripts/history_cli.py tier --dataset pricetrack --confirm` |
 
 ---
 
@@ -556,5 +643,8 @@ referência, fora do fluxo atual.
 | [`docs/MIGRACAO_AIVEN.md`](docs/MIGRACAO_AIVEN.md) | Rollback para Postgres direto (Aiven) |
 | [`docs/BRIEFING_LOCAL_SETUP.md`](docs/BRIEFING_LOCAL_SETUP.md) | Briefing diário local (Claude Code headless) |
 | [`docs/PRICETRACK_FIDELIDADE.md`](docs/PRICETRACK_FIDELIDADE.md) | Fidelidade do preço PriceTrack |
+| [`docs/diagnostico.md`](docs/diagnostico.md) | Fórmulas do painel 🩻 Diagnóstico |
+| [`docs/diagnostico_fase0.md`](docs/diagnostico_fase0.md) | Descoberta do export PriceTrack e decisões do Diagnóstico (escopo, armazenamento) |
+| [`docs/pricetrack_openapi_1.2.0.yaml`](docs/pricetrack_openapi_1.2.0.yaml) | Spec da API Externa PriceTrack 1.2.0 |
 | [`.claude/COMMON_MISTAKES.md`](.claude/COMMON_MISTAKES.md) | Anti-padrões que já quebraram produção |
 | [`docs/learnings/`](docs/learnings/) | Padrões de scraping, anti-bot, dealers, debug |
