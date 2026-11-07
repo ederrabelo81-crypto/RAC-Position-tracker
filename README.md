@@ -281,7 +281,8 @@ python scripts/collect_bestsellers.py --importar-xlsx ./uploads --data 2026-08-1
   (`RAC_BESTSELLERS_AMAZON_PDP=0` desliga).
 - **Cobertura fonte a fonte** (`bestsellers/cobertura.py`): lista fora de ≥ 2
   dias de coleta seguidos — em dias em que outras fontes gravaram — vira alerta
-  no `pipeline_watch.py`.
+  no `pipeline_watch.py`. Fontes que **nunca** gravaram (ex.: Casas Bahia) não
+  geram esse alerta: ficam só no relatório (`nunca_coletaram`).
 - **📡 Radar de marcas** (`bestsellers/radar.py`): share de topo de **todas** as
   marcas, por plataforma, nos últimos 7 dias contra os 28 anteriores; status
   SUBINDO / ATENÇÃO / MISTO / CAINDO. Aba 📡 Radar na página 🥇 Mais Vendidos e
@@ -372,7 +373,9 @@ de AC só por escolha no filtro; o teto de 30.000 BTU vale sempre).
 - **Fonte:** histórico Parquet de `pricetrack_daily` no Drive, turno Diário —
   o Supabase guarda só 2 dias. Período = filtro global da barra lateral.
 - **Filtros:** marketplace foco (padrão Casas Bahia), marca foco (padrão
-  Midea), subcategoria, tecnologia, BTU, ciclo, produtos × marca.
+  Midea), subcategoria, tecnologia, BTU, ciclo, produtos × marca. Dos filtros
+  globais, **só o Período** vale aqui: Plataformas e Marcas globais não se
+  aplicam, porque o painel compara o foco com o mercado inteiro.
 - **Blocos:** ofertas foco × mercado (top 10 + foco) · anúncios por marca
   (Qtd./%) · preço mínimo por marca · profundidade vs. mediana de mercado ·
   produtos mais agressivos (com sparkline) · comparador · export CSV/XLSX.
@@ -458,8 +461,10 @@ Ver [`pricetrack_dashboard/README.md`](pricetrack_dashboard/README.md).
   `compactar_indices` (migração 022): `DELETE` não devolve disco nem encolhe
   índice.
 - **Import do PriceTrack no Actions** grava o dia também no Parquet do Drive
-  (o workflow instala `pyarrow` e `google-api-python-client`), então o painel
-  🩻 Diagnóstico vê D-1 sem esperar a poda.
+  quando os secrets `GDRIVE_*` estão configurados e o Drive responde (o
+  workflow instala `pyarrow` e `google-api-python-client`); aí o painel
+  🩻 Diagnóstico vê D-1 sem esperar a poda. Sem Drive, a cópia cai no disco do
+  runner, que é descartado — o dia só chega ao Parquet pela poda noturna.
 - **Banco intercambiável:** `utils/db.py` imita a API do `supabase-py` sobre
   psycopg2; `RAC_DB_DSN` preenchido aponta tudo para um Postgres direto (hoje
   só rollback para a Aiven).
