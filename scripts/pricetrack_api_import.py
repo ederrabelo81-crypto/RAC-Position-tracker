@@ -759,7 +759,7 @@ def date_exists(collection_date: str, dry_run: bool = False) -> bool:
         return False
 
 
-def _is_cold_day(day: date, cold_days: Set[str], cutoff: Optional[date]) -> bool:
+def _is_cold_day(day: date, cold_days: Optional[Set[str]], cutoff: Optional[date]) -> bool:
     """True se o dia saiu do banco pela poda e já vive no histórico frio.
 
     Sem isto o `--gaps-only` do 3º degrau (05:20 BRT) via como "buraco" todo
@@ -768,28 +768,48 @@ def _is_cold_day(day: date, cold_days: Set[str], cutoff: Optional[date]) -> bool
     dias (257 MB em 04/11/2026) em vez da janela quente de 2, e o banco
     passava da cota. Dia DENTRO da janela quente ausente do banco continua
     sendo buraco de verdade, mesmo que exista no Parquet.
+
+    ``cold_days is None`` = histórico ilegível neste run: todo dia fora da
+    janela quente é tratado como frio (não reimporta). O Supabase é o recurso
+    crítico (cota de 500 MB); um dia antigo que falte de verdade é curado no
+    próximo run com o Drive acessível.
     """
-    return cutoff is not None and day < cutoff and day.isoformat() in cold_days
+    if cutoff is None or day >= cutoff:
+        return False
+    return cold_days is None or day.isoformat() in cold_days
 
 
-def _cold_history_days() -> Tuple[Set[str], Optional[date]]:
+def _cold_history_days() -> Tuple[Optional[Set[str]], Optional[date]]:
     """Dias de PriceTrack no histórico frio e o início da janela quente.
 
-    Falha ao ler o histórico devolve ``(set(), None)``: o heal volta ao
-    comportamento antigo (reimporta o que falta no banco). Custa espaço por um
-    dia, mas nunca deixa um dia sem cópia nenhuma.
+    Falha ao ler o histórico devolve ``(None, início da janela)``: o heal cura
+    só a janela quente e NÃO reimporta dias antigos. Até 05/11/2026 a falha
+    devolvia o comportamento antigo (reimportar tudo o que faltava no banco) —
+    e foi o que aconteceu no primeiro run após a correção: o Actions não tinha
+    as bibliotecas do Drive, o heal reimportou 6 dias e o banco voltou a passar
+    da cota.
     """
-    try:
-        from utils.history import DATASET_PRICETRACK, get_store, hot_window_start
+    from utils.history import hot_window_start
 
-        days = {d.isoformat() for d in get_store().days(DATASET_PRICETRACK)}
+    try:
+        from utils.history import DATASET_PRICETRACK, get_store
+        from utils.history.backends import GoogleDriveBackend
+
+        store = get_store()
+        # `get_store()` cai em silêncio no disco local quando o Drive falta ou
+        # falha ao iniciar. No runner do Actions esse disco está vazio: um
+        # conjunto vazio ali significa "não sei", não "o Parquet não tem nada".
+        if not isinstance(getattr(store, "backend", None), GoogleDriveBackend):
+            raise RuntimeError("histórico frio não está no Drive (backend local)")
+        days = {d.isoformat() for d in store.days(DATASET_PRICETRACK)}
         return days, hot_window_start()
     except Exception as exc:
         logger.warning(
-            f"[gaps-only] histórico frio ilegível ({exc}); buracos serão "
-            f"medidos só pelo banco."
+            f"[gaps-only] histórico frio ilegível ({exc}); só a janela quente "
+            f"(desde {hot_window_start()}) será curada — dias antigos ficam "
+            f"para um run com o Drive acessível, para não estourar a cota."
         )
-        return set(), None
+        return None, hot_window_start()
 
 
 def insert_rows(records: List[Dict], dry_run: bool = False) -> int:
@@ -1212,6 +1232,8 @@ def run(
     cold_days, cold_cutoff = (
         _cold_history_days() if gaps_only else (set(), None)
     )
+    if gaps_only and cold_days is None:
+        logger.warning("[gaps-only] histórico frio indisponível neste run.")
     cur = start
     while cur <= end:
         ds = cur.isoformat()
