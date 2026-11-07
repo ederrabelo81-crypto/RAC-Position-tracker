@@ -102,7 +102,7 @@ class TierSpec(NamedTuple):
 # Este dicionário é a lista do que o `tier` apaga do banco. `coletas` e
 # `pricetrack_daily` saem quando deixam a janela quente (2 dias,
 # docs/RETORNO_SUPABASE.md). `seller_offer_daily`/`seller_coverage_daily` são
-# fatos DERIVADOS de `coletas` e têm RETENÇÃO PRÓPRIA, maior (62 dias,
+# fatos DERIVADOS de `coletas` e têm RETENÇÃO PRÓPRIA, maior (30 dias,
 # `utils.history.seller_retention_days`), para o `seller_app` manter série de
 # buy box com `coletas` guardando só 2 dias. Cortá-las pela janela quente
 # deixaria o painel do lojista com 2 dias — por isso `retencao_propria=True`.
@@ -745,7 +745,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Qual tabela migrar. 'pricetrack' cobre pricetrack_daily; "
              "'seller_offer'/'seller_coverage' (ou 'seller', os dois) são os "
              "fatos do seller_app, na retenção própria RAC_SELLER_RETENTION_DAYS "
-             "(padrão 62 dias). 'all' migra todos e compacta os índices "
+             "(padrão 30 dias). 'all' migra todos e compacta os índices "
              "(default: coletas).",
     )
     p_tier.add_argument(

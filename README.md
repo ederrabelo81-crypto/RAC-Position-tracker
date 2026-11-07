@@ -156,8 +156,8 @@ RAC_DB_DSN=
 
 # Janela quente no Supabase (padrão 2 dias)
 RAC_HOT_WINDOW_DAYS=2
-# Retenção própria dos fatos do seller_app no banco (padrão 62, piso 16)
-RAC_SELLER_RETENTION_DAYS=62
+# Retenção própria dos fatos do seller_app no banco (padrão 30, piso 16)
+RAC_SELLER_RETENTION_DAYS=30
 
 # Histórico frio no Google Drive — gerado por scripts/gdrive_setup.py
 GDRIVE_CLIENT_ID=...
@@ -457,7 +457,7 @@ Ver [`pricetrack_dashboard/README.md`](pricetrack_dashboard/README.md).
 - **Poda automática:** toda noite o estágio D roda
   `history_cli.py tier --dataset all --confirm --heartbeat` (lê → grava
   Parquet → relê e confere → só então apaga). Job `local_tier_migration`.
-  Os fatos do `seller_app` têm retenção **própria** de 62 dias
+  Os fatos do `seller_app` têm retenção **própria** de 30 dias
   (`RAC_SELLER_RETENTION_DAYS`), e o estágio termina com a RPC
   `compactar_indices` (migração 022): `DELETE` não devolve disco nem encolhe
   índice.

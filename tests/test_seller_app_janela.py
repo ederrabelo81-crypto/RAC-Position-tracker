@@ -58,11 +58,11 @@ def test_dias_max_amarrado_ao_historico_real():
 
 
 def test_dias_max_limites():
-    """Piso 4 (garante min<max no slider) e teto 60 (dado longo)."""
+    """Piso 4 (garante min<max no slider) e teto 28 (dado longo; retenção 30)."""
     m = _mod()
-    assert m._dias_max((None, None)) == 60, "sem dado, teto genérico"
+    assert m._dias_max((None, None)) == 28, "sem dado, teto genérico"
     assert m._dias_max((date(2026, 9, 4), date(2026, 9, 4))) == 4, "1 dia → piso 4"
-    assert m._dias_max((date(2020, 1, 1), date(2026, 9, 4))) == 60, "muito dado → 60"
+    assert m._dias_max((date(2020, 1, 1), date(2026, 9, 4))) == 28, "muito dado → 28"
 
 
 def test_janela_ancora_no_ultimo_dia_com_dado():

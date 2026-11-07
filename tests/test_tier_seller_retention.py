@@ -8,7 +8,7 @@ Em 29/10/2026 o banco passou da cota do free tier (561 MB contra 500).
 all --confirm`) passou a:
 
 * podar `seller_offer_daily`/`seller_coverage_daily` na retenção PRÓPRIA
-  (`RAC_SELLER_RETENTION_DAYS`, 62 dias), nunca na janela quente de 2 dias de
+  (`RAC_SELLER_RETENTION_DAYS`, 30 dias), nunca na janela quente de 2 dias de
   `coletas`;
 * exportar → reler → conferir a contagem EXATA da partição → só então apagar;
 * compactar os índices ao fim (RPC `compactar_indices`, migração 022).
@@ -150,7 +150,7 @@ def _args(**over) -> argparse.Namespace:
 class TestRetencaoSeller:
     def test_default(self, monkeypatch):
         monkeypatch.delenv("RAC_SELLER_RETENTION_DAYS", raising=False)
-        assert seller_retention_days() == DEFAULT_SELLER_RETENTION_DAYS == 62
+        assert seller_retention_days() == DEFAULT_SELLER_RETENTION_DAYS == 30
 
     def test_env(self, monkeypatch):
         monkeypatch.setenv("RAC_SELLER_RETENTION_DAYS", "90")
@@ -168,7 +168,7 @@ class TestRetencaoSeller:
 
     def test_inicio_inclui_hoje(self, monkeypatch):
         monkeypatch.delenv("RAC_SELLER_RETENTION_DAYS", raising=False)
-        assert seller_retention_start(date(2026, 10, 29)) == date(2026, 8, 29)
+        assert seller_retention_start(date(2026, 10, 29)) == date(2026, 9, 30)
 
     def test_retencao_cobre_o_slider_inteiro_do_seller_app(self, monkeypatch):
         """O slider vai até N dias ancorado no último dia com dado

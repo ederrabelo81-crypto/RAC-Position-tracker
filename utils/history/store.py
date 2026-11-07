@@ -88,7 +88,12 @@ DEFAULT_HOT_WINDOW_DAYS = 2
 #: cheia precisa de hoje − 61 → hoje: 62 dias. Em 29/10/2026 o fato custava
 #: ~3,6 MB/dia depois do REINDEX — 62 dias ≈ 225 MB, com o banco inteiro em
 #: ~390 MB contra os 500 MB do free tier.
-DEFAULT_SELLER_RETENTION_DAYS = 62
+#:
+#: 07/11/2026: reduzida para 30 dias por decisão do mantenedor — o banco
+#: passou da cota (640 MB) e o fato do seller era a maior tabela (217 MB). O
+#: slider se ajusta sozinho ao histórico que existe (`_dias_max`), então ele
+#: passa a ir até ~29 dias; o resto do histórico segue no Parquet do Drive.
+DEFAULT_SELLER_RETENTION_DAYS = 30
 
 #: Piso da retenção: a janela padrão do slider (14 dias) + âncora + margem.
 #: Um `RAC_SELLER_RETENTION_DAYS=2` digitado por engano (o valor da janela
