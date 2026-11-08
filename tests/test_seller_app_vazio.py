@@ -158,8 +158,8 @@ def test_onde_agir_mostra_a_perda_com_o_preco_de_quem_levou():
     at = _rodar("Bel Micro", FATO, PERDIDOS)
     assert not at.exception, "; ".join(str(e.value) for e in at.exception)
     rotulos = [m.label for m in at.metric]
-    for esperado in ("Share de buy box", "Melhor posição no ranking",
-                     "Saldo de viradas", "Perdas ainda abertas"):
+    for esperado in ("Share de buy box", "Posição no ranking",
+                     "Saldo de viradas", "Perdas abertas"):
         assert esperado in rotulos, rotulos
     saldo = next(m for m in at.metric if m.label == "Saldo de viradas")
     assert saldo.value == "-1", "1 perda e 0 ganhos"

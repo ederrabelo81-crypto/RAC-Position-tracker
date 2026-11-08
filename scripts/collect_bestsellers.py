@@ -230,7 +230,11 @@ def executar_coleta(args: argparse.Namespace) -> int:
     storage.salvar_relatorio(texto, data, args.output)
 
     if args.notificar:
-        _notificar(report.resumo_telegram(preparado_hoje, ocorrencias, n=args.top))
+        from utils.url_state import linha_telegram
+
+        link = linha_telegram("mais-vendidos", rotulo="Abrir 🥇 Mais Vendidos")
+        _notificar(report.resumo_telegram(preparado_hoje, ocorrencias, n=args.top)
+                   + (f"\n\n{link}" if link else ""))
         if resumo_radar:
             _notificar(html.escape(resumo_radar))
 

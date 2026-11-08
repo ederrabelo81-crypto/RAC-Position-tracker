@@ -145,6 +145,13 @@ def _como_ler(corpo: str, rotulo: str = "ℹ️ Como ler") -> None:
             st.markdown(corpo)
 
 
+#: `@st.fragment` (Streamlit ≥ 1.37): o controle dentro dele reroda SÓ o
+#: bloco, não a página inteira. Usado em controles que mexem num gráfico/tabela
+#: só — e é o que impede páginas atrás de um botão "Carregar" de perderem o dado
+#: ao mexer num seletor (o rerun completo volta o botão a False).
+_fragment = getattr(st, "fragment", lambda f: f)
+
+
 _EMPTY_KINDS: dict[str, tuple[str, str]] = {
     # tipo: (ícone, título) — três causas que o painel nunca pode confundir.
     "sem_dado":       ("📭", "Sem dado neste recorte"),
@@ -3258,6 +3265,159 @@ def _canal_de(plataforma: str) -> str:
     return _CANAL_LOJA_PROPRIA
 
 
+# ---------------------------------------------------------------------------
+# Recorte na URL + recortes salvos (Fase 2 de UX, Nov/2026 — utils/url_state.py)
+# ---------------------------------------------------------------------------
+
+def _hoje_brt() -> date:
+    from utils.text import now_brt
+    return now_brt().date()
+
+
+def _aplicar_recorte(f: dict) -> None:
+    """Grava um recorte no session_state dos filtros globais.
+
+    Só chamar ANTES dos widgets nascerem (início do script ou callback):
+    depois disso o Streamlit recusa escrever na chave de um widget.
+    """
+    if f.get("inicio") and f.get("fim"):
+        st.session_state["gf_dates"] = (f["inicio"], f["fim"])
+    for chave, campo in (("gf_canais", "canais"), ("gf_platforms", "plataformas"),
+                         ("gf_brands", "marcas"), ("gf_sources", "fontes")):
+        if campo in f:
+            st.session_state[chave] = list(f[campo])
+    if "comparar" in f:
+        st.session_state["gf_compare"] = bool(f["comparar"])
+
+
+def _aplicar_url_uma_vez(opts: dict) -> None:
+    """Na 1ª execução da sessão, a URL manda no recorte (link compartilhado).
+
+    Uma vez só: depois disso quem manda são os widgets, e a URL passa a
+    espelhá-los (`_sincronizar_url`). Valor que não é opção válida é ignorado
+    — link antigo não pode derrubar a página.
+    """
+    if st.session_state.get("_url_aplicada"):
+        return
+    st.session_state["_url_aplicada"] = True
+    from utils.url_state import decode_filters
+    try:
+        qp = {k: st.query_params.get(k) for k in st.query_params}
+    except Exception:  # noqa: BLE001 — sem contexto de request (testes)
+        return
+    if not qp:
+        return
+    _aplicar_recorte(decode_filters(qp, {
+        "canais": list(_CANAIS),
+        "plataformas": opts.get("platforms") or [],
+        "marcas": opts.get("brands") or [],
+        "fontes": list(_DATA_SOURCES),
+    }, _hoje_brt()))
+
+
+def _recorte_atual() -> dict:
+    """Recorte vigente dos filtros globais (formato de `utils.url_state`)."""
+    ini, fim = _gf_dates()
+    return {
+        "inicio": ini, "fim": fim,
+        "canais": _gf_canais(),
+        "plataformas": list(st.session_state.get("gf_platforms", [])),
+        "marcas": _gf_brands(),
+        "fontes": _gf_sources(),
+        "comparar": bool(st.session_state.get("gf_compare")),
+    }
+
+
+def _sincronizar_url() -> None:
+    """Reescreve a query string com o recorte vigente (só se mudou).
+
+    Copiar a barra de endereço passa a ser compartilhar o recorte. Período
+    padrão fica fora da URL (link "rolante").
+    """
+    from utils.url_state import encode_filters
+    novo = encode_filters(_recorte_atual(), _hoje_brt(), fontes_padrao=_DATA_SOURCES)
+    try:
+        atual = {k: st.query_params.get(k) for k in st.query_params}
+        if atual != novo:
+            st.query_params.from_dict(novo)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ao_escolher_recorte() -> None:
+    """Callback do seletor de recortes: aplica antes dos widgets renascerem."""
+    nome = st.session_state.get("gf_recorte")
+    if not nome:
+        return
+    from utils.url_state import recortes_padrao
+    todos = {**recortes_padrao(_hoje_brt()), **_recortes_usuario()}
+    f = todos.get(nome)
+    if f:
+        _aplicar_recorte(f)
+    st.session_state["gf_recorte"] = None
+
+
+def _recortes_usuario() -> dict:
+    """Recortes salvos pelo usuário (arquivo do servidor), já com datas."""
+    out = {}
+    for nome, p in _load_presets().items():
+        try:
+            out[f"⭐ {nome}"] = {
+                "inicio": date.fromisoformat(p["start"]),
+                "fim": date.fromisoformat(p["end"]),
+                "canais": [c for c in p.get("canais", []) if c in _CANAIS],
+                "plataformas": p.get("platforms", []),
+                "marcas": p.get("brands", []),
+                "fontes": p.get("sources", list(_DATA_SOURCES)),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _render_recortes() -> None:
+    """⭐ Recortes: atalhos prontos + os salvos + o link do recorte atual.
+
+    Os recortes prontos são código (nunca somem). Os salvos moram num arquivo
+    do servidor — no Streamlit Cloud somem a cada reinício —, por isso o link
+    é a forma durável: o recorte inteiro está na URL, então favoritar o link
+    é salvar.
+    """
+    from utils.url_state import encode_filters, recortes_padrao
+    from urllib.parse import urlencode
+
+    with st.expander("⭐ Recortes", expanded=False):
+        opcoes = list(recortes_padrao(_hoje_brt())) + list(_recortes_usuario())
+        st.selectbox(
+            "Aplicar recorte", opcoes, index=None, placeholder="Escolha um atalho…",
+            key="gf_recorte", on_change=_ao_escolher_recorte,
+        )
+        nome = st.text_input("Salvar o recorte atual como", key="gf_preset_name",
+                             placeholder="Ex.: Midea · ML · 14 dias")
+        if st.button("💾 Salvar", key="gf_save_preset", use_container_width=True):
+            if nome.strip():
+                presets = _load_presets()
+                f = _recorte_atual()
+                presets[nome.strip()] = {
+                    "start": str(f["inicio"]), "end": str(f["fim"]),
+                    "canais": f["canais"], "platforms": f["plataformas"],
+                    "brands": f["marcas"], "sources": f["fontes"],
+                }
+                _save_presets(presets)
+                st.success(f"Salvo: “{nome.strip()}”.")
+            else:
+                st.warning("Dê um nome ao recorte.")
+        qs = urlencode(encode_filters(_recorte_atual(), _hoje_brt(),
+                                      fontes_padrao=_DATA_SOURCES))
+        base = ""
+        try:
+            base = str(getattr(st.context, "url", "") or "").split("?")[0]
+        except Exception:  # noqa: BLE001
+            base = ""
+        st.caption("🔗 Link deste recorte (favorite para guardar de vez):")
+        st.code((base or "") + ("?" + qs if qs else ""), language=None)
+
+
 def _render_global_filters() -> None:
     """Filtros globais da barra lateral — valem para TODAS as páginas.
 
@@ -3279,6 +3439,7 @@ def _render_global_filters() -> None:
     # Drive ainda sem cache — sem o aviso a tela fica em branco e parece travada.
     with st.spinner("Carregando filtros (histórico do Drive)…"):
         opts = get_filter_options()
+    _aplicar_url_uma_vez(opts)
     st.date_input(
         "Período",
         value=(date.today() - timedelta(days=7), date.today()),
@@ -3365,55 +3526,7 @@ def _render_global_filters() -> None:
                 f"{_ce.strftime('%d/%m/%Y')}** (automático)."
             )
 
-        # Preset save / load. Gravado em arquivo no servidor: no Streamlit
-        # Cloud ele some a cada reinício do container e é compartilhado por
-        # todos os usuários — por isso mora aqui, e não no bloco principal.
-        st.caption("Presets (salvos no servidor do painel)")
-        presets = _load_presets()
-        preset_name = st.text_input(
-            "Nome do preset",
-            placeholder="Ex: Midea - 7 dias",
-            key="gf_preset_name",
-            label_visibility="collapsed",
-        )
-        if st.button("💾 Salvar preset", key="gf_save_preset",
-                     use_container_width=True, help="Salvar filtros atuais como preset"):
-            if preset_name:
-                gf = st.session_state.get("gf_dates", ())
-                presets[preset_name] = {
-                    "start":     str(gf[0]) if gf else str(date.today() - timedelta(days=7)),
-                    "end":       str(gf[1]) if len(gf) > 1 else str(date.today()),
-                    "canais":    list(st.session_state.get("gf_canais", [])),
-                    "platforms": st.session_state.get("gf_platforms", []),
-                    "brands":    st.session_state.get("gf_brands", []),
-                    "sources":   _gf_sources(),
-                }
-                _save_presets(presets)
-                st.success(f"Salvo: '{preset_name}'")
-            else:
-                st.warning("Digite um nome para o preset.")
-
-        if presets:
-            sel = st.selectbox(
-                "Carregar preset",
-                ["— selecione —"] + list(presets.keys()),
-                key="gf_load_preset",
-                label_visibility="collapsed",
-            )
-            if sel and sel != "— selecione —" and sel != st.session_state.get("_last_loaded_preset"):
-                st.session_state["_last_loaded_preset"] = sel
-                p = presets[sel]
-                try:
-                    st.session_state["gf_dates"]     = (date.fromisoformat(p["start"]), date.fromisoformat(p["end"]))
-                    # `canais` é novo; preset antigo cai em "todos".
-                    st.session_state["gf_canais"]    = [c for c in p.get("canais", []) if c in _CANAIS]
-                    st.session_state["gf_platforms"] = p.get("platforms", [])
-                    st.session_state["gf_brands"]    = p.get("brands", [])
-                    # `sources` é novo; presets antigos caem no padrão (ambas).
-                    st.session_state["gf_sources"]   = p.get("sources", list(_DATA_SOURCES))
-                    st.rerun()
-                except Exception:
-                    pass
+    _render_recortes()
 
 
 def _inherit_global(page_key: str, global_values: list, options: list) -> None:
@@ -6389,6 +6502,66 @@ def page_familia_sku_admin() -> None:
 # Page 7 — BuyBox Position
 # ---------------------------------------------------------------------------
 
+@_fragment
+def _bb_timeline(df_top: pd.DataFrame) -> None:
+    """Linha do tempo de vitórias de buy box, com o seletor de agrupamento.
+
+    Fragment: mudar o "Agrupar por" reroda só este bloco. Antes o rerun era da
+    página inteira, e como ela só carrega dado com o botão "Load BuyBox"
+    apertado, o seletor apagava a página e voltava ao "clique em Load".
+    """
+    group_opts = ["Marca", "Plataforma", "Seller (buy box)"]
+    group_choice = st.radio(
+        "Agrupar por", group_opts, horizontal=True, key="bb_grp"
+    )
+    group_col = {
+        "Marca": "marca",
+        "Plataforma": "plataforma",
+        "Seller (buy box)": "buy_box_seller",
+    }[group_choice]
+
+    df_grp = df_top
+    if group_col == "buy_box_seller" and "buy_box_seller" in df_top.columns:
+        df_grp = df_top[
+            df_top["buy_box_seller"].notna()
+            & (df_top["buy_box_seller"].astype(str).str.strip() != "")
+        ]
+        if df_grp.empty:
+            st.info(
+                "Nenhuma plataforma no filtro atual expõe `buy_box_seller`. "
+                "O campo é preenchido por Mercado Livre, Leroy Merlin, "
+                "Magalu, Shopee, Google Shopping e Casas Bahia (Amazon fica "
+                "sem seller na SERP). Amplie o período ou os filtros."
+            )
+
+    if group_col not in df_top.columns or "data" not in df_top.columns:
+        st.info("Required columns not available.")
+    elif not df_grp.empty:
+        timeline = (
+            df_grp
+            .groupby(["data", group_col], as_index=False)
+            .size()
+            .rename(columns={"size": "BuyBox wins", group_col: group_choice})
+        )
+        timeline["data"] = pd.to_datetime(timeline["data"])
+
+        _cmap = _brand_color_map(timeline[group_choice]) if group_choice == "Marca" else None
+        fig_line = px.line(
+            timeline,
+            x="data",
+            y="BuyBox wins",
+            color=group_choice,
+            color_discrete_map=_cmap,
+            markers=True,
+            title=f"Daily BuyBox wins by {group_choice}",
+            labels={"data": "Date"},
+        )
+        fig_line.update_traces(line=dict(width=2.5), marker=dict(size=6))
+        _emphasize_midea_traces(fig_line)
+        _apply_chart_style(fig_line, height=450)
+        st.plotly_chart(fig_line, use_container_width=True)
+
+
 def page_buybox_position():
     st.title("🏆 Buy Box — posição e vencedor")
     st.caption(
@@ -6618,56 +6791,7 @@ def page_buybox_position():
     with tab_timeline:
         st.subheader("BuyBox wins over time")
 
-        group_opts = ["Brand", "Platform", "Seller (Buy Box)"]
-        group_choice = st.radio(
-            "Group by", group_opts, horizontal=True, key="bb_grp"
-        )
-        group_col = {
-            "Brand": "marca",
-            "Platform": "plataforma",
-            "Seller (Buy Box)": "buy_box_seller",
-        }[group_choice]
-
-        df_grp = df_top
-        if group_col == "buy_box_seller" and "buy_box_seller" in df_top.columns:
-            df_grp = df_top[
-                df_top["buy_box_seller"].notna()
-                & (df_top["buy_box_seller"].astype(str).str.strip() != "")
-            ]
-            if df_grp.empty:
-                st.info(
-                    "Nenhuma plataforma no filtro atual expõe `buy_box_seller`. "
-                    "O campo é preenchido por Mercado Livre, Leroy Merlin, "
-                    "Magalu, Shopee, Google Shopping e Casas Bahia (Amazon fica "
-                    "sem seller na SERP). Amplie o período ou os filtros."
-                )
-
-        if group_col not in df_top.columns or "data" not in df_top.columns:
-            st.info("Required columns not available.")
-        elif not df_grp.empty:
-            timeline = (
-                df_grp
-                .groupby(["data", group_col], as_index=False)
-                .size()
-                .rename(columns={"size": "BuyBox wins", group_col: group_choice})
-            )
-            timeline["data"] = pd.to_datetime(timeline["data"])
-
-            _cmap = _brand_color_map(timeline[group_choice]) if group_choice == "Brand" else None
-            fig_line = px.line(
-                timeline,
-                x="data",
-                y="BuyBox wins",
-                color=group_choice,
-                color_discrete_map=_cmap,
-                markers=True,
-                title=f"Daily BuyBox wins by {group_choice}",
-                labels={"data": "Date"},
-            )
-            fig_line.update_traces(line=dict(width=2.5), marker=dict(size=6))
-            _emphasize_midea_traces(fig_line)
-            _apply_chart_style(fig_line, height=450)
-            st.plotly_chart(fig_line, use_container_width=True)
+        _bb_timeline(df_top)
 
     # ── Tab 3: Detail ────────────────────────────────────────────────────────
     with tab_detail:
@@ -12569,6 +12693,86 @@ def _bs_aba_radar(serie: pd.DataFrame, dia, n: int, referencia_sel: str) -> None
             st.plotly_chart(fig, use_container_width=True)
 
 
+@_fragment
+def _bs_ranking_do_dia(janela: pd.DataFrame, specs: dict, tipo_escopo: str) -> None:
+    """Aba "Ranking do dia" dos Mais Vendidos (data × plataforma × escopo).
+
+    Fragment: trocar a data ou a plataforma reroda só a tabela, sem refazer a
+    leitura e as validações da página inteira.
+    """
+    TIPO_ESCOPO_KPI = tipo_escopo  # noqa: N806 — mesmo nome do corpo original
+    col_data, col_plat, col_escopo = st.columns([1, 1, 1])
+    datas_janela = sorted(janela["data"].dt.date.unique(), reverse=True)
+    with col_data:
+        data_sel = st.selectbox(
+            "Data", datas_janela,
+            format_func=lambda d: d.strftime("%d/%m/%Y"),
+            key="bs_rank_data",
+        )
+    do_dia = janela[janela["data"].dt.date == data_sel]
+    plats = sorted(do_dia["plataforma"].dropna().unique())
+    with col_plat:
+        plat_sel = st.selectbox(
+            "Plataforma", plats, format_func=lambda k: _bs_nome(k, specs),
+            key="bs_rank_plat",
+        ) if plats else None
+    with col_escopo:
+        so_escopo = st.checkbox(
+            "Somente split hi-wall (escopo do KPI)", value=True,
+            key="bs_rank_escopo",
+            help="Desmarque para ver a lista como o varejista publica — "
+                 "inclusive janela, portátil e a contaminação da categoria.",
+        )
+
+    if plat_sel is None:
+        st.info("Nenhuma plataforma coletada nesta data.", icon="ℹ️")
+    else:
+        lista = do_dia[do_dia["plataforma"] == plat_sel].sort_values("rank")
+        if so_escopo:
+            lista = lista[lista["tipo"] == TIPO_ESCOPO_KPI]
+
+        visiveis = [
+            "rank", "titulo", "marca", "grupo_midea", "btu", "tipo", "preco",
+            "vendidos", "base_vendidos", "seller", "rating", "reviews",
+            "patrocinado", "url_produto",
+        ]
+        tabela_rank = lista[[c for c in visiveis if c in lista.columns]]
+        st.dataframe(
+            _bs_style(tabela_rank),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "rank": st.column_config.NumberColumn("#", width="small"),
+                "titulo": st.column_config.TextColumn("Produto", width="large"),
+                "marca": st.column_config.TextColumn("Marca"),
+                "grupo_midea": st.column_config.CheckboxColumn("Grupo Midea"),
+                "btu": st.column_config.NumberColumn("BTU", format="%d"),
+                "tipo": st.column_config.TextColumn("Tipo"),
+                "preco": st.column_config.NumberColumn("Preço", format="R$ %.2f"),
+                "vendidos": st.column_config.NumberColumn("Vendidos"),
+                "base_vendidos": st.column_config.TextColumn("Base"),
+                "seller": st.column_config.TextColumn("Seller"),
+                "rating": st.column_config.NumberColumn("Nota", format="%.1f"),
+                "reviews": st.column_config.NumberColumn("Reviews", format="%d"),
+                "patrocinado": st.column_config.CheckboxColumn("Patrocinado?"),
+                "url_produto": st.column_config.LinkColumn(
+                    "Link", display_text="Abrir ↗", width="small",
+                ),
+            },
+        )
+        spec = specs.get(plat_sel)
+        if spec is not None:
+            st.caption(
+                f"Referência: **{spec.referencia_rotulo}** · ordenação: "
+                f"`{spec.parametro_ordenacao}` · mecânica: "
+                f"**{spec.mecanica}** · base de `vendidos`: "
+                f"**{spec.base_vendidos or 'não declarada'}**"
+            )
+            st.warning(spec.armadilha, icon="🪤")
+        _csv_download_btn(
+            lista, f"bestsellers_{plat_sel}_{data_sel}.csv", key="bs_rank_csv"
+        )
+
+
 def page_bestsellers() -> None:
     """Página 🥇 Mais Vendidos — a única variável de RESULTADO da coleta.
 
@@ -13028,76 +13232,7 @@ def page_bestsellers() -> None:
 
     # ── Ranking do dia ────────────────────────────────────────────────────
     with tab_rank:
-        col_data, col_plat, col_escopo = st.columns([1, 1, 1])
-        datas_janela = sorted(janela["data"].dt.date.unique(), reverse=True)
-        with col_data:
-            data_sel = st.selectbox(
-                "Data", datas_janela,
-                format_func=lambda d: d.strftime("%d/%m/%Y"),
-                key="bs_rank_data",
-            )
-        do_dia = janela[janela["data"].dt.date == data_sel]
-        plats = sorted(do_dia["plataforma"].dropna().unique())
-        with col_plat:
-            plat_sel = st.selectbox(
-                "Plataforma", plats, format_func=lambda k: _bs_nome(k, specs),
-                key="bs_rank_plat",
-            ) if plats else None
-        with col_escopo:
-            so_escopo = st.checkbox(
-                "Somente split hi-wall (escopo do KPI)", value=True,
-                key="bs_rank_escopo",
-                help="Desmarque para ver a lista como o varejista publica — "
-                     "inclusive janela, portátil e a contaminação da categoria.",
-            )
-
-        if plat_sel is None:
-            st.info("Nenhuma plataforma coletada nesta data.", icon="ℹ️")
-        else:
-            lista = do_dia[do_dia["plataforma"] == plat_sel].sort_values("rank")
-            if so_escopo:
-                lista = lista[lista["tipo"] == TIPO_ESCOPO_KPI]
-
-            visiveis = [
-                "rank", "titulo", "marca", "grupo_midea", "btu", "tipo", "preco",
-                "vendidos", "base_vendidos", "seller", "rating", "reviews",
-                "patrocinado", "url_produto",
-            ]
-            tabela_rank = lista[[c for c in visiveis if c in lista.columns]]
-            st.dataframe(
-                _bs_style(tabela_rank),
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "rank": st.column_config.NumberColumn("#", width="small"),
-                    "titulo": st.column_config.TextColumn("Produto", width="large"),
-                    "marca": st.column_config.TextColumn("Marca"),
-                    "grupo_midea": st.column_config.CheckboxColumn("Grupo Midea"),
-                    "btu": st.column_config.NumberColumn("BTU", format="%d"),
-                    "tipo": st.column_config.TextColumn("Tipo"),
-                    "preco": st.column_config.NumberColumn("Preço", format="R$ %.2f"),
-                    "vendidos": st.column_config.NumberColumn("Vendidos"),
-                    "base_vendidos": st.column_config.TextColumn("Base"),
-                    "seller": st.column_config.TextColumn("Seller"),
-                    "rating": st.column_config.NumberColumn("Nota", format="%.1f"),
-                    "reviews": st.column_config.NumberColumn("Reviews", format="%d"),
-                    "patrocinado": st.column_config.CheckboxColumn("Patrocinado?"),
-                    "url_produto": st.column_config.LinkColumn(
-                        "Link", display_text="Abrir ↗", width="small",
-                    ),
-                },
-            )
-            spec = specs.get(plat_sel)
-            if spec is not None:
-                st.caption(
-                    f"Referência: **{spec.referencia_rotulo}** · ordenação: "
-                    f"`{spec.parametro_ordenacao}` · mecânica: "
-                    f"**{spec.mecanica}** · base de `vendidos`: "
-                    f"**{spec.base_vendidos or 'não declarada'}**"
-                )
-                st.warning(spec.armadilha, icon="🪤")
-            _csv_download_btn(
-                lista, f"bestsellers_{plat_sel}_{data_sel}.csv", key="bs_rank_csv"
-            )
+        _bs_ranking_do_dia(janela, specs, TIPO_ESCOPO_KPI)
 
     # ── Competição ────────────────────────────────────────────────────────
     with tab_comp:
@@ -13925,6 +14060,7 @@ def _main() -> None:
         st.divider()
         _render_global_filters()
         st.divider()
+    _sincronizar_url()
 
     pg = st.navigation(secoes, position="top")
 

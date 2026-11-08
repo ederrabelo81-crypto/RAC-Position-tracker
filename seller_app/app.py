@@ -48,6 +48,21 @@ except ImportError:  # testes (AppTest.from_string) rodam a partir da raiz
 
 st.set_page_config(page_title="Track Position Seller", page_icon="📦", layout="wide")
 
+# KPIs 2×2 no celular: abaixo de 640 px o Streamlit empilha as colunas uma a
+# uma, e os 4 cartões viravam 4 telas de rolagem. Só a linha de colunas que
+# contém métrica quebra em pares (mesma regra de `assets/style.css` do painel
+# interno — este app é publicado sozinho e não lê aquele arquivo).
+st.markdown("""<style>
+@media (max-width: 640px) {
+  [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stMetric"]) {
+    flex-direction: row !important; flex-wrap: wrap !important; gap: .5rem !important; }
+  [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stMetric"]) > [data-testid="stColumn"] {
+    flex: 1 1 calc(50% - .5rem) !important; width: calc(50% - .5rem) !important;
+    min-width: calc(50% - .5rem) !important; }
+  [data-testid="stMetricValue"] { font-size: 1.35rem !important; }
+}
+</style>""", unsafe_allow_html=True)
+
 # ── Cores: verde-petróleo do produto, âmbar para "não observado" ────────────
 ACENTO, ALERTA, NEUTRO = "#1B6E6A", "#9C5D11", "#56635F"
 
@@ -491,7 +506,7 @@ def main() -> None:
         atual, comp, ant = fotos["atual"], fotos["atual_comp"], fotos["anterior"]
         delta = None
         if comp and ant and comp.pct is not None and ant.pct is not None:
-            delta = f"{comp.pct - ant.pct:+.1f} p.p. vs 7 dias antes"
+            delta = f"{comp.pct - ant.pct:+.1f} p.p. em 7 dias"
         _metric(
             linha1[0], "Share de buy box",
             f"{atual.pct:.1f}%" if atual.pct is not None else "—",
@@ -502,7 +517,7 @@ def main() -> None:
         if not ranking.empty:
             melhor = ranking.iloc[0]
             _metric(
-                linha1[1], "Melhor posição no ranking",
+                linha1[1], "Posição no ranking",
                 f"#{int(melhor['posicao'])} de {int(melhor['total'])}",
                 sem_seta=True,
                 delta=(f"líder: {melhor['lider']} (+{melhor['gap_lider_pp']:.1f} p.p.)"
@@ -511,7 +526,7 @@ def main() -> None:
                 help=f"Ranking de share de buy box em {melhor['plataforma']} "
                      f"({melhor['data']:%d/%m}). Todas as plataformas na aba 🥊 Ranking.")
         else:
-            _metric(linha1[1], "Melhor posição no ranking", "—")
+            _metric(linha1[1], "Posição no ranking", "—")
         saldo = len(ganhos) - len(perdidos)
         _metric(
             linha2[0], "Saldo de viradas", f"{saldo:+d}", sem_seta=True,
@@ -519,7 +534,7 @@ def main() -> None:
             help="Ganho = você tomou a buy box de outro seller. Perda = outro tomou a sua.")
         abertas = int((~agir["recuperado"]).sum()) if not agir.empty else 0
         _metric(
-            linha2[1], "Perdas ainda abertas", abertas,
+            linha2[1], "Perdas abertas", abertas,
             help="Produtos que você perdeu e não recuperou até o último turno observado. "
                  "Lista completa na aba 🎯 Onde agir.")
 

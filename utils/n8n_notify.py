@@ -738,6 +738,13 @@ def _fmt_end(
     if len(msg) > 4000:
         msg = msg[:3950] + "\n\n<i>... mensagem truncada.</i>"
 
+    # Link para o Cockpit (só com RAC_DASHBOARD_URL) — depois do corte, para o
+    # truncamento nunca comer o link.
+    from utils.url_state import linha_telegram
+    link = linha_telegram("", rotulo="Abrir o Cockpit do Trade")
+    if link:
+        msg += "\n\n" + link
+
     return msg
 
 
