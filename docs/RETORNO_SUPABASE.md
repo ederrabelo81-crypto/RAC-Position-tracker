@@ -430,15 +430,15 @@ tabela por chamada, lista branca fixa, e só reconstrói quando índice > 1,25×
 heap. Noite comum = uma consulta de tamanho por tabela. Falha da RPC deixa a
 batida FAILED, para o `pipeline_watch` cobrar.
 
-**Orçamento depois da correção (29/10/2026):**
+**Orçamento depois da correção (29/10/2026; `coletas` revisada em 08/11/2026, §5.3):**
 
 | Parcela | Normal | Pico |
 |---|---|---|
 | `seller_offer_daily` + `coverage`, 30 dias × ~3,6 MB (62 até 07/11/2026) | ~110 MB | — |
-| `coletas` (2–3 dias) | ~65 MB | ~90 MB |
+| `coletas` (2–3 dias; ~26 mil linhas/dia × ~660 B) | ~100 MB | ~110 MB |
 | `pricetrack_daily` (2 dias × 3 turnos) | ~31 MB | ~100 MB¹ |
 | `rac_monitoramento` + `bestsellers` + resto + schemas do Supabase | ~75 MB | ~75 MB |
-| **Total** | **~280 MB (folga ~220 MB, 44%)** com 30 dias de seller (era ~395 MB com 62) | **~375 MB** |
+| **Total** | **~320 MB (folga ~180 MB, 36%)** com 30 dias de seller (era ~430 MB com 62) | **~395 MB** |
 
 ¹ Medido no mesmo dia: um reimport do PriceTrack dos dias 15–19/10 levou a
 tabela a 190 mil linhas / 96 MB durante a manhã. Esses dias estão fora da
@@ -476,10 +476,32 @@ workflow nem instalava as bibliotecas para lê-lo (corrigido no #426). Junto,
 | **Banco** | **453 MB** | **327 MB** (folga ~173 MB, 35%) |
 
 O seller medido bate com o orçamento (~3,4 MB/dia × 30 ≈ 101 MB). A
-diferença para os ~280 MB previstos (~47 MB) vem principalmente de `coletas`
-(99 MB contra ~65 MB, ~34 MB); o resto, de `pricetrack_daily` (37 contra
-~31 MB) e das demais parcelas aproximadas. Fica como ponto a acompanhar, não
-como alarme.
+diferença para os ~280 MB previstos (~47 MB) vinha principalmente de
+`coletas` (99 MB contra ~65 MB, ~34 MB). O resto vinha de `pricetrack_daily`
+(37 contra ~31 MB) e das demais parcelas aproximadas.
+
+**`coletas`: o orçamento estava errado, não a tabela.** A conferência de
+08/11 não achou gravação dupla nem dia velho. Os 2 run_ids por turno são o PC
+e a Amazon do Actions, com plataformas disjuntas. O tamanho sai do volume:
+
+- ~8,7 mil linhas por turno × 3 turnos ≈ 26 mil linhas/dia, a ~660 B por
+  linha ≈ 17 MB/dia de dado (34 MB nos 2 dias).
+- A poda só roda às 23:29, depois do Fechamento. Até lá a tabela chega a
+  **3 dias** (~78 mil linhas, ~51 MB). O espaço liberado pelo `DELETE` é
+  reusado, não devolvido, então o heap fica no tamanho do pico (52 MB). Um
+  `VACUUM FULL` aqui só alivia até a noite seguinte; não vale o lock.
+- São 20 índices (47 MB). O maior é a chave única `coletas_unique_run`
+  (`data, turno, plataforma, keyword, produto, run_id`), com 22 MB, mais do
+  dobro do tamanho reconstruído. Ele não entra no `compactar_indices` porque
+  a razão índice/heap da tabela (0,9) fica abaixo do gatilho de 1,25.
+  `REINDEX INDEX CONCURRENTLY public.coletas_unique_run` em 08/11 (sem travar
+  a escrita) levou o índice a **8 MB**, os índices a 33 MB, a tabela a
+  **86 MB** e o banco a **314 MB**. O inchaço volta em alguns dias.
+
+Patamar real da tabela: **~100 MB** (já no orçamento acima). Se a folga
+apertar, repetir esse REINDEX devolve ~10 MB. Também há dois índices iguais
+em `data` (`coletas_data_idx` DESC e `idx_coletas_data`, ~0,8 MB cada), e um
+deles pode sair.
 
 **Regra que fica:** depois de uma poda grande por `DELETE` (troca de
 retenção, limpeza manual), rode um `VACUUM FULL` na tabela fora do horário de
