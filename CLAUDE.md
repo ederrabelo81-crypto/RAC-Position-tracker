@@ -329,9 +329,12 @@ pip install -r seller_app/requirements.txt
 streamlit run seller_app/app.py
 ```
 
-**`seller_app/app.py` — 5 abas:** 📈 Share de buy box · 🏆 Ganhos e perdas
-(evento, não foto — a SERP só mostra o detentor atual, nunca o perdedor) ·
-🏷️ Marcas e posição · 🥊 Ranking na plataforma · 🩺 Cobertura. Só
+**`seller_app/app.py` — selo de cobertura + 4 KPIs com comparação + 6 abas
+(Nov/2026, `docs/UX_PAINEIS.md`):** 🎯 Onde agir (perdas com o preço de quem
+levou × o seu último) · 📈 Share · 🏆 Ganhos e perdas (evento, não foto — a
+SERP só mostra o detentor atual, nunca o perdedor) · 🏷️ Marcas e posição ·
+🥊 Ranking · 🩺 Cobertura. Contas puras em `seller_app/seller_insights.py`; as
+cores de plataforma espelham `utils/ui_tokens.py` (teste reprova divergência). Só
 `superficie == "marketplace"` e ofertas com `identidade_suspeita == False`
 entram nos KPIs — loja própria é campeonato que o lojista joga sozinho, e
 chave de oferta colapsada não pode virar numerador nem denominador.

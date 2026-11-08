@@ -64,7 +64,13 @@ FATO = [dict(
     qtd_sellers=7, tipo_seller="3P", identidade_suspeita=False)]
 
 
-def _rodar(seller: str, fato: list[dict]) -> AppTest:
+PERDIDOS = [dict(
+    data="2026-09-04", turno="Fechamento", plataforma="Magalu",
+    seller_canonical="Web Continental", marketplace_product_id="123",
+    produto="Ar Condicionado Midea 12000 BTUs", marca="Midea", preco="2099.90")]
+
+
+def _rodar(seller: str, fato: list[dict], perdidos: list[dict] | None = None) -> AppTest:
     """Executa o app com os carregadores dublados e o secret `SELLER` travado."""
     dubles = f"""
 import pandas as _pd
@@ -78,7 +84,7 @@ carregar = lambda s, d: (
     _tipar(_quadro({fato!r}, _SELECT_FATO)),
     _tipar(_pd.DataFrame([m for m in {MERCADO!r} if m["seller_canonical"] == s])),
     _pd.DataFrame({COBERTURA!r}))
-carregar_perdidos = lambda s, d: _tipar(_quadro([], _SELECT_PERDIDOS))
+carregar_perdidos = lambda s, d: _tipar(_quadro({(perdidos or [])!r}, _SELECT_PERDIDOS))
 main()
 """
     fonte = APP.read_text(encoding="utf-8").replace(
@@ -114,7 +120,7 @@ def test_seller_sem_linha_nao_derruba_a_pagina():
     assert not at.exception, (
         "a página estourou com a consulta vazia: "
         + "; ".join(str(e.value) for e in at.exception))
-    assert len(at.tabs) == 5, "as 5 abas continuam — a de Cobertura é a resposta"
+    assert len(at.tabs) == 6, "as 6 abas continuam — a de Cobertura é a resposta"
     assert any("Sem oferta registrada" in w.value for w in at.warning)
 
 
@@ -140,11 +146,27 @@ def test_seller_com_dado_segue_renderizando():
     """A correção não pode custar nada ao caminho normal."""
     at = _rodar("Bel Micro", FATO)
     assert not at.exception, "; ".join(str(e.value) for e in at.exception)
-    assert len(at.tabs) == 5
+    assert len(at.tabs) == 6
     assert not at.error
     assert not any("Sem oferta registrada" in w.value for w in at.warning)
     assert not any("SELLER" in i.value for i in at.info), (
         "a hipótese do secret só cabe quando NÃO veio linha nenhuma")
+
+
+def test_onde_agir_mostra_a_perda_com_o_preco_de_quem_levou():
+    """Roteiro do Seller App (Nov/2026): a aba de ação e os KPIs com comparação."""
+    at = _rodar("Bel Micro", FATO, PERDIDOS)
+    assert not at.exception, "; ".join(str(e.value) for e in at.exception)
+    rotulos = [m.label for m in at.metric]
+    for esperado in ("Share de buy box", "Melhor posição no ranking",
+                     "Saldo de viradas", "Perdas ainda abertas"):
+        assert esperado in rotulos, rotulos
+    saldo = next(m for m in at.metric if m.label == "Saldo de viradas")
+    assert saldo.value == "-1", "1 perda e 0 ganhos"
+    tabela = at.tabs[0].dataframe[0].value
+    assert list(tabela["levou"]) == ["Web Continental"]
+    assert float(tabela["seu_preco"].iloc[0]) == 2184.05
+    assert round(float(tabela["diferenca_pct"].iloc[0]), 1) == -3.9
 
 
 if __name__ == "__main__":
