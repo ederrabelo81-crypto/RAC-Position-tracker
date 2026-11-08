@@ -502,7 +502,18 @@ e a Amazon do Actions, com plataformas disjuntas. O tamanho sai do volume:
   **86 MB** e o banco a **314 MB**. O inchaço volta em alguns dias.
 
 Patamar real da tabela: **~100 MB** (já no orçamento acima). Se a folga
-apertar, repetir esse REINDEX devolve ~10 MB. Também há dois índices iguais
+apertar, repetir esse REINDEX devolve ~10–14 MB. Dois cuidados:
+
+- `REINDEX ... CONCURRENTLY` não roda dentro de transação. Use conexão em
+  autocommit (o `execute_sql` do MCP, `psql`), como o `VACUUM` do Passo 5 e
+  o `scripts/db_vacuum.py`, e não um bloco transacional do SQL Editor.
+- O upsert de `coletas` usa esta chave no `on_conflict`
+  (`utils/supabase_client.py`). O PostgreSQL avisa que reconstruir um índice
+  único com `CONCURRENTLY` pode fazer `INSERT ... ON CONFLICT` falhar
+  durante a troca. Rode fora da janela de gravação dos turnos: as gravações
+  caem por volta de 11h, 17h e 23h BRT no PC e uns 30–60 min depois na
+  Amazon do Actions. O de 08/11 rodou às 11:05 BRT com o turno da manhã
+  ainda coletando, sem gravar. Também há dois índices iguais
 em `data` (`coletas_data_idx` DESC e `idx_coletas_data`, ~0,8 MB cada), e um
 deles pode sair.
 
