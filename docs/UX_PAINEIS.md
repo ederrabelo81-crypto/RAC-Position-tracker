@@ -74,8 +74,8 @@ dia".
 
 ## Próximas fases (não feitas aqui)
 - **Fase 2:** feita — ver a seção "Fase 2" no fim.
-- **Popover "Como ler" nas demais páginas.** Mais Vendidos (20 captions e 18
-  avisos) e Preço do Dia são as próximas.
+- **Popover "Como ler" nas demais páginas:** feito — ver "Como ler em todas as
+  páginas" no fim.
 - **Seller App:** feito — ver a seção abaixo.
 
 ## Seller App — roteiro (Nov/2026)
@@ -173,3 +173,29 @@ padrão "Web Continental" no seletor da demo.
 - Aplicar um recorte usa um callback (`on_change`): ele grava os filtros antes
   de os widgets renascerem. Antes era uma sequência de comparação e
   `st.rerun()`.
+
+## Como ler em todas as páginas (Nov/2026)
+
+30 textos de metodologia saíram do meio das páginas para o popover
+`_como_ler` (ℹ️ Como ler), em todas as páginas que tinham esse tipo de texto:
+Evolução de Preço, Saúde do Dado, Automação, Buy Box (as duas visões),
+Disponibilidade, Reputação, SoV Patrocinado, Compliance de Preço, Cockpit,
+Alertas (as duas visões), Resumo por E-mail, Análise de Mercado, Preço do Dia,
+Mais Vendidos (incluindo o 📡 Radar), Clima × Vendas e os painéis do Família &
+SKU.
+
+**O que sai da tela:** texto que explica regra, definição ou mecânica e é
+igual em todo acesso (como o share ponderado é calculado, o que é
+"Rompimento", por que as curvas não se cruzam).
+
+**O que fica visível:**
+- avisos que mudam a leitura do número **agora**: cobertura limitada, coleta
+  parcial, pontos removidos, amostra pequena;
+- mensagens de estado ("Defina os filtros e clique em Carregar…");
+- o subtítulo curto embaixo do título.
+
+Os textos que estavam em inglês (Resumo por E-mail, Anomalias de preço)
+foram traduzidos.
+
+**Regra (teste):** `tests/test_ui_components.py::test_metodologia_longa_fica_no_como_ler`
+reprova `st.caption` com texto fixo de mais de 200 caracteres no `app.py`.

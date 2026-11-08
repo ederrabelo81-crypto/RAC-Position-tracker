@@ -3917,7 +3917,7 @@ def _render_coverage(
         f"({com_dado}/{total} plataformas com dado no período)",
         expanded=expanded,
     ):
-        st.caption(
+        _como_ler(
             "Todas as plataformas coletadas entram nesta análise. Uma plataforma "
             "em 0% ainda não expõe este campo no período (limitação de "
             "coleta/anti-bot) — passa a contar automaticamente quando a coleta "
@@ -5389,10 +5389,11 @@ def page_price_evolution():
     # ── Tab 3: Detail ────────────────────────────────────────────────────────
     with tab_detail:
         st.subheader("All records")
-        st.caption(
+        _como_ler(
             "Tudo o que foi carregado, das **duas** fontes (coluna `source`). "
             "O gráfico usa uma fonte por série — ver **Fonte de cada série** "
-            "na aba do gráfico.")
+            "na aba do gráfico."
+        )
         display_cols = [
             c for c in [
                 "data", "source", "turno", "plataforma", "marca", "sku",
@@ -5944,7 +5945,7 @@ def page_data_health() -> None:
     )
     _apply_chart_style(fig, height=max(380, 26 * len(cov)), hovermode="closest")
     st.plotly_chart(fig, use_container_width=True)
-    st.caption(
+    _como_ler(
         "Campos booleanos (Fulfillment, Patrocinado) contam `false` como "
         "preenchido — 100% significa que o scraper sempre envia o campo. "
         "`Pos. Patroc.` só é preenchida em anúncios pagos: a célula equivale "
@@ -6034,7 +6035,7 @@ def _admin_auto_render_report(report: dict) -> None:
 
 def page_admin_automation() -> None:
     st.title("🤖 Automação Admin")
-    st.caption(
+    _como_ler(
         "Manutenção do banco **100% automática** — sem cliques: limpeza de "
         "registros não-AC, preços suspeitos (bug ×10), normalização de "
         "nomes/marcas/plataformas/sellers, seed + resolução da fila REVISAR "
@@ -6222,7 +6223,7 @@ def _render_sku_proposals_panel(client) -> None:
               f"resolução unívoca · {total_gap:,} linha(s) MAPEADO sem SKU"
               ).replace(",", ".")
     with st.expander(header, expanded=False):
-        st.caption(
+        _como_ler(
             "Derivadas por `utils/sku_matcher` (marca + BTU + ciclo + "
             "família-linha, desempate por voltagem) — só entra aqui o que fixa "
             "**1 SKU** do catálogo; ambíguos ficam de fora. Aplicar grava o SKU "
@@ -6290,7 +6291,7 @@ def _render_variant_suspects_panel() -> None:
                 f"a página para tentar de novo): {sus_err}"
             )
             return
-        st.caption(
+        _como_ler(
             "Compara o **piso diário** por SKU entre Coletas e "
             "`pricetrack_daily` (turno Diário) nos últimos 30 dias. Δ "
             "persistente de ±25%+ no mesmo sentido não é reprecificação — é "
@@ -6575,12 +6576,11 @@ def page_buybox_position():
         "Quem está em posição #1 para cada produto/plataforma? "
         "Analise quais marcas e sellers dominam o topo das buscas."
     )
-    st.info(
-        "ℹ️ Esta página usa a **posição orgânica/geral ≤ N** como *proxy* de buy box "
+    _como_ler(
+        "Esta página usa a **posição orgânica/geral ≤ N** como *proxy* de buy box "
         "(funciona para todas as plataformas). Para o **vencedor real da buy box** "
         "(campo `buy_box_seller`, mix 1P/3P e nº de sellers competindo), veja a página "
-        "**🏆 Buy Box → Share de buy box**.",
-        icon="ℹ️",
+        "**🏆 Buy Box → Share de buy box**."
     )
 
     # --- Sidebar filters ---
@@ -6896,8 +6896,8 @@ def page_share_of_buybox() -> None:
     df = st.session_state.get("sbb_df")
     if df is None:
         st.info("Defina os filtros na barra lateral e clique em **Carregar Buy Box**.")
-        st.caption(
-            "💡 A cobertura de `buy_box_seller` varia por plataforma e scraper — "
+        _como_ler(
+            "A cobertura de `buy_box_seller` varia por plataforma e scraper — "
             "consulte a matriz campo × plataforma na página 🩺 Saúde do Dado. "
             "A coleta de buy box começou no fim de Maio/2026."
         )
@@ -7357,7 +7357,7 @@ def page_availability():
     # ── Tab 2: Visibility Score ponderado por posição ────────────────────────
     with tab_vis:
         st.subheader("Visibility Score — share of shelf ponderado por posição")
-        st.caption(
+        _como_ler(
             "Cada aparição vale `1/posição_geral`: o slot 1 vale 1.0, o slot 10 "
             "vale 0.1. O share ponderado premia quem domina o topo da busca; o "
             "share simples conta presença em qualquer posição."
@@ -7476,7 +7476,7 @@ def page_availability():
                             hovermode="closest",
                         )
                         st.plotly_chart(fig_hc, use_container_width=True)
-                        st.caption(
+                        _como_ler(
                             "Categoria Keyword segmenta a intenção da busca "
                             "(Genérica, Capacidade BTU, Marca, Intenção Compra…): "
                             "mostra onde cada marca domina o topo do funil."
@@ -7602,8 +7602,8 @@ def page_reputacao() -> None:
 
     if not load_btn:
         st.info("Defina os filtros na barra lateral e clique em **Carregar Avaliações**.")
-        st.caption(
-            "💡 A cobertura de `avaliacao` e `reputacao_seller` varia por plataforma "
+        _como_ler(
+            "A cobertura de `avaliacao` e `reputacao_seller` varia por plataforma "
             "e scraper — veja a matriz campo × plataforma na página 🩺 Saúde do Dado."
         )
         return
@@ -7976,8 +7976,8 @@ def page_sov_patrocinado() -> None:
     df = st.session_state.get("sov_df")
     if df is None:
         st.info("Defina os filtros na barra lateral e clique em **Carregar SoV**.")
-        st.caption(
-            "💡 A análise considera todas as plataformas coletadas. Hoje quem "
+        _como_ler(
+            "A análise considera todas as plataformas coletadas. Hoje quem "
             "marca anúncio patrocinado na coleta é Mercado Livre (Product Ads) e "
             "Amazon (AMS); Google Shopping/Magalu/Shopee ainda não sinalizam o "
             "flag na SERP capturada. A cobertura real por plataforma aparece no "
@@ -8381,7 +8381,7 @@ def page_price_compliance() -> None:
     X% abaixo dela (limiar configurável).
     """
     st.title("🛡️ Compliance de Preço")
-    st.caption(
+    _como_ler(
         "Monitor de preço-piso dos SKUs MCJV (`pricetrack_daily.is_midea_group`). "
         "**Rompimento** = preço mínimo do seller mais de X% abaixo da mediana "
         "dos sellers do mesmo SKU no dia. Quando o catálogo ganhar a coluna "
@@ -9026,7 +9026,7 @@ def page_overview() -> None:
             )
 
     with tab_def:
-        st.caption(
+        _como_ler(
             "**Defesa**: quando buscam a Midea (\"midea inverter\", \"midea ecomaster\"), "
             "quanto do top 10 é nosso — o resto é rival interceptando. **Conquista**: "
             "quando buscam o rival (\"ar condicionado lg\"), quanto a Midea aparece."
@@ -9131,7 +9131,7 @@ def page_overview() -> None:
             st.rerun()
 
     with tab_preco:
-        st.caption(
+        _como_ler(
             "Mediana do preço que o consumidor VÊ no top 20 (coleta de posição), só "
             "split hi-wall, no último dia. Índice 100 = paridade com a mediana dos "
             "rivais. Preço de referência por SKU (PriceTrack) fica em 💰 Preços 9K/12K."
@@ -9154,7 +9154,7 @@ def page_overview() -> None:
             st.rerun()
 
     with tab_cob:
-        st.caption(
+        _como_ler(
             "Linhas por turno depois da deduplicação. ⚠️ = menos de 30% do melhor "
             "turno da plataforma na janela — coleta parcial (bloqueio, login, "
             "queda), não queda de mercado."
@@ -9371,7 +9371,7 @@ def _pt_top_movers_finalize(df: pd.DataFrame) -> pd.DataFrame:
 
 def page_top_movers() -> None:
     st.title("🚨 Alertas — movimentos de preço")
-    st.caption(
+    _como_ler(
         "SKUs com maior variação de preço entre duas janelas temporais. "
         "Fonte: `pricetrack_daily` (granularidade garantida: 1 linha por "
         "SKU × marketplace × seller × dia). Janelas meio-abertas `[ini, fim)`."
@@ -9728,7 +9728,7 @@ def page_top_movers() -> None:
 
     # ── Detail table ─────────────────────────────────────────────────────────
     st.subheader("Tabela Detalhada")
-    st.caption(
+    _como_ler(
         "Por janela: **Registros** = COUNT(*) bruto · "
         "**Ofertas** = marketplace × seller únicos · "
         "**Dias** = nº de datas com presença. "
@@ -9973,11 +9973,10 @@ def _build_anomaly_email(target_day, prev_day, threshold, shown):
 
 def page_email_digest() -> None:
     st.title("📧 Resumo por E-mail")
-    st.markdown(
-        "Send a consolidated email with the **Top Movers** and **BuyBox** "
-        "snapshot for the active window. The same digest can be sent "
-        "automatically on a cron schedule via `send_digest.py` (see Replit "
-        "Scheduled Deployments)."
+    _como_ler(
+        "Envia por e-mail o resumo de **movimentos de preço** e **buy box** da janela "
+        "ativa. O mesmo resumo pode sair sozinho num agendamento, via "
+        "`send_digest.py`."
     )
 
     # Active window — the 7 days ending yesterday
@@ -10162,13 +10161,12 @@ def page_email_digest() -> None:
 
 def page_price_anomalies() -> None:
     st.title("🚨 Alertas — anomalias de preço")
-    st.markdown(
-        "Detects per-SKU price changes between two consecutive days. Any "
-        "product whose mean price moved by at least the threshold is "
-        "reported. The same logic runs daily on a cron via "
-        "`send_anomalies.py` (Replit Scheduled Deployments). "
-        "Prices come from PriceTrack (Python collections only fill brands/"
-        "products PriceTrack does not cover)."
+    _como_ler(
+        "Detecta, por SKU, a variação de preço entre dois dias consecutivos: "
+        "todo produto cujo preço médio mudou pelo menos o limite entra no "
+        "relatório. A mesma lógica roda todo dia no agendamento "
+        "(`send_anomalies.py`). O preço vem do PriceTrack; as coletas Python "
+        "só preenchem marcas/produtos que o PriceTrack não cobre."
     )
 
     with st.sidebar:
@@ -10392,9 +10390,11 @@ def _query_products_history(
 
 def page_market_analytics() -> None:
     st.title("📊 Análise de Mercado")
-    st.caption("Distribuição de preços (uma fonte só na janela: PriceTrack, ou "
+    _como_ler(
+        "Distribuição de preços (uma fonte só na janela: PriceTrack, ou "
                "Coletas quando o PriceTrack cobre menos da metade dos dias) e "
-               "presença por marketplace (volume de ofertas das coletas) ao longo do tempo.")
+               "presença por marketplace (volume de ofertas das coletas) ao longo do tempo."
+    )
 
     with st.sidebar:
         st.subheader("Filtros")
@@ -10520,11 +10520,12 @@ def page_market_analytics() -> None:
             )
             _apply_chart_style(fig, height=820, hovermode="closest")
             st.plotly_chart(fig, use_container_width=True)
-            st.caption(
+            _como_ler(
                 f"Fonte do mapa inteiro: **{fonte_dist}**. O mapa usa uma fonte "
                 "só na janela — o PriceTrack enquanto cobrir ao menos metade dos "
                 "dias que a Coletas cobre. Dia sem essa fonte fica fora do mapa; "
-                "a outra fonte **nunca** o preenche (outra medida, outro mix).")
+                "a outra fonte **nunca** o preenche (outra medida, outro mix)."
+            )
             cov_md = _source_coverage_md(df_price_all, dist_report)
             if cov_md:
                 st.caption(cov_md)
@@ -11525,7 +11526,7 @@ def _dv_floor_prev(
 
 def page_daily_vision() -> None:
     st.title("📅 Preço do Dia")
-    st.caption(
+    _como_ler(
         "Menor preço por marketplace, consolidado por marca, capacidade e SKU. "
         "**PriceTrack** alimenta **Manhã** (08–12h) e **Tarde** (18–22h) — "
         "recorte por hora de coleta — além da linha **Diário** (dia inteiro). "
@@ -12628,7 +12629,7 @@ def _bs_aba_radar(serie: pd.DataFrame, dia, n: int, referencia_sel: str) -> None
 
     janela = radar.JanelaRadar(ate=pd.Timestamp(dia).date(), top_n=n)
     tabela = radar.radar_marcas(serie, janela)
-    st.caption(
+    _como_ler(
         f"Share de topo (% do top {n}) de cada marca **dentro de cada "
         f"plataforma**, últimos 7 dias ({janela.inicio_recente:%d/%m}–"
         f"{janela.ate:%d/%m}) contra os 28 anteriores. Uma plataforma conta "
@@ -12830,7 +12831,7 @@ def page_bestsellers() -> None:
         return
 
     st.title("🥇 Mais Vendidos")
-    st.caption(
+    _como_ler(
         "Rankings de prateleira dos varejistas — a única variável de "
         "**resultado** da coleta. Duas **referências** convivem e **nunca se "
         "misturam**: *Mais Vendidos* (lista ordenada por vendas) e *Relevância* "
@@ -13151,7 +13152,7 @@ def page_bestsellers() -> None:
             fig_rank.update_yaxes(autorange="reversed")
             _apply_chart_style(fig_rank)
             st.plotly_chart(fig_rank, use_container_width=True)
-            st.caption(
+            _como_ler(
                 "Cada linha é uma plataforma comparada **consigo mesma** ao "
                 "longo do tempo. As listas têm tamanhos e mecânicas diferentes "
                 "— cruzar as curvas entre si não significa nada."
@@ -13322,7 +13323,7 @@ def page_bestsellers() -> None:
                 ),
                 use_container_width=True, hide_index=True,
             )
-            st.caption(
+            _como_ler(
                 "Agrega **somente** `base_vendidos = 'mes'` (hoje, só a Shopee). "
                 "O “+5mil vendidos” do Mercado Livre é acumulado vitalício e "
                 "somá-lo aqui produziria número sem unidade. O `%` é share "
@@ -13420,7 +13421,7 @@ def page_bestsellers() -> None:
                     }),
                     use_container_width=True, hide_index=True,
                 )
-                st.caption(
+                _como_ler(
                     "Ranking de venda real se mexe. Acima de 35% dos itens "
                     "parados entre duas leituras o veredito vira **CURADORIA "
                     "SUSPEITA** — foi assim que a Leroy Merlin se denunciou."
@@ -13670,7 +13671,7 @@ def page_clima() -> None:
     from utils.text import now_brt
 
     st.title("🌡️ Clima × Vendas")
-    st.caption(
+    _como_ler(
         "Ar condicionado é compra puxada por calor. Esta página mostra a "
         "temperatura máxima por região — **observada** e **prevista** (16 dias) "
         "— contra a **normal** da mesma época nos anos anteriores, e mede se o "
@@ -13769,7 +13770,7 @@ def page_clima() -> None:
 
     # ── Clima × venda ─────────────────────────────────────────────────────
     st.subheader("🔬 O calor antecipa a venda?")
-    st.caption(
+    _como_ler(
         "Proxy diário de venda: **avaliações novas por dia** nos anúncios das "
         "listas de Mais Vendidos (mesmo anúncio, leituras consecutivas). As "
         "duas séries passam por média móvel de 7 dias (tira o ciclo da semana) "
