@@ -513,9 +513,14 @@ apertar, repetir esse REINDEX devolve ~10–14 MB. Dois cuidados:
   durante a troca. Rode fora da janela de gravação dos turnos: as gravações
   do PC caíram entre 11–12h, 17–18h e ~23h25 BRT em 06–07/11, e as da
   Amazon do Actions às ~15h, ~19–20h e ~01h30. O de 08/11 rodou às 11:05
-  BRT, com o turno da manhã ainda coletando e sem gravar. Também há dois índices iguais
-em `data` (`coletas_data_idx` DESC e `idx_coletas_data`, ~0,8 MB cada), e um
-deles pode sair.
+  BRT, com o turno da manhã ainda coletando e sem gravar.
+
+**Índice duplicado removido (08/11/2026).** `idx_coletas_data` (`data`) era
+cópia exata de `coletas_data_idx` (`data DESC`): um btree serve os dois
+sentidos. Ele saiu com `DROP INDEX CONCURRENTLY public.idx_coletas_data`
+(autocommit, sem travar a escrita), alinhando a produção à migração 019, que
+já o deixava de fora. Ficou só o `coletas_data_idx` (válido, 848 kB). A
+`coletas` caiu de 20 para 19 índices, e nenhum ficou inválido.
 
 **Regra que fica:** depois de uma poda grande por `DELETE` (troca de
 retenção, limpeza manual), rode um `VACUUM FULL` na tabela fora do horário de
