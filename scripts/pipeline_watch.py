@@ -928,10 +928,10 @@ def _formatar_telegram(
         ok = sum(1 for d in diagnosticos if d.estado == OK)
         linhas.append(f"{ok} job(s) executados dentro do contrato.")
 
-    # Link para a 🩺 Saúde do Dado já no dia do alerta (só com RAC_DASHBOARD_URL).
+    # Link para a 🩺 Saúde do Dado (só com RAC_DASHBOARD_URL). Sem datas: a
+    # página usa a própria janela (slider), não o período global da URL.
     from utils.url_state import linha_telegram
-    link = linha_telegram("saude-do-dado", {"inicio": dia, "fim": dia},
-                          rotulo=f"Ver a saúde do dado de {dia:%d/%m}")
+    link = linha_telegram("saude-do-dado", rotulo="Ver a saúde do dado")
     if link:
         linhas += ["", link]
 

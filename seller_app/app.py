@@ -54,9 +54,9 @@ st.set_page_config(page_title="Track Position Seller", page_icon="📦", layout=
 # interno — este app é publicado sozinho e não lê aquele arquivo).
 st.markdown("""<style>
 @media (max-width: 640px) {
-  [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stMetric"]) {
+  [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stMetric"]):not(:has(> [data-testid="stColumn"] :is([data-testid="stPlotlyChart"], [data-testid="stDataFrame"], [data-testid="stVegaLiteChart"], [data-testid="stTable"], [data-testid="stSelectbox"], [data-testid="stMultiSelect"], [data-testid="stDateInput"], [data-testid="stTextInput"], [data-testid="stNumberInput"], [data-testid="stSlider"], [data-testid="stRadio"], [data-testid="stCheckbox"], [data-testid="stButton"], [data-testid="stDownloadButton"]))) {
     flex-direction: row !important; flex-wrap: wrap !important; gap: .5rem !important; }
-  [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stMetric"]) > [data-testid="stColumn"] {
+  [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stMetric"]):not(:has(> [data-testid="stColumn"] :is([data-testid="stPlotlyChart"], [data-testid="stDataFrame"], [data-testid="stVegaLiteChart"], [data-testid="stTable"], [data-testid="stSelectbox"], [data-testid="stMultiSelect"], [data-testid="stDateInput"], [data-testid="stTextInput"], [data-testid="stNumberInput"], [data-testid="stSlider"], [data-testid="stRadio"], [data-testid="stCheckbox"], [data-testid="stButton"], [data-testid="stDownloadButton"]))) > [data-testid="stColumn"] {
     flex: 1 1 calc(50% - .5rem) !important; width: calc(50% - .5rem) !important;
     min-width: calc(50% - .5rem) !important; }
   [data-testid="stMetricValue"] { font-size: 1.35rem !important; }

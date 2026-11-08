@@ -136,14 +136,16 @@ padrão "Web Continental" no seletor da demo.
   variável **`RAC_DASHBOARD_URL`** (URL pública do painel). Sem ela, o alerta
   sai idêntico ao de antes.
 - Onde já há link:
-  - `pipeline_watch.py` → 🩺 Saúde do Dado, no dia do alerta;
+  - `pipeline_watch.py` → 🩺 Saúde do Dado (sem datas: a página usa a
+    própria janela, não o período global);
   - resumo de coleta (`utils/n8n_notify.py`) → Cockpit;
   - brief de Mais Vendidos → 🥇 Mais Vendidos.
 - No Actions, cadastre `RAC_DASHBOARD_URL` em *Settings → Secrets and
   variables → Actions → **Variables*** (não é segredo). O `pipeline_guard.yml`
   já lê `vars.RAC_DASHBOARD_URL`. No PC coletor, vai no `.env` (modelo em
   `.env.example`).
-- `tests/test_url_state.py` reprova link para página que não existe no menu.
+- `tests/test_url_state.py` confere que os destinos dos alertas
+  (`saude-do-dado`, `mais-vendidos`) existem no menu; o Cockpit é a raiz.
 
 ### `@st.fragment` nos controles locais
 - `_fragment = getattr(st, "fragment", ...)`: o controle reroda só o bloco

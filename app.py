@@ -3442,8 +3442,11 @@ def _render_global_filters() -> None:
     _aplicar_url_uma_vez(opts)
     st.date_input(
         "Período",
-        value=(date.today() - timedelta(days=7), date.today()),
-        max_value=date.today(),
+        # Relógio BRT, o mesmo do recorte na URL: no Streamlit Cloud (UTC) o
+        # `date.today()` vira o dia às 21h BRT e o período padrão deixava de
+        # bater com o "rolante" do `encode_filters`.
+        value=(_hoje_brt() - timedelta(days=7), _hoje_brt()),
+        max_value=_hoje_brt(),
         format="DD/MM/YYYY",
         key="gf_dates",
     )
@@ -3632,7 +3635,7 @@ def _gf_dates() -> tuple:
     gf = st.session_state.get("gf_dates", ())
     if len(gf) >= 2:
         return gf[0], gf[1]
-    return date.today() - timedelta(days=7), date.today()
+    return _hoje_brt() - timedelta(days=7), _hoje_brt()
 
 
 def _gf_canais() -> list:
