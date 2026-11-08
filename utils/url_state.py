@@ -152,16 +152,16 @@ def recortes_padrao(hoje: date) -> Dict[str, Dict[str, Any]]:
     return {
         "📅 Últimos 7 dias · tudo": {
             "inicio": hoje - timedelta(days=7), "fim": hoje,
-            "canais": [], "plataformas": [], "marcas": []},
+            "canais": [], "plataformas": [], "marcas": [], "comparar": False},
         "🛒 Marketplaces · 7 dias": {
             "inicio": hoje - timedelta(days=7), "fim": hoje,
-            "canais": ["Marketplaces"], "plataformas": [], "marcas": []},
+            "canais": ["Marketplaces"], "plataformas": [], "marcas": [], "comparar": False},
         "🔵 Midea · 30 dias": {
             "inicio": hoje - timedelta(days=30), "fim": hoje,
-            "canais": [], "plataformas": [], "marcas": ["Midea"]},
+            "canais": [], "plataformas": [], "marcas": ["Midea"], "comparar": False},
         "⏱️ Ontem e hoje": {
             "inicio": hoje - timedelta(days=1), "fim": hoje,
-            "canais": [], "plataformas": [], "marcas": []},
+            "canais": [], "plataformas": [], "marcas": [], "comparar": False},
     }
 
 

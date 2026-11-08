@@ -3369,6 +3369,9 @@ def _recortes_usuario() -> dict:
                 "plataformas": p.get("platforms", []),
                 "marcas": p.get("brands", []),
                 "fontes": p.get("sources", list(_DATA_SOURCES)),
+                # Recorte salvo antes de Nov/2026 não tinha a chave: sem
+                # comparação, explícito, para não herdar o checkbox da sessão.
+                "comparar": bool(p.get("compare", False)),
             }
         except (KeyError, TypeError, ValueError):
             continue
@@ -3402,6 +3405,7 @@ def _render_recortes() -> None:
                     "start": str(f["inicio"]), "end": str(f["fim"]),
                     "canais": f["canais"], "platforms": f["plataformas"],
                     "brands": f["marcas"], "sources": f["fontes"],
+                    "compare": f["comparar"],
                 }
                 _save_presets(presets)
                 st.success(f"Salvo: “{nome.strip()}”.")

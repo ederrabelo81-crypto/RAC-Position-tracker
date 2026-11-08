@@ -90,3 +90,8 @@ def test_recortes_padrao_usam_canais_validos() -> None:
     for nome, f in us.recortes_padrao(HOJE).items():
         assert set(f["canais"]) <= set(app._CANAIS), nome
         assert f["inicio"] <= f["fim"] == HOJE
+
+
+def test_recortes_padrao_definem_comparar_explicitamente() -> None:
+    # Aplicar um atalho não pode herdar o "comparar" que estava ligado na sessão.
+    assert all(f["comparar"] is False for f in us.recortes_padrao(HOJE).values())
