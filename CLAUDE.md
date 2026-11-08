@@ -442,6 +442,12 @@ viraram as visões de 🏆 Buy Box, e Top Movers/Price Anomalies as de 🚨 Aler
 4. Metodologia vai em `_como_ler(...)`, nunca entre o KPI e o gráfico.
 5. Selo de frescor com livro-razão indisponível diz "não verificado", nunca
    "em dia".
+6. O recorte vive na URL (`utils/url_state.py`). Filtro global novo entra em
+   `encode_filters`/`decode_filters`, e valor fora das opções é descartado, nunca
+   vira erro. Link em alerta só via `linha_telegram` (exige `RAC_DASHBOARD_URL`),
+   sempre para um slug que existe (`tests/test_url_state.py`).
+7. Controle que mexe num gráfico só vai num `@_fragment`, ainda mais em página
+   atrás de um botão "Carregar".
 
 ---
 

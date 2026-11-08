@@ -217,6 +217,9 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           N8N_TELEGRAM_CHAT_ID: ${{ secrets.N8N_TELEGRAM_CHAT_ID }}
+          # Link do painel no alerta (variável de repositório, não segredo:
+          # é a URL pública do Streamlit). Vazia = alerta sem link, como antes.
+          RAC_DASHBOARD_URL: ${{ vars.RAC_DASHBOARD_URL }}
           IN_DATA: ${{ github.event.inputs.data }}
           MODO: ${{ steps.modo.outputs.modo }}
         run: |

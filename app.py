@@ -145,6 +145,13 @@ def _como_ler(corpo: str, rotulo: str = "ℹ️ Como ler") -> None:
             st.markdown(corpo)
 
 
+#: `@st.fragment` (Streamlit ≥ 1.37): o controle dentro dele reroda SÓ o
+#: bloco, não a página inteira. Usado em controles que mexem num gráfico/tabela
+#: só — e é o que impede páginas atrás de um botão "Carregar" de perderem o dado
+#: ao mexer num seletor (o rerun completo volta o botão a False).
+_fragment = getattr(st, "fragment", lambda f: f)
+
+
 _EMPTY_KINDS: dict[str, tuple[str, str]] = {
     # tipo: (ícone, título) — três causas que o painel nunca pode confundir.
     "sem_dado":       ("📭", "Sem dado neste recorte"),
@@ -3258,6 +3265,163 @@ def _canal_de(plataforma: str) -> str:
     return _CANAL_LOJA_PROPRIA
 
 
+# ---------------------------------------------------------------------------
+# Recorte na URL + recortes salvos (Fase 2 de UX, Nov/2026 — utils/url_state.py)
+# ---------------------------------------------------------------------------
+
+def _hoje_brt() -> date:
+    from utils.text import now_brt
+    return now_brt().date()
+
+
+def _aplicar_recorte(f: dict) -> None:
+    """Grava um recorte no session_state dos filtros globais.
+
+    Só chamar ANTES dos widgets nascerem (início do script ou callback):
+    depois disso o Streamlit recusa escrever na chave de um widget.
+    """
+    if f.get("inicio") and f.get("fim"):
+        st.session_state["gf_dates"] = (f["inicio"], f["fim"])
+    for chave, campo in (("gf_canais", "canais"), ("gf_platforms", "plataformas"),
+                         ("gf_brands", "marcas"), ("gf_sources", "fontes")):
+        if campo in f:
+            st.session_state[chave] = list(f[campo])
+    if "comparar" in f:
+        st.session_state["gf_compare"] = bool(f["comparar"])
+
+
+def _aplicar_url_uma_vez(opts: dict) -> None:
+    """Na 1ª execução da sessão, a URL manda no recorte (link compartilhado).
+
+    Uma vez só: depois disso quem manda são os widgets, e a URL passa a
+    espelhá-los (`_sincronizar_url`). Valor que não é opção válida é ignorado
+    — link antigo não pode derrubar a página.
+    """
+    if st.session_state.get("_url_aplicada"):
+        return
+    st.session_state["_url_aplicada"] = True
+    from utils.url_state import decode_filters
+    try:
+        qp = {k: st.query_params.get(k) for k in st.query_params}
+    except Exception:  # noqa: BLE001 — sem contexto de request (testes)
+        return
+    if not qp:
+        return
+    _aplicar_recorte(decode_filters(qp, {
+        "canais": list(_CANAIS),
+        "plataformas": opts.get("platforms") or [],
+        "marcas": opts.get("brands") or [],
+        "fontes": list(_DATA_SOURCES),
+    }, _hoje_brt()))
+
+
+def _recorte_atual() -> dict:
+    """Recorte vigente dos filtros globais (formato de `utils.url_state`)."""
+    ini, fim = _gf_dates()
+    return {
+        "inicio": ini, "fim": fim,
+        "canais": _gf_canais(),
+        "plataformas": list(st.session_state.get("gf_platforms", [])),
+        "marcas": _gf_brands(),
+        "fontes": _gf_sources(),
+        "comparar": bool(st.session_state.get("gf_compare")),
+    }
+
+
+def _sincronizar_url() -> None:
+    """Reescreve a query string com o recorte vigente (só se mudou).
+
+    Copiar a barra de endereço passa a ser compartilhar o recorte. Período
+    padrão fica fora da URL (link "rolante").
+    """
+    from utils.url_state import encode_filters
+    novo = encode_filters(_recorte_atual(), _hoje_brt(), fontes_padrao=_DATA_SOURCES)
+    try:
+        atual = {k: st.query_params.get(k) for k in st.query_params}
+        if atual != novo:
+            st.query_params.from_dict(novo)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ao_escolher_recorte() -> None:
+    """Callback do seletor de recortes: aplica antes dos widgets renascerem."""
+    nome = st.session_state.get("gf_recorte")
+    if not nome:
+        return
+    from utils.url_state import recortes_padrao
+    todos = {**recortes_padrao(_hoje_brt()), **_recortes_usuario()}
+    f = todos.get(nome)
+    if f:
+        _aplicar_recorte(f)
+    st.session_state["gf_recorte"] = None
+
+
+def _recortes_usuario() -> dict:
+    """Recortes salvos pelo usuário (arquivo do servidor), já com datas."""
+    out = {}
+    for nome, p in _load_presets().items():
+        try:
+            out[f"⭐ {nome}"] = {
+                "inicio": date.fromisoformat(p["start"]),
+                "fim": date.fromisoformat(p["end"]),
+                "canais": [c for c in p.get("canais", []) if c in _CANAIS],
+                "plataformas": p.get("platforms", []),
+                "marcas": p.get("brands", []),
+                "fontes": p.get("sources", list(_DATA_SOURCES)),
+                # Recorte salvo antes de Nov/2026 não tinha a chave: sem
+                # comparação, explícito, para não herdar o checkbox da sessão.
+                "comparar": bool(p.get("compare", False)),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _render_recortes() -> None:
+    """⭐ Recortes: atalhos prontos + os salvos + o link do recorte atual.
+
+    Os recortes prontos são código (nunca somem). Os salvos moram num arquivo
+    do servidor — no Streamlit Cloud somem a cada reinício —, por isso o link
+    é a forma durável: o recorte inteiro está na URL, então favoritar o link
+    é salvar.
+    """
+    from utils.url_state import encode_filters, recortes_padrao
+    from urllib.parse import urlencode
+
+    with st.expander("⭐ Recortes", expanded=False):
+        opcoes = list(recortes_padrao(_hoje_brt())) + list(_recortes_usuario())
+        st.selectbox(
+            "Aplicar recorte", opcoes, index=None, placeholder="Escolha um atalho…",
+            key="gf_recorte", on_change=_ao_escolher_recorte,
+        )
+        nome = st.text_input("Salvar o recorte atual como", key="gf_preset_name",
+                             placeholder="Ex.: Midea · ML · 14 dias")
+        if st.button("💾 Salvar", key="gf_save_preset", use_container_width=True):
+            if nome.strip():
+                presets = _load_presets()
+                f = _recorte_atual()
+                presets[nome.strip()] = {
+                    "start": str(f["inicio"]), "end": str(f["fim"]),
+                    "canais": f["canais"], "platforms": f["plataformas"],
+                    "brands": f["marcas"], "sources": f["fontes"],
+                    "compare": f["comparar"],
+                }
+                _save_presets(presets)
+                st.success(f"Salvo: “{nome.strip()}”.")
+            else:
+                st.warning("Dê um nome ao recorte.")
+        qs = urlencode(encode_filters(_recorte_atual(), _hoje_brt(),
+                                      fontes_padrao=_DATA_SOURCES))
+        base = ""
+        try:
+            base = str(getattr(st.context, "url", "") or "").split("?")[0]
+        except Exception:  # noqa: BLE001
+            base = ""
+        st.caption("🔗 Link deste recorte (favorite para guardar de vez):")
+        st.code((base or "") + ("?" + qs if qs else ""), language=None)
+
+
 def _render_global_filters() -> None:
     """Filtros globais da barra lateral — valem para TODAS as páginas.
 
@@ -3279,10 +3443,14 @@ def _render_global_filters() -> None:
     # Drive ainda sem cache — sem o aviso a tela fica em branco e parece travada.
     with st.spinner("Carregando filtros (histórico do Drive)…"):
         opts = get_filter_options()
+    _aplicar_url_uma_vez(opts)
     st.date_input(
         "Período",
-        value=(date.today() - timedelta(days=7), date.today()),
-        max_value=date.today(),
+        # Relógio BRT, o mesmo do recorte na URL: no Streamlit Cloud (UTC) o
+        # `date.today()` vira o dia às 21h BRT e o período padrão deixava de
+        # bater com o "rolante" do `encode_filters`.
+        value=(_hoje_brt() - timedelta(days=7), _hoje_brt()),
+        max_value=_hoje_brt(),
         format="DD/MM/YYYY",
         key="gf_dates",
     )
@@ -3365,55 +3533,7 @@ def _render_global_filters() -> None:
                 f"{_ce.strftime('%d/%m/%Y')}** (automático)."
             )
 
-        # Preset save / load. Gravado em arquivo no servidor: no Streamlit
-        # Cloud ele some a cada reinício do container e é compartilhado por
-        # todos os usuários — por isso mora aqui, e não no bloco principal.
-        st.caption("Presets (salvos no servidor do painel)")
-        presets = _load_presets()
-        preset_name = st.text_input(
-            "Nome do preset",
-            placeholder="Ex: Midea - 7 dias",
-            key="gf_preset_name",
-            label_visibility="collapsed",
-        )
-        if st.button("💾 Salvar preset", key="gf_save_preset",
-                     use_container_width=True, help="Salvar filtros atuais como preset"):
-            if preset_name:
-                gf = st.session_state.get("gf_dates", ())
-                presets[preset_name] = {
-                    "start":     str(gf[0]) if gf else str(date.today() - timedelta(days=7)),
-                    "end":       str(gf[1]) if len(gf) > 1 else str(date.today()),
-                    "canais":    list(st.session_state.get("gf_canais", [])),
-                    "platforms": st.session_state.get("gf_platforms", []),
-                    "brands":    st.session_state.get("gf_brands", []),
-                    "sources":   _gf_sources(),
-                }
-                _save_presets(presets)
-                st.success(f"Salvo: '{preset_name}'")
-            else:
-                st.warning("Digite um nome para o preset.")
-
-        if presets:
-            sel = st.selectbox(
-                "Carregar preset",
-                ["— selecione —"] + list(presets.keys()),
-                key="gf_load_preset",
-                label_visibility="collapsed",
-            )
-            if sel and sel != "— selecione —" and sel != st.session_state.get("_last_loaded_preset"):
-                st.session_state["_last_loaded_preset"] = sel
-                p = presets[sel]
-                try:
-                    st.session_state["gf_dates"]     = (date.fromisoformat(p["start"]), date.fromisoformat(p["end"]))
-                    # `canais` é novo; preset antigo cai em "todos".
-                    st.session_state["gf_canais"]    = [c for c in p.get("canais", []) if c in _CANAIS]
-                    st.session_state["gf_platforms"] = p.get("platforms", [])
-                    st.session_state["gf_brands"]    = p.get("brands", [])
-                    # `sources` é novo; presets antigos caem no padrão (ambas).
-                    st.session_state["gf_sources"]   = p.get("sources", list(_DATA_SOURCES))
-                    st.rerun()
-                except Exception:
-                    pass
+    _render_recortes()
 
 
 def _inherit_global(page_key: str, global_values: list, options: list) -> None:
@@ -3519,7 +3639,7 @@ def _gf_dates() -> tuple:
     gf = st.session_state.get("gf_dates", ())
     if len(gf) >= 2:
         return gf[0], gf[1]
-    return date.today() - timedelta(days=7), date.today()
+    return _hoje_brt() - timedelta(days=7), _hoje_brt()
 
 
 def _gf_canais() -> list:
@@ -3797,7 +3917,7 @@ def _render_coverage(
         f"({com_dado}/{total} plataformas com dado no período)",
         expanded=expanded,
     ):
-        st.caption(
+        _como_ler(
             "Todas as plataformas coletadas entram nesta análise. Uma plataforma "
             "em 0% ainda não expõe este campo no período (limitação de "
             "coleta/anti-bot) — passa a contar automaticamente quando a coleta "
@@ -5269,10 +5389,11 @@ def page_price_evolution():
     # ── Tab 3: Detail ────────────────────────────────────────────────────────
     with tab_detail:
         st.subheader("All records")
-        st.caption(
+        _como_ler(
             "Tudo o que foi carregado, das **duas** fontes (coluna `source`). "
             "O gráfico usa uma fonte por série — ver **Fonte de cada série** "
-            "na aba do gráfico.")
+            "na aba do gráfico."
+        )
         display_cols = [
             c for c in [
                 "data", "source", "turno", "plataforma", "marca", "sku",
@@ -5824,7 +5945,7 @@ def page_data_health() -> None:
     )
     _apply_chart_style(fig, height=max(380, 26 * len(cov)), hovermode="closest")
     st.plotly_chart(fig, use_container_width=True)
-    st.caption(
+    _como_ler(
         "Campos booleanos (Fulfillment, Patrocinado) contam `false` como "
         "preenchido — 100% significa que o scraper sempre envia o campo. "
         "`Pos. Patroc.` só é preenchida em anúncios pagos: a célula equivale "
@@ -5914,7 +6035,7 @@ def _admin_auto_render_report(report: dict) -> None:
 
 def page_admin_automation() -> None:
     st.title("🤖 Automação Admin")
-    st.caption(
+    _como_ler(
         "Manutenção do banco **100% automática** — sem cliques: limpeza de "
         "registros não-AC, preços suspeitos (bug ×10), normalização de "
         "nomes/marcas/plataformas/sellers, seed + resolução da fila REVISAR "
@@ -6102,7 +6223,7 @@ def _render_sku_proposals_panel(client) -> None:
               f"resolução unívoca · {total_gap:,} linha(s) MAPEADO sem SKU"
               ).replace(",", ".")
     with st.expander(header, expanded=False):
-        st.caption(
+        _como_ler(
             "Derivadas por `utils/sku_matcher` (marca + BTU + ciclo + "
             "família-linha, desempate por voltagem) — só entra aqui o que fixa "
             "**1 SKU** do catálogo; ambíguos ficam de fora. Aplicar grava o SKU "
@@ -6170,7 +6291,7 @@ def _render_variant_suspects_panel() -> None:
                 f"a página para tentar de novo): {sus_err}"
             )
             return
-        st.caption(
+        _como_ler(
             "Compara o **piso diário** por SKU entre Coletas e "
             "`pricetrack_daily` (turno Diário) nos últimos 30 dias. Δ "
             "persistente de ±25%+ no mesmo sentido não é reprecificação — é "
@@ -6389,18 +6510,77 @@ def page_familia_sku_admin() -> None:
 # Page 7 — BuyBox Position
 # ---------------------------------------------------------------------------
 
+@_fragment
+def _bb_timeline(df_top: pd.DataFrame) -> None:
+    """Linha do tempo de vitórias de buy box, com o seletor de agrupamento.
+
+    Fragment: mudar o "Agrupar por" reroda só este bloco. Antes o rerun era da
+    página inteira, e como ela só carrega dado com o botão "Load BuyBox"
+    apertado, o seletor apagava a página e voltava ao "clique em Load".
+    """
+    group_opts = ["Marca", "Plataforma", "Seller (buy box)"]
+    group_choice = st.radio(
+        "Agrupar por", group_opts, horizontal=True, key="bb_grp"
+    )
+    group_col = {
+        "Marca": "marca",
+        "Plataforma": "plataforma",
+        "Seller (buy box)": "buy_box_seller",
+    }[group_choice]
+
+    df_grp = df_top
+    if group_col == "buy_box_seller" and "buy_box_seller" in df_top.columns:
+        df_grp = df_top[
+            df_top["buy_box_seller"].notna()
+            & (df_top["buy_box_seller"].astype(str).str.strip() != "")
+        ]
+        if df_grp.empty:
+            st.info(
+                "Nenhuma plataforma no filtro atual expõe `buy_box_seller`. "
+                "O campo é preenchido por Mercado Livre, Leroy Merlin, "
+                "Magalu, Shopee, Google Shopping e Casas Bahia (Amazon fica "
+                "sem seller na SERP). Amplie o período ou os filtros."
+            )
+
+    if group_col not in df_top.columns or "data" not in df_top.columns:
+        st.info("Required columns not available.")
+    elif not df_grp.empty:
+        timeline = (
+            df_grp
+            .groupby(["data", group_col], as_index=False)
+            .size()
+            .rename(columns={"size": "BuyBox wins", group_col: group_choice})
+        )
+        timeline["data"] = pd.to_datetime(timeline["data"])
+
+        _cmap = _brand_color_map(timeline[group_choice]) if group_choice == "Marca" else None
+        fig_line = px.line(
+            timeline,
+            x="data",
+            y="BuyBox wins",
+            color=group_choice,
+            color_discrete_map=_cmap,
+            markers=True,
+            title=f"Daily BuyBox wins by {group_choice}",
+            labels={"data": "Date"},
+        )
+        fig_line.update_traces(line=dict(width=2.5), marker=dict(size=6))
+        _emphasize_midea_traces(fig_line)
+        _apply_chart_style(fig_line, height=450)
+        st.plotly_chart(fig_line, use_container_width=True)
+
+
 def page_buybox_position():
     st.title("🏆 Buy Box — posição e vencedor")
     st.caption(
         "Quem está em posição #1 para cada produto/plataforma? "
         "Analise quais marcas e sellers dominam o topo das buscas."
     )
-    st.info(
-        "ℹ️ Esta página usa a **posição orgânica/geral ≤ N** como *proxy* de buy box "
+    _como_ler(
+        "Esta página usa a **posição orgânica/geral ≤ N** como *proxy* de buy box "
         "(funciona para todas as plataformas). Para o **vencedor real da buy box** "
         "(campo `buy_box_seller`, mix 1P/3P e nº de sellers competindo), veja a página "
-        "**🏆 Buy Box → Share de buy box**.",
-        icon="ℹ️",
+        "**🏆 Buy Box → Share de buy box**."
     )
 
     # --- Sidebar filters ---
@@ -6618,56 +6798,7 @@ def page_buybox_position():
     with tab_timeline:
         st.subheader("BuyBox wins over time")
 
-        group_opts = ["Brand", "Platform", "Seller (Buy Box)"]
-        group_choice = st.radio(
-            "Group by", group_opts, horizontal=True, key="bb_grp"
-        )
-        group_col = {
-            "Brand": "marca",
-            "Platform": "plataforma",
-            "Seller (Buy Box)": "buy_box_seller",
-        }[group_choice]
-
-        df_grp = df_top
-        if group_col == "buy_box_seller" and "buy_box_seller" in df_top.columns:
-            df_grp = df_top[
-                df_top["buy_box_seller"].notna()
-                & (df_top["buy_box_seller"].astype(str).str.strip() != "")
-            ]
-            if df_grp.empty:
-                st.info(
-                    "Nenhuma plataforma no filtro atual expõe `buy_box_seller`. "
-                    "O campo é preenchido por Mercado Livre, Leroy Merlin, "
-                    "Magalu, Shopee, Google Shopping e Casas Bahia (Amazon fica "
-                    "sem seller na SERP). Amplie o período ou os filtros."
-                )
-
-        if group_col not in df_top.columns or "data" not in df_top.columns:
-            st.info("Required columns not available.")
-        elif not df_grp.empty:
-            timeline = (
-                df_grp
-                .groupby(["data", group_col], as_index=False)
-                .size()
-                .rename(columns={"size": "BuyBox wins", group_col: group_choice})
-            )
-            timeline["data"] = pd.to_datetime(timeline["data"])
-
-            _cmap = _brand_color_map(timeline[group_choice]) if group_choice == "Brand" else None
-            fig_line = px.line(
-                timeline,
-                x="data",
-                y="BuyBox wins",
-                color=group_choice,
-                color_discrete_map=_cmap,
-                markers=True,
-                title=f"Daily BuyBox wins by {group_choice}",
-                labels={"data": "Date"},
-            )
-            fig_line.update_traces(line=dict(width=2.5), marker=dict(size=6))
-            _emphasize_midea_traces(fig_line)
-            _apply_chart_style(fig_line, height=450)
-            st.plotly_chart(fig_line, use_container_width=True)
+        _bb_timeline(df_top)
 
     # ── Tab 3: Detail ────────────────────────────────────────────────────────
     with tab_detail:
@@ -6765,8 +6896,8 @@ def page_share_of_buybox() -> None:
     df = st.session_state.get("sbb_df")
     if df is None:
         st.info("Defina os filtros na barra lateral e clique em **Carregar Buy Box**.")
-        st.caption(
-            "💡 A cobertura de `buy_box_seller` varia por plataforma e scraper — "
+        _como_ler(
+            "A cobertura de `buy_box_seller` varia por plataforma e scraper — "
             "consulte a matriz campo × plataforma na página 🩺 Saúde do Dado. "
             "A coleta de buy box começou no fim de Maio/2026."
         )
@@ -7226,7 +7357,7 @@ def page_availability():
     # ── Tab 2: Visibility Score ponderado por posição ────────────────────────
     with tab_vis:
         st.subheader("Visibility Score — share of shelf ponderado por posição")
-        st.caption(
+        _como_ler(
             "Cada aparição vale `1/posição_geral`: o slot 1 vale 1.0, o slot 10 "
             "vale 0.1. O share ponderado premia quem domina o topo da busca; o "
             "share simples conta presença em qualquer posição."
@@ -7345,7 +7476,7 @@ def page_availability():
                             hovermode="closest",
                         )
                         st.plotly_chart(fig_hc, use_container_width=True)
-                        st.caption(
+                        _como_ler(
                             "Categoria Keyword segmenta a intenção da busca "
                             "(Genérica, Capacidade BTU, Marca, Intenção Compra…): "
                             "mostra onde cada marca domina o topo do funil."
@@ -7471,8 +7602,8 @@ def page_reputacao() -> None:
 
     if not load_btn:
         st.info("Defina os filtros na barra lateral e clique em **Carregar Avaliações**.")
-        st.caption(
-            "💡 A cobertura de `avaliacao` e `reputacao_seller` varia por plataforma "
+        _como_ler(
+            "A cobertura de `avaliacao` e `reputacao_seller` varia por plataforma "
             "e scraper — veja a matriz campo × plataforma na página 🩺 Saúde do Dado."
         )
         return
@@ -7845,8 +7976,8 @@ def page_sov_patrocinado() -> None:
     df = st.session_state.get("sov_df")
     if df is None:
         st.info("Defina os filtros na barra lateral e clique em **Carregar SoV**.")
-        st.caption(
-            "💡 A análise considera todas as plataformas coletadas. Hoje quem "
+        _como_ler(
+            "A análise considera todas as plataformas coletadas. Hoje quem "
             "marca anúncio patrocinado na coleta é Mercado Livre (Product Ads) e "
             "Amazon (AMS); Google Shopping/Magalu/Shopee ainda não sinalizam o "
             "flag na SERP capturada. A cobertura real por plataforma aparece no "
@@ -8250,7 +8381,7 @@ def page_price_compliance() -> None:
     X% abaixo dela (limiar configurável).
     """
     st.title("🛡️ Compliance de Preço")
-    st.caption(
+    _como_ler(
         "Monitor de preço-piso dos SKUs MCJV (`pricetrack_daily.is_midea_group`). "
         "**Rompimento** = preço mínimo do seller mais de X% abaixo da mediana "
         "dos sellers do mesmo SKU no dia. Quando o catálogo ganhar a coluna "
@@ -8895,7 +9026,7 @@ def page_overview() -> None:
             )
 
     with tab_def:
-        st.caption(
+        _como_ler(
             "**Defesa**: quando buscam a Midea (\"midea inverter\", \"midea ecomaster\"), "
             "quanto do top 10 é nosso — o resto é rival interceptando. **Conquista**: "
             "quando buscam o rival (\"ar condicionado lg\"), quanto a Midea aparece."
@@ -9000,7 +9131,7 @@ def page_overview() -> None:
             st.rerun()
 
     with tab_preco:
-        st.caption(
+        _como_ler(
             "Mediana do preço que o consumidor VÊ no top 20 (coleta de posição), só "
             "split hi-wall, no último dia. Índice 100 = paridade com a mediana dos "
             "rivais. Preço de referência por SKU (PriceTrack) fica em 💰 Preços 9K/12K."
@@ -9023,7 +9154,7 @@ def page_overview() -> None:
             st.rerun()
 
     with tab_cob:
-        st.caption(
+        _como_ler(
             "Linhas por turno depois da deduplicação. ⚠️ = menos de 30% do melhor "
             "turno da plataforma na janela — coleta parcial (bloqueio, login, "
             "queda), não queda de mercado."
@@ -9240,7 +9371,7 @@ def _pt_top_movers_finalize(df: pd.DataFrame) -> pd.DataFrame:
 
 def page_top_movers() -> None:
     st.title("🚨 Alertas — movimentos de preço")
-    st.caption(
+    _como_ler(
         "SKUs com maior variação de preço entre duas janelas temporais. "
         "Fonte: `pricetrack_daily` (granularidade garantida: 1 linha por "
         "SKU × marketplace × seller × dia). Janelas meio-abertas `[ini, fim)`."
@@ -9597,7 +9728,7 @@ def page_top_movers() -> None:
 
     # ── Detail table ─────────────────────────────────────────────────────────
     st.subheader("Tabela Detalhada")
-    st.caption(
+    _como_ler(
         "Por janela: **Registros** = COUNT(*) bruto · "
         "**Ofertas** = marketplace × seller únicos · "
         "**Dias** = nº de datas com presença. "
@@ -9842,11 +9973,10 @@ def _build_anomaly_email(target_day, prev_day, threshold, shown):
 
 def page_email_digest() -> None:
     st.title("📧 Resumo por E-mail")
-    st.markdown(
-        "Send a consolidated email with the **Top Movers** and **BuyBox** "
-        "snapshot for the active window. The same digest can be sent "
-        "automatically on a cron schedule via `send_digest.py` (see Replit "
-        "Scheduled Deployments)."
+    _como_ler(
+        "Envia por e-mail o resumo de **movimentos de preço** e **buy box** da janela "
+        "ativa. O mesmo resumo pode sair sozinho num agendamento, via "
+        "`send_digest.py`."
     )
 
     # Active window — the 7 days ending yesterday
@@ -10031,13 +10161,12 @@ def page_email_digest() -> None:
 
 def page_price_anomalies() -> None:
     st.title("🚨 Alertas — anomalias de preço")
-    st.markdown(
-        "Detects per-SKU price changes between two consecutive days. Any "
-        "product whose mean price moved by at least the threshold is "
-        "reported. The same logic runs daily on a cron via "
-        "`send_anomalies.py` (Replit Scheduled Deployments). "
-        "Prices come from PriceTrack (Python collections only fill brands/"
-        "products PriceTrack does not cover)."
+    _como_ler(
+        "Detecta, por SKU, a variação de preço entre dois dias consecutivos: "
+        "todo produto cujo preço médio mudou pelo menos o limite entra no "
+        "relatório. A mesma lógica roda todo dia no agendamento "
+        "(`send_anomalies.py`). O preço vem do PriceTrack; as coletas Python "
+        "só preenchem marcas/produtos que o PriceTrack não cobre."
     )
 
     with st.sidebar:
@@ -10261,9 +10390,11 @@ def _query_products_history(
 
 def page_market_analytics() -> None:
     st.title("📊 Análise de Mercado")
-    st.caption("Distribuição de preços (uma fonte só na janela: PriceTrack, ou "
+    _como_ler(
+        "Distribuição de preços (uma fonte só na janela: PriceTrack, ou "
                "Coletas quando o PriceTrack cobre menos da metade dos dias) e "
-               "presença por marketplace (volume de ofertas das coletas) ao longo do tempo.")
+               "presença por marketplace (volume de ofertas das coletas) ao longo do tempo."
+    )
 
     with st.sidebar:
         st.subheader("Filtros")
@@ -10389,11 +10520,12 @@ def page_market_analytics() -> None:
             )
             _apply_chart_style(fig, height=820, hovermode="closest")
             st.plotly_chart(fig, use_container_width=True)
-            st.caption(
+            _como_ler(
                 f"Fonte do mapa inteiro: **{fonte_dist}**. O mapa usa uma fonte "
                 "só na janela — o PriceTrack enquanto cobrir ao menos metade dos "
                 "dias que a Coletas cobre. Dia sem essa fonte fica fora do mapa; "
-                "a outra fonte **nunca** o preenche (outra medida, outro mix).")
+                "a outra fonte **nunca** o preenche (outra medida, outro mix)."
+            )
             cov_md = _source_coverage_md(df_price_all, dist_report)
             if cov_md:
                 st.caption(cov_md)
@@ -11394,7 +11526,7 @@ def _dv_floor_prev(
 
 def page_daily_vision() -> None:
     st.title("📅 Preço do Dia")
-    st.caption(
+    _como_ler(
         "Menor preço por marketplace, consolidado por marca, capacidade e SKU. "
         "**PriceTrack** alimenta **Manhã** (08–12h) e **Tarde** (18–22h) — "
         "recorte por hora de coleta — além da linha **Diário** (dia inteiro). "
@@ -12497,7 +12629,7 @@ def _bs_aba_radar(serie: pd.DataFrame, dia, n: int, referencia_sel: str) -> None
 
     janela = radar.JanelaRadar(ate=pd.Timestamp(dia).date(), top_n=n)
     tabela = radar.radar_marcas(serie, janela)
-    st.caption(
+    _como_ler(
         f"Share de topo (% do top {n}) de cada marca **dentro de cada "
         f"plataforma**, últimos 7 dias ({janela.inicio_recente:%d/%m}–"
         f"{janela.ate:%d/%m}) contra os 28 anteriores. Uma plataforma conta "
@@ -12569,6 +12701,86 @@ def _bs_aba_radar(serie: pd.DataFrame, dia, n: int, referencia_sel: str) -> None
             st.plotly_chart(fig, use_container_width=True)
 
 
+@_fragment
+def _bs_ranking_do_dia(janela: pd.DataFrame, specs: dict, tipo_escopo: str) -> None:
+    """Aba "Ranking do dia" dos Mais Vendidos (data × plataforma × escopo).
+
+    Fragment: trocar a data ou a plataforma reroda só a tabela, sem refazer a
+    leitura e as validações da página inteira.
+    """
+    TIPO_ESCOPO_KPI = tipo_escopo  # noqa: N806 — mesmo nome do corpo original
+    col_data, col_plat, col_escopo = st.columns([1, 1, 1])
+    datas_janela = sorted(janela["data"].dt.date.unique(), reverse=True)
+    with col_data:
+        data_sel = st.selectbox(
+            "Data", datas_janela,
+            format_func=lambda d: d.strftime("%d/%m/%Y"),
+            key="bs_rank_data",
+        )
+    do_dia = janela[janela["data"].dt.date == data_sel]
+    plats = sorted(do_dia["plataforma"].dropna().unique())
+    with col_plat:
+        plat_sel = st.selectbox(
+            "Plataforma", plats, format_func=lambda k: _bs_nome(k, specs),
+            key="bs_rank_plat",
+        ) if plats else None
+    with col_escopo:
+        so_escopo = st.checkbox(
+            "Somente split hi-wall (escopo do KPI)", value=True,
+            key="bs_rank_escopo",
+            help="Desmarque para ver a lista como o varejista publica — "
+                 "inclusive janela, portátil e a contaminação da categoria.",
+        )
+
+    if plat_sel is None:
+        st.info("Nenhuma plataforma coletada nesta data.", icon="ℹ️")
+    else:
+        lista = do_dia[do_dia["plataforma"] == plat_sel].sort_values("rank")
+        if so_escopo:
+            lista = lista[lista["tipo"] == TIPO_ESCOPO_KPI]
+
+        visiveis = [
+            "rank", "titulo", "marca", "grupo_midea", "btu", "tipo", "preco",
+            "vendidos", "base_vendidos", "seller", "rating", "reviews",
+            "patrocinado", "url_produto",
+        ]
+        tabela_rank = lista[[c for c in visiveis if c in lista.columns]]
+        st.dataframe(
+            _bs_style(tabela_rank),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "rank": st.column_config.NumberColumn("#", width="small"),
+                "titulo": st.column_config.TextColumn("Produto", width="large"),
+                "marca": st.column_config.TextColumn("Marca"),
+                "grupo_midea": st.column_config.CheckboxColumn("Grupo Midea"),
+                "btu": st.column_config.NumberColumn("BTU", format="%d"),
+                "tipo": st.column_config.TextColumn("Tipo"),
+                "preco": st.column_config.NumberColumn("Preço", format="R$ %.2f"),
+                "vendidos": st.column_config.NumberColumn("Vendidos"),
+                "base_vendidos": st.column_config.TextColumn("Base"),
+                "seller": st.column_config.TextColumn("Seller"),
+                "rating": st.column_config.NumberColumn("Nota", format="%.1f"),
+                "reviews": st.column_config.NumberColumn("Reviews", format="%d"),
+                "patrocinado": st.column_config.CheckboxColumn("Patrocinado?"),
+                "url_produto": st.column_config.LinkColumn(
+                    "Link", display_text="Abrir ↗", width="small",
+                ),
+            },
+        )
+        spec = specs.get(plat_sel)
+        if spec is not None:
+            st.caption(
+                f"Referência: **{spec.referencia_rotulo}** · ordenação: "
+                f"`{spec.parametro_ordenacao}` · mecânica: "
+                f"**{spec.mecanica}** · base de `vendidos`: "
+                f"**{spec.base_vendidos or 'não declarada'}**"
+            )
+            st.warning(spec.armadilha, icon="🪤")
+        _csv_download_btn(
+            lista, f"bestsellers_{plat_sel}_{data_sel}.csv", key="bs_rank_csv"
+        )
+
+
 def page_bestsellers() -> None:
     """Página 🥇 Mais Vendidos — a única variável de RESULTADO da coleta.
 
@@ -12619,7 +12831,7 @@ def page_bestsellers() -> None:
         return
 
     st.title("🥇 Mais Vendidos")
-    st.caption(
+    _como_ler(
         "Rankings de prateleira dos varejistas — a única variável de "
         "**resultado** da coleta. Duas **referências** convivem e **nunca se "
         "misturam**: *Mais Vendidos* (lista ordenada por vendas) e *Relevância* "
@@ -12940,7 +13152,7 @@ def page_bestsellers() -> None:
             fig_rank.update_yaxes(autorange="reversed")
             _apply_chart_style(fig_rank)
             st.plotly_chart(fig_rank, use_container_width=True)
-            st.caption(
+            _como_ler(
                 "Cada linha é uma plataforma comparada **consigo mesma** ao "
                 "longo do tempo. As listas têm tamanhos e mecânicas diferentes "
                 "— cruzar as curvas entre si não significa nada."
@@ -13028,76 +13240,7 @@ def page_bestsellers() -> None:
 
     # ── Ranking do dia ────────────────────────────────────────────────────
     with tab_rank:
-        col_data, col_plat, col_escopo = st.columns([1, 1, 1])
-        datas_janela = sorted(janela["data"].dt.date.unique(), reverse=True)
-        with col_data:
-            data_sel = st.selectbox(
-                "Data", datas_janela,
-                format_func=lambda d: d.strftime("%d/%m/%Y"),
-                key="bs_rank_data",
-            )
-        do_dia = janela[janela["data"].dt.date == data_sel]
-        plats = sorted(do_dia["plataforma"].dropna().unique())
-        with col_plat:
-            plat_sel = st.selectbox(
-                "Plataforma", plats, format_func=lambda k: _bs_nome(k, specs),
-                key="bs_rank_plat",
-            ) if plats else None
-        with col_escopo:
-            so_escopo = st.checkbox(
-                "Somente split hi-wall (escopo do KPI)", value=True,
-                key="bs_rank_escopo",
-                help="Desmarque para ver a lista como o varejista publica — "
-                     "inclusive janela, portátil e a contaminação da categoria.",
-            )
-
-        if plat_sel is None:
-            st.info("Nenhuma plataforma coletada nesta data.", icon="ℹ️")
-        else:
-            lista = do_dia[do_dia["plataforma"] == plat_sel].sort_values("rank")
-            if so_escopo:
-                lista = lista[lista["tipo"] == TIPO_ESCOPO_KPI]
-
-            visiveis = [
-                "rank", "titulo", "marca", "grupo_midea", "btu", "tipo", "preco",
-                "vendidos", "base_vendidos", "seller", "rating", "reviews",
-                "patrocinado", "url_produto",
-            ]
-            tabela_rank = lista[[c for c in visiveis if c in lista.columns]]
-            st.dataframe(
-                _bs_style(tabela_rank),
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "rank": st.column_config.NumberColumn("#", width="small"),
-                    "titulo": st.column_config.TextColumn("Produto", width="large"),
-                    "marca": st.column_config.TextColumn("Marca"),
-                    "grupo_midea": st.column_config.CheckboxColumn("Grupo Midea"),
-                    "btu": st.column_config.NumberColumn("BTU", format="%d"),
-                    "tipo": st.column_config.TextColumn("Tipo"),
-                    "preco": st.column_config.NumberColumn("Preço", format="R$ %.2f"),
-                    "vendidos": st.column_config.NumberColumn("Vendidos"),
-                    "base_vendidos": st.column_config.TextColumn("Base"),
-                    "seller": st.column_config.TextColumn("Seller"),
-                    "rating": st.column_config.NumberColumn("Nota", format="%.1f"),
-                    "reviews": st.column_config.NumberColumn("Reviews", format="%d"),
-                    "patrocinado": st.column_config.CheckboxColumn("Patrocinado?"),
-                    "url_produto": st.column_config.LinkColumn(
-                        "Link", display_text="Abrir ↗", width="small",
-                    ),
-                },
-            )
-            spec = specs.get(plat_sel)
-            if spec is not None:
-                st.caption(
-                    f"Referência: **{spec.referencia_rotulo}** · ordenação: "
-                    f"`{spec.parametro_ordenacao}` · mecânica: "
-                    f"**{spec.mecanica}** · base de `vendidos`: "
-                    f"**{spec.base_vendidos or 'não declarada'}**"
-                )
-                st.warning(spec.armadilha, icon="🪤")
-            _csv_download_btn(
-                lista, f"bestsellers_{plat_sel}_{data_sel}.csv", key="bs_rank_csv"
-            )
+        _bs_ranking_do_dia(janela, specs, TIPO_ESCOPO_KPI)
 
     # ── Competição ────────────────────────────────────────────────────────
     with tab_comp:
@@ -13180,7 +13323,7 @@ def page_bestsellers() -> None:
                 ),
                 use_container_width=True, hide_index=True,
             )
-            st.caption(
+            _como_ler(
                 "Agrega **somente** `base_vendidos = 'mes'` (hoje, só a Shopee). "
                 "O “+5mil vendidos” do Mercado Livre é acumulado vitalício e "
                 "somá-lo aqui produziria número sem unidade. O `%` é share "
@@ -13278,7 +13421,7 @@ def page_bestsellers() -> None:
                     }),
                     use_container_width=True, hide_index=True,
                 )
-                st.caption(
+                _como_ler(
                     "Ranking de venda real se mexe. Acima de 35% dos itens "
                     "parados entre duas leituras o veredito vira **CURADORIA "
                     "SUSPEITA** — foi assim que a Leroy Merlin se denunciou."
@@ -13528,7 +13671,7 @@ def page_clima() -> None:
     from utils.text import now_brt
 
     st.title("🌡️ Clima × Vendas")
-    st.caption(
+    _como_ler(
         "Ar condicionado é compra puxada por calor. Esta página mostra a "
         "temperatura máxima por região — **observada** e **prevista** (16 dias) "
         "— contra a **normal** da mesma época nos anos anteriores, e mede se o "
@@ -13627,7 +13770,7 @@ def page_clima() -> None:
 
     # ── Clima × venda ─────────────────────────────────────────────────────
     st.subheader("🔬 O calor antecipa a venda?")
-    st.caption(
+    _como_ler(
         "Proxy diário de venda: **avaliações novas por dia** nos anúncios das "
         "listas de Mais Vendidos (mesmo anúncio, leituras consecutivas). As "
         "duas séries passam por média móvel de 7 dias (tira o ciclo da semana) "
@@ -13925,6 +14068,7 @@ def _main() -> None:
         st.divider()
         _render_global_filters()
         st.divider()
+    _sincronizar_url()
 
     pg = st.navigation(secoes, position="top")
 

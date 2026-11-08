@@ -73,11 +73,9 @@ dia".
    página nova.
 
 ## Próximas fases (não feitas aqui)
-- **Fase 2:** filtros na URL (`st.query_params`) e links nos alertas do
-  Telegram; `@st.fragment` nos controles que mexem só num gráfico; faixa de
-  KPI 2×2 no celular; filtros salvos.
-- **Popover "Como ler" nas demais páginas.** Mais Vendidos (20 captions e 18
-  avisos) e Preço do Dia são as próximas.
+- **Fase 2:** feita — ver a seção "Fase 2" no fim.
+- **Popover "Como ler" nas demais páginas:** feito — ver "Como ler em todas as
+  páginas" no fim.
 - **Seller App:** feito — ver a seção abaixo.
 
 ## Seller App — roteiro (Nov/2026)
@@ -90,14 +88,14 @@ irmão do `app.py` e as cores de plataforma são uma cópia de
 - **Selo de cobertura no topo**, antes de qualquer número: 🟢 leitura
   completa / 🟠 parcial (qual plataforma e qual turno faltou) / ⚪ sem
   registro. A aba 🩺 Cobertura continua com o detalhe.
-- **KPIs com comparação**, em cartões 2×2 (no celular viram uma coluna):
+- **KPIs com comparação**, em cartões 2×2 (2×2 também no celular):
   - **Share de buy box** com delta contra 7 dias antes. O delta usa só as
     plataformas observadas nos dois momentos.
-  - **Melhor posição no ranking** ("#2 de 41"), com o líder e a distância em
+  - **Posição no ranking** ("#2 de 41"), com o líder e a distância em
     p.p.
   - **Saldo de viradas**: ganhos − perdas, num cartão próprio. Antes o saldo
     vinha como delta dentro do card "Perdidos" e se lia como "perdi mais 3".
-  - **Perdas ainda abertas**.
+  - **Perdas abertas**.
 - **🎯 Onde agir** (1ª aba): cada produto perdido com quem levou, o preço
   dele no turno da perda, o seu último preço antes dela, a diferença em % e se
   você já recuperou. Ordem: perdas abertas primeiro, as de menor diferença no
@@ -118,3 +116,86 @@ irmão do `app.py` e as cores de plataforma são uma cópia de
 Ficaram de fora de propósito: Plotly no Seller App (os gráficos nativos com
 cor fixa resolvem a consistência sem somar dependência ao deploy) e a troca do
 padrão "Web Continental" no seletor da demo.
+
+## Fase 2 (Nov/2026)
+
+### Recorte na URL
+- `utils/url_state.py` (puro, `tests/test_url_state.py`). O recorte (período,
+  canal, plataformas, marcas, fontes, comparar) vai na query string, por
+  exemplo `/buy-box?de=2026-11-01&ate=2026-11-05&canal=Marketplaces&plat=Magalu`.
+- Ao abrir uma sessão, a URL manda no recorte (`_aplicar_url_uma_vez`). Depois
+  disso a URL espelha os filtros a cada execução (`_sincronizar_url`) e
+  acompanha a troca de página. Copiar a barra de endereço é compartilhar o
+  recorte.
+- Período padrão (últimos 7 dias) **não** vai para a URL: link sem `de`/`ate`
+  é rolante. Valor que deixou de ser opção (plataforma renomeada, data
+  inválida) é ignorado em silêncio: um link antigo nunca derruba a página.
+
+### Links nos alertas do Telegram
+- `linha_telegram(pagina, filtros)` monta a linha; ela só aparece com a
+  variável **`RAC_DASHBOARD_URL`** (URL pública do painel). Sem ela, o alerta
+  sai idêntico ao de antes.
+- Onde já há link:
+  - `pipeline_watch.py` → 🩺 Saúde do Dado (sem datas: a página usa a
+    própria janela, não o período global);
+  - resumo de coleta (`utils/n8n_notify.py`) → Cockpit;
+  - brief de Mais Vendidos → 🥇 Mais Vendidos.
+- No Actions, cadastre `RAC_DASHBOARD_URL` em *Settings → Secrets and
+  variables → Actions → **Variables*** (não é segredo). O `pipeline_guard.yml`
+  já lê `vars.RAC_DASHBOARD_URL`. No PC coletor, vai no `.env` (modelo em
+  `.env.example`).
+- `tests/test_url_state.py` confere que os destinos dos alertas
+  (`saude-do-dado`, `mais-vendidos`) existem no menu; o Cockpit é a raiz.
+
+### `@st.fragment` nos controles locais
+- `_fragment = getattr(st, "fragment", ...)`: o controle reroda só o bloco
+  dele.
+- 🏆 Buy Box → Posição e vencedor → Timeline (`_bb_timeline`). **Corrige um
+  bug:** a página só carrega dado com o botão "Load BuyBox", e mexer no
+  "Agrupar por" rerodava a página inteira, que voltava ao "clique em Load".
+- 🥇 Mais Vendidos → Ranking do dia (`_bs_ranking_do_dia`): trocar a data ou a
+  plataforma não refaz mais a leitura e as validações da página.
+
+### KPIs 2×2 no celular
+- Abaixo de 640 px o Streamlit empilha toda linha de colunas. A linha que só
+  tem métricas agora quebra em pares (`assets/style.css`). O Seller App tem a
+  mesma regra embutida, porque é publicado sozinho.
+
+### Recortes salvos
+- Sai do "⚙️ Avançado" para **⭐ Recortes**, logo abaixo dos filtros:
+  - atalhos prontos, definidos em código e que nunca somem: 7 dias,
+    marketplaces, Midea 30 dias, ontem e hoje;
+  - os recortes salvos pelo usuário;
+  - o **link do recorte atual**.
+- Os salvos ainda moram num arquivo do servidor, que some a cada reinício do
+  Streamlit Cloud. Por isso o link é a forma durável: o recorte inteiro está
+  na URL, e favoritar o link é salvar.
+- Aplicar um recorte usa um callback (`on_change`): ele grava os filtros antes
+  de os widgets renascerem. Antes era uma sequência de comparação e
+  `st.rerun()`.
+
+## Como ler em todas as páginas (Nov/2026)
+
+30 textos de metodologia saíram do meio das páginas para o popover
+`_como_ler` (ℹ️ Como ler), em todas as páginas que tinham esse tipo de texto:
+Evolução de Preço, Saúde do Dado, Automação, Buy Box (as duas visões),
+Disponibilidade, Reputação, SoV Patrocinado, Compliance de Preço, Cockpit,
+Alertas (as duas visões), Resumo por E-mail, Análise de Mercado, Preço do Dia,
+Mais Vendidos (incluindo o 📡 Radar), Clima × Vendas e os painéis do Família &
+SKU.
+
+**O que sai da tela:** texto que explica regra, definição ou mecânica e é
+igual em todo acesso (como o share ponderado é calculado, o que é
+"Rompimento", por que as curvas não se cruzam).
+
+**O que fica visível:**
+- avisos que mudam a leitura do número **agora**: cobertura limitada, coleta
+  parcial, pontos removidos, amostra pequena;
+- mensagens de estado ("Defina os filtros e clique em Carregar…");
+- o subtítulo curto embaixo do título.
+
+Os textos que estavam em inglês (Resumo por E-mail, Anomalias de preço)
+foram traduzidos.
+
+**Regra (teste):** `tests/test_ui_components.py::test_metodologia_longa_fica_no_como_ler`
+reprova `st.caption` com texto fixo de mais de 200 caracteres no `app.py`.

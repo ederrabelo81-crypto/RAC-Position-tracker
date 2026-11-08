@@ -230,7 +230,14 @@ def executar_coleta(args: argparse.Namespace) -> int:
     storage.salvar_relatorio(texto, data, args.output)
 
     if args.notificar:
-        _notificar(report.resumo_telegram(preparado_hoje, ocorrencias, n=args.top))
+        import utils.n8n_notify  # noqa: F401 — carrega o .env (RAC_DASHBOARD_URL)
+        from utils.url_state import linha_telegram
+
+        # Sem datas: a página 🥇 Mais Vendidos tem o próprio seletor de período
+        # (`bs_dates`) e não lê o período global da URL.
+        link = linha_telegram("mais-vendidos", rotulo="Abrir 🥇 Mais Vendidos")
+        _notificar(report.resumo_telegram(preparado_hoje, ocorrencias, n=args.top)
+                   + (f"\n\n{link}" if link else ""))
         if resumo_radar:
             _notificar(html.escape(resumo_radar))
 

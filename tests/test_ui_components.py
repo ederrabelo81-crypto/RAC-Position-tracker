@@ -68,3 +68,26 @@ def test_rotulo_direto_desiste_com_linhas_demais() -> None:
                      for i in range(9)])
     app._label_line_ends(fig)
     assert not fig.layout.annotations
+
+
+def test_metodologia_longa_fica_no_como_ler() -> None:
+    """Texto fixo longo de metodologia vai em `_como_ler`, não em `st.caption`.
+
+    Regra de `docs/UX_PAINEIS.md`: a resposta vem antes da metodologia. Uma
+    caption fixa com mais de 200 caracteres numa página é, na prática,
+    metodologia no caminho do número.
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path(app.__file__).read_text(encoding="utf-8")
+    longas = []
+    for node in ast.walk(ast.parse(src)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and getattr(node.func.value, "id", None) == "st"
+                and node.func.attr == "caption" and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and len(node.args[0].value) > 200):
+            longas.append(node.lineno)
+    assert not longas, f"st.caption com metodologia longa nas linhas {longas}: use _como_ler"

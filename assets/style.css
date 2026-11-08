@@ -879,3 +879,26 @@ div[data-baseweb="menu"] li[aria-selected="true"],
         font-size: 0.8rem !important;
     }
 }
+
+/* ===========================
+   KPIs 2×2 NO CELULAR (Nov/2026)
+   Abaixo de 640 px o Streamlit empilha toda linha de colunas numa coluna só:
+   uma faixa de 5 KPIs virava 5 telas de rolagem. Linha de colunas que só tem
+   métricas passa a quebrar em pares (2 por linha). Outras linhas de colunas
+   (filtros, gráficos lado a lado) continuam empilhando, como devem.
+   =========================== */
+@media (max-width: 640px) {
+    [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stMetric"]):not(:has(> [data-testid="stColumn"] :is([data-testid="stPlotlyChart"], [data-testid="stDataFrame"], [data-testid="stVegaLiteChart"], [data-testid="stTable"], [data-testid="stSelectbox"], [data-testid="stMultiSelect"], [data-testid="stDateInput"], [data-testid="stTextInput"], [data-testid="stNumberInput"], [data-testid="stSlider"], [data-testid="stRadio"], [data-testid="stCheckbox"], [data-testid="stButton"], [data-testid="stDownloadButton"]))) {
+        flex-direction: row !important;
+        flex-wrap: wrap !important;
+        gap: 0.5rem !important;
+    }
+    [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stMetric"]):not(:has(> [data-testid="stColumn"] :is([data-testid="stPlotlyChart"], [data-testid="stDataFrame"], [data-testid="stVegaLiteChart"], [data-testid="stTable"], [data-testid="stSelectbox"], [data-testid="stMultiSelect"], [data-testid="stDateInput"], [data-testid="stTextInput"], [data-testid="stNumberInput"], [data-testid="stSlider"], [data-testid="stRadio"], [data-testid="stCheckbox"], [data-testid="stButton"], [data-testid="stDownloadButton"]))) > [data-testid="stColumn"] {
+        flex: 1 1 calc(50% - 0.5rem) !important;
+        width: calc(50% - 0.5rem) !important;
+        min-width: calc(50% - 0.5rem) !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 1.35rem !important;
+    }
+}
