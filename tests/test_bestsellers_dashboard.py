@@ -44,7 +44,7 @@ RUN_TIMEOUT = 60
 def test_pagina_registrada_no_menu() -> None:
     assert PAGINA in app.PAGES, list(app.PAGES)
     assert app.PAGES[PAGINA] is app.page_bestsellers
-    assert PAGINA in app._NAV_GROUPS["INSIGHTS"], app._NAV_GROUPS["INSIGHTS"]
+    assert PAGINA in app._NAV_GROUPS["DEMANDA"], app._NAV_GROUPS["DEMANDA"]
 
 
 # ---------------------------------------------------------------------------

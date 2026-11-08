@@ -4,6 +4,19 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
 /* ===========================
+   TOKENS DA INTERFACE (Nov/2026)
+   O azul #1a56db é a cor da MIDEA nos gráficos (utils/ui_tokens.py). A
+   interface (botões, abas, foco) usa um acento neutro para não competir com
+   a série que o gráfico quer destacar. Mude aqui, não no resto do arquivo.
+   =========================== */
+:root {
+    --rac-accent: #0f766e;
+    --rac-accent-700: #115e59;
+    --rac-accent-800: #134e4a;
+    --rac-accent-rgb: 15, 118, 110;
+}
+
+/* ===========================
    GLOBAL STYLES
    =========================== */
 /* Scope to body so inheritance cascades Inter to text while preserving
@@ -29,10 +42,30 @@ p, h1, h2, h3, h4, h5, h6,
 /* ===========================
    HEADER CUSTOMIZATION
    =========================== */
+/* Cabeçalho claro (Nov/2026): é onde mora a navegação por seções
+   (st.navigation position="top"). O gradiente escuro deixava os rótulos das
+   seções ilegíveis. */
 [data-testid="stHeader"] {
-    background: linear-gradient(135deg, #1a56db 0%, #1e40af 50%, #1e3a8a 100%) !important;
-    border-bottom: 3px solid #fbbf24 !important;
-    box-shadow: 0 4px 20px rgba(26, 86, 219, 0.3) !important;
+    background: #ffffff !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06) !important;
+}
+[data-testid="stHeader"] a,
+[data-testid="stHeader"] button,
+[data-testid="stHeader"] span,
+[data-testid="stHeader"] p {
+    color: #1e293b !important;
+    font-weight: 600 !important;
+}
+
+/* Avisos dentro da barra lateral: a regra geral de texto claro da sidebar
+   deixava o texto amarelo-claro sobre o fundo amarelo do st.warning. */
+section[data-testid="stSidebar"] div[data-testid="stAlert"] p,
+section[data-testid="stSidebar"] div[data-testid="stAlert"] span,
+section[data-testid="stSidebar"] div[data-testid="stAlert"] code,
+section[data-testid="stSidebar"] div[data-testid="stAlert"] div[data-testid] {
+    color: #1e293b !important;
+    text-shadow: none !important;
 }
 
 /* Hide Streamlit branding */
@@ -45,7 +78,7 @@ footer {visibility: hidden;}
 [data-testid="stMetric"] {
     background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%) !important;
     border: 1px solid #e2e8f0 !important;
-    border-left: 4px solid #1a56db !important;
+    border-left: 4px solid var(--rac-accent) !important;
     border-radius: 16px !important;
     padding: 1.5rem !important;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04) !important;
@@ -56,7 +89,7 @@ footer {visibility: hidden;}
 
 [data-testid="stMetric"]:hover {
     transform: translateY(-4px) !important;
-    box-shadow: 0 12px 24px rgba(26, 86, 219, 0.15), 0 8px 16px rgba(0, 0, 0, 0.08) !important;
+    box-shadow: 0 12px 24px rgba(var(--rac-accent-rgb), 0.15), 0 8px 16px rgba(0, 0, 0, 0.08) !important;
     border-left-color: #fbbf24 !important;
 }
 
@@ -67,7 +100,7 @@ footer {visibility: hidden;}
     right: -50%;
     width: 100%;
     height: 100%;
-    background: radial-gradient(circle, rgba(26, 86, 219, 0.05) 0%, transparent 70%);
+    background: radial-gradient(circle, rgba(var(--rac-accent-rgb), 0.05) 0%, transparent 70%);
     pointer-events: none;
 }
 
@@ -86,7 +119,7 @@ footer {visibility: hidden;}
 [data-testid="stMetricValue"] {
     font-size: 1.6rem !important;
     font-weight: 800 !important;
-    background: linear-gradient(135deg, #1e293b 0%, #1a56db 100%);
+    background: linear-gradient(135deg, #1e293b 0%, var(--rac-accent) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -139,16 +172,16 @@ footer {visibility: hidden;}
 }
 
 .stTabs [data-baseweb="tab"]:hover {
-    color: #1a56db !important;
+    color: var(--rac-accent) !important;
     background: rgba(255, 255, 255, 0.5) !important;
 }
 
 .stTabs [aria-selected="true"] {
     background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%) !important;
-    color: #1a56db !important;
+    color: var(--rac-accent) !important;
     font-weight: 700 !important;
-    box-shadow: 0 4px 12px rgba(26, 86, 219, 0.15), 0 2px 4px rgba(0, 0, 0, 0.08) !important;
-    border: 2px solid #1a56db !important;
+    box-shadow: 0 4px 12px rgba(var(--rac-accent-rgb), 0.15), 0 2px 4px rgba(0, 0, 0, 0.08) !important;
+    border: 2px solid var(--rac-accent) !important;
     transform: translateY(-2px);
 }
 
@@ -157,22 +190,22 @@ footer {visibility: hidden;}
    =========================== */
 button[kind="primary"],
 [data-testid="stBaseButton-primary"] {
-    background: linear-gradient(135deg, #1a56db 0%, #1e40af 100%) !important;
+    background: linear-gradient(135deg, var(--rac-accent) 0%, var(--rac-accent-700) 100%) !important;
     border-radius: 10px !important;
     font-weight: 600 !important;
     font-size: 0.95rem !important;
     border: none !important;
     letter-spacing: 0.02em !important;
     padding: 0.5rem 1.5rem !important;
-    box-shadow: 0 4px 12px rgba(26, 86, 219, 0.3) !important;
+    box-shadow: 0 4px 12px rgba(var(--rac-accent-rgb), 0.3) !important;
     transition: all 0.2s ease !important;
 }
 
 button[kind="primary"]:hover,
 [data-testid="stBaseButton-primary"]:hover {
     transform: translateY(-2px) !important;
-    box-shadow: 0 6px 20px rgba(26, 86, 219, 0.4) !important;
-    background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%) !important;
+    box-shadow: 0 6px 20px rgba(var(--rac-accent-rgb), 0.4) !important;
+    background: linear-gradient(135deg, var(--rac-accent-700) 0%, var(--rac-accent-800) 100%) !important;
 }
 
 /* Secondary buttons — scoped to Streamlit buttons only to avoid deforming
@@ -191,8 +224,8 @@ button[kind="primary"]:hover,
 .stButton > button:not([kind="primary"]):hover,
 .stDownloadButton > button:not([kind="primary"]):hover,
 [data-testid="stBaseButton-secondary"]:hover {
-    border-color: #1a56db !important;
-    color: #1a56db !important;
+    border-color: var(--rac-accent) !important;
+    color: var(--rac-accent) !important;
     background: #eff6ff !important;
 }
 
@@ -242,9 +275,9 @@ hr {
    PROGRESS BAR
    =========================== */
 [data-testid="stProgressBar"] > div > div {
-    background: linear-gradient(90deg, #1a56db 0%, #0891b2 50%, #059669 100%) !important;
+    background: linear-gradient(90deg, var(--rac-accent) 0%, #0891b2 50%, #059669 100%) !important;
     border-radius: 8px !important;
-    box-shadow: 0 2px 8px rgba(26, 86, 219, 0.3) !important;
+    box-shadow: 0 2px 8px rgba(var(--rac-accent-rgb), 0.3) !important;
 }
 
 /* ===========================
@@ -431,12 +464,12 @@ section[data-testid="stSidebar"] [data-baseweb="calendar"] button {
 
 section[data-testid="stSidebar"] [data-baseweb="calendar"] button:hover {
     background: #eff6ff !important;
-    color: #1a56db !important;
+    color: var(--rac-accent) !important;
 }
 
 section[data-testid="stSidebar"] [data-baseweb="calendar"] [aria-current="date"],
 section[data-testid="stSidebar"] [data-baseweb="calendar"] [aria-selected="true"] {
-    background: #1a56db !important;
+    background: var(--rac-accent) !important;
     color: #ffffff !important;
 }
 
@@ -489,7 +522,7 @@ section[data-testid="stSidebar"] button[data-testid^="stBaseButton"] span {
     text-shadow: none !important;
 }
 section[data-testid="stSidebar"] button[data-testid^="stBaseButton-secondary"]:hover {
-    color: #1a56db !important;
+    color: var(--rac-accent) !important;
     background: #eff6ff !important;
 }
 section[data-testid="stSidebar"] [data-testid="stExpander"] details {
@@ -515,10 +548,14 @@ section[data-testid="stSidebar"] nav a[href],
 section[data-testid="stSidebar"] [data-testid="stSidebarNavLink"] {
     color: #ffffff !important;
     font-weight: 600 !important;
-    padding: 0.5rem 1rem !important;
-    margin: 0.25rem 0 !important;
+    padding: 0.3rem 0.75rem !important;
+    margin: 1px 0 !important;
     border-radius: 6px !important;
-    display: block !important;
+    /* flex, não block: com block o ícone do st.navigation cai numa linha e o
+       rótulo em outra, e cada item ocupava ~85 px de altura. */
+    display: flex !important;
+    align-items: center !important;
+    gap: 0.5rem !important;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) !important;
 }
 
@@ -554,7 +591,7 @@ div.stError {
 
 div.stInfo {
     background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%) !important;
-    border-left: 4px solid #1a56db !important;
+    border-left: 4px solid var(--rac-accent) !important;
 }
 
 /* ===========================
@@ -572,7 +609,7 @@ div.stInfo {
 
 .streamlit-expanderHeader:hover {
     background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%) !important;
-    border-color: #1a56db !important;
+    border-color: var(--rac-accent) !important;
 }
 
 /* ===========================
@@ -591,8 +628,8 @@ input[type="text"],
 input[type="number"]:focus,
 input[type="text"]:focus,
 .stTextInput > div > div > input:focus {
-    border-color: #1a56db !important;
-    box-shadow: 0 0 0 3px rgba(26, 86, 219, 0.1) !important;
+    border-color: var(--rac-accent) !important;
+    box-shadow: 0 0 0 3px rgba(var(--rac-accent-rgb), 0.1) !important;
 }
 
 /* ===========================
@@ -642,7 +679,7 @@ ul[data-testid="stVirtualSelect"] li:hover,
 div[data-baseweb="menu"] li:hover,
 [data-baseweb="menu-item"]:hover {
     background: #eff6ff !important;
-    color: #1a56db !important;
+    color: var(--rac-accent) !important;
 }
 
 /* Selected options in dropdown */
@@ -652,13 +689,13 @@ ul[data-testid="stVirtualSelect"] li[aria-selected="true"],
 div[data-baseweb="menu"] li[aria-selected="true"],
 [data-baseweb="menu-item"][aria-selected="true"] {
     background: #dbeafe !important;
-    color: #1e40af !important;
+    color: var(--rac-accent-700) !important;
     font-weight: 600 !important;
 }
 
 /* Multi-select chips/tags */
 [data-testid="stMultiSelect"] [data-testid="stChip"] {
-    background: linear-gradient(135deg, #1a56db 0%, #1e40af 100%) !important;
+    background: linear-gradient(135deg, var(--rac-accent) 0%, var(--rac-accent-700) 100%) !important;
     color: #ffffff !important;
     border-radius: 6px !important;
     font-weight: 500 !important;
@@ -677,8 +714,8 @@ div[data-baseweb="menu"] li[aria-selected="true"],
 }
 
 [data-testid="stDateInput"] input:focus {
-    border-color: #1a56db !important;
-    box-shadow: 0 0 0 3px rgba(26, 86, 219, 0.1) !important;
+    border-color: var(--rac-accent) !important;
+    box-shadow: 0 0 0 3px rgba(var(--rac-accent-rgb), 0.1) !important;
 }
 
 /* Calendar picker styling */
@@ -696,12 +733,12 @@ div[data-baseweb="menu"] li[aria-selected="true"],
 
 [data-baseweb="calendar"] button:hover {
     background: #eff6ff !important;
-    color: #1a56db !important;
+    color: var(--rac-accent) !important;
 }
 
 [data-baseweb="calendar"] [aria-current="date"],
 [data-baseweb="calendar"] [aria-selected="true"] {
-    background: #1a56db !important;
+    background: var(--rac-accent) !important;
     color: #ffffff !important;
 }
 
@@ -725,8 +762,8 @@ div[data-baseweb="menu"] li[aria-selected="true"],
 }
 
 [data-testid="stNumberInput"] input:focus {
-    border-color: #1a56db !important;
-    box-shadow: 0 0 0 3px rgba(26, 86, 219, 0.1) !important;
+    border-color: var(--rac-accent) !important;
+    box-shadow: 0 0 0 3px rgba(var(--rac-accent-rgb), 0.1) !important;
 }
 
 /* Text input in filters */
@@ -760,8 +797,8 @@ div[data-baseweb="menu"] li[aria-selected="true"],
 /* Slider thumb (native + BaseWeb) */
 .stSlider [role="slider"] {
     background: #ffffff !important;
-    border: 3px solid #1a56db !important;
-    box-shadow: 0 2px 8px rgba(26, 86, 219, 0.4) !important;
+    border: 3px solid var(--rac-accent) !important;
+    box-shadow: 0 2px 8px rgba(var(--rac-accent-rgb), 0.4) !important;
 }
 
 /* ===========================

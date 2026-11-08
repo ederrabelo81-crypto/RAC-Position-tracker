@@ -74,11 +74,11 @@ def test_pagina_sem_dado_avisa_e_nao_quebra() -> None:
     assert any("Sem dado do PriceTrack" in w.value for w in at.warning)
 
 
-def test_pagina_registrada_no_menu_insights() -> None:
+def test_pagina_registrada_no_menu_preco() -> None:
     import app
 
     assert app.PAGES["🩻 Diagnóstico"] is app.page_diagnostico
-    assert "🩻 Diagnóstico" in app._NAV_GROUPS["INSIGHTS"]
+    assert "🩻 Diagnóstico" in app._NAV_GROUPS["PREÇO"]
 
 
 def test_leitura_incompleta_do_historico_nao_fica_em_cache(monkeypatch) -> None:

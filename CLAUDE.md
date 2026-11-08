@@ -419,6 +419,29 @@ para **todas** as páginas (`docs/DASHBOARD_FILTERS.md`).
 
 ---
 
+## Navegação e sistema visual dos painéis (Nov/2026) 🆕
+
+Detalhes em `docs/UX_PAINEIS.md`. O `app.py` usa `st.navigation(position="top")`
+com 8 seções (Hoje, Prateleira, Buy box e sellers, Preço, Demanda, Produto,
+Operação, Admin), URL própria por página e um selo de frescor no topo
+(`utils/freshness.py`). As páginas antigas BuyBox Position/Share of Buy Box
+viraram as visões de 🏆 Buy Box, e Top Movers/Price Anomalies as de 🚨 Alertas
+(`_SUBVIEWS`). Nomes antigos resolvem por `_LEGACY_PAGES`.
+
+**Regras duras:**
+1. Página nova vai em `PAGES` **e** em exatamente uma seção de `_NAV_GROUPS`,
+   com nome em português (`tests/test_ui_components.py` reprova).
+2. Cor de marca/plataforma só via `utils/ui_tokens.py`. O azul `#1a56db` é da
+   Midea; a interface usa o acento `#0f766e` (`config.toml` + `:root` do
+   `assets/style.css`).
+3. Estado vazio via `_empty_state("sem_dado" | "sem_coleta" | "fora_cobertura")`:
+   silêncio não é mercado, e as três causas nunca têm a mesma cara.
+4. Metodologia vai em `_como_ler(...)`, nunca entre o KPI e o gráfico.
+5. Selo de frescor com livro-razão indisponível diz "não verificado", nunca
+   "em dia".
+
+---
+
 ## Série de preço = uma fonte (Set/2026) 🆕
 
 **O que aconteceu (30/09/2026):** a "Tendência de Preço por Marca" mostrava a
@@ -857,7 +880,7 @@ See `.claude/COMMON_MISTAKES.md` for critical examples:
 rac-position-tracker/
 ├── config.py                    # Central configuration: keywords, platforms, brands
 ├── main.py                      # CLI entry point, orchestration, CSV export
-├── app.py                       # Streamlit dashboard (home = 🏠 Cockpit do Trade + 20 páginas)
+├── app.py                       # Streamlit dashboard (home = 🏠 Cockpit do Trade; nav no topo, 8 seções — docs/UX_PAINEIS.md)
 ├── diagnostico.py               # Debug utilities
 ├── requirements.txt             # Python dependencies
 │
@@ -909,6 +932,8 @@ rac-position-tracker/
 │   ├── seller_names.py          # 🆕 De-para canônico de seller (buy box)
 │   ├── keyword_taxonomy.py      # 🆕 Tipo de busca: genérica / marca própria / concorrente / dealer
 │   ├── shelf_insights.py        # 🆕 Métricas puras do Cockpit do Trade (share, buy box, alertas)
+│   ├── ui_tokens.py             # 🆕 Cor única por marca/plataforma + acento da interface
+│   ├── freshness.py             # 🆕 Selo de frescor (heartbeat × contrato) no topo das páginas
 │   ├── price_series.py          # 🆕 Série de preço = uma fonte (PT × coletas) + recorte BTU/hi-wall
 │   ├── run_sidecar.py           # 🆕 run_id viaja com o CSV (fim da gravação dupla)
 │   ├── offer_identity.py        # offer_key versionada + ids de marketplace
