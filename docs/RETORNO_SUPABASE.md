@@ -45,7 +45,10 @@ A migração para a Aiven aconteceu por um motivo só: 15 dias de janela quente
 | 7 dias | ~238 MB | 🟡 apertado com as demais tabelas |
 | **2 dias** | **~68 MB** | ✅ **com folga** — é o que viabiliza a volta |
 
-Com 2 dias, `coletas` ocupa ~68 MB. Somadas as tabelas de **referência**
+Com 2 dias, `coletas` ocupa ~68 MB. Essa era a conta de set/2026. **Medido
+em 08/11/2026, o patamar real é ~100 MB:** a poda roda depois do Fechamento,
+então a tabela chega a 3 dias antes de cada poda, e heap e índices ficam no
+tamanho desse pico (§5.3). Somadas as tabelas de **referência**
 (catálogo + de-para + superfície, <6 MB, que **não** saem do banco), sobra
 espaço de sobra dentro dos 500 MB — desde que as tabelas grandes de fato
 **saiam** (§5, Passo 2). A restrição de cota do Supabase não expira com o
@@ -577,7 +580,8 @@ Se quiser forçar explicitamente durante a transição:
   `produtos_aliases`, `plataforma_superficie`, `seller_depara` são curadas, não
   estão no Parquet e alimentam o gatilho `trg_resolve_familia_coletas`. Apagá-las
   quebra a resolução de família/SKU. **Nunca** entram na poda.
-- **500 MB não é infinito.** 2 dias de `coletas` (~68 MB) + referências + o que
+- **500 MB não é infinito.** 2 dias de `coletas` (~100 MB no
+  patamar real, §5.3) + referências + o que
   ficar de `pricetrack_daily`/`seller_offer_daily` tem que somar < 500 MB.
   Monitore com o SQL do Passo 1.
 
