@@ -447,6 +447,43 @@ ordem: baixar `RAC_SELLER_RETENTION_DAYS` (o slider do `seller_app` se ajusta
 sozinho ao histórico que existe), e manter só o turno `Diário` de
 `pricetrack_daily` na janela quente (~20 MB, decisão de produto em aberto).
 
+### 5.3 07–08/11/2026 — cota estourada de novo (640 MB) e a volta para 327 MB
+
+**Causa:** o degrau de cura do PriceTrack (`--gaps-only`, 05:20 BRT) via como
+"buraco" os dias que a poda já tinha mandado ao Drive e os **reimportava**
+para o banco. Ele não consultava o histórico frio (corrigido no #421), e o
+workflow nem instalava as bibliotecas para lê-lo (corrigido no #426). Junto,
+`seller_offer_daily` guardava 62 dias e era a maior tabela (217 MB).
+
+**O que foi feito:**
+
+1. 07/11: `tier` manual no PC → **637 → 493 MB**. `pricetrack_daily` ficou
+   com um dia só, mas 89 MB (83 MB de heap morto: `DELETE` não devolve disco).
+2. 07/11: retenção do seller de **62 → 30 dias** (#429). O teto do slider do
+   `seller_app` passou de 60 para 28 (segue `RAC_SELLER_RETENTION_DAYS − 2`).
+3. Noite de 07/11 (23:29): o `tier` agendado podou o seller para 09/10–07/11.
+   A cura das 06:58 de 08/11 rodou sem reimportar dia antigo: o fix segurou.
+   `pricetrack_daily` ficou com 06/11 e 07/11.
+4. 08/11, 09:50 BRT: `VACUUM FULL` nas três tabelas podadas, fora de qualquer
+   escrita (antes do turno das 14:00, sem import do PriceTrack em andamento):
+
+| Tabela | Antes | Depois (heap + índice) |
+|---|---|---|
+| `seller_offer_daily` (30 dias, 211 mil linhas) | 220 MB | **101 MB** (53 + 48) |
+| `pricetrack_daily` (2 dias, 76 mil linhas) | 44 MB | **37 MB** (24 + 13) |
+| `seller_coverage_daily` | 640 kB | 312 kB |
+| `coletas` (sem vacuum) | 99 MB | 99 MB (52 + 47) |
+| **Banco** | **453 MB** | **327 MB** (folga ~173 MB, 35%) |
+
+O seller medido bate com o orçamento (~3,4 MB/dia × 30 ≈ 101 MB). A
+diferença para os ~280 MB previstos está em `coletas` (99 MB contra ~65 MB).
+Fica aqui como ponto a acompanhar, não como alarme.
+
+**Regra que fica:** depois de uma poda grande por `DELETE` (troca de
+retenção, limpeza manual), rode um `VACUUM FULL` na tabela fora do horário de
+escrita. Ele trava a tabela inteira, e é o único jeito de o disco voltar.
+O `compactar_indices` da noite só reconstrói índice, não devolve o heap.
+
 Conferir a qualquer momento:
 
 ```sql
