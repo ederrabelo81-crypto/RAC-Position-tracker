@@ -113,67 +113,93 @@ def _apply_chart_style(fig, height: int = 440, hovermode: str = "x unified") -> 
 
 _MIDEA_BRAND = "Midea"
 
-# Paleta categórica ampla e visualmente distinta para gráficos por marca.
-# Maior que `_CHART_COLORS` de propósito: uma barra empilhada de "quem ocupa o
-# top 10" chega a ~20 marcas, e um pool pequeno faz cores se repetirem.
-_BRAND_PALETTE = [
-    "#1a56db",  # azul
-    "#f97316",  # laranja
-    "#059669",  # verde
-    "#db2777",  # magenta
-    "#8b5cf6",  # violeta
-    "#0891b2",  # ciano
-    "#dc2626",  # vermelho
-    "#ca8a04",  # dourado
-    "#4d7c0f",  # oliva
-    "#be123c",  # carmim
-    "#0e7490",  # petróleo
-    "#7c3aed",  # roxo
-    "#b45309",  # âmbar-escuro
-    "#334155",  # ardósia
-]
+# Cores de marca/plataforma: fonte única em `utils/ui_tokens.py` (Nov/2026).
+# Antes havia duas paletas que se contradiziam (Midea #1a56db aqui, #4338ca na
+# Ficha do Produto; Philco vermelha aqui, laranja lá).
+from utils import ui_tokens as _ui  # noqa: E402
 
-# Cor fixa por marca conhecida: garante que marcas importantes sejam sempre a
-# mesma cor entre gráficos E que pares parecidos não colidam — em especial
-# LG (magenta) × Elgin (laranja), que antes caíam em dois laranjas quase iguais.
-# Todas as cores fixas são mutuamente distintas.
-_BRAND_FIXED: dict[str, str] = {
-    "Midea":   "#1a56db",  # azul (marca principal)
-    # Rótulo do grupo no Cockpit (utils/shelf_insights.ROTULO_GRUPO) — mesma
-    # cor da Midea: é a mesma empresa vista como grupo.
-    "Midea Carrier": "#1a56db",
-    "Elgin":   "#f97316",  # laranja
-    "LG":      "#db2777",  # magenta
-    "Gree":    "#059669",  # verde
-    "Samsung": "#8b5cf6",  # violeta
-    "TCL":     "#0891b2",  # ciano
-    "Philco":  "#dc2626",  # vermelho
-}
+_BRAND_PALETTE = _ui.BRAND_ROTATION
+_BRAND_FIXED: dict[str, str] = _ui.BRAND_COLORS
 
 
 def _brand_color_map(values) -> dict:
-    """Mapa de cores discreto para gráficos por marca.
+    """Mapa de cores discreto para gráficos por marca (ver `utils.ui_tokens`)."""
+    return _ui.brand_color_map(values)
 
-    Marcas conhecidas recebem uma cor fixa e mutuamente distinta (Midea segue
-    no azul primário; LG e Elgin nunca caem em laranjas parecidos). As demais
-    rodam pela paleta restante, pulando as cores já usadas pelas fixas.
+
+# ---------------------------------------------------------------------------
+# Componentes de leitura (Nov/2026) — progressive disclosure e estado vazio
+# ---------------------------------------------------------------------------
+
+def _como_ler(corpo: str, rotulo: str = "ℹ️ Como ler") -> None:
+    """Metodologia/ressalvas atrás de um popover, fora do caminho do número.
+
+    A regra do projeto continua visível a um clique — só deixa de ficar entre o
+    KPI e o gráfico.
     """
-    unique = sorted(set(str(v) for v in values if pd.notna(v)))
-    cmap: dict = {}
-    used: set = set()
-    for v in unique:
-        fixed = _BRAND_FIXED.get(v)
-        if fixed:
-            cmap[v] = fixed
-            used.add(fixed)
-    rotation = [c for c in _BRAND_PALETTE if c not in used] or _BRAND_PALETTE
-    idx = 0
-    for v in unique:
-        if v in cmap:
+    if hasattr(st, "popover"):
+        with st.popover(rotulo):
+            st.markdown(corpo)
+    else:  # Streamlit < 1.33
+        with st.expander(rotulo):
+            st.markdown(corpo)
+
+
+_EMPTY_KINDS: dict[str, tuple[str, str]] = {
+    # tipo: (ícone, título) — três causas que o painel nunca pode confundir.
+    "sem_dado":       ("📭", "Sem dado neste recorte"),
+    "sem_coleta":     ("🛰️", "A coleta não trouxe este recorte"),
+    "fora_cobertura": ("🧭", "Fora da cobertura desta análise"),
+}
+
+
+def _empty_state(tipo: str, mensagem: str, acao: str | None = None) -> None:
+    """Estado vazio padronizado.
+
+    Args:
+        tipo: ``sem_dado`` (o mercado não teve), ``sem_coleta`` (nós não
+            olhamos — bloqueio, turno parcial) ou ``fora_cobertura`` (a pergunta
+            não se aplica ao recorte). "Silêncio não é mercado": os três nunca
+            podem ter a mesma cara.
+        mensagem: O que aconteceu, em uma ou duas frases.
+        acao: Próximo passo para o usuário (opcional).
+    """
+    icone, titulo = _EMPTY_KINDS.get(tipo, _EMPTY_KINDS["sem_dado"])
+    with st.container(border=True):
+        st.markdown(f"**{icone} {titulo}**  \n{mensagem}")
+        if acao:
+            st.caption(f"Próximo passo: {acao}")
+
+
+def _label_line_ends(fig, max_traces: int = 8) -> None:
+    """Rótulo direto no fim de cada linha, no lugar da legenda embaixo.
+
+    A legenda horizontal custava ~140 px de margem inferior por gráfico e
+    obrigava o olho a ir e voltar. Com mais de ``max_traces`` linhas os
+    rótulos se sobrepõem — aí a legenda fica.
+    """
+    linhas = [t for t in fig.data
+              if getattr(t, "type", "") == "scatter"
+              and "lines" in (getattr(t, "mode", None) or "lines")
+              and t.x is not None and len(t.x)]
+    if not linhas or len(linhas) > max_traces:
+        return
+    for t in linhas:
+        cor = None
+        if getattr(t, "line", None) is not None:
+            cor = t.line.color
+        # Último ponto COM valor: série com buraco no fim não pode ancorar o
+        # rótulo num None (Plotly o desenharia no zero).
+        pontos = [(x, y) for x, y in zip(t.x, t.y if t.y is not None else [])
+                  if y is not None and not (isinstance(y, float) and y != y)]
+        if not pontos:
             continue
-        cmap[v] = rotation[idx % len(rotation)]
-        idx += 1
-    return cmap
+        x_fim, y_fim = pontos[-1]
+        fig.add_annotation(
+            x=x_fim, y=y_fim, text=f"<b>{t.name}</b>", showarrow=False,
+            xanchor="left", xshift=6, font=dict(size=11, color=cor or _ui.TEXT),
+        )
+    fig.update_layout(showlegend=False, margin=dict(r=120, b=40))
 
 
 def _emphasize_midea_traces(fig) -> None:
@@ -4214,7 +4240,7 @@ def _render_send_section(
 # ---------------------------------------------------------------------------
 
 def page_results():
-    st.title("📊 Results")
+    st.title("🔎 Posição na Busca")
     st.caption("Browse collected data. Filters are applied before loading.")
 
     # --- Sidebar filters ---
@@ -4799,7 +4825,7 @@ def _evo_build_series(
 
 
 def page_price_evolution():
-    st.title("📈 Price Evolution")
+    st.title("📈 Evolução de Preço")
     st.caption("Track price changes over time by product or brand.")
 
     with st.sidebar:
@@ -5184,6 +5210,7 @@ def page_price_evolution():
                     tr.line.dash = "dash"
             _emphasize_midea_traces(fig)
             _apply_chart_style(fig, height=460)
+            _label_line_ends(fig)
             st.plotly_chart(fig, use_container_width=True)
 
             st.caption(_SERIES_SOURCE_RULE)
@@ -5283,7 +5310,7 @@ def page_price_evolution():
 # ---------------------------------------------------------------------------
 
 def page_import_history():
-    st.title("📂 Import History")
+    st.title("📂 Importar Histórico")
     st.caption("Upload historical CSV files to Supabase. Duplicates are ignored automatically.")
 
     OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -5722,7 +5749,7 @@ def _query_health(window_days: int) -> pd.DataFrame:
 
 
 def page_data_health() -> None:
-    st.title("🩺 Data Health")
+    st.title("🩺 Saúde do Dado")
     st.caption(
         "Cobertura e preenchimento dos campos por plataforma. Detecta coleta "
         "quebrada ou campo de buy box vazio antes que vire dias de buraco."
@@ -6363,7 +6390,7 @@ def page_familia_sku_admin() -> None:
 # ---------------------------------------------------------------------------
 
 def page_buybox_position():
-    st.title("🏆 BuyBox Position")
+    st.title("🏆 Buy Box — posição e vencedor")
     st.caption(
         "Quem está em posição #1 para cada produto/plataforma? "
         "Analise quais marcas e sellers dominam o topo das buscas."
@@ -6372,7 +6399,7 @@ def page_buybox_position():
         "ℹ️ Esta página usa a **posição orgânica/geral ≤ N** como *proxy* de buy box "
         "(funciona para todas as plataformas). Para o **vencedor real da buy box** "
         "(campo `buy_box_seller`, mix 1P/3P e nº de sellers competindo), veja a página "
-        "**👑 Share of Buy Box**.",
+        "**🏆 Buy Box → Share de buy box**.",
         icon="ℹ️",
     )
 
@@ -6691,7 +6718,7 @@ def page_buybox_position():
 # ---------------------------------------------------------------------------
 
 def page_share_of_buybox() -> None:
-    st.title("👑 Share of Buy Box")
+    st.title("🏆 Buy Box — share por seller")
     st.caption(
         "Quem vence a oferta principal (buy box) de cada produto — por seller, "
         "tipo (1P/3P/Loja Oficial) e nível de competição. Baseado no campo real "
@@ -6740,7 +6767,7 @@ def page_share_of_buybox() -> None:
         st.info("Defina os filtros na barra lateral e clique em **Carregar Buy Box**.")
         st.caption(
             "💡 A cobertura de `buy_box_seller` varia por plataforma e scraper — "
-            "consulte a matriz campo × plataforma na página 🩺 Data Health. "
+            "consulte a matriz campo × plataforma na página 🩺 Saúde do Dado. "
             "A coleta de buy box começou no fim de Maio/2026."
         )
         return
@@ -6764,7 +6791,7 @@ def page_share_of_buybox() -> None:
     if bb.empty:
         st.warning(
             "As plataformas/períodos selecionados não têm `buy_box_seller` preenchido. "
-            "Veja quais plataformas entregam o campo na página 🩺 Data Health e "
+            "Veja quais plataformas entregam o campo na página 🩺 Saúde do Dado e "
             "tente um período recente."
         )
         cov = (
@@ -6832,9 +6859,11 @@ def page_share_of_buybox() -> None:
         col_chart, col_table = st.columns([2, 1])
         with col_chart:
             top = wins.head(15)
+            # Cor única: pintar cada seller de uma cor não codifica nada (a
+            # paleta só cicla) e compete com o comprimento da barra.
             fig = px.bar(
                 top, x="Buy box wins", y="Seller", orientation="h",
-                color="Seller", color_discrete_sequence=_CHART_COLORS,
+                color_discrete_sequence=[_ui.TEXT_MUTED],
                 text="Share (%)", title="Top sellers por buy box vencida",
             )
             fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
@@ -6843,7 +6872,13 @@ def page_share_of_buybox() -> None:
             _apply_chart_style(fig, height=480, hovermode="closest")
             st.plotly_chart(fig, use_container_width=True)
         with col_table:
-            st.dataframe(wins, use_container_width=True, hide_index=True, height=480)
+            st.dataframe(
+                wins, use_container_width=True, hide_index=True, height=480,
+                column_config={
+                    "Share (%)": st.column_config.ProgressColumn(
+                        "Share (%)", format="%.1f%%", min_value=0, max_value=100),
+                },
+            )
         _csv_download_btn(
             wins, f"rac_share_buybox_seller_{start_date}_{end_date}.csv",
             "⬇️ Exportar share por seller", key="sbb_seller_csv",
@@ -6859,7 +6894,7 @@ def page_share_of_buybox() -> None:
             st.info(
                 "Nenhum registro com `tipo_seller` preenchido nos filtros/período "
                 "selecionados. A cobertura varia por plataforma e scraper — veja a "
-                "matriz campo × plataforma na página 🩺 Data Health."
+                "matriz campo × plataforma na página 🩺 Saúde do Dado."
             )
         else:
             tdf = bb[bb["tipo_seller"].notna()
@@ -6894,7 +6929,7 @@ def page_share_of_buybox() -> None:
             st.info(
                 "Nenhum registro com `qtd_sellers` preenchido nos filtros/período "
                 "selecionados. A cobertura varia por plataforma e scraper — veja a "
-                "matriz campo × plataforma na página 🩺 Data Health."
+                "matriz campo × plataforma na página 🩺 Saúde do Dado."
             )
         else:
             comp = bb.dropna(subset=["qtd_sellers"])
@@ -6967,7 +7002,7 @@ def page_share_of_buybox() -> None:
 # ---------------------------------------------------------------------------
 
 def page_availability():
-    st.title("📦 Availability")
+    st.title("📦 Disponibilidade")
     st.caption(
         "Presença de marcas e sellers em TODAS as posições coletadas. "
         "Mostra quão amplamente cada marca aparece nas buscas — independente da posição."
@@ -7438,7 +7473,7 @@ def page_reputacao() -> None:
         st.info("Defina os filtros na barra lateral e clique em **Carregar Avaliações**.")
         st.caption(
             "💡 A cobertura de `avaliacao` e `reputacao_seller` varia por plataforma "
-            "e scraper — veja a matriz campo × plataforma na página 🩺 Data Health."
+            "e scraper — veja a matriz campo × plataforma na página 🩺 Saúde do Dado."
         )
         return
 
@@ -7657,7 +7692,7 @@ def page_reputacao() -> None:
             "API oficial do ML (`python main.py --platforms ml_api`, requer "
             "ML_APP_ID/ML_APP_SECRET + `python scripts/ml_oauth_setup.py`) e o "
             "`shop_rating` da Shopee. Veja a cobertura real por marketplace no "
-            "expander acima e na página 🩺 Data Health."
+            "expander acima e na página 🩺 Saúde do Dado."
         )
         if not {"reputacao_seller", "buy_box_seller"} <= set(df.columns):
             st.warning("Colunas de reputação/buy box indisponíveis no schema.")
@@ -7815,7 +7850,7 @@ def page_sov_patrocinado() -> None:
             "marca anúncio patrocinado na coleta é Mercado Livre (Product Ads) e "
             "Amazon (AMS); Google Shopping/Magalu/Shopee ainda não sinalizam o "
             "flag na SERP capturada. A cobertura real por plataforma aparece no "
-            "expander de cobertura e na página 🩺 Data Health."
+            "expander de cobertura e na página 🩺 Saúde do Dado."
         )
         return
 
@@ -7846,7 +7881,7 @@ def page_sov_patrocinado() -> None:
     if not bool(spon.any()):
         st.warning(
             "Nenhum anúncio patrocinado no período/filtros. Confira a cobertura "
-            "de `patrocinado` por plataforma na página 🩺 Data Health — coleta "
+            "de `patrocinado` por plataforma na página 🩺 Saúde do Dado — coleta "
             "quebrada aparece lá como 0% (caso do ML até Jun/2026)."
         )
         return
@@ -8214,7 +8249,7 @@ def page_price_compliance() -> None:
     mínimos dos sellers do mesmo SKU no dia: rompimento = ofertar mais de
     X% abaixo dela (limiar configurável).
     """
-    st.title("🛡️ Price Compliance")
+    st.title("🛡️ Compliance de Preço")
     st.caption(
         "Monitor de preço-piso dos SKUs MCJV (`pricetrack_daily.is_midea_group`). "
         "**Rompimento** = preço mínimo do seller mais de X% abaixo da mediana "
@@ -8585,6 +8620,27 @@ def _share_stack_chart(longo: pd.DataFrame, dim: str, titulo: str, top: int = 6)
     return fig
 
 
+def _cockpit_headline(sh_u, sh_a, lider, ultimo) -> str:
+    """Frase-resposta do Cockpit: o número do dia, a direção e o rival.
+
+    Fica ACIMA dos KPIs — quem abre o painel lê a resposta antes de ler os
+    cartões. Pura (sem Streamlit): testada em `tests/test_ui_components.py`.
+    """
+    if sh_u is None:
+        return "Sem share de prateleira calculável no período."
+    dia = f" em {ultimo:%d/%m}" if ultimo is not None else ""
+    frase = f"**A Midea Carrier ocupa {sh_u:.0%} da prateleira genérica{dia}**"
+    if sh_a is not None:
+        dpp = (sh_u - sh_a) * 100
+        if abs(dpp) < 0.5:
+            frase += ", estável vs o dia anterior"
+        else:
+            frase += f", {'▲' if dpp > 0 else '▼'} {abs(dpp):.1f} p.p. vs o dia anterior"
+    if lider is not None:
+        frase += f" — rival líder: **{lider['marca']}** com {float(lider['share']):.0%}"
+    return frase + "."
+
+
 def page_overview() -> None:
     """🏠 Cockpit do Trade — leitura de prateleira da Midea Carrier no dia.
 
@@ -8630,9 +8686,11 @@ def page_overview() -> None:
             sem_depara_flag=_gf_historico_sem_depara(),
         )
     if bruto.empty:
-        st.info(
-            "Nenhuma coleta de posição no período. Ajuste o **Período** global "
-            "ou confira a fonte em ⚙️ Avançado (o Cockpit lê só as Coletas)."
+        _empty_state(
+            "sem_coleta",
+            "Nenhuma coleta de posição no período selecionado.",
+            acao="ajuste o **Período** global ou confira a fonte em ⚙️ Avançado "
+                 "(o Cockpit lê só as Coletas).",
         )
         return
 
@@ -8664,7 +8722,12 @@ def page_overview() -> None:
     ult, ant, meta = comparable_days(genericas)
 
     if ult.empty:
-        st.warning("O período não tem buscas genéricas coletadas — sem base para share de prateleira.")
+        _empty_state(
+            "fora_cobertura",
+            "O período não tem buscas **genéricas** coletadas — sem base para "
+            "share de prateleira (busca de marca não entra no share).",
+            acao="amplie o Período ou remova o filtro de Plataformas.",
+        )
         return
 
     # ── KPI strip ───────────────────────────────────────────────────────────
@@ -8689,6 +8752,7 @@ def page_overview() -> None:
     preco = shelf_price_by_btu(base[base["data"] == meta["ultimo"]])
     p12 = preco[preco["btu"] == 12000] if not preco.empty else preco
 
+    st.markdown(_cockpit_headline(sh_u, sh_a, lider, meta.get("ultimo")))
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(
         "Share prateleira", f"{sh_u:.1%}" if sh_u is not None else "—",
@@ -8730,16 +8794,20 @@ def page_overview() -> None:
     ant_txt = meta["anterior"].strftime("%d/%m") if meta["anterior"] else "sem dia anterior"
     dup_txt = f"{dup:,}".replace(",", ".")
     desc = int(meta.get("buscas_descartadas") or 0)
-    st.caption(
-        f"Base: **{ult_txt}** vs **{ant_txt}**, só nos turnos e nas buscas que os "
-        f"dois dias coletaram em cada plataforma"
+    _como_ler(
+        f"**Base da comparação:** {ult_txt} vs {ant_txt}, só nos turnos e nas "
+        f"buscas que os dois dias coletaram em cada plataforma"
         + (f" ({desc} busca(s) vista(s) em só um dos dias ficaram de fora)" if desc else "")
-        + f". {dup_txt} linha(s) duplicada(s) descartada(s) (o mesmo turno gravado "
+        + ".\n\n"
+        "**Share de prateleira** = fração das 10 primeiras posições orgânicas das "
+        "buscas **genéricas** (sem marca) ocupada pela Midea Carrier. Busca de "
+        "marca tem leitura própria (defesa/conquista) e nunca soma no share.\n\n"
+        "Turno com coleta parcial (< 30% do melhor turno da plataforma) sai dos "
+        "dois dias e vira ressalva — silêncio não é mercado.\n\n"
+        f"{dup_txt} linha(s) duplicada(s) descartada(s) (o mesmo turno gravado "
         "por duas runs)."
+        + (f"\n\n**Turnos comparados:** {turnos_txt}" if turnos_txt else ""),
     )
-    if turnos_txt:
-        with st.expander("Turnos comparados por plataforma"):
-            st.caption(turnos_txt)
 
     # ── O que mudou ─────────────────────────────────────────────────────────
     st.subheader("🚨 O que mudou e pede ação")
@@ -8867,7 +8935,12 @@ def page_overview() -> None:
             serie["data"] = pd.to_datetime(serie["data"])
             fig = px.line(
                 serie, x="data", y="share", color="marca", markers=True,
-                color_discrete_map=_brand_color_map(serie["marca"]),
+                # Foco + contexto: Midea Carrier e os 2 maiores rivais (mais as
+                # marcas filtradas) em cor; o resto em cinza.
+                color_discrete_map=_ui.focus_color_map(
+                    serie["marca"],
+                    [ROTULO_GRUPO, "Midea", *rivais_top[:2], *sel_brands],
+                ),
                 title="Share do top 10 nas buscas genéricas (média entre plataformas)",
                 labels={"share": "Share do top 10", "data": "", "marca": "Marca"},
                 custom_data=["plataformas"],
@@ -8882,6 +8955,7 @@ def page_overview() -> None:
             # distância entre as marcas não ser exagerada pelo recorte do eixo.
             fig.update_xaxes(dtick="D1", tickformat="%d/%m", title=None)
             fig.update_yaxes(tickformat=".0%", rangemode="tozero")
+            _label_line_ends(fig)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
             st.caption(
                 "Cada plataforma pesa igual no dia — assim um bloqueio de coleta "
@@ -8921,7 +8995,7 @@ def page_overview() -> None:
                     "plataformas": "Plataformas",
                 },
             )
-        if st.button("→ Share of Buy Box completo", key="ov_goto_sbb"):
+        if st.button("→ Share de buy box completo", key="ov_goto_sbb"):
             st.session_state["_nav_page"] = "👑 Share of Buy Box"
             st.rerun()
 
@@ -8968,13 +9042,13 @@ def page_overview() -> None:
 
     st.divider()
     nav1, nav2, nav3 = st.columns(3)
-    if nav1.button("→ BuyBox Position", key="ov_goto_buybox", use_container_width=True):
+    if nav1.button("→ Buy Box", key="ov_goto_buybox", use_container_width=True):
         st.session_state["_nav_page"] = "🏆 BuyBox Position"
         st.rerun()
     if nav2.button("→ SoV Patrocinado", key="ov_goto_sov", use_container_width=True):
         st.session_state["_nav_page"] = "📣 SoV Patrocinado"
         st.rerun()
-    if nav3.button("→ Top Movers de preço", key="ov_goto_movers", use_container_width=True):
+    if nav3.button("→ Alertas de preço", key="ov_goto_movers", use_container_width=True):
         st.session_state["_nav_page"] = "🚨 Top Movers"
         st.rerun()
     _csv_download_btn(
@@ -9165,7 +9239,7 @@ def _pt_top_movers_finalize(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def page_top_movers() -> None:
-    st.title("🚨 Top Movers")
+    st.title("🚨 Alertas — movimentos de preço")
     st.caption(
         "SKUs com maior variação de preço entre duas janelas temporais. "
         "Fonte: `pricetrack_daily` (granularidade garantida: 1 linha por "
@@ -9767,7 +9841,7 @@ def _build_anomaly_email(target_day, prev_day, threshold, shown):
 
 
 def page_email_digest() -> None:
-    st.title("📧 Email Digest")
+    st.title("📧 Resumo por E-mail")
     st.markdown(
         "Send a consolidated email with the **Top Movers** and **BuyBox** "
         "snapshot for the active window. The same digest can be sent "
@@ -9956,7 +10030,7 @@ def page_email_digest() -> None:
 
 
 def page_price_anomalies() -> None:
-    st.title("🔔 Price Anomalies")
+    st.title("🚨 Alertas — anomalias de preço")
     st.markdown(
         "Detects per-SKU price changes between two consecutive days. Any "
         "product whose mean price moved by at least the threshold is "
@@ -10186,7 +10260,7 @@ def _query_products_history(
 # ---------------------------------------------------------------------------
 
 def page_market_analytics() -> None:
-    st.title("📊 Market Analytics")
+    st.title("📊 Análise de Mercado")
     st.caption("Distribuição de preços (uma fonte só na janela: PriceTrack, ou "
                "Coletas quando o PriceTrack cobre menos da metade dos dias) e "
                "presença por marketplace (volume de ofertas das coletas) ao longo do tempo.")
@@ -10671,34 +10745,12 @@ _TURNO_TO_PERIODO: dict[str, str] = {
 # Cor primária por marca para o chip de Marca (borda lateral colorida).
 # Cores aproximam o branding sem precisar de PNG real — substitua por
 # `assets/logos/marcas/{slug}.png` numa 2ª iteração se quiser logo de verdade.
-_BRAND_COLORS: dict[str, str] = {
-    "Agratto":         "#dc2626",
-    "Electrolux":      "#1e40af",
-    "Elgin":           "#d97706",
-    "Gree":            "#15803d",
-    "LG":              "#a21caf",
-    "Midea":           "#4338ca",
-    "Philco":          "#ea580c",
-    "Samsung":         "#0f172a",
-    "TCL":             "#0369a1",
-    "Springer Midea":  "#1d4ed8",
-    "Consul":          "#0e7490",
-    "Komeco":          "#6d28d9",
-    "Carrier":         "#0891b2",
-    "Daikin":          "#0c4a6e",
-    "Fujitsu":         "#7f1d1d",
-    "Britânia":        "#be123c",
-    "Britania":        "#be123c",
-}
+_BRAND_COLORS: dict[str, str] = _ui.BRAND_COLORS
+
 
 def _brand_color(brand: str | None) -> str:
-    """Cor primária da marca (fallback cinza neutro)."""
-    if not brand:
-        return "#64748b"
-    # Normaliza marca para tolerar variações de caixa/acento mantendo
-    # o dicionário enxuto (uma entrada por canônico).
-    norm = str(brand).strip()
-    return _BRAND_COLORS.get(norm, "#64748b")
+    """Cor primária da marca (fallback cinza neutro) — `utils.ui_tokens`."""
+    return _ui.brand_color(brand)
 
 
 def _hex_tint(hex_color: str, ratio: float = 0.88) -> str:
@@ -11341,7 +11393,7 @@ def _dv_floor_prev(
 
 
 def page_daily_vision() -> None:
-    st.title("📅 Daily Price Vision")
+    st.title("📅 Preço do Dia")
     st.caption(
         "Menor preço por marketplace, consolidado por marca, capacidade e SKU. "
         "**PriceTrack** alimenta **Manhã** (08–12h) e **Tarde** (18–22h) — "
@@ -13622,73 +13674,227 @@ def page_clima() -> None:
                f"menos de {clima.MIN_PONTOS_CORRELACAO} pontos é hipótese, não regra.")
 
 
+# ---------------------------------------------------------------------------
+# Navegação (Nov/2026)
+#
+# Antes: 23 páginas em 3 grupos (17 em INSIGHTS), nomes metade em inglês, e a
+# barra lateral feita de `st.button` + `st.rerun()` — cada clique rodava o
+# script DUAS vezes e nenhuma página tinha URL própria. Agora:
+#   * seções pela PERGUNTA de trade (Hoje / Prateleira / Buy box / Preço /
+#     Demanda / Produto / Operação / Admin), via `st.navigation`;
+#   * cada página com URL estável (`url_path`) — dá para mandar o link;
+#   * páginas que respondiam a mesma pergunta viraram UMA página com visões
+#     (`_SUBVIEWS`): Buy Box (posição + share) e Alertas (movimentos +
+#     anomalias de preço).
+#   * nomes antigos continuam valendo em `_nav_page` / `_current_page`
+#     (`_LEGACY_PAGES`), para atalho e teste antigo não quebrarem calados.
+# ---------------------------------------------------------------------------
+
+_HOME_PAGE = "🏠 Cockpit do Trade"
+
+#: Página → {rótulo da visão: função}. A 1ª visão é a padrão.
+_SUBVIEWS: dict[str, dict] = {
+    "🚨 Alertas": {
+        "Movimentos de preço": page_top_movers,
+        "Anomalias de preço": page_price_anomalies,
+    },
+    "🏆 Buy Box": {
+        "Posição e vencedor": page_buybox_position,
+        "Share de buy box": page_share_of_buybox,
+    },
+}
+
+
+def _subview_key(page: str) -> str:
+    """Chave de session_state do seletor de visão de uma página composta."""
+    return f"subview__{page}"
+
+
+def _render_subviews(page: str) -> None:
+    """Renderiza o seletor de visão e SÓ a visão escolhida (não roda as outras)."""
+    views = _SUBVIEWS[page]
+    opts = list(views)
+    key = _subview_key(page)
+    if st.session_state.get(key) not in opts:
+        st.session_state[key] = opts[0]
+    if hasattr(st, "segmented_control"):
+        escolha = st.segmented_control("Visão", opts, key=key,
+                                       label_visibility="collapsed")
+    else:  # Streamlit < 1.40
+        escolha = st.radio("Visão", opts, key=key, horizontal=True,
+                           label_visibility="collapsed")
+    views[escolha or opts[0]]()
+
+
+def _composta(page: str):
+    """Função de página para uma página composta (closure nomeada)."""
+    def _run() -> None:
+        _render_subviews(page)
+    _run.__name__ = f"page_{_slug(page)}"
+    return _run
+
+
+def _slug(nome: str) -> str:
+    """'🏆 Buy Box' → 'buy-box' (url_path estável, só ASCII)."""
+    import unicodedata
+    txt = unicodedata.normalize("NFKD", nome)
+    txt = "".join(c for c in txt if c.isascii())
+    txt = re.sub(r"[^a-zA-Z0-9]+", "-", txt).strip("-").lower()
+    return txt or "pagina"
+
+
 PAGES = {
+    # HOJE
     "🏠 Cockpit do Trade":         page_overview,
-    "📅 Daily Price Vision":       page_daily_vision,
-    "🚨 Top Movers":               page_top_movers,
-    "📊 Results":                  page_results,
-    "📈 Price Evolution":           page_price_evolution,
-    "📊 Market Analytics":         page_market_analytics,
+    "🚨 Alertas":                  _composta("🚨 Alertas"),
+    # PRATELEIRA
+    "🔎 Posição na Busca":         page_results,
+    "📣 SoV Patrocinado":          page_sov_patrocinado,
+    "📦 Disponibilidade":          page_availability,
+    # BUY BOX E SELLERS
+    "🏆 Buy Box":                  _composta("🏆 Buy Box"),
+    "⭐ Reputação & Avaliações":   page_reputacao,
+    # PREÇO
+    "📅 Preço do Dia":             page_daily_vision,
+    "📈 Evolução de Preço":        page_price_evolution,
+    "📊 Análise de Mercado":       page_market_analytics,
     "💰 Preços 9K/12K":            page_pricetrack_precos,
     "🩻 Diagnóstico":               page_diagnostico,
+    "🛡️ Compliance de Preço":      page_price_compliance,
+    # DEMANDA
     "🥇 Mais Vendidos":            page_bestsellers,
     "🌡️ Clima × Vendas":           page_clima,
+    # PRODUTO
     "🗂️ Ficha do Produto":         page_product_sheet,
-    "🏆 BuyBox Position":          page_buybox_position,
-    "👑 Share of Buy Box":         page_share_of_buybox,
-    "⭐ Reputação & Avaliações":   page_reputacao,
-    "📣 SoV Patrocinado":          page_sov_patrocinado,
-    "🛡️ Price Compliance":         page_price_compliance,
-    "📦 Availability":             page_availability,
-    "📧 Email Digest":             page_email_digest,
-    "🔔 Price Anomalies":          page_price_anomalies,
-    "📂 Import History":           page_import_history,
-    "🩺 Data Health":              page_data_health,
+    # OPERAÇÃO
+    "🩺 Saúde do Dado":            page_data_health,
+    "📂 Importar Histórico":       page_import_history,
+    "📧 Resumo por E-mail":        page_email_digest,
+    # ADMIN
     "🤖 Automação":                page_admin_automation,
     "🧬 Família & SKU":            page_familia_sku_admin,
 }
 
 _NAV_GROUPS: dict[str, list[str]] = {
-    "INSIGHTS": [
-        "🏠 Cockpit do Trade",
-        "📅 Daily Price Vision",
-        "🚨 Top Movers",
-        "📊 Results",
-        "📈 Price Evolution",
-        "📊 Market Analytics",
-        "💰 Preços 9K/12K",
-        "🩻 Diagnóstico",
-        "🥇 Mais Vendidos",
-        "🌡️ Clima × Vendas",
-        "🗂️ Ficha do Produto",
-        "🏆 BuyBox Position",
-        "👑 Share of Buy Box",
-        "⭐ Reputação & Avaliações",
-        "📣 SoV Patrocinado",
-        "🛡️ Price Compliance",
-        "📦 Availability",
+    "HOJE": ["🏠 Cockpit do Trade", "🚨 Alertas"],
+    "PRATELEIRA": ["🔎 Posição na Busca", "📣 SoV Patrocinado", "📦 Disponibilidade"],
+    "BUY BOX E SELLERS": ["🏆 Buy Box", "⭐ Reputação & Avaliações"],
+    "PREÇO": [
+        "📅 Preço do Dia", "📈 Evolução de Preço", "📊 Análise de Mercado",
+        "💰 Preços 9K/12K", "🩻 Diagnóstico", "🛡️ Compliance de Preço",
     ],
-    "OPERAÇÕES": [
-        "📧 Email Digest",
-        "🔔 Price Anomalies",
-        "📂 Import History",
-        "🩺 Data Health",
-    ],
-    "ADMIN": [
-        "🤖 Automação",
-        "🧬 Família & SKU",
-    ],
+    "DEMANDA": ["🥇 Mais Vendidos", "🌡️ Clima × Vendas"],
+    "PRODUTO": ["🗂️ Ficha do Produto"],
+    "OPERAÇÃO": ["🩺 Saúde do Dado", "📂 Importar Histórico", "📧 Resumo por E-mail"],
+    "ADMIN": ["🤖 Automação", "🧬 Família & SKU"],
+}
+
+#: Rótulo exibido de cada seção (as chaves de `_NAV_GROUPS` ficam em caixa alta
+#: por compatibilidade com testes e documentação).
+_SECTION_LABELS: dict[str, str] = {
+    "HOJE": "Hoje", "PRATELEIRA": "Prateleira", "BUY BOX E SELLERS": "Buy box e sellers",
+    "PREÇO": "Preço", "DEMANDA": "Demanda", "PRODUTO": "Produto",
+    "OPERAÇÃO": "Operação", "ADMIN": "Admin",
+}
+
+#: Nome antigo → (página nova, visão ou None). Atalhos, favoritos de sessão e
+#: testes antigos chegam com o nome antigo e precisam cair no lugar certo.
+_LEGACY_PAGES: dict[str, tuple] = {
+    "📅 Daily Price Vision":  ("📅 Preço do Dia", None),
+    "🚨 Top Movers":          ("🚨 Alertas", "Movimentos de preço"),
+    "🔔 Price Anomalies":     ("🚨 Alertas", "Anomalias de preço"),
+    "📊 Results":             ("🔎 Posição na Busca", None),
+    "📈 Price Evolution":     ("📈 Evolução de Preço", None),
+    "📊 Market Analytics":    ("📊 Análise de Mercado", None),
+    "🏆 BuyBox Position":     ("🏆 Buy Box", "Posição e vencedor"),
+    "👑 Share of Buy Box":    ("🏆 Buy Box", "Share de buy box"),
+    "🛡️ Price Compliance":    ("🛡️ Compliance de Preço", None),
+    "📦 Availability":        ("📦 Disponibilidade", None),
+    "📧 Email Digest":        ("📧 Resumo por E-mail", None),
+    "📂 Import History":      ("📂 Importar Histórico", None),
+    "🩺 Data Health":         ("🩺 Saúde do Dado", None),
 }
 
 _PAGINAS_COM_COBERTURA: frozenset = frozenset({
-    "🩺 Data Health", "🤖 Automação", "🧬 Família & SKU",
+    "🩺 Saúde do Dado", "🤖 Automação", "🧬 Família & SKU",
 })
 
-_SECTION_LABEL_CSS = (
-    "color:#94a3b8; font-size:0.65rem; font-weight:700; "
-    "letter-spacing:0.12em; text-transform:uppercase; "
-    "margin:0.75rem 0 0.2rem; padding:0;"
-)
+
+def _resolve_page(nome: str | None) -> str | None:
+    """Nome (novo ou antigo) → nome atual; registra a visão pedida, se houver."""
+    if not nome:
+        return None
+    if nome in PAGES:
+        return nome
+    alvo = _LEGACY_PAGES.get(nome)
+    if not alvo:
+        return None
+    page, view = alvo
+    if view:
+        st.session_state[_subview_key(page)] = view
+    return page
+
+
+def _split_icon(nome: str) -> tuple[str, str]:
+    """'🏆 Buy Box' → ('🏆', 'Buy Box')."""
+    icon, _, title = nome.partition(" ")
+    return icon, title.strip() or nome
+
+
+# ---------------------------------------------------------------------------
+# Selo de frescor — topo de toda página (Nov/2026)
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _freshness_snapshot(dia_iso: str) -> tuple[str, str, list[str]]:
+    """(nível, texto, problemas) do frescor do dia; cache de 5 min.
+
+    O livro-razão indisponível vira nível ``indisponivel`` — "não consegui
+    olhar" nunca pode aparecer como "está tudo em dia".
+    """
+    from datetime import datetime as _dt
+
+    from utils import freshness
+    from utils.heartbeat import LivroRazaoIndisponivel, ultimas_batidas
+    from utils.pipeline_registry import jobs_do_dia
+    from utils.text import now_brt
+
+    agora = now_brt().replace(tzinfo=None)
+    dia = _dt.fromisoformat(dia_iso).date()
+    try:
+        batidas = ultimas_batidas(dia)
+    except LivroRazaoIndisponivel as exc:
+        return "indisponivel", f"Livro-razão indisponível ({exc})", []
+    except Exception as exc:  # noqa: BLE001 — selo nunca derruba a página
+        return "indisponivel", f"Livro-razão indisponível ({type(exc).__name__})", []
+    res = freshness.resumir(jobs_do_dia(dia), batidas, agora)
+    return res.nivel, freshness.rotulo(res), list(res.problemas)
+
+
+_FRESH_STYLE = {
+    "ok":           (_ui.OK,      "🟢", "Dados em dia"),
+    "atencao":      (_ui.WARN,    "🟠", "Coleta parcial"),
+    "critico":      (_ui.BAD,     "🔴", "Coleta com falha"),
+    "desconhecido": (_ui.UNKNOWN, "⚪", "Sem turno esperado"),
+    "indisponivel": (_ui.UNKNOWN, "⚪", "Frescor não verificado"),
+}
+
+
+def _render_freshness_badge() -> None:
+    """Uma linha no topo: o dado da tela está fresco? (livro-razão × contrato)."""
+    from utils.text import now_brt
+    try:
+        nivel, texto, problemas = _freshness_snapshot(now_brt().date().isoformat())
+    except Exception as exc:  # noqa: BLE001
+        nivel, texto, problemas = "indisponivel", f"erro ao ler ({type(exc).__name__})", []
+    cor, bolinha, titulo = _FRESH_STYLE.get(nivel, _FRESH_STYLE["indisponivel"])
+    st.markdown(
+        f"<div class='rac-fresh' style='border-left:4px solid {cor};"
+        f"padding:.35rem .75rem;margin:-.5rem 0 .75rem;font-size:.85rem;"
+        f"color:{_ui.TEXT};background:rgba(148,163,184,.08);border-radius:6px'>"
+        f"{bolinha} <b>{titulo}</b> · {texto}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _main() -> None:
@@ -13699,46 +13905,40 @@ def _main() -> None:
     NÃO dispara a renderização — as funções puras ficam testáveis sem efeitos
     colaterais de Streamlit/Supabase.
     """
-    # Resolve deep-link navigation from overview/movers shortcut buttons
-    if "_nav_page" in st.session_state:
-        target = st.session_state.pop("_nav_page")
-        if target in PAGES:
-            st.session_state["_current_page"] = target
-        st.rerun()
+    # `_current_page` (pré-Nov/2026) segue aceito como DICA de página inicial:
+    # vira o `default` do st.navigation quando a URL não aponta página nenhuma.
+    inicial = _resolve_page(st.session_state.get("_current_page")) or _HOME_PAGE
 
-    if "_current_page" not in st.session_state:
-        st.session_state["_current_page"] = "🏠 Cockpit do Trade"
-
-    # Guard against stale keys after a code update
-    if st.session_state["_current_page"] not in PAGES:
-        st.session_state["_current_page"] = "🏠 Cockpit do Trade"
+    paginas: dict[str, object] = {}
+    secoes: dict[str, list] = {}
+    for grupo, nomes in _NAV_GROUPS.items():
+        for nome in nomes:
+            icon, title = _split_icon(nome)
+            paginas[nome] = st.Page(
+                PAGES[nome], title=title, icon=icon,
+                url_path=_slug(nome), default=(nome == inicial),
+            )
+            secoes.setdefault(_SECTION_LABELS.get(grupo, grupo), []).append(paginas[nome])
 
     with st.sidebar:
         st.markdown("## ❄️ RAC Monitor")
         st.divider()
-
-        # ── Global filters ─────────────────────────────────────────────────────
         _render_global_filters()
         st.divider()
 
-        # ── Grouped navigation ─────────────────────────────────────────────────
-        current = st.session_state["_current_page"]
+    pg = st.navigation(secoes, position="top")
 
-        for group_label, page_list in _NAV_GROUPS.items():
-            st.markdown(f"<p style='{_SECTION_LABEL_CSS}'>{group_label}</p>",
-                        unsafe_allow_html=True)
-            for page_name in page_list:
-                is_active = current == page_name
-                # Prefix active page with a bullet so users see which is open
-                btn_label = f"▶ {page_name}" if is_active else f"  {page_name}"
-                if st.button(btn_label, key=f"nav__{page_name}",
-                             use_container_width=True, type="secondary"):
-                    st.session_state["_current_page"] = page_name
-                    st.rerun()
+    # Atalhos internos (botões "→ Buy Box completo" etc.) gravam `_nav_page`.
+    if "_nav_page" in st.session_state:
+        alvo = _resolve_page(st.session_state.pop("_nav_page"))
+        if alvo and paginas[alvo] is not pg:
+            st.switch_page(paginas[alvo])
 
+    atual = next((n for n, p in paginas.items() if p is pg), _HOME_PAGE)
+    st.session_state["_current_page"] = atual
+
+    with st.sidebar:
         st.divider()
-
-        # ── Status footer ──────────────────────────────────────────────────────
         client_ok = _get_supabase() is not None
         st.caption(f"Supabase: {'🟢 conectado' if client_ok else '🔴 desconectado'}")
         try:
@@ -13751,14 +13951,13 @@ def _main() -> None:
             "local": "🟡 disco local",
             "ausente": "🔴 não configurado",
         }[_hist])
-        st.caption(f"🕐 {date.today().strftime('%d/%m/%Y')}")
 
+    _render_freshness_badge()
     # Cobertura do de-para (MAPEADO/FORA_ESCOPO/NAO_AC/REVISAR) é métrica de
-    # curadoria: ficava no topo de TODAS as páginas, empurrando a leitura de
-    # negócio para baixo. Agora aparece só onde se age sobre ela.
-    if st.session_state["_current_page"] in _PAGINAS_COM_COBERTURA:
+    # curadoria: aparece só onde se age sobre ela.
+    if atual in _PAGINAS_COM_COBERTURA:
         _render_cobertura_banner()
-    PAGES[st.session_state["_current_page"]]()
+    pg.run()
 
 
 if __name__ == "__main__":

@@ -45,6 +45,9 @@ SWEEP_TIMEOUT = 30   # cada página do sweep (60×30s = teto, nunca o caso feliz
 # Fonte única de verdade: as páginas vêm direto de `app.PAGES` — sem duplicar
 # os rótulos aqui (some o risco de divergência ao adicionar/renomear página).
 PAGE_NAMES = list(app.PAGES.keys())
+# Páginas compostas (Nov/2026): cada visão é uma página antiga — o sweep passa
+# por todas, não só pela visão padrão.
+SUBVIEW_CASES = [(p, v) for p, views in app._SUBVIEWS.items() for v in views]
 
 SOURCE_COMBOS = [
     ["coletas", "pricetrack"],  # padrão (idêntico a hoje)
@@ -177,9 +180,11 @@ def test_signatures_accept_sources_tuple() -> None:
 # 4) Sweep de fumaça — 20 páginas × 3 combinações de fonte, sem exceção
 # ---------------------------------------------------------------------------
 
-def _run_page(page: str, sources: list[str]):
+def _run_page(page: str, sources: list[str], view: str | None = None):
     at = AppTest.from_file(APP_FILE)
     at.session_state["_current_page"] = page
+    if view:
+        at.session_state[app._subview_key(page)] = view
     at.session_state["gf_sources"] = sources
     at.session_state["gf_dates"] = (date(2026, 6, 8), date(2026, 6, 15))
     at.session_state["gf_compare"] = True  # exercita também o caminho de comparação
@@ -200,6 +205,16 @@ def test_all_pages_render_under_every_source() -> None:
                 msgs = "; ".join(str(e.value) for e in at.exception)
                 failures.append(f"{page} / {sources} → {msgs}")
     assert not failures, "Páginas com exceção:\n  " + "\n  ".join(failures)
+
+
+def test_all_subviews_render() -> None:
+    """Cada visão de página composta (Buy Box, Alertas) renderiza sem exceção."""
+    failures: list[str] = []
+    for page, view in SUBVIEW_CASES:
+        at = _run_page(page, ["coletas", "pricetrack"], view=view)
+        if at.exception:
+            failures.append(f"{page} / {view} → " + "; ".join(str(e.value) for e in at.exception))
+    assert not failures, "Visões com exceção:\n  " + "\n  ".join(failures)
 
 
 # ---------------------------------------------------------------------------

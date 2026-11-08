@@ -1,0 +1,83 @@
+# UX dos painéis — ganhos rápidos + Fase 1 (Nov/2026)
+
+Revisão de design/UX do `app.py` (painel interno). O `seller_app/` segue com o
+roteiro próprio (ver "Próximas fases").
+
+## O que mudou
+
+### Navegação por pergunta, no topo
+- `st.navigation(position="top")`: as 21 páginas saíram da barra lateral e
+  viraram 8 seções no cabeçalho (**Hoje · Prateleira · Buy box e sellers ·
+  Preço · Demanda · Produto · Operação · Admin**). A barra lateral ficou só com
+  os filtros globais, que antes ficavam abaixo de 23 botões. No celular o
+  Streamlit recolhe as seções no menu lateral sozinho.
+- Antes: 23 páginas em 3 grupos (17 em INSIGHTS), feitas de `st.button` +
+  `st.rerun()`. Cada clique rodava o script **duas vezes** e nenhuma página
+  tinha URL própria.
+- Cada página tem `url_path` estável (`/buy-box`, `/preco-do-dia`, …), então
+  dá para mandar o link.
+- Páginas que respondiam a mesma pergunta viraram **uma página com visões**
+  (`_SUBVIEWS`, seletor `st.segmented_control`, que roda só a visão escolhida):
+  - 🏆 **Buy Box** = BuyBox Position + Share of Buy Box
+  - 🚨 **Alertas** = Top Movers + Price Anomalies
+- Todos os nomes de página em português. Nomes antigos continuam valendo em
+  `_nav_page` / `_current_page` (`_LEGACY_PAGES`).
+- Requer `streamlit>=1.46` (`position="top"`).
+
+### Selo de frescor no topo de toda página
+`utils/freshness.py` (puro) cruza o livro-razão (`pipeline_heartbeat`) com o
+contrato (`utils/pipeline_registry.jobs_do_dia`), só para jobs que gravam em
+`coletas`. O resultado é uma linha: 🟢 em dia / 🟠 parcial / 🔴 falha (com o
+turno e o executor) / ⚪ não verificado. Fica 5 min em cache. Se o livro-razão
+estiver indisponível, o selo mostra **"Frescor não verificado"**, nunca "em
+dia".
+
+### Uma cor por marca, e a interface fora do azul da Midea
+- `utils/ui_tokens.py` é a fonte única de cor de marca e plataforma. Antes havia
+  duas paletas que se contradiziam: a Midea era `#1a56db` nos gráficos e
+  `#4338ca` na Ficha do Produto, e a Philco era vermelha num lugar e laranja no
+  outro.
+- O acento da interface (botões, abas, foco) virou `#0f766e`, em
+  `.streamlit/config.toml` e no `:root` de `assets/style.css`. O azul fica
+  reservado ao dado da Midea.
+- `focus_color_map`: Midea + 2 rivais em cor, o resto em cinza. Aplicado na
+  evolução do Cockpit.
+- Barras de ranking de seller numa cor só: pintar cada seller de uma cor não
+  codificava nada.
+
+### Leitura: a resposta antes da metodologia
+- `_como_ler(...)` é um popover "ℹ️ Como ler" com a metodologia e as ressalvas.
+  No Cockpit ele substituiu a caption de base e o expander de turnos, que
+  ficavam entre os KPIs e os alertas.
+- O Cockpit abre com uma **frase-resposta** (`_cockpit_headline`), por exemplo:
+  "A Midea Carrier ocupa 31% da prateleira genérica em 08/11, ▼ 2.4 p.p. vs o
+  dia anterior — rival líder: Philco com 18%".
+- `_empty_state(tipo, ...)` tem três variantes, que nunca podem ter a mesma
+  cara: `sem_dado` (o mercado não teve), `sem_coleta` (nós não olhamos) e
+  `fora_cobertura` (a pergunta não se aplica ao recorte).
+- `_label_line_ends(fig)` põe o rótulo direto no fim de cada linha (até 8
+  séries) no lugar da legenda embaixo, que custava cerca de 140 px por gráfico.
+  Aplicado na evolução do Cockpit e no 📈 Evolução de Preço.
+
+### Limpeza
+`design_system.py` (986 linhas, sem nenhum import), `MELHORIAS_DESIGN.md` e
+`GUIA_DESIGN_SYSTEM.md` foram para `docs/archive/`.
+
+## Regras para página nova
+1. Registrar em `PAGES` **e** numa seção de `_NAV_GROUPS`. O
+   `tests/test_ui_components.py` reprova página fora do menu ou em duas seções.
+2. Nome em português, com emoji na frente (vira o ícone do menu).
+3. Cor de marca e plataforma só via `utils/ui_tokens.py`, nunca hex solto.
+4. Metodologia em `_como_ler`, estado vazio em `_empty_state`.
+5. Pergunta que já tem página vira uma **visão** dela (`_SUBVIEWS`), não uma
+   página nova.
+
+## Próximas fases (não feitas aqui)
+- **Fase 2:** filtros na URL (`st.query_params`) e links nos alertas do
+  Telegram; `@st.fragment` nos controles que mexem só num gráfico; faixa de
+  KPI 2×2 no celular; filtros salvos.
+- **Popover "Como ler" nas demais páginas.** Mais Vendidos (20 captions e 18
+  avisos) e Preço do Dia são as próximas.
+- **Seller App:** delta e posição relativa nos KPIs, card de Saldo, lista
+  "Onde agir hoje" (perdas com a diferença de preço para o novo detentor),
+  tokens e Plotly compartilhados, selo de cobertura no topo e exportação.

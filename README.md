@@ -350,15 +350,21 @@ streamlit run app.py
 
 Home **🏠 Cockpit do Trade** (share de prateleira da Midea Carrier nas buscas
 genéricas, batalha por keyword, defesa/conquista de marca, buy box das ofertas
-Midea, preço de vitrine por BTU, alertas e cobertura) + 22 páginas:
+Midea, preço de vitrine por BTU, alertas e cobertura). A navegação fica no
+**topo**, em seções pela pergunta de trade (Nov/2026 — `docs/UX_PAINEIS.md`):
 
-- **INSIGHTS:** 📅 Daily Price Vision · 🚨 Top Movers · 📊 Results · 📈 Price
-  Evolution · 📊 Market Analytics · 💰 Preços 9K/12K · 🩻 Diagnóstico ·
-  🥇 Mais Vendidos · 🌡️ Clima × Vendas · 🗂️ Ficha do Produto · 🏆 BuyBox
-  Position · 👑 Share of Buy Box · ⭐ Reputação & Avaliações · 📣 SoV
-  Patrocinado · 🛡️ Price Compliance · 📦 Availability
-- **OPERAÇÕES:** 📧 Email Digest · 🔔 Price Anomalies · 📂 Import History · 🩺 Data Health
-- **ADMIN:** 🤖 Automação (limpeza/normalização/de-para sem interação) · 🧬 Família & SKU
+- **Hoje:** 🏠 Cockpit do Trade · 🚨 Alertas (movimentos + anomalias de preço)
+- **Prateleira:** 🔎 Posição na Busca · 📣 SoV Patrocinado · 📦 Disponibilidade
+- **Buy box e sellers:** 🏆 Buy Box (posição e vencedor + share por seller) · ⭐ Reputação & Avaliações
+- **Preço:** 📅 Preço do Dia · 📈 Evolução de Preço · 📊 Análise de Mercado ·
+  💰 Preços 9K/12K · 🩻 Diagnóstico · 🛡️ Compliance de Preço
+- **Demanda:** 🥇 Mais Vendidos · 🌡️ Clima × Vendas
+- **Produto:** 🗂️ Ficha do Produto
+- **Operação:** 🩺 Saúde do Dado · 📂 Importar Histórico · 📧 Resumo por E-mail
+- **Admin:** 🤖 Automação (limpeza/normalização/de-para sem interação) · 🧬 Família & SKU
+
+Cada página tem URL própria (ex.: `/buy-box`, `/preco-do-dia`) e um **selo de
+frescor** no topo (livro-razão × contrato de coleta do dia).
 
 Os filtros globais (Período, Canal, Plataformas, Marcas) valem para **todas**
 as páginas, **exceto o 🩻 Diagnóstico**, que usa só o Período (ele compara o
