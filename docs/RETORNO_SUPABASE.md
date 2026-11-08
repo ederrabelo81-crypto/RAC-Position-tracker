@@ -476,13 +476,16 @@ workflow nem instalava as bibliotecas para lê-lo (corrigido no #426). Junto,
 | **Banco** | **453 MB** | **327 MB** (folga ~173 MB, 35%) |
 
 O seller medido bate com o orçamento (~3,4 MB/dia × 30 ≈ 101 MB). A
-diferença para os ~280 MB previstos está em `coletas` (99 MB contra ~65 MB).
-Fica aqui como ponto a acompanhar, não como alarme.
+diferença para os ~280 MB previstos (~47 MB) vem principalmente de `coletas`
+(99 MB contra ~65 MB, ~34 MB); o resto, de `pricetrack_daily` (37 contra
+~31 MB) e das demais parcelas aproximadas. Fica como ponto a acompanhar, não
+como alarme.
 
 **Regra que fica:** depois de uma poda grande por `DELETE` (troca de
 retenção, limpeza manual), rode um `VACUUM FULL` na tabela fora do horário de
-escrita. Ele trava a tabela inteira, e é o único jeito de o disco voltar.
-O `compactar_indices` da noite só reconstrói índice, não devolve o heap.
+escrita. Ele trava a tabela inteira, e é o jeito de recuperar o heap morto
+espalhado pela tabela: o `VACUUM` comum só devolve as páginas vazias do fim
+dela. O `compactar_indices` da noite só reconstrói índice, não devolve o heap.
 
 Conferir a qualquer momento:
 
