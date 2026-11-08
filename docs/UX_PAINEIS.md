@@ -78,6 +78,43 @@ dia".
   KPI 2×2 no celular; filtros salvos.
 - **Popover "Como ler" nas demais páginas.** Mais Vendidos (20 captions e 18
   avisos) e Preço do Dia são as próximas.
-- **Seller App:** delta e posição relativa nos KPIs, card de Saldo, lista
-  "Onde agir hoje" (perdas com a diferença de preço para o novo detentor),
-  tokens e Plotly compartilhados, selo de cobertura no topo e exportação.
+- **Seller App:** feito — ver a seção abaixo.
+
+## Seller App — roteiro (Nov/2026)
+
+`seller_app/app.py` + contas puras em `seller_app/seller_insights.py`
+(`tests/test_seller_insights.py`). O app segue publicado sozinho: o módulo é
+irmão do `app.py` e as cores de plataforma são uma cópia de
+`utils/ui_tokens.PLATFORM_COLORS` (o teste reprova se divergirem).
+
+- **Selo de cobertura no topo**, antes de qualquer número: 🟢 leitura
+  completa / 🟠 parcial (qual plataforma e qual turno faltou) / ⚪ sem
+  registro. A aba 🩺 Cobertura continua com o detalhe.
+- **KPIs com comparação**, em cartões 2×2 (no celular viram uma coluna):
+  - **Share de buy box** com delta contra 7 dias antes. O delta usa só as
+    plataformas observadas nos dois momentos.
+  - **Melhor posição no ranking** ("#2 de 41"), com o líder e a distância em
+    p.p.
+  - **Saldo de viradas**: ganhos − perdas, num cartão próprio. Antes o saldo
+    vinha como delta dentro do card "Perdidos" e se lia como "perdi mais 3".
+  - **Perdas ainda abertas**.
+- **🎯 Onde agir** (1ª aba): cada produto perdido com quem levou, o preço
+  dele no turno da perda, o seu último preço antes dela, a diferença em % e se
+  você já recuperou. Ordem: perdas abertas primeiro, as de menor diferença no
+  topo (as mais baratas de reverter). Sem o seu preço anterior a perda
+  aparece, mas sem diferença inventada. Turno é ordenado pelo horário
+  (Abertura < Tarde < Fechamento), nunca pelo alfabeto (o defeito da
+  migração 016).
+- **🥊 Ranking** abre com "Sua posição em cada plataforma" (posição, nº de
+  sellers, líder e distância ao líder).
+- **Formatação:** share em barra, preço em R$, datas DD/MM, cores fixas por
+  marketplace nos gráficos de share e de posição.
+- **Exportação** em CSV para Excel PT-BR (`;`, vírgula decimal, BOM): a lista
+  "Onde agir" e todas as ofertas da janela.
+- **Glossário** "❔ O que é isto?" (buy box, share, ganho/perda, turno) e
+  **tela de senha** com identidade do produto.
+- Requer `streamlit>=1.40` (`color=`/rótulos de eixo nos gráficos nativos).
+
+Ficaram de fora de propósito: Plotly no Seller App (os gráficos nativos com
+cor fixa resolvem a consistência sem somar dependência ao deploy) e a troca do
+padrão "Web Continental" no seletor da demo.

@@ -41,10 +41,31 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client
 
+try:  # Streamlit Cloud: o diretório do script (seller_app/) está no sys.path
+    import seller_insights as ins
+except ImportError:  # testes (AppTest.from_string) rodam a partir da raiz
+    from seller_app import seller_insights as ins
+
 st.set_page_config(page_title="Track Position Seller", page_icon="📦", layout="wide")
 
 # ── Cores: verde-petróleo do produto, âmbar para "não observado" ────────────
 ACENTO, ALERTA, NEUTRO = "#1B6E6A", "#9C5D11", "#56635F"
+
+_GLOSSARIO = """
+**Buy box** — o botão "Comprar" da página do produto. Quando vários lojistas
+vendem o mesmo item, o marketplace escolhe UM para levar a venda por padrão.
+Quem está com a buy box fica com a maior parte das vendas daquele produto.
+
+**Share de buy box** — dos produtos que observamos na plataforma, em quantos
+você está com a buy box. O denominador é o universo observado, não só os seus.
+
+**Ganho / perda** — o momento em que a buy box troca de dono entre dois turnos.
+A vitrine só mostra quem está com ela agora; por isso ganho e perda só existem
+como evento.
+
+**Turno** — a coleta roda 3× ao dia: 08h (Abertura), 14h (Tarde) e 20h
+(Fechamento). Turno não observado fica de fora de todo número — nunca vira zero.
+"""
 
 
 @st.cache_resource
@@ -78,7 +99,9 @@ _SELECT_FATO = (
     "preco,posicao_melhor,posicao_mediana,keywords_presente,detentor_buybox,"
     "detentor_anterior,virou_no_turno,qtd_sellers,tipo_seller,identidade_suspeita"
 )
-_SELECT_PERDIDOS = "data,turno,plataforma,seller_canonical,produto,marca,preco"
+_SELECT_PERDIDOS = (
+    "data,turno,plataforma,seller_canonical,marketplace_product_id,produto,marca,preco"
+)
 
 
 def _quadro(linhas: list[dict], select: str) -> pd.DataFrame:
@@ -300,13 +323,22 @@ def _porta() -> bool:
         return True
     if st.session_state.get("liberado"):
         return True
-    st.title("Track Position Seller")
-    digitada = st.text_input("Senha", type="password")
-    if digitada and digitada == senha:
-        st.session_state["liberado"] = True
-        st.rerun()
-    elif digitada:
-        st.error("Senha incorreta.")
+    _, meio, _ = st.columns([1, 2, 1])
+    with meio:
+        st.markdown(
+            f"<div style='margin-top:3rem;padding:1.5rem 1.75rem;border-radius:12px;"
+            f"border:1px solid #d6e2e0;border-top:4px solid {ACENTO}'>"
+            f"<div style='font-size:1.6rem;font-weight:700;color:{ACENTO}'>📦 Track Position Seller</div>"
+            "<div style='color:#334155;margin:.35rem 0 0'>Sua buy box, sua posição e quem "
+            "está levando suas vendas nos marketplaces — 3 leituras por dia.</div></div>",
+            unsafe_allow_html=True)
+        digitada = st.text_input("Senha de acesso", type="password")
+        if digitada and digitada == senha:
+            st.session_state["liberado"] = True
+            st.rerun()
+        elif digitada:
+            st.error("Senha incorreta.")
+        st.caption("Dado observado-público: a mesma vitrine que qualquer visitante vê.")
     return False
 
 
@@ -338,6 +370,51 @@ def _escolher_seller(desde: date) -> tuple[str | None, pd.DataFrame]:
     return escolhido, mercado
 
 
+def _selo_cobertura(cobertura: pd.DataFrame) -> None:
+    """Uma linha ANTES dos números: o último dia foi observado por inteiro?"""
+    res = ins.resumo_cobertura(cobertura)
+    if res.nivel == "sem_registro":
+        cor, txt = ALERTA, "⚪ <b>Cobertura não registrada</b> no período — os números abaixo podem estar incompletos."
+    elif res.nivel == "ok":
+        cor, txt = ACENTO, (f"🟢 <b>Leitura completa</b> em {res.dia:%d/%m}: 3 turnos em "
+                            f"{res.plataformas} plataforma(s).")
+    else:
+        falt = "; ".join(res.faltando[:4]) + (f" (+{len(res.faltando) - 4})" if len(res.faltando) > 4 else "")
+        cor, txt = ALERTA, (f"🟠 <b>Leitura parcial</b> em {res.dia:%d/%m}: {res.completas}/"
+                            f"{res.plataformas} plataformas com os 3 turnos · sem leitura: {falt}. "
+                            "Turno sem leitura fica fora dos números — não é queda sua.")
+    st.markdown(
+        f"<div style='border-left:4px solid {cor};padding:.4rem .8rem;margin:.25rem 0 1rem;"
+        f"background:rgba(148,163,184,.10);border-radius:6px;font-size:.88rem'>{txt}</div>",
+        unsafe_allow_html=True)
+
+
+def _metric(alvo, label: str, value, *, sem_seta: bool = False, **kw) -> None:
+    """`st.metric` em cartão; ``sem_seta`` tira a seta de delta INFORMATIVO.
+
+    "você lidera" ou "10 ganhos · 7 perdas" não são variação — a seta ↑ ali
+    sugeria uma melhora que o número não diz. `delta_arrow`/`border` só
+    existem em Streamlit recente; em versão antiga o cartão sai sem eles.
+    """
+    import inspect
+
+    params = inspect.signature(st.metric).parameters
+    if "border" in params:
+        kw.setdefault("border", True)
+    if sem_seta and "delta_arrow" in params:
+        kw["delta_arrow"] = "off"
+    alvo.metric(label, value, **kw)
+
+
+def _fmt_brl(v) -> str:
+    return "—" if v is None or pd.isna(v) else f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _csv(df: pd.DataFrame) -> bytes:
+    """CSV para Excel PT-BR: `;` e BOM UTF-8."""
+    return df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+
+
 def main() -> None:
     if not _porta():
         return
@@ -352,14 +429,19 @@ def main() -> None:
     if not seller:
         return
 
-    st.title(f"Track Position Seller — {seller}")
-    st.caption(
-        "Buy box, posição e concorrência nos marketplaces. Coleta em 3 turnos "
-        "(08h Abertura · 14h Tarde · 20h Fechamento)."
+    cab, glos = st.columns([5, 1])
+    cab.title(f"📦 {seller}")
+    cab.caption(
+        "Buy box, posição e concorrência nos marketplaces · Track Position Seller · "
+        "coleta em 3 turnos (08h · 14h · 20h)."
     )
+    with glos:
+        with st.popover("❔ O que é isto?", use_container_width=True):
+            st.markdown(_GLOSSARIO)
 
     fato, share, cobertura = carregar(seller, desde)
     perdidos = carregar_perdidos(seller, desde)
+    _selo_cobertura(cobertura)
 
     vazio = fato.empty
     if vazio:
@@ -374,24 +456,9 @@ def main() -> None:
         if st.secrets.get("SELLER"):
             # TERCEIRA causa possível, que a aba Cobertura NÃO consegue
             # descartar: instância travada num nome que a canonização
-            # aposentou. O de-para (`utils.seller_names`) colapsa grafias num
-            # canônico — quando "Comprebel" passa a ser variante de
-            # "Bel Micro", ou "GoCompras" de "Denteck", o secret que ainda
-            # nomeia a grafia velha aponta para um seller que deixou de
-            # existir e o PostgREST devolve `[]` com HTTP 200.
-            #
-            # É HIPÓTESE, não diagnóstico, e o texto tem de dizer isso: seller
-            # novo, dia parado e coleta que não rodou produzem exatamente este
-            # mesmo estado. Afirmar "o nome está errado" mandaria o operador
-            # mexer no secret certo. O que não dá é ficar calado — esta é a
-            # única das três causas com conserto fora do banco, e ela não
-            # aparece em lugar nenhum da tela.
-            #
-            # Não dá para estreitar pelo `mercado`: a view sai do próprio
-            # `seller_offer_daily`, então seller ausente do fato está ausente
-            # da view por construção — a checagem seria sempre verdadeira e
-            # não separaria nada. Quem separa de fato é a aba Cobertura, para
-            # as outras duas causas.
+            # aposentou. É HIPÓTESE, não diagnóstico (seller novo, dia parado e
+            # coleta que não rodou dão o mesmo estado) — por isso `st.info`
+            # condicionado a "se a coleta rodou", nunca um `st.error`.
             st.info(
                 f"**Se a coleta rodou** (veja a aba Cobertura), sobra conferir o "
                 f"nome. Esta instância está travada em **{seller}** pelo secret "
@@ -412,48 +479,82 @@ def main() -> None:
     #    identidade suspeita é chave colapsada: nem numerador, nem denominador.
     limpo = (fato[(fato["superficie"] == "marketplace") & (~fato["identidade_suspeita"])]
              if not vazio else fato)
+    ganhos = limpo[limpo["virou_no_turno"].fillna(False)] if not vazio else limpo
+    ranking = ins.ranking_relativo(mercado, seller)
+    agir = ins.onde_agir(perdidos, limpo)
 
     if not vazio:
-        c1, c2, c3, c4, c5 = st.columns(5)
-        if not share.empty:
-            # Foto do último dia observado POR PLATAFORMA, não o max() global de
-            # `data`. A Amazon é coletada num pipeline à parte (GitHub Actions,
-            # buy box via PDP) e materializa com atraso: o último dia do mercado
-            # costuma vir de outra plataforma já um dia à frente, e ancorar tudo
-            # nesse dia único apagava a Amazon do KPI (o sintoma "Amazon não
-            # aparece"). Cada plataforma no seu próprio último dia mantém a
-            # Amazon visível mesmo defasada.
-            ultimo_por_plat = share.groupby("plataforma")["data"].transform("max")
-            hoje = share[share["data"] == ultimo_por_plat]
-            detidos, universo = hoje["produtos_detidos"].sum(), hoje["produtos_universo"].sum()
-            # Share real = soma/soma. A média dos percentuais por plataforma
-            # daria outro número quando os universos diferem (Magalu 661 x
-            # ML 307), e não seria o share de nada.
-            pct = 100.0 * detidos / universo if universo else 0.0
-            c1.metric("Share de buy box", f"{pct:.1f}%",
-                      help=f"{int(detidos)} de {int(universo)} produtos com buy box "
-                           "observada no último dia de cada plataforma.")
-            c2.metric("Produtos com a BB", int(detidos),
-                      help=f"de {int(universo)} observados")
-        c3.metric("Ofertas monitoradas",
-                  f"{limpo['offer_key'].nunique():,}".replace(",", "."))
-        ganhos_n = int(limpo["virou_no_turno"].fillna(False).sum())
-        perdidos_n = len(perdidos)
-        c4.metric("Ganhos de buy box", ganhos_n,
-                  help="Produtos em que este seller tomou a BB de outro.")
-        c5.metric("Perdidos", perdidos_n,
-                  help="Produtos em que outro seller tomou a BB deste.",
-                  delta=f"{ganhos_n - perdidos_n:+d} no saldo" if (ganhos_n or perdidos_n) else None)
-                  # delta_color fica no padrão "normal" de propósito: saldo
-                  # negativo já pinta vermelho sozinho. "inverse" faria o
-                  # OPOSTO do pretendido — pintaria o pior saldo de verde,
-                  # que é a cor certa só para métrica onde diminuir é bom
-                  # (latência, custo) — não é o caso de perder buy box.
+        # 4 cartões (2×2 no celular): cada um com comparação, nunca número solto.
+        linha1 = st.columns(2)
+        linha2 = st.columns(2)
+        fotos = ins.share_atual_e_anterior(share, dias=7)
+        atual, comp, ant = fotos["atual"], fotos["atual_comp"], fotos["anterior"]
+        delta = None
+        if comp and ant and comp.pct is not None and ant.pct is not None:
+            delta = f"{comp.pct - ant.pct:+.1f} p.p. vs 7 dias antes"
+        _metric(
+            linha1[0], "Share de buy box",
+            f"{atual.pct:.1f}%" if atual.pct is not None else "—",
+            delta=delta,
+            help=(f"{atual.detidos} de {atual.universo} produtos com buy box observada, "
+                  "no último dia de cada plataforma (soma/soma). O delta compara só as "
+                  "plataformas observadas nos dois momentos."))
+        if not ranking.empty:
+            melhor = ranking.iloc[0]
+            _metric(
+                linha1[1], "Melhor posição no ranking",
+                f"#{int(melhor['posicao'])} de {int(melhor['total'])}",
+                sem_seta=True,
+                delta=(f"líder: {melhor['lider']} (+{melhor['gap_lider_pp']:.1f} p.p.)"
+                       if melhor["posicao"] > 1 else "você lidera"),
+                delta_color="off",
+                help=f"Ranking de share de buy box em {melhor['plataforma']} "
+                     f"({melhor['data']:%d/%m}). Todas as plataformas na aba 🥊 Ranking.")
+        else:
+            _metric(linha1[1], "Melhor posição no ranking", "—")
+        saldo = len(ganhos) - len(perdidos)
+        _metric(
+            linha2[0], "Saldo de viradas", f"{saldo:+d}", sem_seta=True,
+            delta=f"{len(ganhos)} ganhos · {len(perdidos)} perdas", delta_color="off",
+            help="Ganho = você tomou a buy box de outro seller. Perda = outro tomou a sua.")
+        abertas = int((~agir["recuperado"]).sum()) if not agir.empty else 0
+        _metric(
+            linha2[1], "Perdas ainda abertas", abertas,
+            help="Produtos que você perdeu e não recuperou até o último turno observado. "
+                 "Lista completa na aba 🎯 Onde agir.")
 
-    aba1, aba2, aba3, aba4, aba5 = st.tabs([
-        "📈 Share de buy box", "🏆 Ganhos e perdas", "🏷️ Marcas e posição",
-        "🥊 Ranking na plataforma", "🩺 Cobertura",
+    aba0, aba1, aba2, aba3, aba4, aba5 = st.tabs([
+        "🎯 Onde agir", "📈 Share", "🏆 Ganhos e perdas", "🏷️ Marcas e posição",
+        "🥊 Ranking", "🩺 Cobertura",
     ])
+
+    with aba0:
+        st.markdown("##### Perdas de buy box, das mais fáceis de reverter para as mais difíceis")
+        if agir.empty:
+            st.info("Nenhuma perda de buy box observada na janela. 🎉")
+        else:
+            st.caption(
+                "Para cada produto que você perdeu: quem levou, o preço dele no turno da "
+                "perda e o seu último preço antes dela. Diferença negativa = ele estava "
+                "mais barato. Preço não é o único critério do marketplace (reputação, "
+                "frete e estoque também pesam) — use como ponto de partida.")
+            vis = agir.copy()
+            vis["Situação"] = vis["recuperado"].map({True: "✅ recuperado", False: "⏳ aberta"})
+            st.dataframe(
+                vis[["Situação", "plataforma", "produto", "levou", "preco_dele",
+                     "seu_preco", "diferenca_pct", "data", "turno"]],
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "plataforma": "Plataforma", "produto": "Produto", "levou": "Quem levou",
+                    "preco_dele": st.column_config.NumberColumn("Preço dele", format="R$ %.2f"),
+                    "seu_preco": st.column_config.NumberColumn("Seu último preço", format="R$ %.2f"),
+                    "diferenca_pct": st.column_config.NumberColumn("Diferença", format="%+.1f%%"),
+                    "data": st.column_config.DateColumn("Perdeu em", format="DD/MM"),
+                    "turno": "Turno",
+                })
+            st.download_button("⬇️ Baixar lista (CSV)", _csv(agir),
+                               f"onde_agir_{seller}_{desde:%Y%m%d}.csv", "text/csv",
+                               key="dl_agir")
 
     with aba1:
         if share.empty:
@@ -461,17 +562,22 @@ def main() -> None:
         else:
             pivo = share.pivot_table(index="data", columns="plataforma",
                                      values="share_buybox_pct", aggfunc="mean")
-            st.line_chart(pivo, height=320)
+            st.line_chart(pivo, height=320, color=ins.cores_plataformas(pivo.columns),
+                          y_label="Share de buy box (%)", x_label="")
             st.dataframe(
                 share.sort_values(["data", "share_buybox_pct"], ascending=[False, False])[
                     ["data", "plataforma", "produtos_detidos", "produtos_universo",
                      "share_buybox_pct"]
-                ].rename(columns={
-                    "data": "Data", "plataforma": "Plataforma",
+                ],
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                    "plataforma": "Plataforma",
                     "produtos_detidos": "Com a BB",
                     "produtos_universo": "Universo observado",
-                    "share_buybox_pct": "Share %"}),
-                use_container_width=True, hide_index=True)
+                    "share_buybox_pct": st.column_config.ProgressColumn(
+                        "Share", format="%.1f%%", min_value=0, max_value=100),
+                })
             st.caption(
                 "O denominador é o universo de produtos **observados** na "
                 "plataforma, não as suas linhas. Sobre as suas linhas o número "
@@ -480,28 +586,28 @@ def main() -> None:
 
     with aba2:
         col_g, col_p = st.columns(2)
-        col_g.metric("Ganhos na janela", len(limpo[limpo["virou_no_turno"].fillna(False)]))
+        col_g.metric("Ganhos na janela", len(ganhos))
         col_p.metric("Perdidos na janela", len(perdidos))
         st.caption(
             "Ganhei = tomei a BB de outro seller. Perdi = outro seller tomou "
             "a minha. Os dois só existem como EVENTO — a foto de um turno nunca "
             "mostra \"perdedor\", só quem está com a BB agora."
         )
+        _cfg_evento = {
+            "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+            "turno": "Turno", "plataforma": "Plataforma", "produto": "Produto",
+            "marca": "Marca", "preco": st.column_config.NumberColumn("Preço", format="R$ %.2f"),
+        }
 
         st.markdown("##### ✅ Produtos que você ganhou")
-        ganhos = limpo[limpo["virou_no_turno"].fillna(False)]
         if ganhos.empty:
             st.info("Nenhum ganho de buy box observado na janela.")
         else:
             st.dataframe(
                 ganhos[["data", "turno", "plataforma", "produto", "marca",
-                        "detentor_anterior", "preco"]]
-                .sort_values("data", ascending=False)
-                .rename(columns={
-                    "data": "Data", "turno": "Turno", "plataforma": "Plataforma",
-                    "produto": "Produto", "marca": "Marca",
-                    "detentor_anterior": "Tomou de", "preco": "Preço (R$)"}),
-                use_container_width=True, hide_index=True)
+                        "detentor_anterior", "preco"]].sort_values("data", ascending=False),
+                use_container_width=True, hide_index=True,
+                column_config={**_cfg_evento, "detentor_anterior": "Tomou de"})
 
         st.markdown("##### ❌ Produtos que você perdeu")
         if perdidos.empty:
@@ -509,13 +615,11 @@ def main() -> None:
         else:
             st.dataframe(
                 perdidos[["data", "turno", "plataforma", "produto", "marca",
-                          "seller_canonical", "preco"]]
-                .sort_values("data", ascending=False)
-                .rename(columns={
-                    "data": "Data", "turno": "Turno", "plataforma": "Plataforma",
-                    "produto": "Produto", "marca": "Marca",
-                    "seller_canonical": "Levou", "preco": "Preço (R$)"}),
-                use_container_width=True, hide_index=True)
+                          "seller_canonical", "preco"]].sort_values("data", ascending=False),
+                use_container_width=True, hide_index=True,
+                column_config={**_cfg_evento, "seller_canonical": "Levou",
+                               "preco": st.column_config.NumberColumn("Preço de quem levou",
+                                                                      format="R$ %.2f")})
 
     with aba3:
         detidos_marca = limpo[limpo["detentor_buybox"] == True]  # noqa: E712
@@ -564,7 +668,8 @@ def main() -> None:
             pos = (limpo.groupby(["data", "plataforma"])["posicao_mediana"]
                   .median().reset_index()
                   .pivot(index="data", columns="plataforma", values="posicao_mediana"))
-            st.line_chart(pos, height=280)
+            st.line_chart(pos, height=280, color=ins.cores_plataformas(pos.columns),
+                          y_label="Posição mediana (menor = melhor)", x_label="")
             st.caption(
                 "Quanto menor, melhor — é a posição mediana entre as keywords em "
                 "que a oferta apareceu no turno. Não soma entre plataformas nem "
@@ -589,6 +694,22 @@ def main() -> None:
             ultimo_por_plat = mercado.groupby("plataforma")["data"].transform("max")
             foto = mercado[mercado["data"] == ultimo_por_plat].copy()
             st.caption("Fotografia do último dia observado de cada plataforma.")
+            if not ranking.empty:
+                st.markdown("##### Sua posição em cada plataforma")
+                st.dataframe(
+                    ranking, use_container_width=True, hide_index=True,
+                    column_config={
+                        "plataforma": "Plataforma",
+                        "data": st.column_config.DateColumn("Observado em", format="DD/MM"),
+                        "posicao": st.column_config.NumberColumn("Posição", format="#%d"),
+                        "total": "Sellers",
+                        "share_pct": st.column_config.ProgressColumn(
+                            "Seu share", format="%.1f%%", min_value=0, max_value=100),
+                        "lider": "Líder",
+                        "share_lider": st.column_config.NumberColumn("Share do líder", format="%.1f%%"),
+                        "gap_lider_pp": st.column_config.NumberColumn(
+                            "Distância ao líder", format="%.1f p.p."),
+                    })
             foto["posicao"] = foto.groupby("plataforma")["share_buybox_pct"] \
                                    .rank(ascending=False, method="min").astype(int)
             for plataforma in plataformas_do_seller:
@@ -598,7 +719,7 @@ def main() -> None:
                 if linha_seller.empty:
                     continue
                 minha_posicao = int(linha_seller["posicao"].iloc[0])
-                dia_plat = bloco["data"].iloc[0]
+                dia_plat = pd.to_datetime(bloco["data"].iloc[0]).strftime("%d/%m")
                 st.markdown(
                     f"##### {plataforma} — você é **#{minha_posicao} de {total}** "
                     f"· observado em {dia_plat}")
@@ -608,12 +729,15 @@ def main() -> None:
                 topo["Você"] = topo["seller_canonical"].eq(seller).map({True: "✅", False: ""})
                 st.dataframe(
                     topo[["posicao", "seller_canonical", "Você", "produtos_detidos",
-                          "produtos_universo", "share_buybox_pct"]]
-                    .rename(columns={
+                          "produtos_universo", "share_buybox_pct"]],
+                    use_container_width=True, hide_index=True,
+                    column_config={
                         "posicao": "#", "seller_canonical": "Seller",
-                        "produtos_detidos": "Com a BB",
-                        "produtos_universo": "Universo", "share_buybox_pct": "Share %"}),
-                    use_container_width=True, hide_index=True)
+                        "produtos_detidos": "Com a BB", "produtos_universo": "Universo",
+                        "share_buybox_pct": st.column_config.ProgressColumn(
+                            "Share", format="%.1f%%", min_value=0,
+                            max_value=float(max(100.0, bloco["share_buybox_pct"].max()))),
+                    })
 
     with aba5:
         st.markdown(
@@ -638,6 +762,11 @@ def main() -> None:
             else:
                 st.warning(f"{len(faltantes)} combinações data×plataforma com menos de 3 turnos.")
                 st.dataframe(faltantes, use_container_width=True, hide_index=True)
+
+    if not vazio:
+        st.download_button(
+            "⬇️ Baixar todas as suas ofertas da janela (CSV)", _csv(limpo),
+            f"ofertas_{seller}_{desde:%Y%m%d}.csv", "text/csv", key="dl_fato")
 
     suspeitas = int(fato["identidade_suspeita"].sum()) if not vazio else 0
     if suspeitas:
