@@ -511,9 +511,9 @@ apertar, repetir esse REINDEX devolve ~10–14 MB. Dois cuidados:
   (`utils/supabase_client.py`). O PostgreSQL avisa que reconstruir um índice
   único com `CONCURRENTLY` pode fazer `INSERT ... ON CONFLICT` falhar
   durante a troca. Rode fora da janela de gravação dos turnos: as gravações
-  caem por volta de 11h, 17h e 23h BRT no PC e uns 30–60 min depois na
-  Amazon do Actions. O de 08/11 rodou às 11:05 BRT com o turno da manhã
-  ainda coletando, sem gravar. Também há dois índices iguais
+  do PC caíram entre 11–12h, 17–18h e ~23h25 BRT em 06–07/11, e as da
+  Amazon do Actions às ~15h, ~19–20h e ~01h30. O de 08/11 rodou às 11:05
+  BRT, com o turno da manhã ainda coletando e sem gravar. Também há dois índices iguais
 em `data` (`coletas_data_idx` DESC e `idx_coletas_data`, ~0,8 MB cada), e um
 deles pode sair.
 
