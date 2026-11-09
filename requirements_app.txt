@@ -30,7 +30,11 @@ tabulate>=0.9.0
 # do Supabase com o histórico — sem estas libs, `_history_gap_fill` falha no
 # import, cai no except e o painel exibe só o que o banco devolveu, sem erro
 # visível. Ver docs/HISTORICO_DRIVE.md.
-pyarrow>=15.0.0
+# <25: o pyarrow 26 tem segfault conhecido (apache/arrow#50471). O Streamlit
+# Cloud instala o 26 e depois troca pelo 24 COM O APP RODANDO; em 08/11/2026
+# essa troca deixou o processo antigo servindo com a lib trocada por baixo e o
+# painel parou de carregar. Fixando aqui, o resolvedor já escolhe o 24.
+pyarrow>=15.0.0,<25
 # Export XLSX da página 🩻 Diagnóstico
 openpyxl>=3.1.0
 google-api-python-client>=2.100.0

@@ -11,7 +11,11 @@ pandas>=2.2.2
 # dependência transitiva não declarada quebra o dia em que o pandas trocar.
 numpy>=1.26.0
 # Histórico frio em Parquet (utils/history) — Drive/disco
-pyarrow>=15.0.0
+# <25: o pyarrow 26 tem segfault conhecido (apache/arrow#50471). O Streamlit
+# Cloud instala o 26 e depois troca pelo 24 COM O APP RODANDO; em 08/11/2026
+# essa troca deixou o processo antigo servindo com a lib trocada por baixo e o
+# painel parou de carregar. Fixando aqui, o resolvedor já escolhe o 24.
+pyarrow>=15.0.0,<25
 # Google Drive como destino do histórico. Opcionais: sem eles o histórico
 # cai no backend local (data/history/) sem quebrar a coleta.
 google-api-python-client>=2.100.0
