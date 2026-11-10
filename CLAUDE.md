@@ -92,6 +92,14 @@ python utils/session_grabber.py --site shopee
 > vitrine inteira, então ranking ali não é inteligência competitiva. A ausência
 > que importa é **Casas Bahia**, que é marketplace e é onde a disputa acontece
 > de verdade. Ela nunca coletou.
+>
+> **Causa (10/11/2026):** a Casas Bahia saiu da VTEX (URL de produto virou
+> `/<slug>/p/<id>`; a coleta de oferta em produção só funciona pelo DOM, 0 buy
+> box). A API IS `orders_desc` responde 200 com a vitrine em HTML — não é
+> Akamai e sessão não resolve. A fonte agora lê a **vitrine** no Chrome real,
+> com a ordenação "Mais vendidos" **confirmada** (rótulo selecionado na tela ou
+> parâmetro que o próprio site escreveu na URL); sem confirmação não grava nada
+> (regra das duas referências). Sem `seller` — o DOM não traz `sellers[]`.
 
 A coleta de OFERTA mede preço, posição e buy box; ela **não contém volume de
 venda**. As listas "Mais Vendidos" dos varejistas são a **única variável de

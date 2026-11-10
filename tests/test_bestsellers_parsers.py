@@ -1337,3 +1337,128 @@ class TestLeroyOrcamentoDePdp:
     def test_titulo_e_normalizado(self, fonte):
         hits = [{"objectID": "A1", "name": "\xa0Ar Condicionado Split Midea 12000\xa0"}]
         assert fonte._parse(hits, offset=0)[0].titulo == "Ar Condicionado Split Midea 12000"
+
+
+# ---------------------------------------------------------------------------
+# Casas Bahia — vitrine pós-VTEX (Nov/2026)
+# ---------------------------------------------------------------------------
+
+_HTML_VITRINE_CB = """
+<html><body>
+<div data-testid="product-card">
+  <a href="/ar-condicionado-12000-btus-split-midea-ai-ecomaster/p/1572774613">
+    <h3 data-testid="product-name">Ar Condicionado Split Midea 12000 BTUs Inverter</h3>
+  </a>
+  <span data-testid="price-best-price">R$ 2.199,00</span>
+</div>
+<div data-testid="product-card">
+  <a href="/ar-condicionado-9000-lg/p/55500011">
+    <h3 data-testid="product-name">Ar Condicionado Split LG 9000 BTUs</h3>
+  </a>
+  <span data-testid="price-best-price">R$&nbsp;1.899,90</span>
+  <span data-testid="sponsored">Patrocinado</span>
+</div>
+<div data-testid="product-card">
+  <a href="/ar-condicionado-12000-btus-split-midea-ai-ecomaster/p/1572774613">
+    <h3 data-testid="product-name">Ar Condicionado Split Midea 12000 BTUs Inverter</h3>
+  </a>
+</div>
+</body></html>
+"""
+
+
+class TestCasasBahiaVitrine:
+    @pytest.fixture
+    def fonte(self):
+        from bestsellers.sources.casas_bahia import CasasBahiaBestSellers
+        from scrapers.casas_bahia import CasasBahiaScraper
+
+        fonte = CasasBahiaBestSellers()
+        fonte._cb = CasasBahiaScraper()
+        return fonte
+
+    def test_cards_viram_ranking_na_ordem_da_pagina(self, fonte):
+        itens = fonte._parse_vitrine(_HTML_VITRINE_CB)
+        assert [i.rank for i in itens] == [1, 2]  # card repetido sai
+        assert itens[0].preco == 2199.0
+        assert itens[1].preco == 1899.9
+        assert itens[0].sku_plataforma == "1572774613"
+        assert itens[0].url_produto.startswith("https://www.casasbahia.com.br/")
+        assert itens[1].patrocinado is True
+
+    def test_dom_nao_inventa_buy_box(self, fonte):
+        # sem sellers[] o vencedor é desconhecido — nunca "Casas Bahia"
+        assert all(i.seller is None for i in fonte._parse_vitrine(_HTML_VITRINE_CB))
+
+    def test_titulo_cru_e_preservado(self, fonte):
+        itens = fonte._parse_vitrine(_HTML_VITRINE_CB)
+        assert itens[0].titulo == "Ar Condicionado Split Midea 12000 BTUs Inverter"
+
+    def test_marcador_de_ordenacao_ui_comprova_a_lista(self):
+        from bestsellers.config import SOURCES
+        from bestsellers.sources.casas_bahia import MARCADOR_ORDENACAO_UI
+
+        spec = SOURCES["casasbahia"]
+        assert spec.ordenacao_comprovada(f"https://x/busca?q=ar [{MARCADOR_ORDENACAO_UI}]")
+        assert not spec.ordenacao_comprovada("https://www.casasbahia.com.br/busca?q=ar")
+
+    def test_url_digitada_por_nos_nao_prova_ordenacao(self, fonte):
+        class _Pagina:
+            url = "https://www.casasbahia.com.br/ar-condicionado/b?ordenacao=maisvendidos"
+
+            def evaluate(self, js):
+                return False  # nenhum rótulo selecionado na tela
+
+        assert fonte._ordenacao_confirmada(_Pagina(), aceitar_url=False) is False
+        assert fonte._ordenacao_confirmada(_Pagina(), aceitar_url=True) is True
+
+    def test_sem_ordenacao_confirmada_nada_e_gravado(self, fonte, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+
+        class _Pagina:
+            url = "https://www.casasbahia.com.br/busca?q=ar+condicionado"
+
+            def goto(self, *a, **k):
+                pass
+
+            def evaluate(self, js):
+                return False
+
+        cb = fonte._cb
+        cb._page = _Pagina()
+        monkeypatch.setattr(cb, "_wait_for_products", lambda timeout_ms=0: True)
+        monkeypatch.setattr(cb, "_page_html", lambda: _HTML_VITRINE_CB)
+        monkeypatch.setattr(cb, "_check_blocked", lambda html: False)
+        monkeypatch.setattr(cb, "_organic_search", lambda kw: True)
+        monkeypatch.setattr(fonte, "_aplicar_mais_vendidos", lambda page: False)
+
+        itens, motivo = fonte._coletar_via_vitrine()
+        assert itens == []
+        assert "ordenação" in motivo
+
+    def test_ordenacao_pela_tela_grava_com_marcador(self, fonte, monkeypatch, tmp_path):
+        from bestsellers.sources.casas_bahia import MARCADOR_ORDENACAO_UI
+
+        monkeypatch.chdir(tmp_path)
+
+        class _Pagina:
+            url = "https://www.casasbahia.com.br/busca?q=ar+condicionado"
+
+            def goto(self, *a, **k):
+                pass
+
+        cb = fonte._cb
+        cb._page = _Pagina()
+        monkeypatch.setattr(cb, "_wait_for_products", lambda timeout_ms=0: True)
+        monkeypatch.setattr(cb, "_page_html", lambda: _HTML_VITRINE_CB)
+        monkeypatch.setattr(cb, "_check_blocked", lambda html: False)
+        monkeypatch.setattr(cb, "_organic_search", lambda kw: True)
+        monkeypatch.setattr(cb, "_human_scroll", lambda **k: None)
+        monkeypatch.setattr("bestsellers.sources.casas_bahia.time.sleep", lambda s: None)
+        monkeypatch.setattr(fonte, "_ordenacao_confirmada", lambda page, aceitar_url=True: False)
+        monkeypatch.setattr(fonte, "_aplicar_mais_vendidos", lambda page: True)
+
+        itens, _ = fonte._coletar_via_vitrine()
+        assert len(itens) == 2
+        assert MARCADOR_ORDENACAO_UI in fonte.endpoint
+        assert fonte.spec.ordenacao_comprovada(fonte.endpoint)

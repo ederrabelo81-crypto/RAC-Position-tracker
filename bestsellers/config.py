@@ -300,7 +300,12 @@ SOURCES: Dict[str, SourceSpec] = {
         key="casasbahia",
         nome="Casas Bahia",
         url_publica="https://www.casasbahia.com.br/ar-condicionado/b?ordenacao=maisvendidos",
-        parametros_ordenacao=("orders_desc", "ordenacao=maisvendidos"),
+        # `ordenacao_ui=mais_vendidos`: ordenação confirmada pelo rótulo
+        # selecionado na vitrine (pós-VTEX, Nov/2026), quando a URL não
+        # carrega o parâmetro — ver bestsellers/sources/casas_bahia.py.
+        parametros_ordenacao=(
+            "orders_desc", "ordenacao=maisvendidos", "ordenacao_ui=mais_vendidos",
+        ),
         mecanica=MECANICA_ACUMULADO,
         base_vendidos=None,
         itens_esperados=20,
