@@ -103,7 +103,11 @@ class TestChromeArgs:
         monkeypatch.delenv("RAC_CHROME_KEEP_EXTENSIONS", raising=False)
         args = lb._chrome_args(9222, tmp_path)
         assert "--remote-debugging-port=9222" in args
-        assert "--remote-allow-origins=*" in args
+        assert (
+            "--remote-allow-origins=http://127.0.0.1:9222,http://localhost:9222"
+            in args
+        )
+        assert "--remote-allow-origins=*" not in args
 
     def test_sem_debug_nao_expoe_porta(self, monkeypatch, tmp_path):
         # 10/11/2026: o login do ML fica preso em /login/identification com o

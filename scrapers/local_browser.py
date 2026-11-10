@@ -85,8 +85,10 @@ _RECONNECTS_USED = 0
 # seguirem pelo caminho antigo.
 _MAX_LAUNCH_FAILURES = 2
 
-# Args do Chrome COMUM (sem NADA de automação). --remote-allow-origins=* é
-# obrigatório para o connect_over_cdp funcionar no Chrome 111+.
+# Args do Chrome COMUM (sem NADA de automação). --remote-allow-origins é
+# obrigatório para o connect_over_cdp funcionar no Chrome 111+ — restrito à
+# própria porta local (o curinga `*` deixaria qualquer página aberta no perfil
+# logado tentar o CDP; mesmo critério do kit da skill, rac_kit/navegador.py).
 def _keep_extensions() -> bool:
     """Se True, sobe o Chrome COM as extensões do perfil (padrão: sem elas).
 
@@ -125,7 +127,10 @@ def _chrome_args(
     # restauração. O padrão (sem a flag) já não restaura as abas anteriores.
     args = []
     if debug:
-        args += [f"--remote-debugging-port={port}", "--remote-allow-origins=*"]
+        args += [
+            f"--remote-debugging-port={port}",
+            f"--remote-allow-origins=http://127.0.0.1:{port},http://localhost:{port}",
+        ]
     args += [
         f"--user-data-dir={profile_dir}",
         "--no-first-run",
@@ -215,8 +220,11 @@ def find_chrome_exe() -> Optional[str]:
 
 def cdp_endpoint_if_up(port: int) -> Optional[str]:
     """Retorna ``http://127.0.0.1:{port}`` se já há um Chrome ouvindo, senão None."""
+    # Sem proxy: no Windows o urllib lê o proxy do sistema, e um proxy que
+    # recusa 127.0.0.1 faria um Chrome vivo parecer fechado.
+    direto = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(
+        with direto.open(
             f"http://127.0.0.1:{port}/json/version", timeout=2
         ) as resp:
             if resp.status == 200:

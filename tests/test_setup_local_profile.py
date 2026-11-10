@@ -157,12 +157,14 @@ class TestLoginSemDebug:
 
         def _close(port):
             chamadas["close"] += 1
+            chamadas["close_port"] = port
             return fecha_ok
 
         monkeypatch.setattr(slp, "close_chrome_via_cdp", _close)
 
         def _spawn(port, profile_dir, start_url=None, debug=True):
             chamadas["spawn"].append(debug)
+            chamadas["spawn_args"] = (port, profile_dir, start_url)
             return proc
 
         monkeypatch.setattr(slp, "spawn_chrome", _spawn)
@@ -181,6 +183,9 @@ class TestLoginSemDebug:
         monkeypatch.setattr(slp, "_wait_process_exit", lambda p, s: s != 3)
         assert slp._login_sem_debug(9222, tmp_path, "mercadolivre") is True
         assert ch["spawn"] == [False]
+        assert ch["spawn_args"] == (
+            9222, tmp_path, slp.SITES["mercadolivre"]["start_url"]
+        )
         assert ch["close"] == 0
 
     def test_fecha_o_chrome_de_debug_antes(self, monkeypatch, tmp_path):
@@ -189,7 +194,9 @@ class TestLoginSemDebug:
         monkeypatch.setattr(slp, "_wait_process_exit", lambda p, s: s != 3)
         assert slp._login_sem_debug(9222, tmp_path, "mercadolivre") is True
         assert ch["close"] == 1
+        assert ch["close_port"] == 9222
         assert ch["spawn"] == [False]
+        assert ch["spawn_args"][:2] == (9222, tmp_path)
 
     def test_nao_fecha_chrome_de_outro_perfil(self, monkeypatch, tmp_path):
         # porta ocupada por um Chrome de debug que não é o do perfil

@@ -438,6 +438,13 @@ def _check_ml_serp(ctx) -> bool:
     page = None
     try:
         page = ctx.new_page()
+        # Aquece a home antes, como a coleta (`MercadoLivreBestSellers._abrir`):
+        # ir direto à lista com sessão fria cai no gate mesmo logado.
+        try:
+            page.goto(_ML_HOME, wait_until="domcontentloaded", timeout=45_000)
+            page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            pass
         page.goto(_ML_CHECK_URL, wait_until="domcontentloaded", timeout=45_000)
         try:
             page.wait_for_selector("div.poly-card, li.ui-search-layout__item", timeout=15_000)
