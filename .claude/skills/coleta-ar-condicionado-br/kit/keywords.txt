@@ -1,0 +1,4 @@
+# Uma busca por linha. Comece com poucas.
+ar condicionado 9000 btus
+ar condicionado 12000 btus
+ar condicionado split inverter

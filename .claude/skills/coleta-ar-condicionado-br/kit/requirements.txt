@@ -1,0 +1,6 @@
+# Kit de coleta — dependências mínimas.
+# rebrowser-playwright é o fork que oculta o Runtime.enable do CDP (o sensor do
+# Akamai, usado por Magalu e Casas Bahia, detecta o Playwright comum).
+rebrowser-playwright>=1.49.0
+beautifulsoup4>=4.12.3
+tzdata>=2024.1; sys_platform == "win32"
