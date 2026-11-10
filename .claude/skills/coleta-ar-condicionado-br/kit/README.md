@@ -39,7 +39,8 @@ o volume nem repita em seguida: bloqueio se resolve esperando.
 ## Licença
 
 MIT — veja o arquivo `LICENSE` na pasta da skill. Pode usar, copiar e adaptar,
-mantendo o aviso de copyright.
+desde que o arquivo `LICENSE` (aviso de copyright e de permissão) acompanhe
+as cópias.
 
 ## Uso responsável
 
