@@ -464,7 +464,9 @@ a pasta da skill.
 | `kit/` | Pacote Python autocontido (`rac_kit`) + `coletar.py`, `abrir_perfil.py` e `coletar_turno.bat` |
 
 Sites prontos: Mercado Livre, Amazon, Magalu, Casas Bahia, Shopee e Leroy
-Merlin, mais qualquer loja própria via `--url-busca`.
+Merlin. Loja própria entra via `--url-busca`: o padrão reconhece links de
+produto de loja VTEX (`/<slug>/p`); outro formato precisa de `--re-produto`
+com a regex do link de produto daquela loja.
 
 ```bash
 # Para o dealer: copiar a pasta para ~/.claude/skills/ ou usar o kit direto
@@ -477,9 +479,11 @@ python coletar.py --url-busca "https://www.loja.com.br/busca?q={q}" --keyword "s
 ```
 
 Saída: CSV no formato do Excel brasileiro (`;`, BOM, vírgula decimal) e, ao
-lado, um `.cobertura.json` com o que **não** foi observado e por quê (`login`,
-`captcha`, `bloqueio`, `layout`, `vazia`, `adiada`, `sem_navegador`,
-`interrompida`). Código de saída 2 = alguma keyword ficou sem dado.
+lado, um `.cobertura.json` com o resultado de cada keyword e página: `ok`,
+`vazia` (a busca não tem resultado) ou o motivo de **não** ter sido observada
+(`login`, `captcha`, `bloqueio`, `layout`, `adiada`, `sem_navegador`,
+`interrompida`). Código de saída 2 = alguma keyword não foi observada ou a
+coleta foi interrompida; busca vazia não conta.
 
 **Dentro deste repositório a coleta de produção continua nos `scrapers/`** — o
 kit é um derivado enxuto e genérico, sem os caminhos por API (Algolia da Leroy,
