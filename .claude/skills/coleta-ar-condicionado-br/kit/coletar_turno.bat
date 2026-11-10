@@ -14,7 +14,7 @@ echo [%date% %time%] inicio >> "%LOG%"
 for %%S in (mercadolivre amazon magalu casasbahia) do (
     python coletar.py --site %%S --keywords-arquivo keywords.txt --paginas 1 --buy-box %BUYBOX% >> "%LOG%" 2>&1
     if errorlevel 1 (
-        echo [%date% %time%] FALHOU site=%%S >> "%LOG%"
+        echo FALHOU site=%%S >> "%LOG%"
         set FALHOU=1
     )
 )

@@ -111,20 +111,22 @@ def _esperar_captcha(aba: Any, site: Site, opcoes: Opcoes) -> bloqueio.Veredito:
 
 
 def _resolver_buy_box(chrome: Any, cards: List[Dict[str, Any]], referer: str,
-                      opcoes: Opcoes) -> Optional[str]:
+                      opcoes: Opcoes) -> Tuple[Optional[str], bool]:
     """Abre o PDP dos N primeiros cards e grava quem vende.
 
     Returns:
-        None se correu bem, ou uma frase dizendo por que a leitura parou
-        (PDP negado, Chrome fechado) — ela vai para a cobertura, para um PDP
-        bloqueado não virar "vendedor não informado" em silêncio.
+        ``(nota, negado)``. ``nota`` é None se correu bem, ou uma frase dizendo
+        por que a leitura parou — ela vai para a cobertura, para um PDP
+        bloqueado não virar "vendedor não informado" em silêncio. ``negado`` é
+        True só quando o SITE negou a página de produto: aí não se insiste.
+        Chrome fechado não é negação, e a leitura volta na página seguinte.
     """
     alvos = cards[: opcoes.buy_box]
     if not alvos:
-        return None
+        return None, False
     aba = chrome.nova_aba()
     if aba is None:
-        return "buy box não lida: o Chrome não abriu a aba"
+        return "buy box não lida: o Chrome não abriu a aba", False
     try:
         for lidos, card in enumerate(alvos):
             try:
@@ -134,19 +136,28 @@ def _resolver_buy_box(chrome: Any, cards: List[Dict[str, Any]], referer: str,
                 html = aba.content()
             except Exception as exc:  # noqa: BLE001 — erro do driver
                 if navegador_morreu(exc):
-                    return f"buy box parou após {lidos} PDPs: Chrome fechado"
+                    return f"buy box parou após {lidos} PDPs: Chrome fechado", False
                 log.debug("PDP %s falhou: %s", card["url"], exc)
                 continue
             status = resposta.status if resposta is not None else None
             if bloqueio.pdp_negado(html, status):
                 log.warning("PDP negado (%s) — parando a leitura de buy box.", card["url"])
-                return f"buy box parou após {lidos} PDPs: página de produto negada"
+                nota = f"buy box parou após {lidos} PDPs: página de produto negada"
+                try:
+                    opcoes.pasta_logs.mkdir(parents=True, exist_ok=True)
+                    marca = hashlib.sha1(card["url"].encode("utf-8")).hexdigest()[:8]
+                    prova = opcoes.pasta_logs / f"bloqueio_pdp_{marca}.html"
+                    prova.write_text(html or "", encoding="utf-8")
+                    nota = f"{nota} (evidência: {prova})"
+                except OSError as exc:
+                    log.warning("Não foi possível gravar a evidência do PDP: %s", exc)
+                return nota, True
             vendedor, fonte = ler_buy_box(html)
             # O rótulo do PDP é a leitura da buy box; sem leitura, o que o
             # card dizia (se dizia) continua valendo, com a fonte "card".
             if vendedor:
                 card["buy_box_seller"], card["fonte_buy_box"] = vendedor, fonte
-        return None
+        return None, False
     finally:
         try:
             aba.close()
@@ -262,9 +273,10 @@ def coletar_site(
                 bloqueios_seguidos = 0
                 detalhe = veredito.detalhe
                 if buy_box_ligada:
-                    parou = _resolver_buy_box(chrome, cards, referer, opcoes)
+                    parou, negado = _resolver_buy_box(chrome, cards, referer, opcoes)
                     if parou:
                         detalhe = f"{detalhe}; {parou}"
+                    if negado:
                         buy_box_ligada = False  # não insistir em PDP negado
                 registros.extend(montar_registro(c, site, keyword) for c in cards)
                 anotar(keyword, pagina, bloqueio.OK, detalhe, len(cards))

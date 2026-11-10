@@ -128,23 +128,30 @@ def _e_produto(obj: Dict[str, Any]) -> bool:
 def _oferta_jsonld(obj: Dict[str, Any]) -> Tuple[Optional[float], Optional[str]]:
     """(preço, vendedor) de um Product do schema.org.
 
-    Com várias ofertas, o vendedor só é devolvido se todas apontarem o mesmo:
-    escolher "a primeira" seria eleger um vencedor que a página não declara.
+    Com várias ofertas, preço e vendedor só são devolvidos quando todas
+    concordam: escolher "a primeira" seria eleger um vencedor que a página não
+    declara. Sem acordo fica None (e, na busca, vale o preço lido do card).
     """
     ofertas = obj.get("offers")
     lista = ofertas if isinstance(ofertas, list) else [ofertas]
     lista = [o for o in lista if isinstance(o, dict)]
     if not lista:
         return None, None
-    bruto = lista[0].get("price", lista[0].get("lowPrice"))
-    preco = parse_price_brazil(str(bruto)) if bruto not in (None, "") else None
+    precos = set()
     nomes = set()
     for oferta in lista:
+        bruto = oferta.get("price", oferta.get("lowPrice"))
+        valor = parse_price_brazil(str(bruto)) if bruto not in (None, "") else None
+        if valor:
+            precos.add(valor)
         vendedor = oferta.get("seller")
         nome = vendedor.get("name") if isinstance(vendedor, dict) else None
         if isinstance(nome, str) and nome.strip():
             nomes.add(nome.strip())
-    return preco, (nomes.pop() if len(nomes) == 1 else None)
+    return (
+        precos.pop() if len(precos) == 1 else None,
+        nomes.pop() if len(nomes) == 1 else None,
+    )
 
 
 def _precos_jsonld(soup: BeautifulSoup, site: Site) -> Dict[str, float]:

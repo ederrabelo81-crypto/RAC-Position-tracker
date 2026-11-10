@@ -33,7 +33,8 @@ def main() -> int:
         print(f"Já existe um Chrome deste perfil aberto (porta {porta}).")
         print(f"Abra nele: {url}")
     else:
-        if abrir_chrome(porta, perfil, url) is None:
+        processo = abrir_chrome(porta, perfil, url)
+        if processo is None:
             return 1
         for _ in range(40):
             if endpoint_cdp(porta):
@@ -42,6 +43,11 @@ def main() -> int:
         else:
             print(f"O Chrome não abriu a porta {porta} em 20 s. Feche as outras "
                   "janelas do Chrome que usam este perfil e tente de novo.")
+            # Não deixa um Chrome sem porta de depuração segurando o perfil.
+            try:
+                processo.terminate()
+            except OSError:
+                pass
             return 1
         print(f"Chrome aberto no perfil {perfil}")
 

@@ -330,6 +330,15 @@ class TestExtracao:
         (card,) = extrair_cards(html, loja)
         assert card["preco"] == 1899.0
 
+    def test_json_ld_com_ofertas_de_precos_diferentes_nao_elege_um(self):
+        ld = json.dumps({"@type": "Product", "url": "https://www.loja.com.br/ar-gree-9000/p",
+                         "offers": [{"price": "1899.0"}, {"price": "2050.0"}]})
+        html = f"""<html><body><script type="application/ld+json">{ld}</script>
+          <div><a href="/ar-gree-9000/p">Ar Condicionado Gree 9000 BTUs</a>
+               <span>R$ 1.950,00</span></div></body></html>"""
+        (card,) = extrair_cards(html, site_generico("https://www.loja.com.br/busca?q={q}"))
+        assert card["preco"] == 1950.0  # vale o que o card mostra
+
     @pytest.mark.parametrize("html,esperado", [
         ("<div>Vendido e entregue por <b>Clima Sul Ar</b></div>", ("Clima Sul Ar", "rotulo")),
         ("<div><span>Vendido por</span>\n<a>Refrigera Norte</a></div>", ("Refrigera Norte", "rotulo")),
@@ -487,8 +496,25 @@ class TestColeta:
             chrome, self.ml, ["a", "b"], _opcoes(tmp_path, buy_box=3))
         assert len(registros) == 12 and not any(r["Buy Box Seller"] for r in registros)
         assert "página de produto negada" in cobertura[0]["detalhe"]
+        assert list(tmp_path.glob("bloqueio_pdp_*.html"))  # evidência do PDP salva
         pdps = [u for u, _ in chrome.visitas if "/p/MLB" in u]
         assert len(pdps) == 1  # parou no 1º e não tentou de novo na keyword seguinte
+
+    def test_chrome_fechado_no_pdp_nao_desliga_a_buy_box(self, tmp_path):
+        pdps = []
+
+        def roteiro(url):
+            if "/p/MLB" in url:
+                pdps.append(url)
+                if len(pdps) == 1:
+                    return Exception("Target page, context or browser has been closed")
+                return _PDP_OK, 200
+            return _serp_ml(6), 200
+
+        registros, cobertura = coletar_site(
+            _ChromeFalso(roteiro), self.ml, ["a", "b"], _opcoes(tmp_path, buy_box=1))
+        assert "Chrome fechado" in cobertura[0]["detalhe"]
+        assert registros[6]["Buy Box Seller"] == "Loja Teste Ar"  # voltou na keyword b
 
     def test_chrome_fechado_duas_vezes_e_sem_navegador_nao_bloqueio(self, tmp_path):
         morto = Exception("Target page, context or browser has been closed")

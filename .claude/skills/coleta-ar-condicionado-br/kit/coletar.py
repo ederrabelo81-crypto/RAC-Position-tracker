@@ -8,7 +8,9 @@
                       --keyword "split inverter"
 
 Sai com código 0 se tudo foi observado e 2 se alguma keyword ficou sem dado
-(bloqueio, login, CAPTCHA, layout novo) — útil para o agendador avisar.
+(bloqueio, login, CAPTCHA, layout novo, Chrome que não conectou) ou se a coleta
+foi interrompida — útil para o agendador avisar. Mesmo interrompida, grava o
+que já tinha coletado.
 """
 
 from __future__ import annotations
@@ -106,13 +108,25 @@ def main() -> int:
         log.warning("Coleta interrompida — gravando o que já foi coletado.")
     except Exception as exc:  # noqa: BLE001 — o que já foi coletado não se perde
         interrompida, causa_resto = True, "interrompida"
-        log.error("Coleta abortada: %s", exc)
+        log.exception("Coleta abortada: %s", exc)
     finally:
         chrome.fechar()
     registros, cobertura = parcial.registros, parcial.cobertura
 
     # Keyword que nem chegou a ser tentada também é "não observada".
     tentadas = {c["keyword"] for c in cobertura}
+    if interrompida and cobertura and cobertura[-1]["causa"] == bloqueio.OK:
+        # A keyword em andamento parou no meio da paginação: as páginas que
+        # faltaram também não foram observadas.
+        ultima = cobertura[-1]
+        if ultima["pagina"] < args.paginas:
+            cobertura.append({
+                "plataforma": site.nome, "keyword": ultima["keyword"],
+                "pagina": ultima["pagina"] + 1, "causa": causa_resto,
+                "detalhe": f"a coleta parou antes das páginas "
+                           f"{ultima['pagina'] + 1} a {args.paginas}",
+                "produtos": 0, "evidencia": None,
+            })
     for keyword in keywords:
         if keyword not in tentadas:
             cobertura.append({
