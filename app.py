@@ -8035,7 +8035,7 @@ def page_sov_patrocinado() -> None:
             "marca anúncio patrocinado na coleta é Mercado Livre (Product Ads), "
             "Amazon (AMS) e Leroy Merlin (desde Nov/2026: prateleira \"Produtos "
             "patrocinados\" da busca, que fica no FIM da página — Posição Geral "
-            "depois dos orgânicos —, e a dos PDPs, ainda em validação, na "
+            "depois dos orgânicos —, e a dos PDPs, na "
             "keyword `PDP · <busca>`); Google Shopping/Magalu/Shopee ainda não "
             "sinalizam o flag na SERP capturada. A cobertura real por plataforma "
             "aparece no expander de cobertura e na página 🩺 Saúde do Dado."
