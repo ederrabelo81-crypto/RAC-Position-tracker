@@ -720,6 +720,31 @@ a cada push do próprio briefing.
 
 ---
 
+## Skill compartilhável de coleta — `coleta-ar-condicionado-br` (Nov/2026) 🆕
+
+`.claude/skills/coleta-ar-condicionado-br/` é uma skill do Claude Code para
+**terceiros** (dealers/sellers) montarem a própria coleta: `SKILL.md`,
+`references/` (navegador local, marketplaces, regras de dado, agendamento) e um
+kit Python **autocontido** em `kit/` (Chrome comum + perfil dedicado + CDP,
+diagnóstico de bloqueio por evidência, extração estrutural, buy box no PDP,
+CSV + cobertura). Compartilhar = copiar a pasta para `~/.claude/skills/`.
+
+**Regras duras:**
+1. **O kit não importa nada do repo** (`config`, `utils`, `scrapers`) e não
+   carrega segredo, credencial nem o de-para de sellers
+   (`SELLER_GROUPS`) — `tests/test_skill_coleta_kit.py` reprova.
+2. **`kit/rac_kit/offer_kind.py` e `offer_identity.py` são cópia fiel** de
+   `utils/`. Mexeu na origem, copie de novo (o teste compara byte a byte).
+   `texto.py` é paridade de comportamento com `utils/text.py`,
+   `utils/brands.py` e `config.BRANDS`, também cobrada por teste.
+3. **Dentro deste repo, a coleta de produção segue nos `scrapers/`.** O kit é
+   um derivado enxuto e genérico; não substitui os scrapers por plataforma.
+4. Só foi validado com HTML sintético e um site local — **não contra os
+   marketplaces reais** (a nuvem é IP de datacenter). A 1ª validação de campo
+   é no PC coletor.
+
+---
+
 ## Table of Contents
 
 1. [Session Start Protocol](#session-start-protocol)
@@ -988,6 +1013,7 @@ rac-position-tracker/
 │
 ├── .claude/                     # AI assistant documentation
 │   ├── COMMON_MISTAKES.md
+│   ├── skills/coleta-ar-condicionado-br/  # 🆕 skill compartilhável (kit autocontido p/ dealers)
 │   ├── QUICK_START.md
 │   ├── ARCHITECTURE_MAP.md
 │   └── templates/
