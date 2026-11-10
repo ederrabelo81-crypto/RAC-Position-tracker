@@ -18,15 +18,20 @@ lixo (desconto fantasma de -79%) e por isso `preco_de` não é coletado aqui.
 """
 
 import os
+import re
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
+from bs4 import BeautifulSoup, Tag
 from loguru import logger
 
 from bestsellers.base import BestSellerSource
 from bestsellers.models import BestSellerItem
-from scrapers.casas_bahia import CasasBahiaScraper
+from scrapers.casas_bahia import _SELECTORS, CasasBahiaScraper
 from scrapers.local_browser import is_local_chrome_enabled
+from utils.text import parse_price, parse_rating, parse_review_count
 
 _VTEX_IS_URL = (
     "https://www.casasbahia.com.br/_v/api/intelligent-search"
@@ -36,6 +41,67 @@ _TERMO = "ar condicionado"
 _ORDENACAO = "orders_desc"
 _ITENS_POR_PAGINA = 24
 _TIMEOUT = 10
+
+# A Casas Bahia saiu da VTEX: as URLs de produto viraram `/<slug>/p/<id>` e a
+# coleta de oferta em produção só funciona pelo DOM (0 buy box em 254–310
+# linhas/turno, 09–10/11/2026). A API IS responde 200 com HTML (a vitrine nova)
+# para qualquer IP — não é Akamai e não volta com sessão. O caminho que funciona
+# é a VITRINE no Chrome real, ordenada por "Mais vendidos".
+_RE_MAIS_VENDIDOS = re.compile(r"mais\s+vendid", re.I)
+
+# URL que prova a ordenação por vendas: um parâmetro DE ORDENAÇÃO (nome na
+# lista branca) cujo valor tem semântica de venda. Valor solto em outro
+# parâmetro (ex.: o termo buscado) não prova nada. Sem isto, a ordenação só
+# vale com o rótulo selecionado na tela — ver `_ordenacao_confirmada`.
+_PARAMS_ORDENACAO = frozenset({
+    "ordenacao", "ordenar", "ordem", "sort", "sortby", "sort_by", "order",
+    "orderby", "order_by",
+})
+_RE_VALOR_VENDAS = re.compile(
+    r"mais.?vendid|orders?_desc|best.?sell|top.?sell|sold|sales|vendas", re.I
+)
+
+
+def url_ordenada_por_vendas(url: str) -> bool:
+    """True se a query tem parâmetro de ordenação com valor de vendas."""
+    try:
+        query = urlsplit(url or "").query
+    except ValueError:
+        return False
+    return any(
+        nome.lower() in _PARAMS_ORDENACAO and _RE_VALOR_VENDAS.search(valor)
+        for nome, valor in parse_qsl(query, keep_blank_values=True)
+    )
+
+# Marcador do endpoint quando a ordenação foi confirmada pelo rótulo da tela
+# (a URL não carrega parâmetro). Está em `parametros_ordenacao` da fonte, então
+# o portão de validação aceita a lista como de vendas — e só ela.
+MARCADOR_ORDENACAO_UI = "ordenacao_ui=mais_vendidos"
+
+# Gatilhos do controle de ordenação (dropdown custom) — do mais explícito ao
+# mais genérico.
+_SORT_TRIGGERS = (
+    "[data-testid*='sort' i]",
+    "[data-testid*='order' i]",
+    "button[aria-haspopup]",
+    "[class*='sort' i] button",
+    "[class*='Sort'] button",
+    "[class*='order' i] button",
+    "button:has-text('Ordenar')",
+    "button:has-text('Relevância')",
+    "button:has-text('Mais relevantes')",
+)
+
+# Onde a opção "Mais vendidos" aparece depois de abrir o dropdown.
+_SORT_OPTIONS = (
+    "[role='option']",
+    "[role='menuitem']",
+    "[role='radio']",
+    "li",
+    "button",
+    "label",
+    "a",
+)
 
 
 class CasasBahiaBestSellers(BestSellerSource):
@@ -141,15 +207,18 @@ class CasasBahiaBestSellers(BestSellerSource):
         self.registrar_endpoint(f"{_VTEX_IS_URL}?{urlencode(params)}")
 
         # Caminho preferido: Chrome real logado. O warm-up valida o _abck na
-        # home e o fetch same-origin da IS (sort=orders_desc) passa pelo Akamai.
+        # home; tenta a IS (legado VTEX) e, sem ela, a vitrine ordenada.
         if self._browser_ativo and self._cb._real_browser_active:
             itens = self._coletar_via_browser(paginas)
             if itens:
                 return itens
-            logger.warning(
-                f"[{self.nome}] Chrome real não retornou itens — tentando a "
-                "API VTEX (curl_cffi) como último recurso."
-            )
+            # Sem curl_cffi aqui: a API VTEX não existe mais na Casas Bahia
+            # (responde a vitrine em HTML), e cair nela só trocava o motivo
+            # real pela mensagem enganosa de "bloqueio Akamai".
+            itens, motivo = self._coletar_via_vitrine()
+            if itens:
+                return itens
+            raise RuntimeError(f"vitrine de mais vendidos: {motivo}")
 
         return self._coletar_via_api(paginas)
 
@@ -173,6 +242,291 @@ class CasasBahiaBestSellers(BestSellerSource):
             if len(produtos) < _ITENS_POR_PAGINA:
                 break
         return itens
+
+    # ------------------------------------------------------------------
+    # Vitrine (DOM) — a Casas Bahia pós-VTEX
+    # ------------------------------------------------------------------
+
+    def _coletar_via_vitrine(self) -> tuple:
+        """
+        Abre a vitrine de ar condicionado no Chrome real, ordena por
+        "Mais vendidos" e lê os cards do DOM.
+
+        Ordem de navegação:
+          1. a URL pública da fonte (``?ordenacao=maisvendidos``);
+          2. se a ordenação não se confirmar, a busca orgânica (digitar no
+             campo — o caminho que a coleta de oferta usa todo turno) e o
+             controle "Ordenar por" da página.
+
+        **Regra dura:** sem ordenação CONFIRMADA (parâmetro na URL ou rótulo
+        "Mais vendidos" selecionado), nada é gravado — uma lista por relevância
+        com o rótulo de mais vendidos misturaria as duas referências.
+
+        Returns:
+            (itens, motivo) — ``motivo`` explica a lista vazia.
+        """
+        cb = self._cb
+        page = cb._page
+        if page is None:
+            return [], "aba do Chrome indisponível"
+
+        url = self.spec.url_publica
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+        except Exception as exc:
+            logger.warning(f"[{self.nome}] goto da vitrine falhou: {exc}")
+        cb._wait_for_products(timeout_ms=10_000)
+
+        html = cb._page_html() or ""
+        if html and cb._check_blocked(html):
+            caminho = self._dump("bloqueio", html)
+            return [], f"bloqueio anti-bot na vitrine (evidência: {caminho})"
+
+        ordenada = self._ordenacao_confirmada(page, aceitar_url=False)
+        if not ordenada:
+            logger.info(
+                f"[{self.nome}] URL pública sem ordenação confirmada "
+                f"({(page.url or '')[:90]}) — indo pela busca + 'Ordenar por'."
+            )
+            if not cb._organic_search(_TERMO):
+                try:
+                    page.goto(
+                        cb._build_url(_TERMO, 1),
+                        wait_until="domcontentloaded",
+                        timeout=40_000,
+                    )
+                except Exception as exc:
+                    return [], f"busca não abriu ({exc})"
+            cb._wait_for_products(timeout_ms=10_000)
+            ordenada = self._aplicar_mais_vendidos(page)
+
+        if not ordenada:
+            caminho = self._dump("sem_ordenacao", cb._page_html() or "")
+            return [], (
+                "não consegui aplicar/confirmar a ordenação 'Mais vendidos' "
+                f"(URL {(page.url or '')[:90]}; evidência: {caminho}). "
+                "Nada gravado para não misturar relevância com vendas."
+            )
+
+        cb._wait_for_products(timeout_ms=10_000)
+        try:
+            cb._human_scroll(steps=8, step_px=400)
+        except Exception as exc:
+            logger.debug(f"[{self.nome}] scroll interrompido: {exc}")
+        time.sleep(1.5)
+        html = cb._page_html() or ""
+
+        final = page.url or url
+        # A ordenação foi confirmada acima; o endpoint carrega a prova num
+        # formato que o portão de validação reconhece.
+        self.endpoint = (
+            final if self.spec.ordenacao_comprovada(final)
+            else f"{final} [{MARCADOR_ORDENACAO_UI}]"
+        )
+
+        itens = self._parse_vitrine(html)
+        if not itens:
+            caminho = self._dump("sem_cards", html)
+            return [], f"vitrine ordenada sem cards de produto (evidência: {caminho})"
+        logger.info(
+            f"[{self.nome}] {len(itens)} produtos via vitrine 'Mais vendidos' "
+            f"(DOM) — {final[:90]}"
+        )
+        return itens, ""
+
+    @staticmethod
+    def _ordenacao_confirmada(page: Any, aceitar_url: bool = True) -> bool:
+        """
+        A página atual está ordenada por "Mais vendidos"?
+
+        Evidência aceita: ``<select>`` com a opção selecionada, elemento
+        ``aria-selected``/``aria-checked`` com o rótulo, o gatilho do controle
+        exibindo SÓ o rótulo, ou — com ``aceitar_url`` — parâmetro de vendas
+        na query. Texto "Mais vendidos" solto NÃO conta (o menu do site tem um
+        link com esse nome), nem um contêiner que lista todas as opções.
+
+        Args:
+            aceitar_url: False para a URL que NÓS digitamos — um parâmetro que
+                o site ignora continuaria na barra e "provaria" uma ordenação
+                que não aconteceu. Só vale a URL que o site escreveu.
+        """
+        if aceitar_url:
+            try:
+                url = page.url or ""
+            except Exception:
+                url = ""
+            if url_ordenada_por_vendas(url):
+                return True
+        try:
+            return bool(page.evaluate(
+                """() => {
+                    const solto = /mais\\s+vendid/i;
+                    const so = /^\\s*(ordenar( por)?:?\\s*)?mais\\s+vendidos?\\s*$/i;
+                    for (const s of document.querySelectorAll('select')) {
+                        const o = s.options[s.selectedIndex];
+                        if (o && solto.test(o.textContent || '')) return true;
+                    }
+                    for (const el of document.querySelectorAll(
+                            "[aria-selected='true'], [aria-checked='true']")) {
+                        const t = (el.innerText || '').trim();
+                        if (t.length < 40 && solto.test(t)) return true;
+                    }
+                    const gat = [
+                        "[data-testid*='sort' i]", "[data-testid*='order' i]",
+                        "[class*='sort' i] button", "[class*='Sort'] button",
+                        "button[aria-haspopup]",
+                    ].join(',');
+                    for (const el of document.querySelectorAll(gat)) {
+                        if (so.test((el.innerText || '').trim())) return true;
+                    }
+                    return false;
+                }"""
+            ))
+        except Exception:
+            return False
+
+    def _aplicar_mais_vendidos(self, page: Any) -> bool:
+        """
+        Escolhe "Mais vendidos" no controle de ordenação da página.
+
+        Tenta ``<select>`` nativo e, depois, dropdown custom (abre o gatilho e
+        clica na opção). Devolve True só com a ordenação CONFIRMADA.
+        """
+        # 1) <select> nativo
+        try:
+            selects = page.locator("select")
+            for i in range(min(selects.count(), 6)):
+                sel = selects.nth(i)
+                rotulos = sel.locator("option").all_inner_texts()
+                alvo = next((r for r in rotulos if _RE_MAIS_VENDIDOS.search(r)), None)
+                if alvo:
+                    sel.select_option(label=alvo.strip())
+                    self._esperar_recarga(page)
+                    if self._ordenacao_confirmada(page):
+                        return True
+        except Exception as exc:
+            logger.debug(f"[{self.nome}] select de ordenação: {exc}")
+
+        # 2) dropdown custom
+        for gatilho in _SORT_TRIGGERS:
+            try:
+                loc = page.locator(gatilho).first
+                if not loc.is_visible(timeout=1_500):
+                    continue
+                loc.click(timeout=4_000)
+                page.wait_for_timeout(800)
+            except Exception:
+                continue
+            for opcao in _SORT_OPTIONS:
+                try:
+                    alvo = page.locator(opcao).filter(has_text=_RE_MAIS_VENDIDOS)
+                    for j in range(min(alvo.count(), 5)):
+                        el = alvo.nth(j)
+                        if not el.is_visible():
+                            continue
+                        # Link que sai da busca (menu "Mais vendidos" do site)
+                        # não é a ordenação — só aceita link na mesma rota.
+                        href = el.get_attribute("href") or ""
+                        if href and not url_ordenada_por_vendas(href):
+                            continue
+                        el.click(timeout=4_000)
+                        self._esperar_recarga(page)
+                        if self._ordenacao_confirmada(page):
+                            logger.info(
+                                f"[{self.nome}] Ordenação 'Mais vendidos' aplicada "
+                                f"(gatilho {gatilho!r}, opção {opcao!r})."
+                            )
+                            return True
+                        break
+                except Exception:
+                    continue
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+        return False
+
+    @staticmethod
+    def _esperar_recarga(page: Any) -> None:
+        """Espera a lista recarregar depois de mudar a ordenação."""
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=15_000)
+        except Exception:
+            pass
+        try:
+            page.wait_for_timeout(2_500)
+        except Exception:
+            pass
+
+    def _parse_vitrine(self, html: str) -> List[BestSellerItem]:
+        """
+        Cards da vitrine → itens, na ordem da página.
+
+        Usa os seletores do ``CasasBahiaScraper`` (mesma vitrine da coleta de
+        oferta), mas sem o ``_build_record``: o ranking precisa do título CRU
+        (o nome canônico é decidido em ``BestSellerItem``). O DOM não expõe
+        ``sellers[]`` — ``seller`` fica vazio, nunca "Casas Bahia" por padrão.
+        """
+        if not html:
+            return []
+        soup = BeautifulSoup(html, "html.parser")
+        cards, _ = CasasBahiaScraper._detect_items(soup)
+        itens: List[BestSellerItem] = []
+        vistos = set()
+        for card in cards:
+            titulo = self._titulo_card(card)
+            if not titulo:
+                continue
+            url = CasasBahiaScraper._extract_dom_url(card)
+            chave = url or titulo
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            preco_el = CasasBahiaScraper._first_match(card, _SELECTORS["price_candidates"])
+            rating_el = card.select_one(_SELECTORS["rating"])
+            reviews_el = card.select_one(_SELECTORS["review_count"])
+            itens.append(BestSellerItem(
+                rank=len(itens) + 1,
+                titulo=titulo,
+                preco=parse_price(preco_el.get_text(" ", strip=True)) if preco_el else None,
+                rating=parse_rating(rating_el.get_text() if rating_el else None),
+                reviews=parse_review_count(reviews_el.get_text() if reviews_el else None),
+                seller=None,
+                sku_plataforma=self._sku_da_url(url),
+                url_produto=url,
+                patrocinado=bool(card.select_one(_SELECTORS["sponsored"])),
+            ))
+        return itens
+
+    @staticmethod
+    def _titulo_card(card: Tag) -> Optional[str]:
+        el = CasasBahiaScraper._first_match(card, _SELECTORS["title_candidates"])
+        titulo = el.get_text(" ", strip=True) if el else None
+        if not titulo:
+            img = card.select_one("img[alt]")
+            titulo = (img.get("alt") or "").strip() if img else None
+        return titulo or None
+
+    @staticmethod
+    def _sku_da_url(url: Optional[str]) -> Optional[str]:
+        """Id do produto na URL nova (``/<slug>/p/<id>``)."""
+        if not url:
+            return None
+        achado = re.search(r"/p/(\d+)", url)
+        return achado.group(1) if achado else None
+
+    def _dump(self, rotulo: str, html: str) -> str:
+        """Salva o HTML em logs/ para conferência e devolve o caminho."""
+        if not html:
+            return "não salva"
+        try:
+            pasta = Path("logs")
+            pasta.mkdir(parents=True, exist_ok=True)
+            caminho = pasta / f"cb_maisvendidos_{rotulo}_{time.strftime('%Y%m%d_%H%M%S')}.html"
+            caminho.write_text(html[:2_000_000], encoding="utf-8")
+            return str(caminho)
+        except Exception:
+            return "não salva"
 
     def _coletar_via_api(self, paginas: int) -> List[BestSellerItem]:
         """Replay da API VTEX via curl_cffi + warm-up de cookies Akamai."""
@@ -217,8 +571,9 @@ class CasasBahiaBestSellers(BestSellerSource):
             # HTML aqui = página de desafio do Akamai, não lista curta.
             raise RuntimeError(
                 f"API VTEX respondeu HTTP {resposta.status_code} (CT={tipo[:40]}) "
-                "— bloqueio Akamai. Sem proxy BR, re-capture a sessão: "
-                "python utils/session_grabber.py --site casasbahia"
+                "— a Casas Bahia saiu da VTEX (Nov/2026) e esta API devolve a "
+                "vitrine em HTML. Rode com RAC_LOCAL_CHROME=1: a coleta lê a "
+                "vitrine ordenada no Chrome local."
             )
 
         dados = resposta.json()

@@ -29,7 +29,7 @@ O que precisa (e o que NÃO precisa) de login
 
 USO:
     python scripts/setup_local_profile.py                      # Shopee (padrão)
-    python scripts/setup_local_profile.py --site mercadolivre  # login no ML
+    python scripts/setup_local_profile.py --site mercadolivre  # login no ML (Chrome SEM debug)
     python scripts/setup_local_profile.py --site magalu        # login na Magalu
     python scripts/setup_local_profile.py --site ambos         # Shopee + ML
     python scripts/setup_local_profile.py --site todos         # + Magalu
@@ -39,6 +39,15 @@ USO:
     # atalho: preenche o formulário do ML com ML_EMAIL/ML_PASSWORD do .env
     # (2FA e verificação de dispositivo você conclui na janela do Chrome)
     python scripts/setup_local_profile.py --site mercadolivre --auto
+
+Mercado Livre: login SEM porta de debug (Nov/2026)
+--------------------------------------------------
+O login do ML não conclui com o Chrome exposto em ``--remote-debugging-port``
+(fica preso em ``/login/identification?challenge_id=...``). Para o ML o setup
+fecha o Chrome de debug do perfil, abre o MESMO perfil sem a porta, espera
+você logar e FECHAR a janela (é aí que os cookies vão para o disco), reabre
+com a porta e confere abrindo a lista de Mais Vendidos — nas mesmas condições
+da coleta. ``--com-debug`` volta ao comportamento antigo.
 
 Depois de logar, rode a coleta:
     RAC_LOCAL_CHROME=1 python main.py --platforms ml magalu shopee casasbahia --pages 1
@@ -67,6 +76,7 @@ except Exception:
 
 from scrapers.local_browser import (  # noqa: E402
     cdp_endpoint_if_up,
+    close_chrome_via_cdp,
     find_chrome_exe,
     spawn_chrome,
     _import_sync_playwright,
@@ -91,6 +101,11 @@ _SHOPEE_HOME = "https://shopee.com.br/"
 # existe" em 31/07/2026) e uma URL morta trava o setup inteiro. A home sempre
 # existe e o botão "Entre" leva ao fluxo VIGENTE.
 _ML_HOME = "https://www.mercadolivre.com.br/"
+
+# Conferência funcional do ML: a MESMA página que a coleta de Mais Vendidos
+# abre. Cookie de login no perfil não prova nada — em 10/11/2026 o perfil tinha
+# 40 cookies, "sessão AUTENTICADA", e a lista caía no gate.
+_ML_CHECK_URL = "https://www.mercadolivre.com.br/mais-vendidos/MLB1646"
 
 # Magalu: home pra logar, busca pra CONFERIR que a SERP abre sem o muro de
 # identificação que derrubou a coleta em Ago/2026.
@@ -121,12 +136,15 @@ SITES = {
         # O ML coleta anônimo na maioria dos dias; logar é o antídoto quando o
         # device-verification (o "login gate") começa a pegar todas as keywords.
         "obrigatorio":   False,
+        # O login do ML não conclui com a porta de debug aberta (Nov/2026):
+        # loga num Chrome SEM debug e só depois reabre com a porta.
+        "login_sem_debug": True,
         "instrucoes": [
-            "Abriu a HOME do Mercado Livre: clique em 'Entre' (canto superior direito)",
-            "e faça login com a SUA conta (e-mail/telefone + senha).",
+            "Abriu a HOME do Mercado Livre (Chrome SEM porta de debug): clique em",
+            "'Entre' (canto superior direito) e faça login com a SUA conta.",
             "Se pedir verificação de dispositivo, confirme no app ou no e-mail —",
             "é justamente esse desafio que derruba a coleta quando não está logado.",
-            "Depois de logar, abra lista.mercadolivre.com.br/ar-condicionado na mão:",
+            "Depois de logar, abra mercadolivre.com.br/mais-vendidos/MLB1646 na mão:",
             "se os produtos aparecerem ali, a coleta também vai passar.",
         ],
     },
@@ -401,6 +419,158 @@ def _check_magalu_serp(ctx) -> bool:
             pass
 
 
+def _check_ml_serp(ctx) -> bool:
+    """
+    Checagem funcional do ML: a lista de Mais Vendidos abre ou cai no gate?
+
+    Reusa o detector do scraper (`MLScraper._gate_reason`) — evidência de card
+    antes de string — para não divergir da coleta. Roda com o Chrome em modo
+    debug + Playwright conectado, ou seja, nas MESMAS condições do turno.
+
+    Args:
+        ctx: BrowserContext já conectado ao Chrome do perfil.
+
+    Returns:
+        True se a lista entrega produtos.
+    """
+    from scrapers.mercado_livre import MLScraper
+
+    page = None
+    try:
+        page = ctx.new_page()
+        # Aquece a home antes, como a coleta (`MercadoLivreBestSellers._abrir`):
+        # ir direto à lista com sessão fria cai no gate mesmo logado.
+        try:
+            page.goto(_ML_HOME, wait_until="domcontentloaded", timeout=45_000)
+            page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            pass
+        page.goto(_ML_CHECK_URL, wait_until="domcontentloaded", timeout=45_000)
+        try:
+            page.wait_for_selector("div.poly-card, li.ui-search-layout__item", timeout=15_000)
+        except Exception:
+            pass
+        probe = MLScraper.__new__(MLScraper)
+        probe._page = page
+        motivo = probe._gate_reason()
+        html = _safe_content(page)
+        if motivo is None and html and MLScraper._has_serp_cards(html):
+            print("  ✅ Mercado Livre OK — a lista de Mais Vendidos abriu com produtos.")
+            return True
+        print(
+            "  ❌ Mercado Livre: a lista de Mais Vendidos NÃO abriu "
+            f"({motivo or 'sem cards de produto'}).\n"
+            f"     URL final: {(page.url or '')[:100]}\n"
+            "     A sessão do perfil não vale. Rode de novo SEM --check e\n"
+            "     conclua o login (inclusive a verificação de dispositivo):\n"
+            "        python scripts/setup_local_profile.py --site mercadolivre"
+        )
+        return False
+    except Exception as exc:
+        print(f"  [aviso] não consegui abrir a lista do Mercado Livre: {exc}")
+        return False
+    finally:
+        try:
+            if page is not None and len(ctx.pages) > 1:
+                page.close()
+        except Exception:
+            pass
+
+
+def _wait_process_exit(proc, seconds: float) -> bool:
+    """True se o processo terminou dentro do prazo."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            return True
+        time.sleep(0.5)
+    return proc.poll() is not None
+
+
+def _porta_e_do_perfil(port: int, profile_dir: Path) -> bool:
+    """
+    True se o Chrome na porta é o do perfil dedicado.
+
+    O `/json/version` não diz qual perfil está por trás da porta; o Chrome, ao
+    abrir a porta de debug, grava ``<perfil>/DevToolsActivePort`` com o número
+    dela na 1ª linha. Sem isso, o setup fecharia qualquer Chrome de debug que
+    estivesse ocupando a 9222 (revisão do PR #439).
+    """
+    try:
+        linhas = (Path(profile_dir) / "DevToolsActivePort").read_text().splitlines()
+        return bool(linhas) and linhas[0].strip() == str(port)
+    except OSError:
+        return False
+
+
+def _login_sem_debug(port: int, profile_dir: Path, site: str) -> bool:
+    """
+    Login num Chrome do perfil dedicado SEM porta de debug.
+
+    O login do Mercado Livre não conclui com o DevTools exposto (relato do PC
+    coletor, 10/11/2026: o formulário fica preso em
+    `/login/identification?challenge_id=...`). Então:
+
+      1. fecha o Chrome de debug que estiver aberto no perfil (o Chrome não
+         abre o mesmo perfil duas vezes — viraria só uma aba no processo com
+         debug);
+      2. abre o perfil SEM a porta; o usuário loga e FECHA a janela (é no
+         fechamento que o Chrome grava os cookies em disco);
+      3. quem chama reabre com a porta e confere.
+
+    Returns:
+        True se o Chrome sem debug abriu e foi fechado pelo usuário.
+    """
+    cfg = SITES[site]
+    if cdp_endpoint_if_up(port) is not None:
+        if not _porta_e_do_perfil(port, profile_dir):
+            print(
+                f"\n  ❌ A porta {port} está com um Chrome de debug que NÃO é o do\n"
+                f"     perfil da coleta ({profile_dir}). Não vou fechá-lo.\n"
+                "     Feche esse Chrome (ou ajuste RAC_CDP_PORT) e rode de novo."
+            )
+            return False
+        print(
+            "\n  Há um Chrome com porta de debug aberto neste perfil — fechando-o\n"
+            "  para reabrir o perfil SEM debug (o login do "
+            f"{cfg['label']} recusa o modo debug)..."
+        )
+        if not close_chrome_via_cdp(port):
+            print(
+                "  ❌ Não consegui fechar esse Chrome. Feche TODAS as janelas dele\n"
+                "     (e a coleta, se estiver rodando) e rode este comando de novo."
+            )
+            return False
+
+    proc = spawn_chrome(port, profile_dir, start_url=cfg["start_url"], debug=False)
+    if proc is None:
+        return False
+    if _wait_process_exit(proc, 3):
+        print(
+            "\n  ⚠️  O Chrome encerrou logo ao abrir — provavelmente outro Chrome\n"
+            "     ainda está usando este perfil e a janela foi parar nele.\n"
+            "     Feche todos os Chromes do perfil e rode de novo."
+        )
+        return False
+
+    print("\n" + "─" * 66)
+    print(f"  INSTRUÇÕES — {cfg['label']} (Chrome SEM debug):")
+    for linha in cfg["instrucoes"]:
+        print(f"   • {linha}")
+    print("   • Logou e viu os produtos? FECHE a janela do Chrome (o X) —")
+    print("     é no fechamento que o login é gravado no perfil.")
+    print("─" * 66)
+    while True:
+        try:
+            input(f"\n  → Pressione ENTER depois de logar e FECHAR o Chrome: ")
+        except KeyboardInterrupt:
+            print("\n  Cancelado.")
+            return False
+        if _wait_process_exit(proc, 10):
+            return True
+        print("  O Chrome ainda está aberto — feche a janela (o X) e dê ENTER de novo.")
+
+
 def _report_login(port: int, site: str) -> bool:
     """Conecta via CDP (breve) e relata se o site está logado. True se logado."""
     cfg = SITES[site]
@@ -423,6 +593,13 @@ def _report_login(port: int, site: str) -> bool:
         if cfg.get("check") == "serp":
             print(f"\n  Checando {cfg['label']} pela própria busca...")
             return _check_magalu_serp(ctx)
+        if site == "mercadolivre":
+            # Cookie não basta (o perfil tinha "sessão AUTENTICADA" e caía no
+            # gate): a conferência é abrir a lista que a coleta abre.
+            cookies = ctx.cookies(cfg["cookie_url"])
+            print(f"\n  Cookies {cfg['label']} no perfil: {len(cookies)}")
+            print(f"  Checando {cfg['label']} pela lista de Mais Vendidos...")
+            return _check_ml_serp(ctx)
         cookies = ctx.cookies(cfg["cookie_url"])
         names = {c.get("name") for c in cookies}
         login_cookies = cfg["login_cookies"]
@@ -479,6 +656,13 @@ def main() -> int:
         help="Só abre o Chrome comum no perfil (aquecer), sem esperar login.",
     )
     parser.add_argument(
+        "--com-debug", action="store_true",
+        help=(
+            "Mercado Livre: loga com a porta de debug aberta (comportamento\n"
+            "antigo). Padrão: login num Chrome SEM debug, que o ML aceita."
+        ),
+    )
+    parser.add_argument(
         "--auto", action="store_true",
         help=(
             "Mercado Livre: preenche e-mail/senha do .env (ML_EMAIL/ML_PASSWORD).\n"
@@ -530,17 +714,29 @@ def main() -> int:
         status = [_report_login(port, s) for s in sites]
         return 0 if all(status) else 1
 
+    def _sem_debug(site: str) -> bool:
+        # --auto digita via CDP, então precisa da porta; --com-debug é o escape.
+        return (
+            SITES[site].get("login_sem_debug", False)
+            and not args.com_debug
+            and not args.auto
+            and not args.no_login
+        )
+
     # Abre o Chrome comum já no site (se já houver um aberto no perfil, a URL
     # abre nele). NENHUM cliente CDP conectado agora → login humano/Google passa.
     primeiro = SITES[sites[0]]
-    if cdp_endpoint_if_up(port) is not None:
+    if _sem_debug(sites[0]):
+        pass  # o loop abaixo abre o Chrome sem debug
+    elif cdp_endpoint_if_up(port) is not None:
         print(
             f"\n  Chrome já está aberto neste perfil — abrindo {primeiro['label']} nele."
             "\n  (Extensões abrindo abas sozinhas? Feche ESTE Chrome e rode de novo:"
             "\n   um Chrome novo sobe com --disable-extensions. Para mantê-las,"
             "\n   exporte RAC_CHROME_KEEP_EXTENSIONS=1.)"
         )
-    spawn_chrome(port, profile_dir, start_url=primeiro["start_url"])
+    if not _sem_debug(sites[0]):
+        spawn_chrome(port, profile_dir, start_url=primeiro["start_url"])
 
     if args.no_login:
         # Confirma que o Chrome subiu de fato (porta de debug acessível) antes
@@ -557,12 +753,34 @@ def main() -> int:
     status = []
     for i, site in enumerate(sites):
         cfg = SITES[site]
-        if i > 0:
+        if _sem_debug(site):
+            if not _login_sem_debug(port, profile_dir, site):
+                status.append(False)
+                continue
+            # Reabre COM a porta (o perfil da coleta) e confere nas condições
+            # do turno: Chrome em debug + Playwright conectado.
+            print("\n  Reabrindo o perfil com a porta de debug para conferir...")
+            spawn_chrome(port, profile_dir, start_url=cfg["start_url"])
+            if not _wait_cdp(port, seconds=20):
+                print("  ❌ O Chrome não expôs a porta de debug ao reabrir.")
+                status.append(False)
+                continue
+            status.append(_report_login(port, site))
+            continue
+        if i > 0 and cdp_endpoint_if_up(port) is None:
+            spawn_chrome(port, profile_dir, start_url=cfg["start_url"])
+            _wait_cdp(port, seconds=15)
+        elif i > 0:
             # abre o próximo site na MESMA janela (perfil já quente)
             spawn_chrome(port, profile_dir, start_url=cfg["start_url"])
 
         if args.auto and site == "mercadolivre":
             _wait_cdp(port, seconds=15)
+            print(
+                "  [--auto] Atenção: o --auto digita via porta de debug, e o ML\n"
+                "  costuma recusar o login nesse modo. Se travar em\n"
+                "  /login/identification, rode SEM --auto (login sem debug)."
+            )
             _ml_auto_login(port)
 
         print("\n" + "─" * 66)

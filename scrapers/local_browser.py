@@ -85,8 +85,10 @@ _RECONNECTS_USED = 0
 # seguirem pelo caminho antigo.
 _MAX_LAUNCH_FAILURES = 2
 
-# Args do Chrome COMUM (sem NADA de automação). --remote-allow-origins=* é
-# obrigatório para o connect_over_cdp funcionar no Chrome 111+.
+# Args do Chrome COMUM (sem NADA de automação). --remote-allow-origins é
+# obrigatório para o connect_over_cdp funcionar no Chrome 111+ — restrito à
+# própria porta local (o curinga `*` deixaria qualquer página aberta no perfil
+# logado tentar o CDP; mesmo critério do kit da skill, rac_kit/navegador.py).
 def _keep_extensions() -> bool:
     """Se True, sobe o Chrome COM as extensões do perfil (padrão: sem elas).
 
@@ -102,14 +104,35 @@ def _keep_extensions() -> bool:
     )
 
 
-def _chrome_args(port: int, profile_dir: Path, start_url: Optional[str] = None) -> list:
+def _chrome_args(
+    port: int,
+    profile_dir: Path,
+    start_url: Optional[str] = None,
+    debug: bool = True,
+) -> list:
+    """
+    Linha de comando do Chrome comum sobre o perfil dedicado.
+
+    Args:
+        port:        porta do DevTools (ignorada quando ``debug=False``).
+        profile_dir: perfil dedicado (``--user-data-dir``).
+        start_url:   URL aberta na janela.
+        debug:       False sobe o Chrome SEM porta de debug — o login do
+                     Mercado Livre recusa concluir com o DevTools exposto
+                     (Nov/2026), então o setup loga nesse modo e só depois
+                     reabre o perfil com a porta para a coleta.
+    """
     # Obs: NÃO passar --restore-last-session — é um switch por PRESENÇA (o Chrome
     # o lê via HasSwitch, ignorando "=false"), então incluí-lo ATIVA a
     # restauração. O padrão (sem a flag) já não restaura as abas anteriores.
-    args = [
-        f"--remote-debugging-port={port}",
+    args = []
+    if debug:
+        args += [
+            f"--remote-debugging-port={port}",
+            f"--remote-allow-origins=http://127.0.0.1:{port},http://localhost:{port}",
+        ]
+    args += [
         f"--user-data-dir={profile_dir}",
-        "--remote-allow-origins=*",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-session-crashed-bubble",
@@ -197,8 +220,11 @@ def find_chrome_exe() -> Optional[str]:
 
 def cdp_endpoint_if_up(port: int) -> Optional[str]:
     """Retorna ``http://127.0.0.1:{port}`` se já há um Chrome ouvindo, senão None."""
+    # Sem proxy: no Windows o urllib lê o proxy do sistema, e um proxy que
+    # recusa 127.0.0.1 faria um Chrome vivo parecer fechado.
+    direto = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(
+        with direto.open(
             f"http://127.0.0.1:{port}/json/version", timeout=2
         ) as resp:
             if resp.status == 200:
@@ -212,9 +238,13 @@ def spawn_chrome(
     port: int,
     profile_dir: Path,
     start_url: Optional[str] = None,
+    debug: bool = True,
 ) -> Optional[subprocess.Popen]:
     """
     Abre um Chrome COMUM (destacado) com a porta de debug no perfil dedicado.
+
+    ``debug=False`` abre o mesmo perfil SEM a porta de debug (login humano do
+    Mercado Livre — ver ``_chrome_args``).
 
     Destacado (survive-parent) porque o Chrome fica aberto entre execuções — é
     o modelo comprovado do CDP (perfil "quente" para o Akamai). Retorna o
@@ -229,7 +259,7 @@ def spawn_chrome(
         return None
 
     profile_dir.mkdir(parents=True, exist_ok=True)
-    args = [exe] + _chrome_args(port, profile_dir, start_url)
+    args = [exe] + _chrome_args(port, profile_dir, start_url, debug=debug)
 
     kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if os.name == "nt":
@@ -242,12 +272,57 @@ def spawn_chrome(
         proc = subprocess.Popen(args, **kwargs)
         logger.info(
             f"[LocalBrowser] Chrome comum aberto (exe={Path(exe).name}, "
-            f"port={port}, profile={profile_dir})"
+            f"port={port if debug else 'SEM debug'}, profile={profile_dir})"
         )
         return proc
     except Exception as exc:
         logger.error(f"[LocalBrowser] Falha ao abrir o Chrome: {exc}")
         return None
+
+
+def close_chrome_via_cdp(port: int, timeout_s: float = 15.0) -> bool:
+    """
+    Fecha o Chrome que expõe a porta de debug (``Browser.close`` via CDP).
+
+    Usado pelo setup antes de reabrir o perfil SEM debug: o Chrome não abre o
+    mesmo ``--user-data-dir`` duas vezes — uma segunda chamada vira só uma aba
+    nova no processo que já existe, e com a porta de debug ligada.
+
+    ``Browser.close`` é o fechamento normal (grava cookies em disco), não um
+    kill.
+
+    Returns:
+        True se a porta deixou de responder dentro do prazo (Chrome fechado).
+    """
+    if cdp_endpoint_if_up(port) is None:
+        return True
+    sync_playwright, _ = _import_sync_playwright()
+    if sync_playwright is not None:
+        pw = None
+        try:
+            pw = sync_playwright().start()
+            browser = pw.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{port}", timeout=15_000
+            )
+            session = browser.new_browser_cdp_session()
+            session.send("Browser.close")
+        except Exception as exc:
+            # A conexão cai no meio do Browser.close — erro esperado.
+            logger.debug(f"[LocalBrowser] Browser.close: {type(exc).__name__}: {exc}")
+        finally:
+            try:
+                if pw is not None:
+                    pw.stop()
+            except Exception:
+                pass
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if cdp_endpoint_if_up(port) is None:
+            # Folga para o processo soltar o lock do perfil.
+            time.sleep(2)
+            return True
+        time.sleep(0.5)
+    return cdp_endpoint_if_up(port) is None
 
 
 def _import_sync_playwright() -> Tuple[Optional[Any], str]:

@@ -279,7 +279,14 @@ SOURCES: Dict[str, SourceSpec] = {
         # gravar relevância dentro da série de mais vendidos sem ninguém ver.
         # Foi exatamente essa a regressão de 26/08/2026.
         url_publica=LEROY_CATEGORIA_URL,
-        parametros_ordenacao=("production_products_most_sales", "most_sales"),
+        # `ordenacao_ui=mais_vendidos`: réplica DESCOBERTA na página com
+        # "Mais vendidos" confirmado no controle da tela (Nov/2026 — a réplica
+        # `most_sales` passou a voltar vazia em 07/10). Ver
+        # `_descobrir_indice_pela_pagina` na fonte.
+        parametros_ordenacao=(
+            "production_products_most_sales", "most_sales",
+            "ordenacao_ui=mais_vendidos",
+        ),
         mecanica=MECANICA_DECLARADO,
         base_vendidos=None,
         itens_esperados=30,
@@ -300,7 +307,12 @@ SOURCES: Dict[str, SourceSpec] = {
         key="casasbahia",
         nome="Casas Bahia",
         url_publica="https://www.casasbahia.com.br/ar-condicionado/b?ordenacao=maisvendidos",
-        parametros_ordenacao=("orders_desc", "ordenacao=maisvendidos"),
+        # `ordenacao_ui=mais_vendidos`: ordenação confirmada pelo rótulo
+        # selecionado na vitrine (pós-VTEX, Nov/2026), quando a URL não
+        # carrega o parâmetro — ver bestsellers/sources/casas_bahia.py.
+        parametros_ordenacao=(
+            "orders_desc", "ordenacao=maisvendidos", "ordenacao_ui=mais_vendidos",
+        ),
         mecanica=MECANICA_ACUMULADO,
         base_vendidos=None,
         itens_esperados=20,

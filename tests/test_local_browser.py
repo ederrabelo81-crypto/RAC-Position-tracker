@@ -99,6 +99,26 @@ class TestChromeArgs:
         assert "enable-automation" not in args
         assert "AutomationControlled" not in args
 
+    def test_modo_debug_expoe_a_porta(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("RAC_CHROME_KEEP_EXTENSIONS", raising=False)
+        args = lb._chrome_args(9222, tmp_path)
+        assert "--remote-debugging-port=9222" in args
+        assert (
+            "--remote-allow-origins=http://127.0.0.1:9222,http://localhost:9222"
+            in args
+        )
+        assert "--remote-allow-origins=*" not in args
+
+    def test_sem_debug_nao_expoe_porta(self, monkeypatch, tmp_path):
+        # 10/11/2026: o login do ML fica preso em /login/identification com o
+        # DevTools exposto — o setup loga nesse modo, no MESMO perfil.
+        monkeypatch.delenv("RAC_CHROME_KEEP_EXTENSIONS", raising=False)
+        args = lb._chrome_args(9222, tmp_path, "https://x/", debug=False)
+        assert not any("remote-debugging" in a for a in args)
+        assert not any("remote-allow-origins" in a for a in args)
+        assert f"--user-data-dir={tmp_path}" in args
+        assert args[-1] == "https://x/"
+
 
 class TestChromeExeOverride:
     def test_env_override_when_exists(self, monkeypatch, tmp_path):

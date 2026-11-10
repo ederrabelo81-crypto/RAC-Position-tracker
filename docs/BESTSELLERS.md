@@ -332,8 +332,9 @@ Prioridade de expansão, por volume de ofertas no painel PriceTrack de
 | Mercado Livre em gate | `logs/ml_gate_*.html`; antídoto: `python scripts/setup_local_profile.py --site mercadolivre` |
 | Magalu com muro de login | `python scripts/setup_local_profile.py --site magalu` |
 | Shopee HTTP 403 | sessão expirada: `python utils/session_grabber.py --site shopee` |
-| Casas Bahia com HTML no lugar de JSON | Akamai — sessão: `python utils/session_grabber.py --site casasbahia` |
+| Casas Bahia com HTML no lugar de JSON | a CB saiu da VTEX (Nov/2026): a API IS devolve a vitrine em HTML para qualquer IP. Com `RAC_LOCAL_CHROME=1` a coleta lê a vitrine ordenada por "Mais vendidos" no DOM; sem ordenação confirmada não grava nada — HTML em `logs/cb_maisvendidos_*.html` |
 | Leroy HTTP 404 no Algolia | índice renomeado — conferir o `sortBy` na UI antes de trocar a constante |
+| Leroy com 0 hits (sem 404) | a réplica `most_sales` esvaziou (07/10/2026). Com `RAC_LOCAL_CHROME=1` a fonte abre a prateleira, escolhe "Ordenar por: Mais vendidos", confirma o rótulo na tela e usa a réplica que a página consulta (endpoint com `[ordenacao_ui=mais_vendidos]`); sem confirmação falha alto — HTML em `logs/leroy_maisvendidos_*.html` |
 
 Testes: `pytest tests/test_bestsellers_*.py` (parsers, portões, métricas,
 persistência e import legado — nenhum toca a rede).

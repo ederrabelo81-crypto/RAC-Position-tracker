@@ -456,3 +456,68 @@ class TestAmazonBuyBoxPorExecucao:
         fonte._coletar(paginas=1)
 
         assert chamou == [1]
+
+
+# ---------------------------------------------------------------------------
+# Réplica de vendas vazia → descoberta pela página (Nov/2026)
+# ---------------------------------------------------------------------------
+
+from bestsellers.sources import leroy_merlin as lm  # noqa: E402
+
+
+class TestLeroyReplicaDescoberta:
+    """07/10–10/11/2026: `production_products_most_sales` passou a voltar 200
+    com 0 hits (sem 404). A fonte saía com 0 posições e um aviso enganoso de
+    facet; agora procura a réplica de 'Mais vendidos' na página."""
+
+    @pytest.fixture
+    def fonte(self, monkeypatch):
+        from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers
+
+        fonte = LeroyMerlinBestSellers()
+        fonte._leroy = object()
+        monkeypatch.setattr(fonte, "_parse", lambda hits, offset: [
+            type("I", (), {"rank": offset + i + 1})() for i, _ in enumerate(hits)
+        ])
+        return fonte
+
+    def test_relevancia_nunca_e_escolhida(self):
+        from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers as L
+
+        assert L._escolher_indice(["production_products"]) is None
+        assert L._escolher_indice(
+            ["production_products", "production_products_sales_desc"]
+        ) == "production_products_sales_desc"
+
+    def test_prefere_nome_de_venda_e_o_mais_recente(self):
+        from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers as L
+
+        assert L._escolher_indice([
+            "production_products_price_asc",
+            "production_products_best_sellers_v1",
+            "production_products_best_sellers_v2",
+        ]) == "production_products_best_sellers_v2"
+
+    def test_replica_vazia_usa_a_descoberta(self, fonte, monkeypatch):
+        consultas = []
+
+        def _consultar(pagina, facet=None):
+            consultas.append(fonte._indice)
+            if fonte._indice == lm._INDICE_MAIS_VENDIDOS:
+                return []
+            return [{"name": "x"}] * 3
+
+        monkeypatch.setattr(fonte, "_consultar", _consultar)
+        monkeypatch.setattr(fonte, "_descobrir_indice_pela_pagina",
+                            lambda: "production_products_top_sales")
+        itens = fonte._coletar(1)
+        assert len(itens) == 3
+        assert fonte._indice == "production_products_top_sales"
+        assert lm.MARCADOR_ORDENACAO_UI in fonte.endpoint
+        assert fonte.spec.ordenacao_comprovada(fonte.endpoint)
+
+    def test_sem_descoberta_falha_alto(self, fonte, monkeypatch):
+        monkeypatch.setattr(fonte, "_consultar", lambda pagina, facet=None: [])
+        monkeypatch.setattr(fonte, "_descobrir_indice_pela_pagina", lambda: None)
+        with pytest.raises(RuntimeError, match="0 hits"):
+            fonte._coletar(1)

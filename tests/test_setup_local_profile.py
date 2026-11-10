@@ -129,3 +129,91 @@ class TestAbrirLoginML:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# Login do ML SEM porta de debug (10/11/2026)
+# ---------------------------------------------------------------------------
+
+import scripts.setup_local_profile as slp  # noqa: E402
+
+
+class _FakeProc:
+    def __init__(self, vivo_por=0):
+        # quantas chamadas de poll() o processo continua vivo
+        self.vivo_por = vivo_por
+
+    def poll(self):
+        if self.vivo_por > 0:
+            self.vivo_por -= 1
+            return None
+        return 0
+
+
+class TestLoginSemDebug:
+    def _base(self, monkeypatch, proc, cdp_up=False, fecha_ok=True):
+        chamadas = {"spawn": [], "close": 0}
+        monkeypatch.setattr(slp, "cdp_endpoint_if_up", lambda port: "x" if cdp_up else None)
+
+        def _close(port):
+            chamadas["close"] += 1
+            chamadas["close_port"] = port
+            return fecha_ok
+
+        monkeypatch.setattr(slp, "close_chrome_via_cdp", _close)
+
+        def _spawn(port, profile_dir, start_url=None, debug=True):
+            chamadas["spawn"].append(debug)
+            chamadas["spawn_args"] = (port, profile_dir, start_url)
+            return proc
+
+        monkeypatch.setattr(slp, "spawn_chrome", _spawn)
+        monkeypatch.setattr(slp.time, "sleep", lambda s: None)
+        monkeypatch.setattr("builtins.input", lambda *a: "")
+        return chamadas
+
+    def test_ml_marcado_para_logar_sem_debug(self):
+        assert slp.SITES["mercadolivre"].get("login_sem_debug") is True
+        assert not slp.SITES["shopee"].get("login_sem_debug")
+
+    def test_abre_sem_debug_e_espera_fechar(self, monkeypatch, tmp_path):
+        proc = _FakeProc(vivo_por=50)  # sobrevive à checagem de 3 s
+        ch = self._base(monkeypatch, proc)
+        # 3 s de checagem inicial consomem poll(); depois o usuário fecha
+        monkeypatch.setattr(slp, "_wait_process_exit", lambda p, s: s != 3)
+        assert slp._login_sem_debug(9222, tmp_path, "mercadolivre") is True
+        assert ch["spawn"] == [False]
+        assert ch["spawn_args"] == (
+            9222, tmp_path, slp.SITES["mercadolivre"]["start_url"]
+        )
+        assert ch["close"] == 0
+
+    def test_fecha_o_chrome_de_debug_antes(self, monkeypatch, tmp_path):
+        ch = self._base(monkeypatch, _FakeProc(), cdp_up=True)
+        (tmp_path / "DevToolsActivePort").write_text("9222\n/devtools/browser/x")
+        monkeypatch.setattr(slp, "_wait_process_exit", lambda p, s: s != 3)
+        assert slp._login_sem_debug(9222, tmp_path, "mercadolivre") is True
+        assert ch["close"] == 1
+        assert ch["close_port"] == 9222
+        assert ch["spawn"] == [False]
+        assert ch["spawn_args"][:2] == (9222, tmp_path)
+
+    def test_nao_fecha_chrome_de_outro_perfil(self, monkeypatch, tmp_path):
+        # porta ocupada por um Chrome de debug que não é o do perfil
+        ch = self._base(monkeypatch, _FakeProc(), cdp_up=True)
+        (tmp_path / "DevToolsActivePort").write_text("9333\n/devtools/browser/x")
+        assert slp._login_sem_debug(9222, tmp_path, "mercadolivre") is False
+        assert ch["close"] == 0
+        assert ch["spawn"] == []
+
+    def test_nao_abre_se_nao_conseguiu_fechar_o_de_debug(self, monkeypatch, tmp_path):
+        ch = self._base(monkeypatch, _FakeProc(), cdp_up=True, fecha_ok=False)
+        (tmp_path / "DevToolsActivePort").write_text("9222\n/devtools/browser/x")
+        assert slp._login_sem_debug(9222, tmp_path, "mercadolivre") is False
+        assert ch["spawn"] == []
+
+    def test_chrome_que_morre_ao_abrir_e_falha(self, monkeypatch, tmp_path):
+        # a janela foi parar noutro Chrome do perfil (com debug)
+        self._base(monkeypatch, _FakeProc())
+        monkeypatch.setattr(slp, "_wait_process_exit", lambda p, s: True)
+        assert slp._login_sem_debug(9222, tmp_path, "mercadolivre") is False
