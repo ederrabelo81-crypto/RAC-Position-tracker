@@ -46,7 +46,15 @@ from utils.leroy_sellers import (
     extract_seller_from_pdp,
     is_leroy_self,
 )
-from utils.leroy_ads import SPONSORED_LABEL_PATTERN, SponsoredItem, extract_sponsored, leroy_product_id
+from utils.leroy_ads import (
+    SPONSORED_LABEL_PATTERN,
+    SponsoredItem,
+    extract_sponsored,
+    fill_serp_template,
+    is_not_found_page,
+    leroy_product_id,
+    serp_url_template,
+)
 from utils.leroy_price import PdpPrice, extract_pdp_price
 from utils.keyword_taxonomy import CATEGORIA_PDP, pdp_keyword
 from utils.seller_names import normalize_seller_name, seller_key
@@ -322,6 +330,10 @@ class LeroyMerlinScraper(BaseScraper):
         # rápida (a prateleira carrega sob demanda e pode ter vindo pela metade).
         self._ads_pdp_lidos: Dict[str, List[SponsoredItem]] = {}
         self._ads_pdp_rolados: set[str] = set()         # PDPs lidos COM rolagem
+        # URL de busca aprendida do próprio site (``{kw}`` no lugar do termo)
+        # quando a montada por `_build_url` cai na página de erro.
+        self._serp_template: Optional[str] = None
+        self._serp_busca_quebrada = False   # o campo de busca também falhou
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -1745,19 +1757,115 @@ class LeroyMerlinScraper(BaseScraper):
             except Exception:
                 return
 
-    def _ler_patrocinados(self, page: Any, url: str, timeout_ms: float) -> Optional[str]:
-        """Navega, rola e espera o rótulo de patrocinado; devolve o HTML.
+    def _html_da_aba(self, page: Any) -> Optional[str]:
+        try:
+            return page.content()
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] Patrocinados: content() falhou ({exc})")
+            return None
 
-        Página sem anúncio não é erro: devolve o HTML do mesmo jeito depois do
-        teto de espera, e o parser responde lista vazia.
+    def _buscar_pelo_campo(self, page: Any, keyword: str) -> bool:
+        """Busca digitando no campo do site e aprende a URL que ele gerar.
+
+        Caminho de recuperação quando a URL montada cai na página de erro
+        (10/11/2026: ``/busca?term=`` virou "não localizamos a página").
+
+        Returns:
+            True quando chegou numa página de resultados (não a de erro).
         """
+        seletor = 'form[role="search"] input[type="search"], input[type="search"]'
+        try:
+            campo = page.locator(seletor).first
+            if not campo.count():
+                page.goto(_HOME_URL, wait_until="domcontentloaded", timeout=40_000)
+                campo = page.locator(seletor).first
+            antes = page.url
+            campo.click(timeout=10_000)
+            campo.fill(keyword, timeout=10_000)
+            campo.press("Enter")
+            try:
+                page.wait_for_url(lambda u: u != antes, timeout=20_000)
+            except Exception:
+                pass
+            page.wait_for_load_state("domcontentloaded", timeout=20_000)
+            page.wait_for_timeout(1_500)
+        except Exception as exc:
+            logger.warning(f"[{self.platform_name}] Busca pelo campo do site falhou: {exc}")
+            return False
+        if is_not_found_page(self._html_da_aba(page)):
+            logger.error(
+                f"[{self.platform_name}] Busca pelo campo do site também caiu na "
+                f"página de erro ({page.url}) — patrocinados da busca desligados no run"
+            )
+            self._serp_busca_quebrada = True
+            return False
+        molde = serp_url_template(page.url, keyword)
+        if molde:
+            self._serp_template = molde
+            logger.warning(
+                f"[{self.platform_name}] URL de busca mudou: o site usa {molde} "
+                f"(a montada por _build_url dá página de erro) — atualize _build_url"
+            )
+        else:
+            logger.warning(
+                f"[{self.platform_name}] Busca pelo campo funcionou, mas o termo não "
+                f"aparece na URL ({page.url}) — cada keyword vai pelo campo"
+            )
+        return True
+
+    def _abrir_busca(self, page: Any, keyword: str) -> bool:
+        """Abre a 1ª página de resultados da keyword, venha a URL de onde vier.
+
+        Ordem: molde aprendido no run → URL montada (`_build_url`) → campo de
+        busca do site. Página de erro nunca passa por resultado vazio.
+        """
+        if self._serp_busca_quebrada:
+            return False
+        url = (
+            fill_serp_template(self._serp_template, keyword)
+            if self._serp_template else self._build_url(keyword, 1)
+        )
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=40_000)
         except Exception as exc:
             if page is self._pdp_local_page and is_target_closed(exc):
                 self._pdp_local_page = None
             logger.debug(f"[{self.platform_name}] Patrocinados: navegação falhou ({exc})")
-            return None
+            return False
+        if not is_not_found_page(self._html_da_aba(page)):
+            return True
+        logger.info(
+            f"[{self.platform_name}] {url} abriu a página de erro — buscando pelo campo do site"
+        )
+        self._serp_template = None
+        return self._buscar_pelo_campo(page, keyword)
+
+    def _ler_patrocinados(
+        self, page: Any, url: Optional[str], timeout_ms: float, keyword: Optional[str] = None,
+    ) -> Optional[str]:
+        """Navega, rola e espera o rótulo de patrocinado; devolve o HTML.
+
+        Args:
+            page: aba do browser.
+            url: PDP a abrir (ignorado quando ``keyword`` é passado).
+            timeout_ms: teto de espera pelo rótulo.
+            keyword: abre a página de BUSCA desta keyword (`_abrir_busca`).
+
+        Página sem anúncio não é erro: devolve o HTML do mesmo jeito depois do
+        teto de espera, e o parser responde lista vazia. Busca que não chegou
+        aos resultados devolve None.
+        """
+        if keyword is not None:
+            if not self._abrir_busca(page, keyword):
+                return None
+        else:
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+            except Exception as exc:
+                if page is self._pdp_local_page and is_target_closed(exc):
+                    self._pdp_local_page = None
+                logger.debug(f"[{self.platform_name}] Patrocinados: navegação falhou ({exc})")
+                return None
         self._rolar(page)
         try:
             page.wait_for_function(
@@ -1767,11 +1875,7 @@ class LeroyMerlinScraper(BaseScraper):
             page.wait_for_timeout(500)  # cards da prateleira terminam de hidratar
         except Exception:
             pass
-        try:
-            return page.content()
-        except Exception as exc:
-            logger.debug(f"[{self.platform_name}] Patrocinados: content() falhou ({exc})")
-            return None
+        return self._html_da_aba(page)
 
     def _patrocinados_serp(self, keyword: str, html: Optional[str] = None) -> List[SponsoredItem]:
         """Prateleira "Produtos patrocinados" da 1ª página de busca.
@@ -1792,7 +1896,9 @@ class LeroyMerlinScraper(BaseScraper):
         page = self._pagina_pdp()
         if page is None:
             return []
-        html = self._ler_patrocinados(page, self._build_url(keyword, 1), _ADS_SERP_TIMEOUT)
+        html = self._ler_patrocinados(page, None, _ADS_SERP_TIMEOUT, keyword=keyword)
+        if html is None:
+            return []
         itens = extract_sponsored(html)
         if not itens:
             logger.info(f"[{self.platform_name}] Busca '{keyword}': nenhum patrocinado na página")
