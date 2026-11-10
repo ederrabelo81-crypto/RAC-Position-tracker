@@ -56,6 +56,31 @@ class TestExtractSponsored:
         )
         assert [i.product_id for i in extract_sponsored(html)] == ["1111111", "2222222"]
 
+    def test_titulo_antes_do_link_nao_encerra_a_prateleira(self):
+        card = lambda pid, t: f'<li><h3>{t}</h3><a href="/ar-{pid}_{pid}">ver</a></li>'
+        html = (
+            f"<main><h2>Produtos patrocinados</h2><ul>{card(1111111, 'A')}"
+            f"{card(2222222, 'B')}</ul><h2>Resultados</h2><ul>{card(3333333, 'C')}"
+            f"{card(4444444, 'D')}</ul></main>"
+        )
+        assert [i.product_id for i in extract_sponsored(html)] == ["1111111", "2222222"]
+
+    def test_grid_sem_cabecalho_logo_apos_o_carrossel(self):
+        """Sem cabeçalho entre o carrossel e o grid: para no 1º bloco."""
+        html = (
+            f"<main><h2>Produtos patrocinados</h2><ul>{_card(1111111, 'A', '1,00')}"
+            f"{_card(2222222, 'B', '2,00')}</ul><ul>{_card(3333333, 'C', '3,00')}"
+            f"{_card(4444444, 'D', '4,00')}</ul></main>"
+        )
+        assert [i.product_id for i in extract_sponsored(html)] == ["1111111", "2222222"]
+
+    def test_cards_soltos_como_irmaos(self):
+        html = (
+            f"<ul><li><h2>Produtos patrocinados</h2></li>{_card(1111111, 'A', '1,00')}"
+            f"{_card(2222222, 'B', '2,00')}</ul>"
+        )
+        assert [i.product_id for i in extract_sponsored(html)] == ["1111111", "2222222"]
+
     def test_chip_no_card(self):
         html = (
             f"<ul>{_card(1111111, 'A', '1,00')}"
@@ -138,6 +163,13 @@ class TestPatrocinadosBusca:
         assert scraper._page is None
         assert scraper._patrocinados_serp("ar condicionado") == []
 
+    def test_anuncio_com_organico_vazio_vira_linha(self, scraper):
+        novos = scraper._aplicar_patrocinados_serp(
+            extract_sponsored(SERP), [], "ar condicionado",
+            {"Genérica": ["ar condicionado"]},
+        )
+        assert [r["ID Produto Marketplace"] for r in novos] == ["91000001", "91000002"]
+
     def test_html_do_fallback_e_reaproveitado(self, scraper):
         itens = scraper._patrocinados_serp("ar condicionado", SERP)
         assert [i.product_id for i in itens] == ["91000001", "91000002"]
@@ -154,8 +186,7 @@ class TestPatrocinadosPdp:
     URL = "https://www.leroymerlin.com.br/ar-condicionado-gree_92000001"
 
     def test_fora_da_busca_nao_registra(self, scraper):
-        scraper._registrar_ads_pdp(self.URL, PDP)
-        assert scraper._ads_pdp == {}
+        assert scraper._ads_pdp_lidos == {}
 
     def test_registra_e_agrega_por_keyword(self, scraper):
         scraper._ads_kw = "ar condicionado"
@@ -164,8 +195,9 @@ class TestPatrocinadosPdp:
         scraper._registrar_ads_pdp("https://www.leroymerlin.com.br/outro_93000001", PDP)
 
         # O próprio produto do PDP não é anúncio dele mesmo.
-        assert scraper._ads_pdp["91000001"]["vezes"] == 2
-        assert scraper._ads_pdp["92000001"]["vezes"] == 1
+        agg = scraper._ads_pdp_agregados()
+        assert agg["91000001"]["vezes"] == 2
+        assert agg["92000001"]["vezes"] == 1
 
         recs = scraper._registros_ads_pdp("ar condicionado")
         assert [r["ID Produto Marketplace"] for r in recs] == ["91000001", "92000001"]
@@ -179,16 +211,31 @@ class TestPatrocinadosPdp:
     def test_leitura_vazia_pode_ser_refeita_com_rolagem(self, scraper):
         scraper._ads_kw = "ar condicionado"
         scraper._registrar_ads_pdp(self.URL, "<main>sem prateleira</main>")
-        assert scraper._ads_pdp == {}
+        assert scraper._ads_pdp_agregados() == {}
         scraper._registrar_ads_pdp(self.URL, PDP)
-        assert "91000001" in scraper._ads_pdp
+        assert "91000001" in scraper._ads_pdp_agregados()
         assert scraper._seller_metrics["ads_pdp_paginas"] == 1
+
+    def test_leitura_rolada_substitui_a_parcial(self, scraper):
+        """Leitura rápida com só parte da prateleira não bloqueia a rolada."""
+        scraper._ads_kw = "ar condicionado"
+        parcial = (
+            f"<section><h2>Produtos patrocinados</h2><ul>"
+            f"{_card(92000001, 'Ar Gree', '1,00')}</ul></section>"
+        )
+        scraper._registrar_ads_pdp("https://www.leroymerlin.com.br/x_93000001", parcial)
+        scraper._registrar_ads_pdp(
+            "https://www.leroymerlin.com.br/x_93000001", PDP, rolado=True
+        )
+        agg = scraper._ads_pdp_agregados()
+        assert set(agg) == {"91000001", "92000001"}
+        assert agg["92000001"]["vezes"] == 1      # o PDP conta uma vez só
 
     def test_desligado_por_env(self, scraper, monkeypatch):
         monkeypatch.setattr("scrapers.leroy_merlin._ADS_PDP_ENABLED", False)
         scraper._ads_kw = "ar condicionado"
         scraper._registrar_ads_pdp(self.URL, PDP)
-        assert scraper._ads_pdp == {}
+        assert scraper._ads_pdp_lidos == {}
 
 
 class TestTaxonomiaPdp:
