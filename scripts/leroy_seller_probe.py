@@ -583,6 +583,7 @@ def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
     from utils.leroy_ads import extract_sponsored
 
     caminho = Path(alvo)
+    fora_dos_resultados: Optional[str] = None  # URL onde a busca foi parar
     if caminho.is_file():
         html: Optional[str] = caminho.read_text(encoding="utf-8", errors="replace")
     else:
@@ -604,6 +605,9 @@ def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
                     if scraper._serp_template:
                         logger.warning(f"URL de busca aprendida: {scraper._serp_template}")
                     if html is None:
+                        # Guarda o HTML como evidência, mas NÃO lê anúncio dele:
+                        # é a home ou a página de erro, não a busca.
+                        fora_dos_resultados = page.url
                         html = scraper._html_da_aba(page)
                 scraper.fechar_pdp_local()
         except Exception as exc:
@@ -619,6 +623,19 @@ def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
         return 1
 
     from utils.leroy_ads import is_not_found_page
+
+    if fora_dos_resultados is not None:
+        logger.error(
+            f"A busca NÃO chegou à página de resultados (ficou em "
+            f"{fora_dos_resultados}). Nenhum anúncio lido — os patrocinados "
+            "dessa página não são da keyword. Mande o log e o dump."
+        )
+        return 1
+    if caminho.is_file() and re.search(r'rel="canonical"[^>]*modular/home', html):
+        logger.warning(
+            "Este HTML é a HOME da Leroy: os patrocinados abaixo são da home, "
+            "não de uma busca."
+        )
 
     itens = extract_sponsored(html)
     if not itens and is_not_found_page(html):

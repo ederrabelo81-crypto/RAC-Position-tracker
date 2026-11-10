@@ -32,7 +32,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
-from urllib.parse import quote, quote_plus, urljoin
+from urllib.parse import parse_qs, quote, quote_plus, urljoin, urlparse
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
@@ -44,6 +44,7 @@ __all__ = [
     "extract_sponsored",
     "leroy_product_id",
     "is_not_found_page",
+    "is_search_results_url",
     "serp_url_template",
     "fill_serp_template",
 ]
@@ -132,6 +133,14 @@ def _label_nodes(soup: BeautifulSoup) -> List[Tag]:
         if parent is None or parent.name in ("script", "style", "noscript", "title"):
             continue
         nodes.append(parent)
+    # Metadado do próprio card (10/11/2026): o link do anúncio carrega
+    # ``data-gtm-item-list="Produtos Patrocinados"`` e
+    # ``data-gtm-partner-name="retail media"`` — evidência mesmo se o
+    # cabeçalho da prateleira mudar de texto.
+    for el in soup.find_all("a", attrs={"data-gtm-item-list": _RE_LABEL}):
+        nodes.append(el)
+    for el in soup.find_all("a", attrs={"data-gtm-partner-name": re.compile("retail media", re.I)}):
+        nodes.append(el)
     # aria-label / title sem texto visível (chip só com ícone).
     for el in soup.find_all(attrs={"aria-label": _RE_LABEL}):
         if _is_label(el.get("aria-label", "")):
@@ -170,6 +179,21 @@ def _title_of(card: Tag, link: Tag) -> Optional[str]:
 
 
 def _price_of(card: Tag) -> Optional[float]:
+    """Preço praticado do card.
+
+    O ``data-gtm-item-price`` do link é o preço cobrado; o texto do card traz
+    antes o preço "de" riscado (R$ 3.332,00 → R$ 2.665,56 no dump real), que é
+    o que o 1º ``R$`` do texto pegaria.
+    """
+    for el in [card] + card.find_all(attrs={"data-gtm-item-price": True}):
+        bruto = el.get("data-gtm-item-price") if isinstance(el, Tag) else None
+        if bruto:
+            try:
+                valor = float(str(bruto).replace(",", "."))
+            except ValueError:
+                continue
+            if valor > 0:
+                return valor
     m = _RE_PRICE.search(card.get_text(" ", strip=True))
     return parse_price(m.group(0)) if m else None
 
@@ -382,7 +406,7 @@ def serp_url_template(url: str, keyword: str) -> Optional[str]:
                 keyword.replace(" ", "-")):
         for variante in (cod, cod.lower()):
             if variante and variante in url:
-                return url.replace(variante, _KW_PLACEHOLDER, 1)
+                return url.replace(variante, _KW_PLACEHOLDER)
     return None
 
 
@@ -396,3 +420,19 @@ def fill_serp_template(template: str, keyword: str) -> str:
     if "?" in antes or "=" in antes:
         return template.replace(_KW_PLACEHOLDER, quote_plus(keyword))
     return template.replace(_KW_PLACEHOLDER, quote(keyword.strip().lower().replace(" ", "-")))
+
+
+def is_search_results_url(url: Optional[str]) -> bool:
+    """A URL é de página de RESULTADOS de busca (não home, PDP ou categoria)?
+
+    O dump do PC coletor (10/11/2026) terminou na home depois da busca pelo
+    campo, e a prateleira de patrocinados da HOME seria gravada como anúncio
+    da keyword. Só conta caminho de busca com o termo na query.
+    """
+    if not url:
+        return False
+    parsed = urlparse(url)
+    if not parsed.path.rstrip("/").lower().endswith(("/search", "/busca")):
+        return False
+    q = parse_qs(parsed.query)
+    return any(q.get(k, [""])[0].strip() for k in ("term", "searchTerm", "q"))

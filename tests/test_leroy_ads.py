@@ -266,7 +266,14 @@ class TestSovSeparaPdp:
 
 
 # --- URL de busca quebrada (10/11/2026) -------------------------------------
-from utils.leroy_ads import fill_serp_template, is_not_found_page, serp_url_template
+from typing import Optional
+
+from utils.leroy_ads import (
+    fill_serp_template,
+    is_not_found_page,
+    is_search_results_url,
+    serp_url_template,
+)
 
 # Trecho real do dump do PC coletor (busca por /busca?term=ar+condicionado).
 ERRO_REAL = """<div class="not-found-notice">
@@ -303,6 +310,60 @@ class TestUrlDeBusca:
             "https://x/busca/ar-split-12000"
 
 
+# Card real da prateleira de patrocinados (dump do PC coletor, 10/11/2026),
+# enxuto: só atributos e textos que o parser usa.
+CARD_REAL = """<h2>Produtos Patrocinados</h2><div itemscope itemtype="https://schema.org/ItemList">
+<div><div data-testid="ProductThumb">
+<a data-gtm-item-list="Produtos Patrocinados" data-gtm-partner-name="retail media"
+ data-gtm-item-id="1572309369" data-gtm-item-position="1" data-gtm-item-price="2665.56"
+ href="https://www.leroymerlin.com.br/ar-condicionado-split-inverter-r-32-samsung-windfree-ai-12-000-btus-frio-220v-monofasico_1572309369">
+ <img alt="Foto de Ar Condicionado Split Inverter R-32 - Samsung - Windfree Ai -"/>
+ <div data-testid="ProductThumb-stripe"><span>Oferta</span><span>-20%</span></div></a>
+<a data-gtm-item-list="Produtos Patrocinados" data-gtm-item-price="2665.56"
+ href="https://www.leroymerlin.com.br/ar-condicionado-split-inverter-r-32-samsung-windfree-ai-12-000-btus-frio-220v-monofasico_1572309369">
+ <div><h3>Ar Condicionado Split Inverter R-32 - Samsung - Windfree Ai -</h3>
+ <span>Cód. <span>1572309369</span></span><span>R$ 3.332,00</span><span>R$ 2.665,56</span></div></a>
+</div></div></div>"""
+
+HOME = '<link rel="canonical" href="https://www.leroymerlin.com.br/modular/home">' + CARD_REAL
+
+
+class TestCardReal:
+    def test_preco_praticado_e_nao_o_riscado(self):
+        (item,) = extract_sponsored(CARD_REAL)
+        assert item.product_id == "1572309369"
+        assert item.price == pytest.approx(2665.56)   # não R$ 3.332,00 ("de")
+        assert item.title == "Ar Condicionado Split Inverter R-32 - Samsung - Windfree Ai -"
+
+    def test_metadado_do_card_basta_sem_cabecalho(self):
+        sem_h2 = CARD_REAL.replace("<h2>Produtos Patrocinados</h2>", "")
+        assert [i.product_id for i in extract_sponsored(sem_h2)] == ["1572309369"]
+
+
+class TestUrlNova:
+    def test_build_url_formato_das_sugestoes_do_site(self):
+        assert LeroyMerlinScraper._build_url("ar condicionado") == (
+            "https://www.leroymerlin.com.br/search?term=ar+condicionado"
+            "&searchTerm=ar+condicionado&searchType=default"
+        )
+
+    @pytest.mark.parametrize("url,ok", [
+        ("https://www.leroymerlin.com.br/search?term=ar+condicionado&searchType=default", True),
+        ("https://www.leroymerlin.com.br/busca?term=ar", True),
+        ("https://www.leroymerlin.com.br/modular/home", False),
+        ("https://www.leroymerlin.com.br/", False),
+        ("https://www.leroymerlin.com.br/search", False),
+        ("https://www.leroymerlin.com.br/ar-condicionado_1572309369", False),
+    ])
+    def test_so_pagina_de_resultados(self, url, ok):
+        assert is_search_results_url(url) is ok
+
+    def test_molde_troca_todas_as_ocorrencias(self):
+        url = ("https://www.leroymerlin.com.br/search?term=ar%20condicionado"
+               "&searchTerm=ar%20condicionado&searchType=default")
+        assert serp_url_template(url, "ar condicionado").count("{kw}") == 2
+
+
 class _CampoFalso:
     def __init__(self, aba: "_AbaFalsa") -> None:
         self.aba, self.texto = aba, ""
@@ -322,21 +383,28 @@ class _CampoFalso:
 
     def press(self, _tecla: str) -> None:
         from urllib.parse import quote_plus
-        self.aba.url = f"https://www.leroymerlin.com.br/search?q={quote_plus(self.texto)}"
+        self.aba.url = self.aba.destino_campo.replace("{kw}", quote_plus(self.texto))
 
 
 class _AbaFalsa:
-    """Aba em que `/busca?term=` dá a página de erro e o campo leva a /search?q=."""
+    """Aba de mentira: `quebrada` dá a página de erro; o campo leva a `destino_campo`."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        quebrada: Optional[str] = "/search?term=",
+        destino_campo: str = "https://www.leroymerlin.com.br/search?q={kw}",
+    ) -> None:
         self.url, self.visitas = "about:blank", []
+        self.quebrada, self.destino_campo = quebrada, destino_campo
 
     def goto(self, url: str, **_kw) -> None:
         self.url = url
         self.visitas.append(url)
 
     def content(self) -> str:
-        return ERRO_REAL if "/busca?term=" in self.url else SERP
+        if self.quebrada and self.quebrada in self.url:
+            return ERRO_REAL
+        return HOME if "/modular/home" in self.url else SERP
 
     def locator(self, _sel: str) -> _CampoFalso:
         return _CampoFalso(self)
@@ -352,6 +420,12 @@ class _AbaFalsa:
 
 
 class TestAbrirBusca:
+    def test_formato_novo_abre_direto(self, scraper):
+        aba = _AbaFalsa(quebrada=None)
+        assert scraper._abrir_busca(aba, "ar condicionado")
+        assert aba.visitas == [LeroyMerlinScraper._build_url("ar condicionado")]
+        assert scraper._serp_template is None
+
     def test_cai_no_campo_e_aprende_a_url(self, scraper):
         aba = _AbaFalsa()
         assert scraper._abrir_busca(aba, "ar condicionado")
@@ -359,6 +433,13 @@ class TestAbrirBusca:
         # Próxima keyword vai direto pelo molde, sem passar pela URL quebrada.
         assert scraper._abrir_busca(aba, "ar split")
         assert aba.visitas[-1] == "https://www.leroymerlin.com.br/search?q=ar+split"
+
+    def test_campo_que_leva_a_home_nao_vale(self, scraper):
+        """Dump de 10/11/2026: a busca pelo campo terminou na home, e a
+        prateleira de patrocinados DELA seria gravada como da keyword."""
+        scraper._page = _AbaFalsa(destino_campo="https://www.leroymerlin.com.br/modular/home")
+        assert scraper._patrocinados_serp("ar condicionado") == []
+        assert scraper._serp_busca_quebrada
 
     def test_erro_tambem_no_campo_desliga_no_run(self, scraper):
         aba = _AbaFalsa()
@@ -368,7 +449,7 @@ class TestAbrirBusca:
         assert not scraper._abrir_busca(aba, "outra")
 
     def test_patrocinados_da_busca_pela_url_aprendida(self, scraper):
-        """Ponta a ponta: URL antiga dá erro, o campo acha os resultados e a
+        """Ponta a ponta: URL montada dá erro, o campo acha os resultados e a
         prateleira de patrocinados é lida (antes voltava vazio em silêncio)."""
         scraper._page = _AbaFalsa()
         itens = scraper._patrocinados_serp("ar condicionado")
