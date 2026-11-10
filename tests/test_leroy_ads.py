@@ -505,3 +505,52 @@ class TestPosicaoDaPrateleira:
         assert [r["Posição Patrocinada"] for r in novos] == [1, 2]
         assert [r["Posição Geral"] for r in novos] == [37, 38]
         assert novos[0]["Preço (R$)"] == pytest.approx(2169.0)
+
+
+class TestProbePdp:
+    """`leroy_seller_probe.py --patrocinados URL` (4º probe, 10/11/2026: o
+    "dump do PDP" enviado era a página de BUSCA — o probe não regravava o
+    arquivo quando o PDP falhava, e não conferia para onde a aba foi)."""
+
+    PDP = "https://www.leroymerlin.com.br/ar-condicionado-lg-12000_1572750548"
+
+    def _rodar(self, monkeypatch, tmp_path, url_final, html):
+        import scripts.leroy_seller_probe as probe
+        import scrapers.leroy_merlin as lm
+
+        class _Aba:
+            url = url_final
+
+        class _Falso:
+            def __init__(self, **_kw): ...
+            def __enter__(self): return self
+            def __exit__(self, *_a): return False
+            def _pagina_pdp(self): return _Aba()
+            def _ler_patrocinados(self, *_a, **_kw): return html
+            def _html_da_aba(self, _p): return html
+            def fechar_pdp_local(self): ...
+
+        monkeypatch.setattr(lm, "LeroyMerlinScraper", _Falso)
+        monkeypatch.chdir(tmp_path)
+        velho = tmp_path / "logs" / "leroy_ads_probe_pdp.html"
+        velho.parent.mkdir()
+        velho.write_text("dump de outra execução", encoding="utf-8")
+        return probe.cmd_patrocinados(self.PDP), velho
+
+    def test_pdp_redirecionado_nao_lista_anuncio(self, monkeypatch, tmp_path, capsys):
+        codigo, dump = self._rodar(
+            monkeypatch, tmp_path, "https://www.leroymerlin.com.br/search?term=ar", BUSCA_REAL
+        )
+        assert codigo == 1
+        assert "3165336429" not in capsys.readouterr().out
+        assert dump.read_text(encoding="utf-8") == BUSCA_REAL  # evidência nova
+
+    def test_pdp_certo_lista_anuncio(self, monkeypatch, tmp_path, capsys):
+        codigo, _ = self._rodar(monkeypatch, tmp_path, self.PDP, CARD_REAL)
+        assert codigo == 0
+        assert "1572309369" in capsys.readouterr().out
+
+    def test_falha_nao_deixa_dump_velho(self, monkeypatch, tmp_path):
+        codigo, dump = self._rodar(monkeypatch, tmp_path, self.PDP, None)
+        assert codigo == 1
+        assert not dump.exists()

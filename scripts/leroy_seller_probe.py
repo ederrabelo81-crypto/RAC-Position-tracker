@@ -28,10 +28,11 @@ Uso:
     python scripts/leroy_seller_probe.py --scan "ar condicionado lg"
 
     # Patrocinados (Nov/2026): o que a coleta leria numa busca, num PDP ou num
-    # HTML salvo. Sempre grava logs/leroy_ads_probe.html (abre no browser).
+    # HTML salvo. Grava logs/leroy_ads_probe_busca.html ou _pdp.html (o dump
+    # antigo é apagado antes, para nunca sobrar o de outra execução).
     python scripts/leroy_seller_probe.py --patrocinados "ar condicionado"
     python scripts/leroy_seller_probe.py --patrocinados "https://www.leroymerlin.com.br/..._92311464"
-    python scripts/leroy_seller_probe.py --patrocinados logs/leroy_ads_probe.html
+    python scripts/leroy_seller_probe.py --patrocinados logs/leroy_ads_probe_busca.html
 
     # Registra um ID manualmente (quando você já sabe o lojista)
     python scripts/leroy_seller_probe.py --set 5e6fd1d90a8aa474fe271e83="Loja X"
@@ -584,18 +585,34 @@ def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
 
     caminho = Path(alvo)
     fora_dos_resultados: Optional[str] = None  # URL onde a busca foi parar
+    e_pdp = alvo.startswith("http")
+    dump = Path("logs") / f"leroy_ads_probe_{'pdp' if e_pdp else 'busca'}.html"
     if caminho.is_file():
         html: Optional[str] = caminho.read_text(encoding="utf-8", errors="replace")
     else:
+        # Dump velho apagado ANTES: se esta execução falhar, não sobra o HTML
+        # de outra (10/11/2026: o "dump do PDP" enviado era de uma busca).
+        dump.unlink(missing_ok=True)
         try:
             from scrapers.leroy_merlin import (
                 _ADS_PDP_TIMEOUT, _ADS_SERP_TIMEOUT, LeroyMerlinScraper,
             )
+            from utils.leroy_ads import leroy_product_id
 
             with LeroyMerlinScraper(headless=headless) as scraper:
                 page = scraper._pagina_pdp()
-                if alvo.startswith("http"):
+                if e_pdp:
                     html = scraper._ler_patrocinados(page, alvo, _ADS_PDP_TIMEOUT)
+                    final = getattr(page, "url", "") or ""
+                    logger.info(f"Página aberta: {final}")
+                    esperado = leroy_product_id(alvo)
+                    if html is None:
+                        fora_dos_resultados = final
+                        html = scraper._html_da_aba(page)
+                    elif esperado and leroy_product_id(final) != esperado:
+                        # Redirecionou (produto fora do ar, busca, home): os
+                        # anúncios dessa página não são os do PDP pedido.
+                        fora_dos_resultados = final
                 else:
                     # Mesmo caminho da coleta: URL montada → campo de busca do
                     # site quando ela cai na página de erro.
@@ -614,7 +631,6 @@ def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
             logger.error(f"Não foi possível abrir a página no browser: {exc}")
             return 1
         if html:
-            dump = Path("logs") / "leroy_ads_probe.html"
             dump.parent.mkdir(parents=True, exist_ok=True)
             dump.write_text(html, encoding="utf-8")
             logger.info(f"HTML gravado em {dump} ({len(html):,} bytes)")
@@ -624,6 +640,13 @@ def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
 
     from utils.leroy_ads import is_not_found_page
 
+    if fora_dos_resultados is not None and e_pdp:
+        logger.error(
+            f"O PDP NÃO abriu (a aba ficou em {fora_dos_resultados}). Nenhum "
+            "anúncio lido — os patrocinados dessa página não são os do produto. "
+            "Mande o log e o dump."
+        )
+        return 1
     if fora_dos_resultados is not None:
         logger.error(
             f"A busca NÃO chegou à página de resultados (ficou em "
