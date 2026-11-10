@@ -1,6 +1,7 @@
 ---
 name: coleta-ar-condicionado-br
 description: Monta e conserta coleta de ofertas de ar condicionado nos marketplaces brasileiros (Mercado Livre, Amazon, Magalu, Casas Bahia, Shopee, Leroy Merlin) e em lojas próprias, usando o Chrome local do usuário em perfil dedicado. Use quando pedirem para coletar posição na busca, preço, buy box ou vendedores de ar condicionado; para criar a coleta de um lojista ou dealer; para diagnosticar bloqueio, tela de login, CAPTCHA ou busca que voltou zerada; ou para agendar a coleta no Windows.
+license: MIT
 ---
 
 # Coleta de ar condicionado — marketplaces do Brasil

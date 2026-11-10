@@ -728,6 +728,8 @@ a cada push do próprio briefing.
 kit Python **autocontido** em `kit/` (Chrome comum + perfil dedicado + CDP,
 diagnóstico de bloqueio por evidência, extração estrutural, buy box no PDP,
 CSV + cobertura). Compartilhar = copiar a pasta para `~/.claude/skills/`.
+Licença **MIT** (`LICENSE` na pasta da skill) — vale só para a skill, não para
+o resto do repositório.
 
 **Regras duras:**
 1. **O kit não importa nada do repo** (`config`, `utils`, `scrapers`) e não

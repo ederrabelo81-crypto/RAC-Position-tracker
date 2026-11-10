@@ -36,6 +36,11 @@ Sites prontos: `mercadolivre`, `amazon`, `magalu`, `casasbahia`, `shopee`,
 O programa diz a causa e o conserto, e salva a página em `logs/`. Não aumente
 o volume nem repita em seguida: bloqueio se resolve esperando.
 
+## Licença
+
+MIT — veja o arquivo `LICENSE` na pasta da skill. Pode usar, copiar e adaptar,
+mantendo o aviso de copyright.
+
 ## Uso responsável
 
 Use a sua própria conta, colete só dado público de oferta, mantenha o volume
