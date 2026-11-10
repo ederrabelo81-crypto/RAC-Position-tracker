@@ -5,7 +5,7 @@ condicionado nos marketplaces e dealers brasileiros, com preço consolidado via
 **PriceTrack** e painéis Streamlit para a indústria (Midea Carrier) e para o
 lojista.
 
-**Status:** ✅ Produção | **Versão:** v5.8 | **Atualizado em:** 07/11/2026
+**Status:** ✅ Produção | **Versão:** v5.9 | **Atualizado em:** 10/11/2026
 
 > O histórico de mudanças, incidentes e validações operacionais até
 > Set/2026 foi preservado em
@@ -24,14 +24,15 @@ lojista.
 6. [Mais Vendidos (bestsellers)](#-mais-vendidos-bestsellers)
 7. [PriceTrack — preço de referência](#-pricetrack--preço-de-referência)
 8. [Painéis](#-painéis)
-9. [Armazenamento: Supabase + Parquet no Drive](#-armazenamento-supabase--parquet-no-drive)
-10. [Confiabilidade: quem rodou, quem não rodou](#-confiabilidade-quem-rodou-quem-não-rodou)
-11. [GitHub Actions](#-github-actions)
-12. [Saída (CSV)](#-saída-csv)
-13. [Testes](#-testes)
-14. [Estrutura do repositório](#-estrutura-do-repositório)
-15. [Troubleshooting](#-troubleshooting)
-16. [Documentação](#-documentação)
+9. [Skill de coleta para dealers e sellers](#-skill-de-coleta-para-dealers-e-sellers)
+10. [Armazenamento: Supabase + Parquet no Drive](#-armazenamento-supabase--parquet-no-drive)
+11. [Confiabilidade: quem rodou, quem não rodou](#-confiabilidade-quem-rodou-quem-não-rodou)
+12. [GitHub Actions](#-github-actions)
+13. [Saída (CSV)](#-saída-csv)
+14. [Testes](#-testes)
+15. [Estrutura do repositório](#-estrutura-do-repositório)
+16. [Troubleshooting](#-troubleshooting)
+17. [Documentação](#-documentação)
 
 ---
 
@@ -446,6 +447,63 @@ Ver [`pricetrack_dashboard/README.md`](pricetrack_dashboard/README.md).
 
 ---
 
+## 🧰 Skill de coleta para dealers e sellers
+
+[`.claude/skills/coleta-ar-condicionado-br/`](.claude/skills/coleta-ar-condicionado-br/)
+é uma skill do Claude Code feita para **sair do repositório**: um dealer ou
+seller copia a pasta e monta a própria coleta de ar condicionado nos
+marketplaces, no próprio Chrome, com a própria conta e a internet residencial
+dele. Ela leva o que este projeto aprendeu sobre os sites brasileiros, sem levar
+nada interno (banco, credenciais, de-para de sellers). Licença **MIT**, só para
+a pasta da skill.
+
+| Parte | O que tem |
+|-------|-----------|
+| `SKILL.md` | O roteiro para o agente: instalar, logar o perfil, coletar pouco, ler a cobertura, buy box, agendar; tabela de causa → conserto; regras de dado |
+| `references/` | Navegador local (Chrome comum + perfil dedicado + CDP), particularidades de cada marketplace, regras de dado com o erro que originou cada uma, agendamento no Windows |
+| `kit/` | Pacote Python autocontido (`rac_kit`) + `coletar.py`, `abrir_perfil.py` e `coletar_turno.bat` |
+
+Sites prontos: Mercado Livre, Amazon, Magalu, Casas Bahia, Shopee e Leroy
+Merlin. Loja própria entra via `--url-busca`: o padrão reconhece links de
+produto de loja VTEX (`/<slug>/p`); outro formato precisa de `--re-produto`
+com a regex do link de produto daquela loja.
+
+```bash
+# Para o dealer: copiar a pasta para ~/.claude/skills/ ou usar o kit direto
+cd .claude/skills/coleta-ar-condicionado-br/kit
+pip install -r requirements.txt
+python abrir_perfil.py --site mercadolivre        # login manual, uma vez
+python coletar.py --site mercadolivre --keyword "ar condicionado 12000 btus"
+python coletar.py --site amazon --keyword "ar condicionado split" --buy-box 10
+python coletar.py --url-busca "https://www.loja.com.br/busca?q={q}" --keyword "split"
+```
+
+Saída: CSV no formato do Excel brasileiro (`;`, BOM, vírgula decimal) e, ao
+lado, um `.cobertura.json` com o resultado de cada keyword e página: `ok`,
+`vazia` (a busca não tem resultado) ou o motivo de **não** ter sido observada
+(`login`, `captcha`, `bloqueio`, `layout`, `adiada`, `sem_navegador`,
+`interrompida`). Código de saída 2 = alguma keyword não foi observada ou a
+coleta foi interrompida; busca vazia não conta.
+
+**Dentro deste repositório a coleta de produção continua nos `scrapers/`** — o
+kit é um derivado enxuto e genérico, sem os caminhos por API (Algolia da Leroy,
+VTEX da Casas Bahia, API v4 da Shopee, API oficial do ML).
+
+Regras de manutenção (cobradas por `tests/test_skill_coleta_kit.py`):
+
+- o kit não importa nada do repo nem carrega segredo ou o de-para de sellers;
+- `kit/rac_kit/offer_kind.py` e `offer_identity.py` são **cópia fiel** de
+  `utils/` — mexeu na origem, copie de novo;
+- `texto.py` mantém paridade com `utils/text.py`, `utils/brands.py`,
+  `utils/shelf_insights.py` e `config.BRANDS`, com três diferenças deliberadas
+  (detalhes no `CLAUDE.md`).
+
+⚠️ **Ainda não validada contra os marketplaces reais** — só com HTML
+sintético e um site local, porque a nuvem é IP de datacenter. A primeira
+validação de campo é no PC coletor.
+
+---
+
 ## 🗄️ Armazenamento: Supabase + Parquet no Drive
 
 - **Supabase** (free tier, 500 MB) guarda só a **janela quente**
@@ -592,6 +650,8 @@ app.py                  dashboard interno (Cockpit + 22 páginas)
 scrapers/               um scraper por plataforma + base.py, local_browser.py, playwright_runtime.py, dealers.py
 bestsellers/            Mais Vendidos (sources artesanais + vtex_generic/html_generic, radar, cobertura)
 seller_app/             Track Position Seller (app separado, só-leitura)
+.claude/skills/coleta-ar-condicionado-br/
+                        skill compartilhável de coleta para dealers/sellers (kit autocontido, MIT)
 pricetrack_api/         cliente tipado da API PriceTrack
 pricetrack_importer/    importador md/xlsx do PriceTrack
 pricetrack_dashboard/   dashboard de preço 9K/12K + página 🩻 Diagnóstico (diagnostico_page.py)
@@ -605,7 +665,7 @@ docs/migrations/        SQL de coletas/bestsellers/heartbeat/seller/clima (001�
                         clima_daily, pipeline_guard, watchdog, collect
 magalu_shopee/          sub-projeto Node/TS (fallback Shopee)
 docs/                   documentação técnica (índice em docs/INDEX.md)
-.claude/                guias para sessões de IA (erros comuns, quick start, mapa)
+.claude/                guias para sessões de IA (erros comuns, quick start, mapa) + skills/
 ```
 
 Arquivos na raiz como `CORRECAO_CASAS_BAHIA.md`, `DIAGNOSTICO_GOOGLE_LEROY.md`,
@@ -650,6 +710,7 @@ referência, fora do fluxo atual.
 | [`docs/BESTSELLERS.md`](docs/BESTSELLERS.md) | Mais Vendidos: KPI, regras, validação |
 | [`docs/COCKPIT_TRADE.md`](docs/COCKPIT_TRADE.md) / [`docs/DASHBOARD_FILTERS.md`](docs/DASHBOARD_FILTERS.md) | Métricas do Cockpit e filtros globais |
 | [`docs/TRACK_POSITION_SELLER.md`](docs/TRACK_POSITION_SELLER.md) | Estratégia e arquitetura do `seller_app` |
+| [`.claude/skills/coleta-ar-condicionado-br/SKILL.md`](.claude/skills/coleta-ar-condicionado-br/SKILL.md) | Skill de coleta para dealers/sellers (kit em `kit/README.md`) |
 | [`docs/HISTORICO_DRIVE.md`](docs/HISTORICO_DRIVE.md) | Histórico frio em Parquet |
 | [`docs/RETORNO_SUPABASE.md`](docs/RETORNO_SUPABASE.md) | Backend atual, janela de 2 dias, emergência de cota |
 | [`docs/MIGRACAO_AIVEN.md`](docs/MIGRACAO_AIVEN.md) | Rollback para Postgres direto (Aiven) |
