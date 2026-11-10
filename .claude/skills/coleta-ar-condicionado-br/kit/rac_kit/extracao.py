@@ -25,7 +25,10 @@ from .texto import parse_price_brazil
 _RE_PRECO = re.compile(r"R\$\s*\d[\d.]*(?:,\d{1,2})?")
 # "10x de R$ 199,90" é parcela, não preço.
 _RE_PARCELA_ANTES = re.compile(r"\d{1,2}\s*x\s*(?:de\s*)?$", re.I)
-_RE_RISCADO = re.compile(r"old|original|previous|strike|riscad|list-?price|de-por", re.I)
+# Início de palavra: sem isso "old" casaria com "font-bold" e apagaria o preço.
+_RE_RISCADO = re.compile(
+    r"(?<![a-z])(?:old|original|previous|strike|riscad|list-?price|de-por)", re.I
+)
 _RE_PATROCINADO = re.compile(r"\bpatrocinado\b|\ban[uú]ncio\b|\bsponsored\b", re.I)
 _RE_VENDIDO_POR = re.compile(
     r"vendido(?:\s+e\s+entregue)?\s+por[:\s]*\n?\s*([^\n]{2,80})", re.I

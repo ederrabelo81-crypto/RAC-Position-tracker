@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import List
 
 from rac_kit import bloqueio
-from rac_kit.coleta import Opcoes, coletar_site
+from rac_kit.coleta import Opcoes, Parcial, coletar_site
 from rac_kit.navegador import ChromeLocal
 from rac_kit.saida import gravar_cobertura, gravar_csv
 from rac_kit.sites import SITES, site_generico
@@ -83,12 +83,30 @@ def main() -> int:
 
     opcoes = Opcoes(paginas=args.paginas, buy_box=args.buy_box,
                     pasta_logs=Path(args.logs))
+    parcial = Parcial()
+    interrompida = False
     try:
         with ChromeLocal() as chrome:
-            registros, cobertura = coletar_site(chrome, site, keywords, opcoes)
-    except RuntimeError as exc:
-        log.error("%s", exc)
-        return 1
+            coletar_site(chrome, site, keywords, opcoes, parcial)
+    except KeyboardInterrupt:
+        interrompida = True
+        log.warning("Coleta interrompida — gravando o que já foi coletado.")
+    except Exception as exc:  # noqa: BLE001 — o que já foi coletado não se perde
+        interrompida = True
+        log.error("Coleta abortada: %s", exc)
+    registros, cobertura = parcial.registros, parcial.cobertura
+
+    # Keyword que nem chegou a ser tentada também é "não observada".
+    tentadas = {c["keyword"] for c in cobertura}
+    causa_resto = "adiada" if cobertura else "sem_navegador"
+    for keyword in keywords:
+        if keyword not in tentadas:
+            cobertura.append({
+                "plataforma": site.nome, "keyword": keyword, "pagina": 1,
+                "causa": causa_resto,
+                "detalhe": "a coleta parou antes desta keyword",
+                "produtos": 0, "evidencia": None,
+            })
 
     csv_path = gravar_csv(registros, Path(args.saida), site.chave)
     gravar_cobertura(cobertura, csv_path)
@@ -99,7 +117,7 @@ def main() -> int:
         log.warning("NÃO OBSERVADA: %s p%s — %s. Conserto: %s",
                     falha["keyword"], falha["pagina"], falha["detalhe"],
                     _REMEDIO.get(falha["causa"], "veja o HTML salvo em logs/"))
-    return 2 if falhas else 0
+    return 2 if falhas or interrompida else 0
 
 
 if __name__ == "__main__":

@@ -105,8 +105,9 @@ def diagnosticar(
 
     if status in (403, 429):
         return Veredito(BLOQUEIO, f"HTTP {status}", n)
-    if len(html) < _TAMANHO_MINIMO:
-        return Veredito(BLOQUEIO, f"página com {len(html)} bytes", n)
+    tamanho = len(html.encode("utf-8"))
+    if tamanho < _TAMANHO_MINIMO:
+        return Veredito(BLOQUEIO, f"página com {tamanho} bytes", n)
     if _RE_BLOQUEIO.search(html):
         return Veredito(BLOQUEIO, "página de bloqueio do antibot", n)
     if _RE_CAPTCHA.search(html):

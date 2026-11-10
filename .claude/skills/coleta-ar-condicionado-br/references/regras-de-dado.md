@@ -37,7 +37,8 @@ Leia a página do produto a cada coleta; cache só dentro da mesma execução.
 ## 5. Só o aparelho entra em série de preço
 
 Kit de instalação a R$ 255 já entrou na série de preço de um split de 9.000
-BTUs. O classificador (`offer_kind.py`) separa:
+BTUs. O classificador (`offer_kind.py`) separa os cinco primeiros tipos abaixo;
+`FORA_ESCOPO` vem de outro teste (`tem_evidencia_ac`, regra 8):
 
 | Tipo | Exemplo |
 |---|---|
@@ -48,8 +49,11 @@ BTUs. O classificador (`offer_kind.py`) separa:
 | `COM_INSTALACAO` | aparelho + serviço |
 | `FORA_ESCOPO` | não é ar condicionado (geladeira "Inverter" patrocinada) |
 
-Na dúvida ele responde `UNIDADE`: só exclui com evidência. Os outros tipos
-continuam na coleta (posição, presença), só não entram em preço.
+Na dúvida ele responde `UNIDADE`: só exclui com evidência. Todos os tipos
+continuam na coleta, porque a posição que ocuparam é fato da página. Quem lê
+filtra por `Tipo Anúncio`: preço só com `UNIDADE`; presença de marca com
+qualquer tipo menos `FORA_ESCOPO`. O kit grava `Marca Monitorada` em todas as
+linhas — o filtro é de quem consome.
 
 ## 6. Preço só no mesmo BTU e no mesmo formato
 
@@ -69,9 +73,9 @@ substitui preço à vista ausente.
 
 Geladeira, lavadora e micro-ondas também são "Inverter". Termo que não é
 exclusivo de ar condicionado só classifica junto de "ar condicionado", "split"
-ou da capacidade em BTU (`is_valid_product`). O que não passa nesse filtro
-fica na coleta como `FORA_ESCOPO`: a posição que ocupou é fato da página, mas
-não entra em preço nem em presença de marca.
+ou da capacidade em BTU (`tem_evidencia_ac`). Título sem essa evidência fica
+na coleta como `FORA_ESCOPO` e, pela regra 5, fora de preço e de presença de
+marca.
 
 ## 9. Posição é ordinal
 

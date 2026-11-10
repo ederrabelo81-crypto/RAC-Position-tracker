@@ -37,7 +37,8 @@ Marque "Executar somente quando o usuário estiver conectado".
   continua lendo o arquivo antigo por posição e quebra. Deixe a atualização num
   `.bat` separado, que chama o da coleta depois.
 - **Código de saída.** `coletar.py` devolve 2 quando alguma keyword não foi
-  observada. Use isso para avisar alguém; tarefa "verde" com dado faltando é o
-  pior caso.
+  observada. O `coletar_turno.bat` resume o turno: sai com 1 se qualquer site
+  terminou diferente de zero e grava `FALHOU site=<site>` no log. Use isso para
+  avisar alguém; tarefa "verde" com dado faltando é o pior caso.
 - **Quem cobra a ausência?** Uma tarefa que deixa de rodar não gera erro. Tenha
   uma verificação separada ("o CSV de hoje existe?") rodando em outro horário.

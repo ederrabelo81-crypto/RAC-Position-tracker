@@ -80,9 +80,18 @@ class TestSincroniaComORepo:
         assert texto.extract_brand(titulo) == extract_brand(titulo)
         assert texto.extract_btu(titulo) == extract_btu(titulo)
 
+    def test_diferencas_deliberadas_da_origem(self):
+        # Defeitos que seguem abertos em utils/: o kit não os copia.
+        assert texto.parse_price_brazil("R$ 0.0") is None
+        assert texto.extract_btu("Split Cassete 120.000 BTUs") == 120000
+        assert texto.extract_btu("Ar 12.000 BTUs") == 12000
+        assert texto.extract_btu("Ar 9000btu") == 9000
+
     @pytest.mark.parametrize("hora", range(24))
     def test_turno_igual_ao_do_repo(self, hora, monkeypatch):
         from utils.text import get_turno
+        # Paridade só pelo relógio: RAC_TURNO é override da pipeline deste
+        # repo e o kit, de propósito, não o implementa.
         monkeypatch.delenv("RAC_TURNO", raising=False)
         momento = datetime(2026, 11, 10, hora, 30)
         assert texto.get_turno(momento) == get_turno(momento)
@@ -279,6 +288,13 @@ class TestExtracao:
         assert cards[1]["url"] == "https://www.amazon.com.br/Ar-LG/dp/B0AAAAAAA2"
         assert cards[2]["titulo"] == "Ar Condicionado TCL 9000 BTUs Split"
 
+    def test_classe_font_bold_nao_e_preco_riscado(self):
+        html = """<html><body><div>
+          <a href="/Ar-LG/dp/B0AAAAAAA2">Ar Condicionado LG Dual Inverter 12000 BTUs</a>
+          <span class="font-bold text-golden">R$ 2.500,00</span></div></body></html>"""
+        (card,) = extrair_cards(html, SITES["amazon"])
+        assert card["preco"] == 2500.0
+
     def test_json_ld_vence_o_preco_do_card(self):
         ld = json.dumps({"@type": "ItemList", "itemListElement": [{"item": {
             "@type": "Product", "url": "https://www.loja.com.br/ar-gree-9000/p",
@@ -327,6 +343,11 @@ class TestSaida:
         r = self._registro(titulo="Kit Instalação Ar Condicionado Split 9000 a 12000 BTUs 3m")
         assert r["Tipo Anúncio"] != "UNIDADE"
 
+    def test_controle_pelo_celular_nao_tira_o_ar_do_escopo(self):
+        r = self._registro(
+            titulo="Ar Condicionado Split 12000 BTUs Wi-Fi Controle pelo Celular")
+        assert r["Tipo Anúncio"] == "UNIDADE"
+
     def test_geladeira_inverter_fica_marcada_fora_de_escopo(self):
         # A busca aceita anúncio de qualquer produto; a linha fica (a posição
         # é fato da página) mas não pode contar como ar condicionado.
@@ -334,9 +355,15 @@ class TestSaida:
         assert r["Tipo Anúncio"] == "FORA_ESCOPO"
         assert r["Posição Geral"] == 1
 
-    def test_csv_nao_sobrescreve_rodada_do_mesmo_minuto(self, tmp_path):
-        nome = gravar_csv([], tmp_path, "amazon").name
-        assert re.fullmatch(r"coleta_amazon_\d{8}_\d{6}\.csv", nome)
+    def test_csv_nunca_sobrescreve_outra_coleta(self, tmp_path, monkeypatch):
+        from rac_kit import saida
+        fixo = datetime(2026, 11, 10, 8, 5, 30)
+        monkeypatch.setattr(saida, "now_brt", lambda: fixo)  # mesmo segundo
+        primeiro = gravar_csv([self._registro()], tmp_path, "amazon")
+        segundo = gravar_csv([], tmp_path, "amazon")
+        assert primeiro != segundo and primeiro.exists() and segundo.exists()
+        assert primeiro.name == "coleta_amazon_20261110_080530.csv"
+        assert len(primeiro.read_text(encoding="utf-8-sig").splitlines()) == 2
 
     def test_buy_box_do_pdp_leva_a_fonte(self):
         r = self._registro(buy_box_seller="Loja Z", fonte_buy_box="rotulo")
@@ -348,6 +375,7 @@ class TestSaida:
         assert bruto.startswith(b"\xef\xbb\xbf")
         linhas = list(csv.DictReader(caminho.open(encoding="utf-8-sig"), delimiter=";"))
         assert linhas[0]["Plataforma"] == "Mercado Livre"
+        assert linhas[0]["Preço (R$)"] == "2100,90"  # vírgula: o Excel lê número
         cobertura = gravar_cobertura([{"keyword": "x", "causa": "login"}], caminho)
         assert json.loads(cobertura.read_text(encoding="utf-8"))[0]["causa"] == "login"
 
@@ -455,6 +483,31 @@ class TestColeta:
         assert len(com_bb) == 2
         assert com_bb[0]["Fonte Buy Box"] == "rotulo"
         assert registros[2]["Buy Box Seller"] is None  # não observado fica vazio
+
+    def test_pagina_negada_tambem_espera_antes_da_proxima(self, tmp_path):
+        pausas = []
+        opcoes = Opcoes(pasta_logs=tmp_path, dormir=pausas.append, espera_captcha=0)
+        chrome = _ChromeFalso(lambda url: ("<html>Access Denied</html>", 403))
+        coletar_site(chrome, self.ml, ["a", "b"], opcoes)
+        minimo = self.ml.intervalo[0]
+        assert sum(1 for p in pausas if p >= minimo) == 2  # uma por página negada
+
+    def test_interrupcao_preserva_o_que_ja_foi_coletado(self, tmp_path):
+        from rac_kit.coleta import Parcial
+        chamadas = []
+
+        def roteiro(url):
+            chamadas.append(url)
+            if len(chamadas) == 2:
+                raise KeyboardInterrupt
+            return _serp_ml(6), 200
+
+        parcial = Parcial()
+        with pytest.raises(KeyboardInterrupt):
+            coletar_site(_ChromeFalso(roteiro), self.ml, ["a", "b"],
+                         _opcoes(tmp_path), parcial)
+        assert len(parcial.registros) == 6
+        assert [c["keyword"] for c in parcial.cobertura] == ["a"]
 
     def test_busca_vazia_nao_conta_como_bloqueio(self, tmp_path):
         vazia = "<html>" + "x" * 5000 + "Não encontramos resultados</html>"

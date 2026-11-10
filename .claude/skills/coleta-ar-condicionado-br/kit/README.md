@@ -17,7 +17,7 @@ python abrir_perfil.py --site mercadolivre     # logue uma vez, com a sua conta
 python coletar.py --site mercadolivre --keyword "ar condicionado 12000 btus"
 ```
 
-O resultado sai em `output/` (CSV que abre no Excel) com um arquivo
+O resultado sai em `output/` (CSV que abre no Excel; em pandas, `sep=";", decimal=","`) com um arquivo
 `.cobertura.json` ao lado, dizendo o que foi e o que não foi observado.
 
 ## Mais usos

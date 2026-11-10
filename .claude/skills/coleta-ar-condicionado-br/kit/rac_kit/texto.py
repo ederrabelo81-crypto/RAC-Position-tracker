@@ -70,9 +70,11 @@ def parse_price_brazil(raw_text: Optional[str]) -> Optional[float]:
     float_match = re.search(r"(?:R\$\s*)?(\d+\.\d{1,2})$", raw_text.strip())
     if float_match and "," not in raw_text:
         try:
-            return float(float_match.group(1))
+            direto = float(float_match.group(1))
         except ValueError:
-            pass
+            direto = 0.0
+        # Mesmo teto do caminho principal: "R$ 0.0" não é preço.
+        return direto if 0 < direto <= 10_000_000 else None
 
     match = re.search(r"R\$\s*([\d.,]+)|([\d]+\.[\d]{3},[\d]{2})", raw_text)
     if not match:
@@ -123,7 +125,11 @@ def extract_brand(title: Optional[str]) -> str:
     return "Desconhecida"
 
 
-_BTU_RE = re.compile(r"(\d{1,2})[.,](\d{3})\s*btu|(\d{4,6})\s*btu", re.IGNORECASE)
+# (?<![\d.,]) impede começar no meio do número: "120.000 BTUs" não vira 20.000.
+_BTU_RE = re.compile(
+    r"(?<![\d.,])(\d{1,3})[.,](\d{3})\s*btu|(?<![\d.,])(\d{4,6})\s*btu",
+    re.IGNORECASE,
+)
 
 # Formatos que não competem em preço com o split hi-wall no mesmo BTU.
 _RE_FORA_HIWALL = re.compile(
@@ -168,6 +174,22 @@ _NON_AC_TERMS = [
     r"\btablet\b", r"\bairpods?\b", r"\bmacbook\b", r"\bcolch[aã]o\b",
     r"\bsof[aá]\b",
 ]
+
+
+def tem_evidencia_ac(name: Optional[str]) -> bool:
+    """True se o título traz evidência de ar condicionado.
+
+    Um termo forte ("ar condicionado", BTU, "hi-wall"...) ou dois fracos
+    ("split" + "inverter"). Não aplica a lista de exclusão: "controle pelo
+    celular" é atributo comum de ar condicionado, e um título com evidência
+    não deve ser descartado por uma palavra solta.
+    """
+    if not name:
+        return False
+    low = name.lower()
+    if any(re.search(p, low) for p in _AC_STRONG_TERMS):
+        return True
+    return sum(1 for p in _AC_WEAK_TERMS if re.search(p, low)) >= 2
 
 
 def is_valid_product(name: str, price: Optional[float] = None) -> bool:

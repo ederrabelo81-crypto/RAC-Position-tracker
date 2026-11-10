@@ -53,6 +53,14 @@ class Opcoes:
     dormir: Callable[[float], None] = field(default=time.sleep, repr=False)
 
 
+@dataclass
+class Parcial:
+    """Resultado acumulado de uma coleta, legível mesmo se ela for interrompida."""
+
+    registros: List[Dict[str, Any]] = field(default_factory=list)
+    cobertura: List[Dict[str, Any]] = field(default_factory=list)
+
+
 def _slug(texto: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", texto.lower()).strip("_")[:40] or "kw"
 
@@ -135,6 +143,7 @@ def coletar_site(
     site: Site,
     keywords: Sequence[str],
     opcoes: Optional[Opcoes] = None,
+    parcial: Optional[Parcial] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Coleta as keywords de um site.
 
@@ -143,6 +152,9 @@ def coletar_site(
         site: Configuração do site.
         keywords: Buscas a fazer, na ordem.
         opcoes: Parâmetros; o padrão é 1 página, sem PDP.
+        parcial: Onde acumular o resultado. Quem chama passa o seu para
+            conseguir gravar o que já foi coletado se a coleta for
+            interrompida (Ctrl+C, erro inesperado).
 
     Returns:
         ``(registros, cobertura)``. ``cobertura`` tem uma entrada por
@@ -150,8 +162,8 @@ def coletar_site(
         inclusive as que NÃO viraram dado.
     """
     opcoes = opcoes or Opcoes()
-    registros: List[Dict[str, Any]] = []
-    cobertura: List[Dict[str, Any]] = []
+    parcial = parcial if parcial is not None else Parcial()
+    registros, cobertura = parcial.registros, parcial.cobertura
     bloqueios_seguidos = 0
     aba: Optional[Any] = None
     referer = site.home
@@ -219,6 +231,7 @@ def coletar_site(
             elif veredito.causa == bloqueio.VAZIA:
                 bloqueios_seguidos = 0
                 anotar(keyword, pagina, veredito.causa, veredito.detalhe)
+                opcoes.dormir(random.uniform(*site.intervalo))
                 break
             else:
                 bloqueios_seguidos += 1
@@ -229,6 +242,9 @@ def coletar_site(
                        evidencia=evidencia)
                 log.warning("%s | %s p%s: %s (%s)", site.nome, keyword, pagina,
                             veredito.causa.upper(), veredito.detalhe)
+                # Pausa também aqui: bater de novo logo após uma negação é o
+                # que transforma um desafio em bloqueio.
+                opcoes.dormir(random.uniform(*site.intervalo))
                 break  # não adianta pedir a página 2 de uma busca negada
 
             opcoes.dormir(random.uniform(*site.intervalo))

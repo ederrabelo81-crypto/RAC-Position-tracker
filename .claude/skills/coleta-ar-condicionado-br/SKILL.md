@@ -68,7 +68,7 @@ cada uma está em `references/regras-de-dado.md`.
    o freio, não encurte as pausas, não rode em paralelo no mesmo site.
 5. **Só o aparelho entra em série de preço.** Kit de instalação, peça, meia
    unidade e pacote com 2+ aparelhos ficam na coleta com `Tipo Anúncio` próprio;
-   o que nem é ar condicionado fica como `FORA_ESCOPO`.
+   título sem evidência de ar condicionado fica como `FORA_ESCOPO`.
 6. **Preço só se compara no mesmo BTU e no mesmo formato.** Split hi-wall não se
    mistura com portátil, janela ou cassete.
 7. **Posição é ordinal.** Não some posições nem trate ranking como participação

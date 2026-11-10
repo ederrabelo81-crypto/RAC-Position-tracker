@@ -736,7 +736,11 @@ CSV + cobertura). Compartilhar = copiar a pasta para `~/.claude/skills/`.
 2. **`kit/rac_kit/offer_kind.py` e `offer_identity.py` são cópia fiel** de
    `utils/`. Mexeu na origem, copie de novo (o teste compara byte a byte).
    `texto.py` é paridade de comportamento com `utils/text.py`,
-   `utils/brands.py` e `config.BRANDS`, também cobrada por teste.
+   `utils/brands.py`, `utils/shelf_insights.py` (`extract_btu`) e
+   `config.BRANDS`, cobrada por teste nos casos comuns. Três diferenças são
+   deliberadas: o turno é só pelo relógio (sem `RAC_TURNO`), `R$ 0.0` não é
+   preço e `120.000 BTUs` não vira 20.000 — os dois últimos são defeitos que
+   seguem abertos na origem.
 3. **Dentro deste repo, a coleta de produção segue nos `scrapers/`.** O kit é
    um derivado enxuto e genérico; não substitui os scrapers por plataforma.
 4. Só foi validado com HTML sintético e um site local — **não contra os

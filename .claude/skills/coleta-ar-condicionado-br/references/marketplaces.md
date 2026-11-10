@@ -13,7 +13,7 @@ bom em cada site e o que já deu errado. Validade: observado até novembro de
 | Amazon | CAPTCHA | não | não | página do produto |
 | Magalu | Akamai + tela de login | recomendado | não confiável | página do produto |
 | Casas Bahia | Akamai | não | não | página do produto |
-| Shopee | antifraude por sessão | obrigatório | sim (cada resultado é uma loja) | o próprio resultado |
+| Shopee | antifraude por sessão | obrigatório | sim, mas o kit não lê | página do produto (`--buy-box`) |
 | Leroy Merlin | desafio em página de produto | não | não | página do produto |
 | Google Shopping | reCAPTCHA | recomendado | sim (lojas comparadas) | fora do kit |
 
@@ -76,7 +76,8 @@ bom em cada site e o que já deu errado. Validade: observado até novembro de
 
 - Exige conta logada no perfil. A sessão vale horas, não dias.
 - É marketplace puro: cada resultado é a oferta de uma loja, então o vendedor é
-  o do próprio resultado.
+  o do próprio resultado. **O kit não lê o nome da loja no card** (ele não vem
+  num rótulo "Vendido por"): sem `--buy-box`, o vendedor fica vazio.
 - Selos: Shopee Mall (loja oficial) e Preferred+. "X vendidos" é base mensal.
 - É o site mais instável da lista. Trate como melhor esforço.
 

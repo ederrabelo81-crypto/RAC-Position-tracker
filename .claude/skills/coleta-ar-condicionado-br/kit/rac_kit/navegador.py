@@ -127,8 +127,11 @@ def argumentos_chrome(porta: int, perfil: Path, url: Optional[str] = None) -> Li
 
 def endpoint_cdp(porta: int) -> Optional[str]:
     """``http://127.0.0.1:<porta>`` se já há um Chrome ouvindo, senão None."""
+    # Sem proxy: com proxy de sistema configurado, a sonda em 127.0.0.1 sairia
+    # por ele, falharia, e o kit abriria um segundo Chrome no mesmo perfil.
+    direto = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(
+        with direto.open(
             f"http://127.0.0.1:{porta}/json/version", timeout=2
         ) as resp:
             if resp.status == 200:

@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from .offer_identity import build_identity
 from .offer_kind import classify_offer
 from .sites import Site
-from .texto import extract_brand, extract_btu, get_turno, is_valid_product, now_brt
+from .texto import extract_brand, extract_btu, get_turno, now_brt, tem_evidencia_ac
 
 # Produto que a busca devolveu mas não é ar condicionado (anúncio de geladeira
 # "Inverter", por exemplo). A linha fica — a posição que ele ocupa é fato da
@@ -60,7 +60,7 @@ def montar_registro(
         "Produto / SKU": titulo or None,
         "BTU": extract_btu(titulo),
         "Tipo Anúncio": (
-            FORA_ESCOPO if titulo and not is_valid_product(titulo)
+            FORA_ESCOPO if titulo and not tem_evidencia_ac(titulo)
             else classify_offer(titulo, url)
         ),
         "Posição Orgânica": card.get("posicao_organica"),
@@ -79,14 +79,32 @@ def montar_registro(
 
 
 def gravar_csv(registros: Iterable[Dict[str, Any]], pasta: Path, rotulo: str) -> Path:
-    """Grava o CSV (``;`` + UTF-8 com BOM, que o Excel brasileiro abre direto)."""
+    """Grava o CSV no formato do Excel brasileiro.
+
+    Separador ``;``, UTF-8 com BOM e preço com vírgula decimal. Em pandas,
+    leia com ``sep=";", decimal=","``. Nunca sobrescreve um arquivo existente.
+    """
     pasta.mkdir(parents=True, exist_ok=True)
-    caminho = pasta / f"coleta_{rotulo}_{now_brt():%Y%m%d_%H%M%S}.csv"
-    with caminho.open("w", newline="", encoding="utf-8-sig") as f:
+    base = f"coleta_{rotulo}_{now_brt():%Y%m%d_%H%M%S}"
+    caminho, n = pasta / f"{base}.csv", 1
+    while True:
+        try:
+            # "x" falha se o arquivo existe: uma coleta nunca apaga outra.
+            f = caminho.open("x", newline="", encoding="utf-8-sig")
+            break
+        except FileExistsError:
+            n += 1
+            caminho = pasta / f"{base}_{n}.csv"
+    with f:
         escritor = csv.DictWriter(f, fieldnames=COLUNAS, delimiter=";")
         escritor.writeheader()
         for registro in registros:
-            escritor.writerow({c: registro.get(c) for c in COLUNAS})
+            linha = {c: registro.get(c) for c in COLUNAS}
+            preco = linha.get("Preço (R$)")
+            if isinstance(preco, (int, float)):
+                # Vírgula decimal: com ponto o Excel brasileiro lê texto.
+                linha["Preço (R$)"] = f"{preco:.2f}".replace(".", ",")
+            escritor.writerow(linha)
     return caminho
 
 
