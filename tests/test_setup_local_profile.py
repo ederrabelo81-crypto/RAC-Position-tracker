@@ -185,13 +185,23 @@ class TestLoginSemDebug:
 
     def test_fecha_o_chrome_de_debug_antes(self, monkeypatch, tmp_path):
         ch = self._base(monkeypatch, _FakeProc(), cdp_up=True)
+        (tmp_path / "DevToolsActivePort").write_text("9222\n/devtools/browser/x")
         monkeypatch.setattr(slp, "_wait_process_exit", lambda p, s: s != 3)
         assert slp._login_sem_debug(9222, tmp_path, "mercadolivre") is True
         assert ch["close"] == 1
         assert ch["spawn"] == [False]
 
+    def test_nao_fecha_chrome_de_outro_perfil(self, monkeypatch, tmp_path):
+        # porta ocupada por um Chrome de debug que não é o do perfil
+        ch = self._base(monkeypatch, _FakeProc(), cdp_up=True)
+        (tmp_path / "DevToolsActivePort").write_text("9333\n/devtools/browser/x")
+        assert slp._login_sem_debug(9222, tmp_path, "mercadolivre") is False
+        assert ch["close"] == 0
+        assert ch["spawn"] == []
+
     def test_nao_abre_se_nao_conseguiu_fechar_o_de_debug(self, monkeypatch, tmp_path):
         ch = self._base(monkeypatch, _FakeProc(), cdp_up=True, fecha_ok=False)
+        (tmp_path / "DevToolsActivePort").write_text("9222\n/devtools/browser/x")
         assert slp._login_sem_debug(9222, tmp_path, "mercadolivre") is False
         assert ch["spawn"] == []
 

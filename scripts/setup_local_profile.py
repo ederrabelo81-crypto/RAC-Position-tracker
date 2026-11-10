@@ -480,6 +480,22 @@ def _wait_process_exit(proc, seconds: float) -> bool:
     return proc.poll() is not None
 
 
+def _porta_e_do_perfil(port: int, profile_dir: Path) -> bool:
+    """
+    True se o Chrome na porta é o do perfil dedicado.
+
+    O `/json/version` não diz qual perfil está por trás da porta; o Chrome, ao
+    abrir a porta de debug, grava ``<perfil>/DevToolsActivePort`` com o número
+    dela na 1ª linha. Sem isso, o setup fecharia qualquer Chrome de debug que
+    estivesse ocupando a 9222 (revisão do PR #439).
+    """
+    try:
+        linhas = (Path(profile_dir) / "DevToolsActivePort").read_text().splitlines()
+        return bool(linhas) and linhas[0].strip() == str(port)
+    except OSError:
+        return False
+
+
 def _login_sem_debug(port: int, profile_dir: Path, site: str) -> bool:
     """
     Login num Chrome do perfil dedicado SEM porta de debug.
@@ -500,6 +516,13 @@ def _login_sem_debug(port: int, profile_dir: Path, site: str) -> bool:
     """
     cfg = SITES[site]
     if cdp_endpoint_if_up(port) is not None:
+        if not _porta_e_do_perfil(port, profile_dir):
+            print(
+                f"\n  ❌ A porta {port} está com um Chrome de debug que NÃO é o do\n"
+                f"     perfil da coleta ({profile_dir}). Não vou fechá-lo.\n"
+                "     Feche esse Chrome (ou ajuste RAC_CDP_PORT) e rode de novo."
+            )
+            return False
         print(
             "\n  Há um Chrome com porta de debug aberto neste perfil — fechando-o\n"
             "  para reabrir o perfil SEM debug (o login do "
