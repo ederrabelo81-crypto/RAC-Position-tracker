@@ -667,6 +667,14 @@ def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
                "(ou não hidratou — tente --no-headless).")
         )
         return 1
+    from utils.leroy_ads import organic_before_shelf
+
+    antes = organic_before_shelf(html)
+    if antes:
+        logger.info(
+            f"Prateleira de patrocinados vem DEPOIS de {antes} produtos orgânicos "
+            f"→ Posição Geral {antes + 1}..{antes + len(itens)} na coleta"
+        )
     for i in itens:
         preco = f"R$ {i.price:,.2f}" if i.price is not None else "—"
         print(f"{i.slot:>2}. [{i.product_id}] {(i.title or '?')[:70]:<70} {preco}")
