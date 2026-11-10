@@ -44,8 +44,8 @@ mexer em qualquer site.
 
 Para `login`, `captcha`, `bloqueio` e `layout`, o kit grava o HTML da página em
 `logs/` com a causa no nome do arquivo (o caminho está na cobertura). Abra o
-arquivo antes de propor conserto; não adivinhe. `vazia`, `adiada` e
-`sem_navegador` não têm HTML: a explicação está no `detalhe` da cobertura.
+arquivo antes de propor conserto; não adivinhe. `vazia`, `adiada`,
+`sem_navegador` e `interrompida` não têm HTML: a explicação está no `detalhe` da cobertura.
 
 | Causa | O que é | Conserto |
 |---|---|---|
@@ -56,6 +56,7 @@ arquivo antes de propor conserto; não adivinhe. `vazia`, `adiada` e
 | `vazia` | a busca não tem resultado | nada a consertar |
 | `adiada` | site freado após 3 negações seguidas | rodar depois só essas keywords |
 | `sem_navegador` | Chrome fechado e não reabriu | `abrir_perfil.py` e rodar de novo |
+| `interrompida` | Ctrl+C ou erro no meio da coleta | rodar de novo só essas keywords |
 
 ## Regras que não se negociam
 

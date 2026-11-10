@@ -32,6 +32,7 @@ _REMEDIO = {
     bloqueio.LAYOUT: "o site mudou: abra o HTML salvo e ajuste re_produto em sites.py",
     "adiada": "rode de novo mais tarde só com estas keywords",
     "sem_navegador": "reabra o Chrome: python abrir_perfil.py",
+    "interrompida": "a coleta foi interrompida: rode de novo só com estas keywords",
 }
 
 
@@ -92,20 +93,26 @@ def main() -> int:
                     pasta_logs=Path(args.logs))
     parcial = Parcial()
     interrompida = False
+    causa_resto = "adiada"  # causa das keywords que nem chegaram a ser tentadas
+    chrome = ChromeLocal()
     try:
-        with ChromeLocal() as chrome:
+        if not chrome.conectar():
+            interrompida, causa_resto = True, "sem_navegador"
+            log.error("Não foi possível conectar ao Chrome local.")
+        else:
             coletar_site(chrome, site, keywords, opcoes, parcial)
     except KeyboardInterrupt:
-        interrompida = True
+        interrompida, causa_resto = True, "interrompida"
         log.warning("Coleta interrompida — gravando o que já foi coletado.")
     except Exception as exc:  # noqa: BLE001 — o que já foi coletado não se perde
-        interrompida = True
+        interrompida, causa_resto = True, "interrompida"
         log.error("Coleta abortada: %s", exc)
+    finally:
+        chrome.fechar()
     registros, cobertura = parcial.registros, parcial.cobertura
 
     # Keyword que nem chegou a ser tentada também é "não observada".
     tentadas = {c["keyword"] for c in cobertura}
-    causa_resto = "adiada" if cobertura else "sem_navegador"
     for keyword in keywords:
         if keyword not in tentadas:
             cobertura.append({
