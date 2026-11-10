@@ -6,8 +6,9 @@ ocultos e em JSON de estado. Decidir bloqueio por ``"texto" in html`` descarta
 páginas cheias de produto. Aqui a ordem é:
 
   1. a URL é de login/verificação  -> gate, sem discussão;
-  2. a página tem links de produto -> é resultado, ignore qualquer frase;
-  3. só então status, tamanho e frases decidem a causa.
+  2. a página tem links de produto -> é resultado, ignore qualquer frase
+     (com poucos links, só HTTP 403/429 ou página de antibot derrubam);
+  3. só então tamanho e frases decidem a causa.
 
 As causas nunca têm a mesma cara, porque o conserto de cada uma é diferente.
 """
@@ -48,6 +49,8 @@ _RE_VAZIA = re.compile(
     r"|n[aã]o h[aá] (?:an[uú]ncios|produtos)|sem resultados para",
     re.I,
 )
+
+_RE_URL_CAPTCHA = re.compile(r"captcha", re.I)
 
 # Página de bloqueio do Akamai e afins tem poucas centenas de bytes.
 _TAMANHO_MINIMO = 1024
@@ -97,6 +100,8 @@ def diagnosticar(
     html = html or ""
 
     if site.re_url_gate and url and site.re_url_gate.search(url):
+        if _RE_URL_CAPTCHA.search(url):
+            return Veredito(CAPTCHA, f"URL de CAPTCHA: {url}")
         return Veredito(LOGIN, f"URL de login/verificação: {url}")
 
     n = len(ids_de_produto(html, site))
@@ -105,23 +110,40 @@ def diagnosticar(
 
     if status in (403, 429):
         return Veredito(BLOQUEIO, f"HTTP {status}", n)
+    # "Sem resultado" vem antes do tamanho e das frases: uma busca vazia pode
+    # ser pequena e trazer "faça login" no cabeçalho, e não é bloqueio.
+    if not n and _RE_VAZIA.search(html):
+        return Veredito(VAZIA, "o site informa que não há resultado", n)
     tamanho = len(html.encode("utf-8"))
     if tamanho < _TAMANHO_MINIMO:
         return Veredito(BLOQUEIO, f"página com {tamanho} bytes", n)
     if _RE_BLOQUEIO.search(html):
         return Veredito(BLOQUEIO, "página de bloqueio do antibot", n)
+    if n:
+        # Há produto e nenhuma evidência de negação: busca curta. Frase de
+        # login ou de CAPTCHA solta no HTML não desfaz isso.
+        return Veredito(OK, f"{n} produtos distintos (busca curta)", n)
     if _RE_CAPTCHA.search(html):
         return Veredito(CAPTCHA, "desafio de CAPTCHA na página", n)
     if _RE_LOGIN.search(html):
         return Veredito(LOGIN, "página pede login e não tem produto", n)
-    if _RE_VAZIA.search(html):
-        return Veredito(VAZIA, "o site informa que não há resultado", n)
-    if n:
-        # Poucos produtos e nenhuma evidência contrária: busca curta, não bloqueio.
-        return Veredito(OK, f"{n} produtos distintos (busca curta)", n)
     return Veredito(
         LAYOUT,
         "página carregou sem nenhum link de produto reconhecido — "
         "o site mudou ou a regex de produto não serve",
         0,
+    )
+
+
+def pdp_negado(html: Optional[str], status: Optional[int] = None) -> bool:
+    """True se a página de PRODUTO veio negada (403/429, toco ou antibot).
+
+    Sem isto, um PDP bloqueado vira "vendedor não informado" em silêncio e a
+    coleta segue abrindo PDPs contra uma sessão já marcada.
+    """
+    html = html or ""
+    return (
+        status in (403, 429)
+        or len(html.encode("utf-8")) < _TAMANHO_MINIMO
+        or bool(_RE_BLOQUEIO.search(html))
     )

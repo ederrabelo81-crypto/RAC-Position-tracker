@@ -13,8 +13,9 @@ Nada aqui depende de serviço pago, proxy ou banco de dados.
 
 - Se você está dentro do repositório de origem (existe `scrapers/local_browser.py`),
   use os módulos do repositório. O kit é um derivado enxuto deles.
-- Se a máquina é um servidor em nuvem, pare e avise: IP de datacenter é negado
-  pelos antibots antes de qualquer outra coisa. A coleta precisa de IP residencial.
+- Se a máquina é um servidor em nuvem, pare e avise: IP de datacenter tende a
+  ser negado pelos antibots antes de qualquer outra coisa. A coleta foi pensada
+  para IP residencial.
 
 ## Fluxo
 
@@ -29,7 +30,9 @@ Nada aqui depende de serviço pago, proxy ou banco de dados.
 4. **Ler a cobertura** — ao lado do CSV sai um `.cobertura.json`. Código de saída
    2 significa que alguma keyword não foi observada. Trate antes de seguir.
 5. **Buy box** — a busca quase nunca diz quem vende. Use `--buy-box N` para abrir
-   a página dos N primeiros produtos. Dimensione: cada produto é uma navegação.
+   a página dos N primeiros produtos de cada página de resultado. Dimensione:
+   cada produto é uma navegação. Se uma página de produto vier negada, a leitura
+   para e a cobertura diz isso.
 6. **Agendar** — só depois de alguns dias estáveis. Ver
    `references/agendamento-windows.md`.
 
@@ -39,8 +42,10 @@ mexer em qualquer site.
 
 ## Quando a coleta volta sem dado
 
-O kit grava o HTML da página em `logs/` com a causa no nome do arquivo. Abra o
-arquivo antes de propor conserto; não adivinhe.
+Para `login`, `captcha`, `bloqueio` e `layout`, o kit grava o HTML da página em
+`logs/` com a causa no nome do arquivo (o caminho está na cobertura). Abra o
+arquivo antes de propor conserto; não adivinhe. `vazia`, `adiada` e
+`sem_navegador` não têm HTML: a explicação está no `detalhe` da cobertura.
 
 | Causa | O que é | Conserto |
 |---|---|---|
@@ -97,4 +102,6 @@ cada uma está em `references/regras-de-dado.md`.
 - **Marcas:** edite `MARCAS` em `kit/rac_kit/texto.py` (nome composto antes do
   simples).
 - O kit entrega posição, título, link, id e patrocinado de forma estrutural. O
-  preço lido do card é heurístico; para preço e vendedor confiáveis, use o PDP.
+  preço lido do card é heurístico e o kit **não lê preço na página do produto**
+  (o `--buy-box` lê só o vendedor). Preço auditável exige estender
+  `ler_buy_box` em `kit/rac_kit/extracao.py` para ler também o JSON-LD do PDP.

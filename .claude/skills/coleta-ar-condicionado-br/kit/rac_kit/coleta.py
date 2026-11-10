@@ -13,6 +13,7 @@ Três regras moldam este arquivo:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
 import re
@@ -62,7 +63,9 @@ class Parcial:
 
 
 def _slug(texto: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", texto.lower()).strip("_")[:40] or "kw"
+    """Nome de arquivo seguro e ÚNICO por keyword (o hash evita colisão)."""
+    legivel = re.sub(r"[^a-z0-9]+", "_", texto.lower()).strip("_")[:40] or "kw"
+    return f"{legivel}_{hashlib.sha1(texto.encode('utf-8')).hexdigest()[:6]}"
 
 
 def _gravar_evidencia(html: str, causa: str, site: Site, keyword: str,
@@ -95,11 +98,12 @@ def _esperar_captcha(aba: Any, site: Site, opcoes: Opcoes) -> bloqueio.Veredito:
         "CAPTCHA em %s — resolva na janela do Chrome (até %s s).",
         site.nome, opcoes.espera_captcha,
     )
-    restante = opcoes.espera_captcha
+    restante = float(opcoes.espera_captcha)
     veredito = bloqueio.Veredito(bloqueio.CAPTCHA, "desafio de CAPTCHA na página")
     while restante > 0:
-        opcoes.dormir(5)
-        restante -= 5
+        passo = min(5.0, restante)
+        opcoes.dormir(passo)
+        restante -= passo
         veredito = bloqueio.diagnosticar(aba.content(), site, aba.url)
         if veredito.causa != bloqueio.CAPTCHA:
             break
@@ -107,30 +111,42 @@ def _esperar_captcha(aba: Any, site: Site, opcoes: Opcoes) -> bloqueio.Veredito:
 
 
 def _resolver_buy_box(chrome: Any, cards: List[Dict[str, Any]], referer: str,
-                      opcoes: Opcoes) -> None:
-    """Abre o PDP dos primeiros cards sem vendedor e grava quem vende."""
-    alvos = [c for c in cards if not c.get("seller")][: opcoes.buy_box]
+                      opcoes: Opcoes) -> Optional[str]:
+    """Abre o PDP dos N primeiros cards e grava quem vende.
+
+    Returns:
+        None se correu bem, ou uma frase dizendo por que a leitura parou
+        (PDP negado, Chrome fechado) — ela vai para a cobertura, para um PDP
+        bloqueado não virar "vendedor não informado" em silêncio.
+    """
+    alvos = cards[: opcoes.buy_box]
     if not alvos:
-        return
+        return None
     aba = chrome.nova_aba()
     if aba is None:
-        return
+        return "buy box não lida: o Chrome não abriu a aba"
     try:
-        for card in alvos:
+        for lidos, card in enumerate(alvos):
             try:
-                aba.goto(card["url"], referer=referer,
-                         wait_until="domcontentloaded", timeout=45_000)
+                resposta = aba.goto(card["url"], referer=referer,
+                                    wait_until="domcontentloaded", timeout=45_000)
                 opcoes.dormir(random.uniform(2.0, 5.0))
-                vendedor, fonte = ler_buy_box(aba.content())
+                html = aba.content()
             except Exception as exc:  # noqa: BLE001 — erro do driver
                 if navegador_morreu(exc):
-                    log.warning("Chrome fechado durante a leitura de buy box.")
-                    return
+                    return f"buy box parou após {lidos} PDPs: Chrome fechado"
                 log.debug("PDP %s falhou: %s", card["url"], exc)
                 continue
-            # Sem leitura fica None: produto sem buy box observada não entra
-            # em ranking de vendedor.
-            card["buy_box_seller"], card["fonte_buy_box"] = vendedor, fonte
+            status = resposta.status if resposta is not None else None
+            if bloqueio.pdp_negado(html, status):
+                log.warning("PDP negado (%s) — parando a leitura de buy box.", card["url"])
+                return f"buy box parou após {lidos} PDPs: página de produto negada"
+            vendedor, fonte = ler_buy_box(html)
+            # O rótulo do PDP é a leitura da buy box; sem leitura, o que o
+            # card dizia (se dizia) continua valendo, com a fonte "card".
+            if vendedor:
+                card["buy_box_seller"], card["fonte_buy_box"] = vendedor, fonte
+        return None
     finally:
         try:
             aba.close()
@@ -165,6 +181,8 @@ def coletar_site(
     parcial = parcial if parcial is not None else Parcial()
     registros, cobertura = parcial.registros, parcial.cobertura
     bloqueios_seguidos = 0
+    sem_navegador = False
+    buy_box_ligada = opcoes.buy_box > 0
     aba: Optional[Any] = None
     referer = site.home
 
@@ -177,6 +195,10 @@ def coletar_site(
         })
 
     for indice, keyword in enumerate(keywords):
+        if sem_navegador:
+            for resto in keywords[indice:]:
+                anotar(resto, 1, "sem_navegador", "o Chrome local não respondeu")
+            break
         if bloqueios_seguidos >= opcoes.max_bloqueios:
             for adiada in keywords[indice:]:
                 anotar(adiada, 1, "adiada",
@@ -194,38 +216,58 @@ def coletar_site(
                     aba = chrome.nova_aba()
                     if aba is None:
                         break
+                # O resultado do aquecimento não decide nada aqui: quem diz se
+                # a sessão serve é o diagnóstico da própria busca, logo abaixo.
                 chrome.aquecer(aba, site.home, site.esperar_abck)
                 try:
                     html, url_final, status = _carregar(
                         aba, site.url_busca(keyword, pagina, vistos), referer, opcoes
                     )
+                    veredito = bloqueio.diagnosticar(html, site, url_final, status)
+                    if veredito.causa == bloqueio.CAPTCHA and opcoes.espera_captcha > 0:
+                        veredito = _esperar_captcha(aba, site, opcoes)
+                        html, url_final = aba.content(), aba.url
                 except Exception as exc:  # noqa: BLE001 — erro do driver
-                    if navegador_morreu(exc) and tentativa == 1:
-                        aba = None  # reconecta e tenta a mesma página
-                        continue
+                    if navegador_morreu(exc):
+                        # Chrome fechado nunca é bloqueio: 1ª vez reconecta e
+                        # repete a página; 2ª vez, a coleta fica sem navegador.
+                        aba, veredito = None, None
+                        if tentativa == 1:
+                            continue
+                        break
                     veredito = bloqueio.Veredito(
                         bloqueio.BLOQUEIO, f"navegação falhou: {exc}"
                     )
                     break
-                veredito = bloqueio.diagnosticar(html, site, url_final, status)
-                if veredito.causa == bloqueio.CAPTCHA and opcoes.espera_captcha > 0:
-                    veredito = _esperar_captcha(aba, site, opcoes)
-                    html, url_final = aba.content(), aba.url
                 referer = url_final
                 break
 
             if veredito is None:
                 anotar(keyword, pagina, "sem_navegador", "o Chrome local não respondeu")
-                bloqueios_seguidos = opcoes.max_bloqueios  # sem browser, nada adianta
+                sem_navegador = True
                 break
+
+            cards: List[Dict[str, Any]] = []
+            if veredito.ok:
+                cards = extrair_cards(html, site, referer)
+                if not cards:
+                    # O diagnóstico conta links no HTML bruto; se nenhum virou
+                    # card, a página não é a busca que parecia ser.
+                    veredito = bloqueio.Veredito(
+                        bloqueio.LAYOUT,
+                        "há links de produto no HTML, mas nenhum card foi extraído",
+                    )
 
             if veredito.ok:
                 bloqueios_seguidos = 0
-                cards = extrair_cards(html, site, referer)
-                if opcoes.buy_box > 0:
-                    _resolver_buy_box(chrome, cards, referer, opcoes)
+                detalhe = veredito.detalhe
+                if buy_box_ligada:
+                    parou = _resolver_buy_box(chrome, cards, referer, opcoes)
+                    if parou:
+                        detalhe = f"{detalhe}; {parou}"
+                        buy_box_ligada = False  # não insistir em PDP negado
                 registros.extend(montar_registro(c, site, keyword) for c in cards)
-                anotar(keyword, pagina, bloqueio.OK, veredito.detalhe, len(cards))
+                anotar(keyword, pagina, bloqueio.OK, detalhe, len(cards))
                 vistos += len(cards)
                 log.info("%s | %s p%s: %s produtos", site.nome, keyword, pagina, len(cards))
             elif veredito.causa == bloqueio.VAZIA:

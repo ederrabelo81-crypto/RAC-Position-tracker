@@ -112,24 +112,45 @@ def _iter_jsonld(soup: BeautifulSoup) -> Iterator[Dict[str, Any]]:
                         pilha.append(item[chave])
 
 
+def _e_produto(obj: Dict[str, Any]) -> bool:
+    """True para ``@type`` Product, em qualquer grafia do schema.org.
+
+    Aceita "Product", "https://schema.org/Product" e listas mistas.
+    """
+    tipos = obj.get("@type")
+    tipos = tipos if isinstance(tipos, list) else [tipos]
+    return any(
+        isinstance(t, str) and t.rstrip("/").rsplit("/", 1)[-1] == "Product"
+        for t in tipos
+    )
+
+
 def _oferta_jsonld(obj: Dict[str, Any]) -> Tuple[Optional[float], Optional[str]]:
-    """(preço, vendedor) de um Product do schema.org."""
+    """(preço, vendedor) de um Product do schema.org.
+
+    Com várias ofertas, o vendedor só é devolvido se todas apontarem o mesmo:
+    escolher "a primeira" seria eleger um vencedor que a página não declara.
+    """
     ofertas = obj.get("offers")
-    if isinstance(ofertas, list):
-        ofertas = ofertas[0] if ofertas else None
-    if not isinstance(ofertas, dict):
+    lista = ofertas if isinstance(ofertas, list) else [ofertas]
+    lista = [o for o in lista if isinstance(o, dict)]
+    if not lista:
         return None, None
-    bruto = ofertas.get("price", ofertas.get("lowPrice"))
+    bruto = lista[0].get("price", lista[0].get("lowPrice"))
     preco = parse_price_brazil(str(bruto)) if bruto not in (None, "") else None
-    vendedor = ofertas.get("seller")
-    nome = vendedor.get("name") if isinstance(vendedor, dict) else None
-    return preco, (nome.strip() if isinstance(nome, str) and nome.strip() else None)
+    nomes = set()
+    for oferta in lista:
+        vendedor = oferta.get("seller")
+        nome = vendedor.get("name") if isinstance(vendedor, dict) else None
+        if isinstance(nome, str) and nome.strip():
+            nomes.add(nome.strip())
+    return preco, (nomes.pop() if len(nomes) == 1 else None)
 
 
 def _precos_jsonld(soup: BeautifulSoup, site: Site) -> Dict[str, float]:
     precos: Dict[str, float] = {}
     for obj in _iter_jsonld(soup):
-        if obj.get("@type") not in ("Product", ["Product"]):
+        if not _e_produto(obj):
             continue
         pid = site.id_produto(str(obj.get("url") or ""))
         preco, _ = _oferta_jsonld(obj)
@@ -215,12 +236,16 @@ def ler_buy_box(html: str) -> Tuple[Optional[str], Optional[str]]:
             lixo.extract()
     m = _RE_VENDIDO_POR.search(soup.get_text("\n"))
     if m:
-        nome = re.split(r"\s{2,}|\s[|•]\s", m.group(1).strip())[0].strip(" .")
+        # "Vendido por LojaX e enviado pela Amazon": o nome acaba antes da entrega.
+        nome = re.split(
+            r"\s{2,}|\s[|•]\s|\s+e\s+(?:enviado|entregue)\s+(?:por|pel[ao])\b",
+            m.group(1).strip(), flags=re.I,
+        )[0].strip(" .")
         if nome:
             return nome, "rotulo"
     soup = BeautifulSoup(html or "", "html.parser")
     for obj in _iter_jsonld(soup):
-        if obj.get("@type") in ("Product", ["Product"]):
+        if _e_produto(obj):
             _, nome = _oferta_jsonld(obj)
             if nome:
                 return nome, "json-ld"

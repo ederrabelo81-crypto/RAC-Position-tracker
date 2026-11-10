@@ -28,7 +28,19 @@ A pasta do perfil precisa nascer vazia e nunca mudar de lugar.
 | `COLETA_CHROME_EXE` | detecção automática | caminho do `chrome.exe` |
 | `COLETA_PERFIL_DIR` | `~/.coleta-ac/perfil` | pasta do perfil dedicado |
 | `COLETA_CDP_PORTA` | `9222` | porta de depuração |
-| `COLETA_FECHAR_CHROME` | desligado | `1` fecha o Chrome ao fim |
+| `COLETA_FECHAR_CHROME` | desligado | `1` pede ao Chrome para encerrar ao fim (inclusive um que já estava aberto) |
+
+## Limite de confiança da porta de depuração
+
+Quem alcança a porta controla o Chrome e as contas logadas nele. Por isso:
+
+- a porta só escuta em `127.0.0.1` — nunca a exponha na rede nem por túnel;
+- qualquer programa rodando na mesma máquina, com o mesmo usuário, alcança a
+  porta: use o kit numa máquina em que você confia;
+- o kit restringe as origens aceitas à própria porta local (sem `*`);
+- o kit usa o Chrome que responder na porta configurada e **não confere de
+  qual perfil ele é**. Mantenha essa porta só para o perfil dedicado;
+- use o perfil dedicado só para a coleta, não para navegar em outros sites.
 
 ## Armadilhas
 
@@ -59,7 +71,7 @@ A pasta do perfil precisa nascer vazia e nunca mudar de lugar.
 
 ```
 python kit/abrir_perfil.py --site magalu     # o Chrome abre? o login persiste?
-curl http://127.0.0.1:9222/json/version      # a porta de depuração responde?
+curl http://127.0.0.1:9222/json/version      # a porta responde? (troque 9222 se usar COLETA_CDP_PORTA)
 python kit/coletar.py --site magalu --keyword "ar condicionado" -v
 ```
 

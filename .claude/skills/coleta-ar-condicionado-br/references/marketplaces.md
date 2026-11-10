@@ -24,13 +24,13 @@ bom em cada site e o que já deu errado. Validade: observado até novembro de
   o kit usa a contagem real de itens vistos.
 - O HTML de uma busca normal contém "Para continuar, acesse sua conta" e o
   script `/gz/webdevice`. Um detector por texto já descartou uma coleta inteira
-  de páginas cheias de produto. Só a URL `/gz/account-verification` ou a falta
-  de links de produto indicam gate.
+  de páginas cheias de produto. O que indica gate é a URL (verificação de
+  conta ou login) ou a página sem nenhum link de produto; frase solta não.
 - Verificação de dispositivo: uma vez marcado, toda busca redireciona, e a home
   continua abrindo normalmente — parece "site ok, coletor quebrado". Recarregar
   não resolve. O conserto é logar o perfil.
-- Sessão logada expira a cada poucas semanas. O sintoma é o volume desabar sem
-  zerar. Relogue pelo `abrir_perfil.py`.
+- Sessão logada expira em dias (já foram três vezes em duas semanas). O sintoma
+  é o volume desabar sem zerar: confira a cobertura a cada coleta. Relogue pelo `abrir_perfil.py`.
 - O card só imprime o vendedor quando quer destacar a loja (na prática, loja
   oficial). Card sem vendedor **não** é "terceiro": é não informado.
 - Patrocinado: texto "Patrocinado" ou link de rastreio (`click1.mercadolivre`,

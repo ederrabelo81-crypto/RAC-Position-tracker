@@ -63,7 +63,7 @@ class Site:
 def _busca_ml(keyword: str, pagina: int, vistos: int) -> str:
     # O ML pagina por deslocamento (_Desde_N), e o tamanho da página muda:
     # use a contagem real de itens já vistos, nunca um passo fixo.
-    slug = quote("-".join(keyword.split()))
+    slug = quote("-".join(keyword.split()), safe="")  # "/" não vira pasta
     base = f"https://lista.mercadolivre.com.br/{slug}"
     return base if pagina <= 1 else f"{base}_Desde_{vistos + 1}"
 
@@ -182,11 +182,13 @@ def site_generico(
         O ``Site`` pronto para o coletor.
 
     Raises:
-        ValueError: Se o modelo não tiver ``{q}``.
+        ValueError: Se o modelo não tiver ``{q}`` ou não for http(s).
     """
     if "{q}" not in url_busca:
         raise ValueError("url_busca precisa conter {q} no lugar da keyword")
     partes = urlsplit(url_busca.replace("{q}", "x").replace("{pagina}", "1"))
+    if partes.scheme not in ("http", "https") or not partes.netloc:
+        raise ValueError("url_busca precisa começar com http:// ou https://")
     home = f"{partes.scheme}://{partes.netloc}/"
 
     def _busca(keyword: str, pagina: int, vistos: int) -> str:

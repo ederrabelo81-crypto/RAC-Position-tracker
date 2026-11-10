@@ -38,8 +38,9 @@ _REMEDIO = {
 def _keywords(args: argparse.Namespace) -> List[str]:
     lista = list(args.keyword or [])
     if args.keywords_arquivo:
-        linhas = Path(args.keywords_arquivo).read_text(encoding="utf-8").splitlines()
-        lista += [l.strip() for l in linhas if l.strip() and not l.startswith("#")]
+        # utf-8-sig: o Bloco de Notas grava BOM, que colaria na 1ª keyword.
+        linhas = Path(args.keywords_arquivo).read_text(encoding="utf-8-sig").splitlines()
+        lista += [l.strip() for l in linhas if l.strip() and not l.strip().startswith("#")]
     return list(dict.fromkeys(lista))
 
 
@@ -75,8 +76,14 @@ def main() -> int:
     keywords = _keywords(args)
     if not keywords:
         parser.error("informe --keyword ou --keywords-arquivo")
-    site = (SITES[args.site] if args.site
-            else site_generico(args.url_busca, args.nome, args.re_produto))
+    if args.url_busca and args.paginas > 1 and "{pagina}" not in args.url_busca:
+        parser.error("--paginas maior que 1 exige {pagina} em --url-busca "
+                     "(sem isso a página 1 seria coletada de novo)")
+    try:
+        site = (SITES[args.site] if args.site
+                else site_generico(args.url_busca, args.nome, args.re_produto))
+    except ValueError as exc:
+        parser.error(str(exc))
     if site.requer_login:
         log.info("%s exige conta logada no perfil (abrir_perfil.py --site %s).",
                  site.nome, site.chave)

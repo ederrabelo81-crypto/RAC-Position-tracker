@@ -106,14 +106,15 @@ def achar_chrome() -> Optional[str]:
 def argumentos_chrome(porta: int, perfil: Path, url: Optional[str] = None) -> List[str]:
     """Argumentos do Chrome COMUM — nenhum deles é flag de automação.
 
-    ``--remote-allow-origins=*`` é exigido pelo Chrome 111+ para aceitar a
-    conexão. ``--restore-last-session`` fica de fora de propósito: é um switch
+    ``--remote-allow-origins`` lista só a própria porta local. O curinga ``*``
+    desligaria a checagem de origem do DevTools: qualquer página aberta nesse
+    Chrome poderia tentar controlar as contas logadas. ``--restore-last-session`` fica de fora de propósito: é um switch
     por presença, e incluí-lo reabriria as abas da sessão anterior.
     """
     args = [
         f"--remote-debugging-port={porta}",
         f"--user-data-dir={perfil}",
-        "--remote-allow-origins=*",
+        f"--remote-allow-origins=http://127.0.0.1:{porta},http://localhost:{porta}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-session-crashed-bubble",
@@ -152,13 +153,13 @@ def abrir_chrome(
             "COLETA_CHROME_EXE com o caminho do executável."
         )
         return None
-    perfil.mkdir(parents=True, exist_ok=True)
     kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if os.name == "nt":
         kwargs["creationflags"] = 0x00000008 | 0x00000200  # destacado
     else:
         kwargs["start_new_session"] = True
     try:
+        perfil.mkdir(parents=True, exist_ok=True)
         return subprocess.Popen([exe] + argumentos_chrome(porta, perfil, url), **kwargs)
     except OSError as exc:
         log.error("Falha ao abrir o Chrome: %s", exc)
@@ -248,6 +249,7 @@ class ChromeLocal:
                     "O Chrome não abriu a porta %s em 20 s. Feche as janelas "
                     "do Chrome que usam este perfil e tente de novo.", self.porta,
                 )
+                self._largar_processo()
                 return False
         else:
             log.info("Reutilizando o Chrome já aberto em %s", endpoint)
@@ -319,8 +321,24 @@ class ChromeLocal:
         return True
 
     def fechar(self) -> None:
-        """Desconecta. O Chrome fica aberto, salvo ``COLETA_FECHAR_CHROME=1``."""
+        """Desconecta. O Chrome fica aberto, salvo ``COLETA_FECHAR_CHROME=1``.
+
+        Com a variável ligada, pede ao próprio Chrome para encerrar
+        (``Browser.close``), para ele gravar cookies e sessão no perfil antes
+        de sair — matar o processo poderia perder o login. Vale também para um
+        Chrome que já estava aberto quando a coleta começou.
+        """
+        if os.getenv("COLETA_FECHAR_CHROME") == "1" and self.vivo():
+            try:
+                self._browser.new_browser_cdp_session().send("Browser.close")  # type: ignore[union-attr]
+                self._processo = None  # saiu sozinho; nada a matar
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Browser.close falhou (%s) — encerrando o processo.", exc)
         self._soltar()
+        self._largar_processo()
+
+    def _largar_processo(self) -> None:
+        """Larga o Chrome que ESTA coleta abriu; encerra-o só se pedido."""
         if self._processo is not None and os.getenv("COLETA_FECHAR_CHROME") == "1":
             try:
                 self._processo.terminate()

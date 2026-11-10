@@ -7,7 +7,7 @@ seu Chrome, a sua conta e a sua internet.
 
 - Windows, macOS ou Linux com Google Chrome instalado
 - Python 3.10 ou mais novo
-- Internet residencial (em servidor de nuvem os sites negam)
+- Internet residencial (em servidor de nuvem os sites tendem a negar)
 
 ## Passo a passo
 

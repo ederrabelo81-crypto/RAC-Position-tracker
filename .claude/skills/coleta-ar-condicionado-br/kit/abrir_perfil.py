@@ -39,6 +39,10 @@ def main() -> int:
             if endpoint_cdp(porta):
                 break
             time.sleep(0.5)
+        else:
+            print(f"O Chrome não abriu a porta {porta} em 20 s. Feche as outras "
+                  "janelas do Chrome que usam este perfil e tente de novo.")
+            return 1
         print(f"Chrome aberto no perfil {perfil}")
 
     print("\n1. Faça login com a sua conta, na janela que abriu.")

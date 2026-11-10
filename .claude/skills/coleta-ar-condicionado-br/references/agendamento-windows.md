@@ -14,6 +14,15 @@ Agende só depois de alguns dias rodando à mão sem bloqueio.
 Modelo em `kit/coletar_turno.bat`. Ele entra na pasta do kit, roda cada site e
 escreve o log **de dentro do .bat**.
 
+O modelo é parcial de propósito — edite-o:
+
+- roda só Mercado Livre, Amazon, Magalu e Casas Bahia. Shopee ficou fora porque
+  a sessão dela vale horas e exige relogar; Leroy, porque preço e vendedor só
+  são confiáveis na página do produto. Acrescente na lista se quiser;
+- vem com `BUYBOX=0`: coleta posição e dados do card, **sem** ler buy box. Para
+  observar a buy box mudar de dono ao longo do dia, ajuste `BUYBOX` (cada
+  unidade é uma página de produto a mais por keyword e por site).
+
 ## Registrar a tarefa
 
 ```

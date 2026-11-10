@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -44,12 +45,15 @@ def montar_registro(
     titulo = card.get("titulo") or ""
     url = card.get("url")
     buy_box = card.get("buy_box_seller") or card.get("seller")
-    identidade = build_identity(
-        platform=site.nome,
-        url=url,
-        title=titulo,
-        marketplace_product_id=card.get("id_produto"),
-    )
+    ids: Dict[str, Any] = {"marketplace_product_id": card.get("id_produto")}
+    par_shopee = re.fullmatch(r"(\d+)\.(\d+)", str(card.get("id_produto") or ""))
+    if site.chave == "shopee" and par_shopee:
+        # Na Shopee o card traz loja.item: o item é o produto, o par é a
+        # oferta (id que o site expõe de verdade) e a loja é o seller.
+        loja, item = par_shopee.groups()
+        ids = {"marketplace_product_id": item, "seller_id": loja,
+               "marketplace_offer_id": f"{loja}_{item}"}
+    identidade = build_identity(platform=site.nome, url=url, title=titulo, **ids)
     return {
         "Data": agora.strftime("%Y-%m-%d"),
         "Turno": get_turno(agora),

@@ -8,7 +8,9 @@ Todas as regras abaixo vieram de um caso assim.
 Uma coleta inteira do Mercado Livre deu zero produto em todas as keywords, com
 Chrome real e IP residencial. As páginas vinham cheias de produto e eram
 descartadas porque o HTML continha uma frase de login — que toda página do site
-contém. Ordem certa: URL de gate → links de produto → só então texto.
+contém. Ordem certa: URL de gate → links de produto → só então texto. Com
+poucos links (busca curta), só HTTP 403/429 ou uma página de antibot desfazem
+o "é resultado".
 
 ## 2. Silêncio não é mercado
 

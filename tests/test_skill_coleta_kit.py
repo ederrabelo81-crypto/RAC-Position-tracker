@@ -162,8 +162,9 @@ class TestNavegador:
         args = " ".join(argumentos_chrome(9222, Path("/tmp/perfil")))
         assert "--remote-debugging-port=9222" in args
         assert "--user-data-dir=" in args
+        # curinga desligaria a checagem de origem da porta de depuração
         for flag in ("enable-automation", "headless", "restore-last-session",
-                     "disable-blink-features"):
+                     "disable-blink-features", "remote-allow-origins=*"):
             assert flag not in args
 
     def test_browser_morto_nao_e_bloqueio(self):
@@ -206,6 +207,12 @@ class TestSites:
         assert loja.id_produto("/ar-midea-12000/p") == "/ar-midea-12000/p"
         with pytest.raises(ValueError):
             site_generico("https://www.loja.com.br/busca")
+        with pytest.raises(ValueError):
+            site_generico("www.loja.com.br/busca?q={q}")  # sem http(s)://
+
+    def test_barra_na_keyword_nao_cria_pasta_na_url_do_ml(self):
+        url = SITES["mercadolivre"].url_busca("ar 9000/12000 btus", 1, 0)
+        assert url.endswith("/ar-9000%2F12000-btus")
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +259,22 @@ class TestDiagnostico:
     ])
     def test_causas_nunca_tem_a_mesma_cara(self, html, status, causa):
         assert bloqueio.diagnosticar(html, self.ml, status=status).causa == causa
+
+    def test_url_de_captcha_da_amazon_e_captcha_nao_login(self):
+        veredito = bloqueio.diagnosticar(
+            "<html>" + "x" * 5000 + "</html>", SITES["amazon"],
+            url="https://www.amazon.com.br/errors/validateCaptcha?x=1")
+        assert veredito.causa == bloqueio.CAPTCHA
+
+    def test_busca_vazia_com_frase_de_login_no_cabecalho_e_vazia(self):
+        html = ("<html><header>Entre na sua conta</header>"
+                '<div class="g-recaptcha"></div>Não encontramos resultados</html>')
+        assert bloqueio.diagnosticar(html, self.ml).causa == bloqueio.VAZIA
+
+    def test_busca_curta_com_frase_de_login_continua_ok(self):
+        html = _serp_ml(2, "<div hidden>Para continuar, acesse sua conta</div>")
+        assert bloqueio.diagnosticar(html, self.ml).ok
+        assert bloqueio.diagnosticar(html, self.ml, status=403).causa == bloqueio.BLOQUEIO
 
     def test_busca_curta_nao_e_bloqueio(self):
         assert bloqueio.diagnosticar(_serp_ml(2), self.ml).ok
@@ -313,6 +336,13 @@ class TestExtracao:
         ('<script type="application/ld+json">{"@type":"Product","offers":'
          '{"price":"10","seller":{"name":"Loja Y"}}}</script>', ("Loja Y", "json-ld")),
         ("<div>Produto indisponível</div>", (None, None)),
+        ("<div>Vendido por Loja X e enviado pela Amazon</div>", ("Loja X", "rotulo")),
+        ('<script type="application/ld+json">{"@type":"https://schema.org/Product",'
+         '"offers":{"price":"10","seller":{"name":"Loja W"}}}</script>', ("Loja W", "json-ld")),
+        # duas ofertas, dois vendedores: a página não declara vencedor
+        ('<script type="application/ld+json">{"@type":["Product","Thing"],"offers":['
+         '{"price":"10","seller":{"name":"A"}},{"price":"9","seller":{"name":"B"}}]}</script>',
+         (None, None)),
     ])
     def test_buy_box_do_pdp(self, html, esperado):
         assert ler_buy_box(html) == esperado
@@ -364,6 +394,13 @@ class TestSaida:
         assert primeiro != segundo and primeiro.exists() and segundo.exists()
         assert primeiro.name == "coleta_amazon_20261110_080530.csv"
         assert len(primeiro.read_text(encoding="utf-8-sig").splitlines()) == 2
+
+    def test_identidade_da_shopee_separa_produto_oferta_e_loja(self):
+        card = {"id_produto": "123456.7890123", "titulo": "Ar Condicionado Split 9000 BTUs",
+                "url": "https://shopee.com.br/Ar-Split-i.123456.7890123", "posicao_geral": 1}
+        r = montar_registro(card, SITES["shopee"], "ar", datetime(2026, 11, 10, 8, 5))
+        assert r["ID Produto Marketplace"] == "7890123"
+        assert "123456_7890123" in r["Offer Key"]
 
     def test_buy_box_do_pdp_leva_a_fonte(self):
         r = self._registro(buy_box_seller="Loja Z", fonte_buy_box="rotulo")
@@ -433,8 +470,39 @@ def _opcoes(tmp_path, **kw):
     return Opcoes(pasta_logs=tmp_path, dormir=lambda s: None, espera_captcha=0, **kw)
 
 
+_PDP_OK = "<html><div>Vendido por <b>Loja Teste Ar</b></div>" + "<p>x</p>" * 200 + "</html>"
+
+
 class TestColeta:
     ml = SITES["mercadolivre"]
+
+    def test_pdp_negado_para_a_leitura_e_vai_para_a_cobertura(self, tmp_path):
+        def roteiro(url):
+            if "/p/MLB" in url:
+                return "<html>Access Denied</html>", 403
+            return _serp_ml(6), 200
+
+        chrome = _ChromeFalso(roteiro)
+        registros, cobertura = coletar_site(
+            chrome, self.ml, ["a", "b"], _opcoes(tmp_path, buy_box=3))
+        assert len(registros) == 12 and not any(r["Buy Box Seller"] for r in registros)
+        assert "página de produto negada" in cobertura[0]["detalhe"]
+        pdps = [u for u, _ in chrome.visitas if "/p/MLB" in u]
+        assert len(pdps) == 1  # parou no 1º e não tentou de novo na keyword seguinte
+
+    def test_chrome_fechado_duas_vezes_e_sem_navegador_nao_bloqueio(self, tmp_path):
+        morto = Exception("Target page, context or browser has been closed")
+        chrome = _ChromeFalso(lambda url: morto)
+        _, cobertura = coletar_site(chrome, self.ml, ["a", "b", "c"], _opcoes(tmp_path))
+        assert [c["causa"] for c in cobertura] == ["sem_navegador"] * 3
+
+    def test_link_so_em_script_nao_passa_como_busca_ok(self, tmp_path):
+        falsos = "".join(
+            f'<script>var x = \'<a href="/p/MLB{2000000 + i}">\';</script>' for i in range(8))
+        html = f"<html><body>{falsos}{'<p>x</p>' * 300}</body></html>"
+        chrome = _ChromeFalso(lambda url: (html, 200))
+        registros, cobertura = coletar_site(chrome, self.ml, ["a"], _opcoes(tmp_path))
+        assert registros == [] and cobertura[0]["causa"] == "layout"
 
     def test_coleta_e_pagina(self, tmp_path):
         chrome = _ChromeFalso(lambda url: (_serp_ml(6), 200))
@@ -455,7 +523,11 @@ class TestColeta:
         assert [c["causa"] for c in cobertura] == ["bloqueio"] * 3 + ["adiada"] * 3
         assert len(chrome.visitas) == 3  # parou de bater no site
         evidencia = Path(cobertura[0]["evidencia"])
-        assert evidencia.name == "bloqueio_mercadolivre_kw_0_p1.html" and evidencia.exists()
+        assert re.fullmatch(r"bloqueio_mercadolivre_kw_0_[0-9a-f]{6}_p1\.html", evidencia.name)
+        assert evidencia.exists()
+        # keywords longas com o mesmo começo não dividem o mesmo arquivo
+        from rac_kit.coleta import _slug
+        assert _slug("x" * 50 + " a") != _slug("x" * 50 + " b")
 
     def test_chrome_fechado_reconecta_em_vez_de_perder_a_keyword(self, tmp_path):
         chamadas = []
@@ -474,7 +546,7 @@ class TestColeta:
     def test_buy_box_abre_pdp_e_grava_quem_vende(self, tmp_path):
         def roteiro(url):
             if "/p/MLB" in url:
-                return "<div>Vendido por <b>Loja Teste Ar</b></div>", 200
+                return _PDP_OK, 200
             return _serp_ml(6), 200
 
         chrome = _ChromeFalso(roteiro)
