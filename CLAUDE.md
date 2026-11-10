@@ -103,6 +103,9 @@ python utils/session_grabber.py --site shopee
 > com a ordenação "Mais vendidos" **confirmada** (rótulo selecionado na tela ou
 > parâmetro que o próprio site escreveu na URL); sem confirmação não grava nada
 > (regra das duas referências). Sem `seller` — o DOM não traz `sellers[]`.
+> **Exige `RAC_LOCAL_CHROME=1`** (ou `RAC_CDP_URL`): sem Chrome real a fonte cai
+> no replay VTEX via curl_cffi, que falha com "API VTEX respondeu HTTP 200
+> (CT=text/html)" — o remédio é ligar o Chrome local, não recapturar sessão.
 
 A coleta de OFERTA mede preço, posição e buy box; ela **não contém volume de
 venda**. As listas "Mais Vendidos" dos varejistas são a **única variável de

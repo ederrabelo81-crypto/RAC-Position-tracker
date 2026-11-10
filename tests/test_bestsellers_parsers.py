@@ -661,7 +661,9 @@ class TestCasasBahiaParser:
         assert itens[0].url_produto.startswith("https://www.casasbahia.com.br/")
 
     def test_resposta_html_vira_erro_de_bloqueio(self, fonte):
-        """HTML no lugar de JSON é desafio do Akamai — não lista curta."""
+        """HTML no lugar de JSON é erro, não lista curta. Desde Nov/2026 a
+        causa é a saída da VTEX (a API devolve a vitrine), e a mensagem manda
+        ligar o Chrome local em vez de recapturar sessão."""
         class _Resposta:
             status_code = 200
             headers = {"content-type": "text/html; charset=utf-8"}
@@ -673,7 +675,7 @@ class TestCasasBahiaParser:
             def get(self, *_a, **_k):
                 return _Resposta()
 
-        with pytest.raises(RuntimeError, match="Akamai"):
+        with pytest.raises(RuntimeError, match="RAC_LOCAL_CHROME=1"):
             fonte._consultar(_Sessao(), {"query": "ar condicionado"}, 1)
 
     def test_coleta_via_browser_quando_chrome_real(self, fonte):
@@ -1435,6 +1437,81 @@ class TestCasasBahiaVitrine:
         itens, motivo = fonte._coletar_via_vitrine()
         assert itens == []
         assert "ordenação" in motivo
+
+    @pytest.mark.parametrize("url, esperado", [
+        ("https://x/busca?q=ar&ordenacao=maisvendidos", True),
+        ("https://x/busca?q=ar&sortBy=bestSellers", True),
+        ("https://x/busca?q=ar+vendas", False),          # termo buscado, não sort
+        ("https://x/busca?utm=sold&q=ar", False),        # parâmetro alheio
+        ("https://x/busca?ordenacao=menorpreco", False),
+    ])
+    def test_url_so_prova_com_parametro_de_ordenacao(self, url, esperado):
+        from bestsellers.sources.casas_bahia import url_ordenada_por_vendas
+
+        assert url_ordenada_por_vendas(url) is esperado
+
+    def test_aplicar_nao_aceita_relevancia_sem_confirmacao(self, fonte, monkeypatch):
+        """O helper real: escolher a opção não basta, a tela tem que confirmar."""
+        selecionado = {"rotulo": "Relevância"}
+
+        class _Opcoes:
+            def all_inner_texts(self):
+                return ["Relevância", "Mais vendidos", "Menor preço"]
+
+        class _Select:
+            def __init__(self, aplica):
+                self.aplica = aplica
+
+            def locator(self, sel):
+                return _Opcoes()
+
+            def select_option(self, label=None):
+                if self.aplica:
+                    selecionado["rotulo"] = label
+
+        class _Selects:
+            def __init__(self, aplica):
+                self.aplica = aplica
+
+            def count(self):
+                return 1
+
+            def nth(self, i):
+                return _Select(self.aplica)
+
+        class _Vazio:
+            first = property(lambda self: self)
+
+            def is_visible(self, timeout=None):
+                return False
+
+        class _Pagina:
+            url = "https://www.casasbahia.com.br/busca?q=ar+condicionado"
+
+            def __init__(self, aplica):
+                self.aplica = aplica
+
+            def locator(self, sel):
+                return _Selects(self.aplica) if sel == "select" else _Vazio()
+
+            def evaluate(self, js):
+                return selecionado["rotulo"] == "Mais vendidos"
+
+            def wait_for_load_state(self, *a, **k):
+                pass
+
+            def wait_for_timeout(self, ms):
+                pass
+
+            class keyboard:
+                @staticmethod
+                def press(k):
+                    pass
+
+        # o site ignora a escolha (continua em Relevância) → não confirma
+        assert fonte._aplicar_mais_vendidos(_Pagina(aplica=False)) is False
+        # o site aplica a escolha → confirma pela tela
+        assert fonte._aplicar_mais_vendidos(_Pagina(aplica=True)) is True
 
     def test_ordenacao_pela_tela_grava_com_marcador(self, fonte, monkeypatch, tmp_path):
         from bestsellers.sources.casas_bahia import MARCADOR_ORDENACAO_UI

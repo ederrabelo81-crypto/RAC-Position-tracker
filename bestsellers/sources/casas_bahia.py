@@ -22,7 +22,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from bs4 import BeautifulSoup, Tag
 from loguru import logger
@@ -49,12 +49,29 @@ _TIMEOUT = 10
 # é a VITRINE no Chrome real, ordenada por "Mais vendidos".
 _RE_MAIS_VENDIDOS = re.compile(r"mais\s+vendid", re.I)
 
-# URL que prova a ordenação por vendas (parâmetro na query, em qualquer grafia
-# conhecida). Sem um destes, a ordenação só vale com o rótulo selecionado na
-# tela — ver `_ordenacao_confirmada`.
-_RE_URL_ORDENADA = re.compile(
-    r"mais.?vendid|orders_desc|best.?sell|top.?sell|sold|vendas", re.I
+# URL que prova a ordenação por vendas: um parâmetro DE ORDENAÇÃO (nome na
+# lista branca) cujo valor tem semântica de venda. Valor solto em outro
+# parâmetro (ex.: o termo buscado) não prova nada. Sem isto, a ordenação só
+# vale com o rótulo selecionado na tela — ver `_ordenacao_confirmada`.
+_PARAMS_ORDENACAO = frozenset({
+    "ordenacao", "ordenar", "ordem", "sort", "sortby", "sort_by", "order",
+    "orderby", "order_by",
+})
+_RE_VALOR_VENDAS = re.compile(
+    r"mais.?vendid|orders?_desc|best.?sell|top.?sell|sold|sales|vendas", re.I
 )
+
+
+def url_ordenada_por_vendas(url: str) -> bool:
+    """True se a query tem parâmetro de ordenação com valor de vendas."""
+    try:
+        query = urlsplit(url or "").query
+    except ValueError:
+        return False
+    return any(
+        nome.lower() in _PARAMS_ORDENACAO and _RE_VALOR_VENDAS.search(valor)
+        for nome, valor in parse_qsl(query, keep_blank_values=True)
+    )
 
 # Marcador do endpoint quando a ordenação foi confirmada pelo rótulo da tela
 # (a URL não carrega parâmetro). Está em `parametros_ordenacao` da fonte, então
@@ -338,7 +355,7 @@ class CasasBahiaBestSellers(BestSellerSource):
                 url = page.url or ""
             except Exception:
                 url = ""
-            if "?" in url and _RE_URL_ORDENADA.search(url.split("?", 1)[1]):
+            if url_ordenada_por_vendas(url):
                 return True
         try:
             return bool(page.evaluate(
@@ -410,9 +427,7 @@ class CasasBahiaBestSellers(BestSellerSource):
                         # Link que sai da busca (menu "Mais vendidos" do site)
                         # não é a ordenação — só aceita link na mesma rota.
                         href = el.get_attribute("href") or ""
-                        if href and not (
-                            _RE_URL_ORDENADA.search(href) and "?" in href
-                        ):
+                        if href and not url_ordenada_por_vendas(href):
                             continue
                         el.click(timeout=4_000)
                         self._esperar_recarga(page)
@@ -556,8 +571,9 @@ class CasasBahiaBestSellers(BestSellerSource):
             # HTML aqui = página de desafio do Akamai, não lista curta.
             raise RuntimeError(
                 f"API VTEX respondeu HTTP {resposta.status_code} (CT={tipo[:40]}) "
-                "— bloqueio Akamai. Sem proxy BR, re-capture a sessão: "
-                "python utils/session_grabber.py --site casasbahia"
+                "— a Casas Bahia saiu da VTEX (Nov/2026) e esta API devolve a "
+                "vitrine em HTML. Rode com RAC_LOCAL_CHROME=1: a coleta lê a "
+                "vitrine ordenada no Chrome local."
             )
 
         dados = resposta.json()
