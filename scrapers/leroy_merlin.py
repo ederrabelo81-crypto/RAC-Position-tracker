@@ -52,6 +52,7 @@ from utils.leroy_ads import (
     extract_sponsored,
     fill_serp_template,
     is_not_found_page,
+    is_search_results_url,
     leroy_product_id,
     serp_url_template,
 )
@@ -380,8 +381,19 @@ class LeroyMerlinScraper(BaseScraper):
 
     @staticmethod
     def _build_url(keyword: str, page: int = 1) -> str:
+        """URL da página de busca.
+
+        Formato de 10/11/2026, copiado das sugestões do campo de busca do
+        próprio site: ``/search?term=<kw>&searchTerm=<kw>&searchType=default``.
+        O antigo ``/busca?term=<kw>`` abre "não localizamos a página
+        pesquisada". A paginação (``&page=N``) não foi confirmada na tela — a
+        busca orgânica pagina pela Algolia, não por esta URL.
+        """
         encoded = quote_plus(keyword)
-        base = f"https://www.leroymerlin.com.br/busca?term={encoded}"
+        base = (
+            f"https://www.leroymerlin.com.br/search?term={encoded}"
+            f"&searchTerm={encoded}&searchType=default"
+        )
         return f"{base}&page={page}" if page > 1 else base
 
     # ------------------------------------------------------------------
@@ -1792,10 +1804,13 @@ class LeroyMerlinScraper(BaseScraper):
         except Exception as exc:
             logger.warning(f"[{self.platform_name}] Busca pelo campo do site falhou: {exc}")
             return False
-        if is_not_found_page(self._html_da_aba(page)):
+        if is_not_found_page(self._html_da_aba(page)) or not is_search_results_url(page.url):
+            # Inclui a HOME (dump de 10/11/2026): a prateleira de patrocinados
+            # dela seria gravada como anúncio da keyword.
             logger.error(
-                f"[{self.platform_name}] Busca pelo campo do site também caiu na "
-                f"página de erro ({page.url}) — patrocinados da busca desligados no run"
+                f"[{self.platform_name}] Busca pelo campo do site não chegou aos "
+                f"resultados (foi parar em {page.url}) — patrocinados da busca "
+                f"desligados no run"
             )
             self._serp_busca_quebrada = True
             return False
@@ -1832,10 +1847,11 @@ class LeroyMerlinScraper(BaseScraper):
                 self._pdp_local_page = None
             logger.debug(f"[{self.platform_name}] Patrocinados: navegação falhou ({exc})")
             return False
-        if not is_not_found_page(self._html_da_aba(page)):
+        if is_search_results_url(page.url) and not is_not_found_page(self._html_da_aba(page)):
             return True
         logger.info(
-            f"[{self.platform_name}] {url} abriu a página de erro — buscando pelo campo do site"
+            f"[{self.platform_name}] {url} não abriu os resultados (está em "
+            f"{page.url}) — buscando pelo campo do site"
         )
         self._serp_template = None
         return self._buscar_pelo_campo(page, keyword)
