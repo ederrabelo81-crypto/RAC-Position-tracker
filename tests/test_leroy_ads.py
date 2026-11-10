@@ -263,3 +263,113 @@ class TestSovSeparaPdp:
         pdp, busca = app._split_anuncios_pdp(df)
         assert len(pdp) == 2
         assert busca["keyword"].tolist() == ["ar condicionado"]
+
+
+# --- URL de busca quebrada (10/11/2026) -------------------------------------
+from utils.leroy_ads import fill_serp_template, is_not_found_page, serp_url_template
+
+# Trecho real do dump do PC coletor (busca por /busca?term=ar+condicionado).
+ERRO_REAL = """<div class="not-found-notice">
+      <h4 class="heading-4">
+        Desculpe, não localizamos <br> a página pesquisada.
+      </h4></div>"""
+
+
+class TestUrlDeBusca:
+    def test_pagina_de_erro_real(self):
+        assert is_not_found_page(ERRO_REAL)
+        assert is_not_found_page("<h4>Desculpe, não localizamos <br> a página</h4>")
+        assert not is_not_found_page(SERP)
+        assert not is_not_found_page(None)
+
+    @pytest.mark.parametrize("url,molde", [
+        ("https://www.leroymerlin.com.br/search?q=ar+condicionado&p=1",
+         "https://www.leroymerlin.com.br/search?q={kw}&p=1"),
+        ("https://www.leroymerlin.com.br/busca/ar-condicionado",
+         "https://www.leroymerlin.com.br/busca/{kw}"),
+        ("https://www.leroymerlin.com.br/s?term=ar%20condicionado",
+         "https://www.leroymerlin.com.br/s?term={kw}"),
+    ])
+    def test_molde_aprendido(self, url, molde):
+        assert serp_url_template(url, "ar condicionado") == molde
+
+    def test_termo_fora_da_url_nao_vira_molde(self):
+        assert serp_url_template("https://www.leroymerlin.com.br/busca", "ar condicionado") is None
+
+    def test_preenche_molde(self):
+        assert fill_serp_template("https://x/search?q={kw}", "ar split 12000") == \
+            "https://x/search?q=ar+split+12000"
+        assert fill_serp_template("https://x/busca/{kw}", "Ar Split 12000") == \
+            "https://x/busca/ar-split-12000"
+
+
+class _CampoFalso:
+    def __init__(self, aba: "_AbaFalsa") -> None:
+        self.aba, self.texto = aba, ""
+
+    @property
+    def first(self):
+        return self
+
+    def count(self) -> int:
+        return 1
+
+    def click(self, **_kw) -> None:
+        pass
+
+    def fill(self, texto: str, **_kw) -> None:
+        self.texto = texto
+
+    def press(self, _tecla: str) -> None:
+        from urllib.parse import quote_plus
+        self.aba.url = f"https://www.leroymerlin.com.br/search?q={quote_plus(self.texto)}"
+
+
+class _AbaFalsa:
+    """Aba em que `/busca?term=` dá a página de erro e o campo leva a /search?q=."""
+
+    def __init__(self) -> None:
+        self.url, self.visitas = "about:blank", []
+
+    def goto(self, url: str, **_kw) -> None:
+        self.url = url
+        self.visitas.append(url)
+
+    def content(self) -> str:
+        return ERRO_REAL if "/busca?term=" in self.url else SERP
+
+    def locator(self, _sel: str) -> _CampoFalso:
+        return _CampoFalso(self)
+
+    def wait_for_url(self, *_a, **_kw) -> None:
+        pass
+
+    def wait_for_load_state(self, *_a, **_kw) -> None:
+        pass
+
+    def wait_for_timeout(self, *_a) -> None:
+        pass
+
+
+class TestAbrirBusca:
+    def test_cai_no_campo_e_aprende_a_url(self, scraper):
+        aba = _AbaFalsa()
+        assert scraper._abrir_busca(aba, "ar condicionado")
+        assert scraper._serp_template == "https://www.leroymerlin.com.br/search?q={kw}"
+        # Próxima keyword vai direto pelo molde, sem passar pela URL quebrada.
+        assert scraper._abrir_busca(aba, "ar split")
+        assert aba.visitas[-1] == "https://www.leroymerlin.com.br/search?q=ar+split"
+
+    def test_erro_tambem_no_campo_desliga_no_run(self, scraper):
+        aba = _AbaFalsa()
+        aba.content = lambda: ERRO_REAL  # type: ignore[method-assign]
+        assert not scraper._abrir_busca(aba, "ar condicionado")
+        assert scraper._serp_busca_quebrada
+        assert not scraper._abrir_busca(aba, "outra")
+
+    def test_patrocinados_da_busca_pela_url_aprendida(self, scraper):
+        """Ponta a ponta: URL antiga dá erro, o campo acha os resultados e a
+        prateleira de patrocinados é lida (antes voltava vazio em silêncio)."""
+        scraper._page = _AbaFalsa()
+        itens = scraper._patrocinados_serp("ar condicionado")
+        assert [i.product_id for i in itens] == ["91000001", "91000002"]

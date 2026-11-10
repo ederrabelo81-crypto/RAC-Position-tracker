@@ -32,7 +32,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
-from urllib.parse import urljoin
+from urllib.parse import quote, quote_plus, urljoin
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
@@ -43,6 +43,9 @@ __all__ = [
     "SPONSORED_LABEL_PATTERN",
     "extract_sponsored",
     "leroy_product_id",
+    "is_not_found_page",
+    "serp_url_template",
+    "fill_serp_template",
 ]
 
 _BASE_URL = "https://www.leroymerlin.com.br/"
@@ -317,3 +320,79 @@ def extract_sponsored(html: Optional[str], base_url: str = _BASE_URL) -> List[Sp
             price=_price_of(card),
         ))
     return itens
+
+
+# --- URL da busca (Nov/2026) --------------------------------------------------
+# Em 10/11/2026 ``/busca?term=<kw>`` passou a abrir a página de erro da Leroy
+# ("Desculpe, não localizamos a página pesquisada") — a coleta orgânica não
+# notou porque sai da Algolia. O formato novo não estava em lugar nenhum do
+# HTML, então o scraper busca pelo campo do próprio site e aprende a URL que o
+# site gerar (``serp_url_template``), em vez de fixar outro formato de memória.
+
+_NOT_FOUND_MARKERS = (
+    "não localizamos a página",
+    "nao localizamos a pagina",
+    "página não encontrada",
+    "pagina nao encontrada",
+)
+
+
+def is_not_found_page(html: Optional[str]) -> bool:
+    """A página é o "não localizamos a página pesquisada" da Leroy?
+
+    Args:
+        html: HTML renderizado (``page.content()``) ou texto da página.
+
+    Returns:
+        True quando algum marcador da página de erro aparece.
+    """
+    if not html:
+        return False
+    bruto = html.lower()
+    if "not-found-notice" in bruto:  # bloco da página de erro (10/11/2026)
+        return True
+    # A frase vem quebrada por tag: "não localizamos <br> a página pesquisada".
+    texto = " ".join(re.sub(r"<[^>]+>", " ", bruto).split())
+    return any(m in texto for m in _NOT_FOUND_MARKERS)
+
+
+_KW_PLACEHOLDER = "{kw}"
+
+
+def serp_url_template(url: str, keyword: str) -> Optional[str]:
+    """Molde de URL de busca a partir de uma URL que o site gerou.
+
+    Troca o termo buscado (em qualquer das codificações usuais) por ``{kw}``.
+
+    Args:
+        url: URL da página de resultados, como o site a escreveu.
+        keyword: termo digitado no campo de busca.
+
+    Returns:
+        O molde, ou None quando o termo não aparece na URL (aí não há o que
+        aprender — a próxima keyword volta a usar o campo de busca).
+
+    Example:
+        >>> serp_url_template("https://x/search?q=ar+condicionado", "ar condicionado")
+        'https://x/search?q={kw}'
+    """
+    if not url or not keyword:
+        return None
+    for cod in (quote_plus(keyword), quote(keyword), quote(keyword, safe=""), keyword,
+                keyword.replace(" ", "-")):
+        for variante in (cod, cod.lower()):
+            if variante and variante in url:
+                return url.replace(variante, _KW_PLACEHOLDER, 1)
+    return None
+
+
+def fill_serp_template(template: str, keyword: str) -> str:
+    """Preenche o molde de ``serp_url_template`` com outro termo.
+
+    O hífen entra quando o molde veio de um slug (``/busca/ar-condicionado``);
+    nos demais casos o termo vai codificado como em formulário (``+``).
+    """
+    antes = template.split(_KW_PLACEHOLDER, 1)[0]
+    if "?" in antes or "=" in antes:
+        return template.replace(_KW_PLACEHOLDER, quote_plus(keyword))
+    return template.replace(_KW_PLACEHOLDER, quote(keyword.strip().lower().replace(" ", "-")))

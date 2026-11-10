@@ -596,9 +596,15 @@ def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
                 if alvo.startswith("http"):
                     html = scraper._ler_patrocinados(page, alvo, _ADS_PDP_TIMEOUT)
                 else:
+                    # Mesmo caminho da coleta: URL montada → campo de busca do
+                    # site quando ela cai na página de erro.
                     html = scraper._ler_patrocinados(
-                        page, scraper._build_url(alvo, 1), _ADS_SERP_TIMEOUT
+                        page, None, _ADS_SERP_TIMEOUT, keyword=alvo
                     )
+                    if scraper._serp_template:
+                        logger.warning(f"URL de busca aprendida: {scraper._serp_template}")
+                    if html is None:
+                        html = scraper._html_da_aba(page)
                 scraper.fechar_pdp_local()
         except Exception as exc:
             logger.error(f"Não foi possível abrir a página no browser: {exc}")
@@ -612,7 +618,16 @@ def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
         logger.error("Página não carregou.")
         return 1
 
+    from utils.leroy_ads import is_not_found_page
+
     itens = extract_sponsored(html)
+    if not itens and is_not_found_page(html):
+        logger.error(
+            "A página é o ERRO da Leroy (\"não localizamos a página pesquisada\"): "
+            "a URL não leva aos resultados — não é ausência de anúncio. "
+            "Mande o log e o dump para ajustar a URL de busca."
+        )
+        return 1
     if not itens:
         from scrapers.leroy_merlin import _PDP_CHALLENGE_MARKERS
 
