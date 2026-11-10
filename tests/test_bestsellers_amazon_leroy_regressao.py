@@ -521,3 +521,37 @@ class TestLeroyReplicaDescoberta:
         monkeypatch.setattr(fonte, "_descobrir_indice_pela_pagina", lambda: None)
         with pytest.raises(RuntimeError, match="0 hits"):
             fonte._coletar(1)
+
+
+class TestLeroyRelevancia:
+    """Prateleira 'Mais relevantes' como série própria (Nov/2026)."""
+
+    def test_indice_de_relevancia_e_referencia_propria(self):
+        from bestsellers.config import REFERENCIA_RELEVANCIA, SOURCES
+
+        fonte = lm.LeroyMerlinRelevancia()
+        assert fonte._indice == "production_products"
+        spec = SOURCES["leroymerlin_relevancia"]
+        assert spec.referencia == REFERENCIA_RELEVANCIA
+        assert spec.nome.endswith("*")
+
+    def test_provas_das_duas_series_nao_se_confundem(self):
+        from bestsellers.config import SOURCES
+
+        rel = SOURCES["leroymerlin_relevancia"]
+        mv = SOURCES["leroymerlin"]
+        url_rel = lm._url_indice("production_products")
+        url_mv = lm._url_indice("production_products_most_sales")
+        assert rel.ordenacao_comprovada(url_rel)
+        assert not rel.ordenacao_comprovada(url_mv)
+        assert mv.ordenacao_comprovada(url_mv)
+        assert not mv.ordenacao_comprovada(url_rel)
+
+    def test_relevancia_nao_tenta_descobrir_replica(self, monkeypatch):
+        fonte = lm.LeroyMerlinRelevancia()
+        fonte._leroy = object()
+        monkeypatch.setattr(fonte, "_consultar", lambda pagina, facet=None: [])
+        with pytest.raises(RuntimeError):
+            fonte._coletar(1)
+        assert fonte._indice == "production_products"
+        assert "production_products/query" in fonte.endpoint

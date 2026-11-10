@@ -303,6 +303,35 @@ SOURCES: Dict[str, SourceSpec] = {
             "não sustenta decisão de corte de verba isoladamente."
         ),
     ),
+
+    # Leroy por RELEVÂNCIA (Nov/2026). A ordenação "Mais vendidos" da Leroy
+    # ficou intermitente (aparece e some do "Ordenar por") e a réplica
+    # `production_products_most_sales` responde 0 hits desde 07/10/2026. Esta
+    # fonte lê a MESMA prateleira Split Inverter na ordem padrão "Mais
+    # relevantes" (índice `production_products`). Chave própria = série
+    # própria: nunca é comparada nem somada com `leroymerlin` (mais vendidos),
+    # que segue tentando e grava quando a ordenação de vendas existir.
+    "leroymerlin_relevancia": SourceSpec(
+        key="leroymerlin_relevancia",
+        nome="Leroy Merlin*",
+        url_publica=LEROY_CATEGORIA_URL,
+        # Endpoint EXATO da réplica de relevância — `production_products_most_sales`
+        # não contém "indexes/production_products/query", então as duas
+        # provas não se confundem.
+        parametros_ordenacao=("indexes/production_products/query",),
+        mecanica=MECANICA_RELEVANCIA,
+        base_vendidos=None,
+        itens_esperados=30,
+        ativo=True,
+        referencia=REFERENCIA_RELEVANCIA,
+        armadilha=(
+            "* RELEVÂNCIA, não vendas: ordem padrão 'Mais relevantes' da "
+            "prateleira Split Inverter. A Leroy tirou a ordenação 'Mais "
+            "vendidos' (intermitente na tela; réplica de vendas vazia desde "
+            "07/10/2026). Proxy de destaque/curadoria — série própria, nunca "
+            "comparar com a de mais vendidos."
+        ),
+    ),
     "casasbahia": SourceSpec(
         key="casasbahia",
         nome="Casas Bahia",
