@@ -23,7 +23,7 @@ from bestsellers.config import COLETA, TIPO_HTML, TIPO_VTEX_CATALOG
 from bestsellers.sources.amazon import AmazonBestSellers
 from bestsellers.sources.casas_bahia import CasasBahiaBestSellers
 from bestsellers.sources.html_generic import make_html_source
-from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers
+from bestsellers.sources.leroy_merlin import LeroyMerlinBestSellers, LeroyMerlinRelevancia
 from bestsellers.sources.magalu import MagaluBestSellers
 from bestsellers.sources.mercado_livre import MercadoLivreBestSellers
 from bestsellers.sources.shopee import ShopeeBestSellers
@@ -36,6 +36,7 @@ SOURCE_CLASSES: Dict[str, Type[BestSellerSource]] = {
     "magazineluiza": MagaluBestSellers,
     "shopee": ShopeeBestSellers,
     "leroymerlin": LeroyMerlinBestSellers,
+    "leroymerlin_relevancia": LeroyMerlinRelevancia,
     "casasbahia": CasasBahiaBestSellers,
 }
 

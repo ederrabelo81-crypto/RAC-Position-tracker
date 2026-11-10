@@ -50,7 +50,12 @@ class TestRegistro:
         assert SOURCES["mercadolivre"].referencia == REFERENCIA_MAIS_VENDIDOS
 
     def test_dealers_de_relevancia_marcados(self):
-        esperado = {"dufrio", "centralar", "leveros", "ferreiracosta", "engage"}
+        # `leroymerlin_relevancia` (Nov/2026): a Leroy perdeu a ordenação por
+        # vendas e a prateleira "Mais relevantes" entrou como série própria.
+        esperado = {
+            "dufrio", "centralar", "leveros", "ferreiracosta", "engage",
+            "leroymerlin_relevancia",
+        }
         marcados = {
             k for k, s in SOURCES.items() if s.referencia == REFERENCIA_RELEVANCIA
         }

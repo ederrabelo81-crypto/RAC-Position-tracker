@@ -157,7 +157,7 @@ class LeroyMerlinBestSellers(BestSellerSource):
         self._leroy = None
 
     def _coletar(self, paginas: int) -> List[BestSellerItem]:
-        self.registrar_endpoint(_URL_ALGOLIA)
+        self.registrar_endpoint(_url_indice(self._indice))
 
         alvo = self.spec.itens_esperados
         minimo_paginas = max(1, paginas)
@@ -494,6 +494,13 @@ class LeroyMerlinBestSellers(BestSellerSource):
             for i in range(n):
                 try:
                     gatilho.nth(i).click(timeout=5_000)
+                    try:
+                        vistas = page.get_by_role("option").all_inner_texts()
+                        logger.info(
+                            f"[{self.nome}] 'Ordenar por' aberto — opções: {vistas}"
+                        )
+                    except Exception:
+                        pass
                     opcao = page.get_by_role("option", name=rotulo).first
                     opcao.click(timeout=5_000)
                     try:
@@ -732,4 +739,24 @@ class LeroyMerlinBestSellers(BestSellerSource):
                 continue
             if isinstance(valor, int) and valor >= 0:
                 return valor
+        return None
+
+
+class LeroyMerlinRelevancia(LeroyMerlinBestSellers):
+    """
+    Prateleira Split Inverter da Leroy na ordem "Mais relevantes" (Nov/2026).
+
+    Mesma coleta (Algolia + âncora de categoria + sellers), outro índice: a
+    réplica PADRÃO `production_products`. Referência RELEVANCIA — série
+    própria (`leroymerlin_relevancia`), exibida como "Leroy Merlin*".
+    """
+
+    key = "leroymerlin_relevancia"
+
+    def __init__(self, headless: bool = True) -> None:
+        super().__init__(headless=headless)
+        self._indice = _INDICE_RELEVANCIA
+
+    def _descobrir_indice_pela_pagina(self) -> Optional[str]:
+        # Relevância é o índice padrão: não há réplica a descobrir.
         return None
