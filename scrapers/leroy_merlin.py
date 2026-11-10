@@ -318,8 +318,9 @@ class LeroyMerlinScraper(BaseScraper):
         # Fora de search() (Mais Vendidos usa os PDPs) `_ads_kw` é None e
         # nada é registrado.
         self._ads_kw: Optional[str] = None
-        self._ads_pdp: Dict[str, Dict[str, Any]] = {}   # id anunciado → leitura
-        self._ads_pdp_lidos: Dict[str, int] = {}        # URL do PDP → nº de anúncios
+        # URL do PDP → anúncios lidos nele. A leitura COM rolagem substitui a
+        # rápida (a prateleira carrega sob demanda e pode ter vindo pela metade).
+        self._ads_pdp_lidos: Dict[str, List[SponsoredItem]] = {}
         self._ads_pdp_rolados: set[str] = set()         # PDPs lidos COM rolagem
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
@@ -1797,32 +1798,38 @@ class LeroyMerlinScraper(BaseScraper):
             logger.info(f"[{self.platform_name}] Busca '{keyword}': nenhum patrocinado na página")
         return itens
 
-    def _registrar_ads_pdp(self, url: str, html: Optional[str]) -> None:
+    def _registrar_ads_pdp(self, url: str, html: Optional[str], rolado: bool = False) -> None:
         """Anota os patrocinados de um PDP lido no turno (busca em curso).
 
         Chamado por TODO PDP que a coleta abre (buy box, preço, nome de seller e
-        a amostra dedicada). Um PDP conta uma vez; a releitura com rolagem só
-        substitui uma leitura anterior que não achou nada.
+        a amostra dedicada). Um PDP conta uma vez. A leitura rápida (sem
+        rolagem) não sobrescreve uma anterior com anúncio; a leitura com
+        rolagem (``rolado=True``) sempre substitui, porque é a completa.
         """
         if not (_ADS_PDP_ENABLED and self._ads_kw and html):
             return
-        if self._ads_pdp_lidos.get(url, 0) > 0:
+        if not rolado and self._ads_pdp_lidos.get(url):
             return
         proprio = leroy_product_id(url)
         itens = [i for i in extract_sponsored(html) if i.product_id != proprio]
         if url not in self._ads_pdp_lidos:
             self._seller_metrics["ads_pdp_paginas"] += 1
-        self._ads_pdp_lidos[url] = len(itens)
-        for item in itens:
-            reg = self._ads_pdp.get(item.product_id)
-            if reg is None:
-                self._ads_pdp[item.product_id] = {"item": item, "slot": item.slot, "vezes": 1}
-            else:
+        self._ads_pdp_lidos[url] = itens
+
+    def _ads_pdp_agregados(self) -> Dict[str, Dict[str, Any]]:
+        """{id anunciado: {item, slot (melhor), vezes (nº de PDPs)}} da keyword."""
+        agg: Dict[str, Dict[str, Any]] = {}
+        for itens in self._ads_pdp_lidos.values():
+            for item in itens:
+                reg = agg.get(item.product_id)
+                if reg is None:
+                    agg[item.product_id] = {"item": item, "slot": item.slot, "vezes": 1}
+                    continue
                 reg["vezes"] += 1
                 reg["slot"] = min(reg["slot"], item.slot)
                 if not reg["item"].title and item.title:
                     reg["item"] = item
-            self._seller_metrics["ads_pdp"] += 1
+        return agg
 
     def _amostrar_ads_pdp(self, records: List[Dict[str, Any]]) -> None:
         """Abre (com rolagem) os PDPs do topo orgânico até a amostra da keyword.
@@ -1847,7 +1854,7 @@ class LeroyMerlinScraper(BaseScraper):
                 return
             self._ads_pdp_rolados.add(url)
             html = self._ler_patrocinados(page, url, _ADS_PDP_TIMEOUT)
-            self._registrar_ads_pdp(url, html)
+            self._registrar_ads_pdp(url, html, rolado=True)
             self._random_delay(min_s=_PDP_MIN_INTERVAL, max_s=_PDP_MAX_INTERVAL)
 
     def _aplicar_patrocinados_serp(
@@ -1914,12 +1921,14 @@ class LeroyMerlinScraper(BaseScraper):
         frequência (em quantos PDPs lidos o anúncio apareceu) vai na tag.
         """
         lidos = len(self._ads_pdp_lidos)
-        if not self._ads_pdp or not lidos:
+        agregados = self._ads_pdp_agregados()
+        self._seller_metrics["ads_pdp"] += sum(r["vezes"] for r in agregados.values())
+        if not agregados:
             return []
         kw = pdp_keyword(keyword)
         mapa = {CATEGORIA_PDP: [kw]}
         ordenados = sorted(
-            self._ads_pdp.values(), key=lambda r: (-r["vezes"], r["slot"])
+            agregados.values(), key=lambda r: (-r["vezes"], r["slot"])
         )
         out: List[Dict[str, Any]] = []
         for reg in ordenados:
@@ -2183,7 +2192,6 @@ class LeroyMerlinScraper(BaseScraper):
         # Patrocinados: estado da keyword (os PDPs abertos durante o parse
         # anotam a prateleira de anúncio deles enquanto `_ads_kw` está setado).
         self._ads_kw = keyword
-        self._ads_pdp = {}
         self._ads_pdp_lidos = {}
         self._ads_pdp_rolados = set()
         html_busca_p1: Optional[str] = None
@@ -2265,18 +2273,19 @@ class LeroyMerlinScraper(BaseScraper):
                 self._random_delay()
 
         # --- Patrocinados (busca + PDP): a Algolia não tem anúncio nenhum ---
-        if all_records:
-            try:
-                ads = self._patrocinados_serp(keyword, html_busca_p1)
-                novos = self._aplicar_patrocinados_serp(
-                    ads, all_records, keyword, keyword_category_map
-                )
-                self._amostrar_ads_pdp(all_records)
-                all_records.extend(novos)
-                all_records.extend(self._registros_ads_pdp(keyword))
-            except Exception as exc:
-                # Anúncio é camada extra: falha aqui nunca derruba o orgânico.
-                logger.warning(f"[{self.platform_name}] Patrocinados de '{keyword}' falharam: {exc}")
+        # Roda mesmo com o orgânico vazio: anúncio sozinho na página também é
+        # mídia (a amostra de PDP é que depende do orgânico, e para sozinha).
+        try:
+            ads = self._patrocinados_serp(keyword, html_busca_p1)
+            novos = self._aplicar_patrocinados_serp(
+                ads, all_records, keyword, keyword_category_map
+            )
+            self._amostrar_ads_pdp(all_records)
+            all_records.extend(novos)
+            all_records.extend(self._registros_ads_pdp(keyword))
+        except Exception as exc:
+            # Anúncio é camada extra: falha aqui nunca derruba o orgânico.
+            logger.warning(f"[{self.platform_name}] Patrocinados de '{keyword}' falharam: {exc}")
         self._ads_kw = None
 
         self._log_search_result(keyword, len(all_records))

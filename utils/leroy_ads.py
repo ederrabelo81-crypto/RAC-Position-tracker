@@ -177,25 +177,34 @@ _RE_HEADING = ("h1", "h2", "h3", "h4")
 _MAX_SHELF_ITEMS = 24
 
 
-def _opens_other_section(node: Tag) -> bool:
-    """O irmão abre OUTRA seção da página?
-
-    Sim quando o primeiro elemento relevante dele (em ordem de documento) é um
-    cabeçalho que não é rótulo de patrocinado — "Resultados", "Mais
-    produtos". Título de card (``<h3>`` depois do link, ou dentro do ``<a>``)
-    não conta: ele vem junto de um produto, não antes dele.
-    """
-    candidatos = [node] if node.name in _RE_HEADING else []
-    candidatos += node.find_all(lambda t: t.name in _RE_HEADING or (
-        t.name == "a" and t.has_attr("href") and leroy_product_id(t["href"])
-    ))
-    for el in candidatos:
-        if el.name == "a":
+def _is_card_title(heading: Tag, limite: Tag) -> bool:
+    """O cabeçalho é título de card (o menor bloco com produto em volta dele
+    tem UM produto só), e não cabeçalho de seção?"""
+    if heading.find_parent("a") is not None:
+        return True
+    node: Optional[Tag] = heading
+    while isinstance(node, Tag):
+        ids = _distinct_ids(_product_links(node))
+        if ids:
+            return len(ids) == 1
+        if node is limite:
             return False
-        if el.find_parent("a") is not None:
-            continue
-        texto = " ".join(el.get_text(" ", strip=True).split())
-        if texto and not _is_label(texto):
+        node = node.parent
+    return False
+
+
+def _opens_other_section(node: Tag) -> bool:
+    """O irmão abre OUTRA seção da página ("Resultados", "Mais produtos")?
+
+    Sim quando tem um cabeçalho que não é rótulo de patrocinado nem título de
+    card — título de card vem colado num produto só, antes ou depois do link.
+    """
+    if node.name in _RE_HEADING:
+        texto = " ".join(node.get_text(" ", strip=True).split())
+        return bool(texto) and not _is_label(texto)
+    for h in node.find_all(_RE_HEADING):
+        texto = " ".join(h.get_text(" ", strip=True).split())
+        if texto and not _is_label(texto) and not _is_card_title(h, node):
             return True
     return False
 
@@ -205,9 +214,16 @@ def _shelf_links(label: Tag) -> List[Tag]:
 
     Sobe do rótulo até o primeiro ancestral com link de produto. Se esse
     ancestral é um card (1 produto), o card inteiro é o anúncio. Se tem vários,
-    a prateleira vai do ramo do rótulo até o próximo cabeçalho de OUTRA seção —
-    é o que impede um ``<main>`` com o rótulo e o grid orgânico lado a lado de
-    virar "tudo patrocinado".
+    a prateleira são os irmãos SEGUINTES ao ramo do rótulo, e só enquanto
+    parecem a mesma prateleira:
+
+    * o 1º irmão com vários produtos é o carrossel — a leitura para nele;
+    * cards soltos como irmãos (1 produto cada) seguem enquanto forem a mesma
+      tag;
+    * cabeçalho de outra seção encerra.
+
+    É o que impede um ``<main>`` com o rótulo e o grid orgânico lado a lado
+    de virar "tudo patrocinado", com ou sem cabeçalho entre os dois.
     """
     branch: Tag = label
     node = label.parent
@@ -225,12 +241,26 @@ def _shelf_links(label: Tag) -> List[Tag]:
         return todos
 
     links: List[Tag] = []
+    tag_card: Optional[str] = None
     for sib in branch.next_siblings:
         if not isinstance(sib, Tag):
             continue
         if _opens_other_section(sib):
             break
-        links.extend(_product_links(sib))
+        sib_links = _product_links(sib)
+        if not sib_links:
+            if links:
+                break
+            continue
+        n_ids = len(_distinct_ids(sib_links))
+        if n_ids > 1:
+            if not links:
+                links = sib_links  # o carrossel inteiro
+            break
+        if tag_card is not None and sib.name != tag_card:
+            break
+        tag_card = sib.name
+        links.extend(sib_links)
     # Sem link depois do rótulo não há como saber qual pedaço do bloco é a
     # prateleira — melhor perder o anúncio do que gravar o grid como mídia.
     return links if len(_distinct_ids(links)) <= _MAX_SHELF_ITEMS else []

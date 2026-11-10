@@ -7933,6 +7933,60 @@ def page_reputacao() -> None:
 # Page — Share of Voice Patrocinado
 # ---------------------------------------------------------------------------
 
+def _split_anuncios_pdp(df: pd.DataFrame) -> tuple:
+    """Separa as linhas de anúncio em PDP (Leroy, keyword ``PDP · <busca>``).
+
+    Anúncio dentro de um PDP não ocupa slot de busca: somado às métricas de
+    SERP ele inflaria o % patrocinado e entraria no "top-10" como se fosse
+    posição na busca. Fica numa aba própria.
+
+    Returns:
+        (linhas de PDP, demais linhas).
+    """
+    from utils.keyword_taxonomy import CATEGORIA_PDP, pdp_keyword
+
+    if df.empty or "keyword" not in df.columns:
+        return df.iloc[0:0], df
+    mask = df["keyword"].astype(str).str.startswith(pdp_keyword(""))
+    if "categoria" in df.columns:
+        mask |= df["categoria"].astype(str).eq(CATEGORIA_PDP)
+    return df[mask], df[~mask]
+
+
+def _render_sov_pdp(df_pdp: pd.DataFrame) -> None:
+    """Share of voice dos anúncios exibidos dentro de PDPs (por marca)."""
+    if df_pdp.empty:
+        st.info(
+            "Nenhum anúncio em PDP no período/filtros. Hoje só a Leroy Merlin "
+            "tem essa leitura (keyword `PDP · <busca>`)."
+        )
+        return
+    st.markdown(
+        "**Anúncios dentro de PDPs** — uma linha por produto anunciado nos PDPs "
+        "abertos a partir de cada busca; não entram nas métricas de busca acima."
+    )
+    if "marca" in df_pdp.columns:
+        por_marca = (
+            df_pdp["marca"].value_counts().rename_axis("Marca")
+            .reset_index(name="Anúncios")
+        )
+        por_marca["Share (%)"] = (
+            por_marca["Anúncios"] / por_marca["Anúncios"].sum() * 100
+        ).round(1)
+        fig = px.bar(
+            por_marca.head(12), x="Share (%)", y="Marca", orientation="h",
+            color="Marca", color_discrete_map=_brand_color_map(por_marca["Marca"]),
+            title="Share dos anúncios em PDP, por marca",
+        )
+        fig.update_layout(showlegend=False, yaxis={"categoryorder": "total ascending"})
+        _apply_chart_style(fig, height=420, hovermode="closest")
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(
+            _style_midea_df(por_marca, brand_col="Marca"),
+            use_container_width=True, hide_index=True,
+        )
+
+
 def page_sov_patrocinado() -> None:
     """Página 📣 Share of Voice Patrocinado.
 
@@ -7979,7 +8033,9 @@ def page_sov_patrocinado() -> None:
         _como_ler(
             "A análise considera todas as plataformas coletadas. Hoje quem "
             "marca anúncio patrocinado na coleta é Mercado Livre (Product Ads), "
-            "Amazon (AMS) e Leroy Merlin (desde Nov/2026: prateleira \"Produtos "
+            "Amazon (AMS) e Leroy Merlin (em validação contra o site desde "
+            "Nov/2026 — Leroy zerada aqui ainda pode ser falha de leitura, não "
+            "ausência de mídia: prateleira \"Produtos "
             "patrocinados\" da busca e dos PDPs — o anúncio de PDP fica na "
             "keyword `PDP · <busca>`); Google Shopping/Magalu/Shopee ainda não "
             "sinalizam o flag na SERP capturada. A cobertura real por plataforma "
@@ -8003,6 +8059,7 @@ def page_sov_patrocinado() -> None:
     # Share neutro: exclui keywords de marca do share of voice (default off).
     # Aplicado antes de derivar `_spon` para KPIs e abas ficarem consistentes.
     df = _brand_neutral_toggle(df, key="sov_brand_neutral")
+    df_pdp, df = _split_anuncios_pdp(df)
 
     spon = pd.Series(False, index=df.index)
     if "patrocinado" in df.columns:
@@ -8012,6 +8069,10 @@ def page_sov_patrocinado() -> None:
     df = df.assign(_spon=spon)
 
     if not bool(spon.any()):
+        if not df_pdp.empty:
+            st.info("Nenhum anúncio na busca no período/filtros — só em PDPs.")
+            _render_sov_pdp(df_pdp)
+            return
         st.warning(
             "Nenhum anúncio patrocinado no período/filtros. Confira a cobertura "
             "de `patrocinado` por plataforma na página 🩺 Saúde do Dado — coleta "
@@ -8048,10 +8109,13 @@ def page_sov_patrocinado() -> None:
     _render_coverage(df, "patrocinado", "flag patrocinado", truthy=True)
     st.divider()
 
-    tab_midia, tab_kw, tab_dupla, tab_evo = st.tabs(
+    tab_midia, tab_kw, tab_dupla, tab_evo, tab_pdp = st.tabs(
         ["📊 Quem compra mídia", "🔑 Keywords disputadas",
-         "👯 Dupla presença", "📈 Evolução diária"]
+         "👯 Dupla presença", "📈 Evolução diária", "📌 Anúncios em PDP"]
     )
+
+    with tab_pdp:
+        _render_sov_pdp(df_pdp)
 
     # ── Tab 1: % patrocinado no top-10 por marca e plataforma ───────────────
     with tab_midia:

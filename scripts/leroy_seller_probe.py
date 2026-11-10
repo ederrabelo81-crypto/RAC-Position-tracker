@@ -614,6 +614,18 @@ def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
 
     itens = extract_sponsored(html)
     if not itens:
+        from scrapers.leroy_merlin import _PDP_CHALLENGE_MARKERS
+
+        inicio = html[:20_000].lower()
+        marcador = next((m for m in _PDP_CHALLENGE_MARKERS if m in inicio), None)
+        if marcador or (not caminho.is_file() and len(html) < 20_000):
+            logger.error(
+                f"A página parece BLOQUEIO, não ausência de anúncio "
+                f"({len(html):,} bytes{f', marcador {marcador!r}' if marcador else ''}). "
+                "Rode com $env:RAC_LOCAL_CHROME=\"1\" (Chrome real, IP residencial) "
+                "e confira o dump."
+            )
+            return 1
         rotulo = "patrocinad" in html.lower()
         logger.warning(
             "Nenhum patrocinado reconhecido. "
