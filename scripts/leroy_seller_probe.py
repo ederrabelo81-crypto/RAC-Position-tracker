@@ -27,6 +27,12 @@ Uso:
     # Roda uma busca Algolia e mostra quais IDs de seller aparecem
     python scripts/leroy_seller_probe.py --scan "ar condicionado lg"
 
+    # Patrocinados (Nov/2026): o que a coleta leria numa busca, num PDP ou num
+    # HTML salvo. Sempre grava logs/leroy_ads_probe.html (abre no browser).
+    python scripts/leroy_seller_probe.py --patrocinados "ar condicionado"
+    python scripts/leroy_seller_probe.py --patrocinados "https://www.leroymerlin.com.br/..._92311464"
+    python scripts/leroy_seller_probe.py --patrocinados logs/leroy_ads_probe.html
+
     # Registra um ID manualmente (quando você já sabe o lojista)
     python scripts/leroy_seller_probe.py --set 5e6fd1d90a8aa474fe271e83="Loja X"
 
@@ -563,6 +569,66 @@ def cmd_preco(alvo: str, use_browser: bool = False, headless: bool = True) -> in
     return 0
 
 
+def cmd_patrocinados(alvo: str, headless: bool = True) -> int:
+    """Mostra os patrocinados que a coleta leria (busca, PDP ou HTML local).
+
+    Args:
+        alvo: keyword de busca, URL de PDP ou caminho de um HTML salvo.
+        headless: False abre o Chrome visível (com ``RAC_LOCAL_CHROME=1`` é o
+            Chrome real, como na coleta).
+
+    Returns:
+        0 se achou anúncio, 1 caso contrário.
+    """
+    from utils.leroy_ads import extract_sponsored
+
+    caminho = Path(alvo)
+    if caminho.is_file():
+        html: Optional[str] = caminho.read_text(encoding="utf-8", errors="replace")
+    else:
+        try:
+            from scrapers.leroy_merlin import (
+                _ADS_PDP_TIMEOUT, _ADS_SERP_TIMEOUT, LeroyMerlinScraper,
+            )
+
+            with LeroyMerlinScraper(headless=headless) as scraper:
+                page = scraper._pagina_pdp()
+                if alvo.startswith("http"):
+                    html = scraper._ler_patrocinados(page, alvo, _ADS_PDP_TIMEOUT)
+                else:
+                    html = scraper._ler_patrocinados(
+                        page, scraper._build_url(alvo, 1), _ADS_SERP_TIMEOUT
+                    )
+                scraper.fechar_pdp_local()
+        except Exception as exc:
+            logger.error(f"Não foi possível abrir a página no browser: {exc}")
+            return 1
+        if html:
+            dump = Path("logs") / "leroy_ads_probe.html"
+            dump.parent.mkdir(parents=True, exist_ok=True)
+            dump.write_text(html, encoding="utf-8")
+            logger.info(f"HTML gravado em {dump} ({len(html):,} bytes)")
+    if not html:
+        logger.error("Página não carregou.")
+        return 1
+
+    itens = extract_sponsored(html)
+    if not itens:
+        rotulo = "patrocinad" in html.lower()
+        logger.warning(
+            "Nenhum patrocinado reconhecido. "
+            + ("O texto 'patrocinad' EXISTE no HTML: o layout mudou — abra o dump "
+               "e ajuste utils/leroy_ads.py." if rotulo else
+               "Nem o texto 'patrocinad' aparece: a página não tinha anúncio "
+               "(ou não hidratou — tente --no-headless).")
+        )
+        return 1
+    for i in itens:
+        preco = f"R$ {i.price:,.2f}" if i.price is not None else "—"
+        print(f"{i.slot:>2}. [{i.product_id}] {(i.title or '?')[:70]:<70} {preco}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Inspeciona e popula o cache de sellers da Leroy Merlin."
@@ -577,6 +643,10 @@ def main() -> int:
     parser.add_argument(
         "--preco", metavar="URL_OU_ARQUIVO",
         help="mostra o preço que a coleta leria no PDP (JSON-LD)",
+    )
+    parser.add_argument(
+        "--patrocinados", metavar="KEYWORD_URL_OU_ARQUIVO",
+        help="lista os produtos patrocinados de uma busca, PDP ou HTML salvo",
     )
     parser.add_argument(
         "--browser", action="store_true",
@@ -609,6 +679,8 @@ def main() -> int:
         return cmd_scan(cache, args.scan, max(1, args.pages))
     if args.set:
         return cmd_set(cache, args.set)
+    if args.patrocinados:
+        return cmd_patrocinados(args.patrocinados, headless=not args.no_headless)
     if args.preco:
         return cmd_preco(args.preco, use_browser=args.browser, headless=not args.no_headless)
 

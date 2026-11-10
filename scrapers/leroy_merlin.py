@@ -46,7 +46,9 @@ from utils.leroy_sellers import (
     extract_seller_from_pdp,
     is_leroy_self,
 )
+from utils.leroy_ads import SPONSORED_LABEL_PATTERN, SponsoredItem, extract_sponsored, leroy_product_id
 from utils.leroy_price import PdpPrice, extract_pdp_price
+from utils.keyword_taxonomy import CATEGORIA_PDP, pdp_keyword
 from utils.seller_names import normalize_seller_name, seller_key
 from utils.text import parse_price, parse_rating, parse_review_count, now_brt
 
@@ -126,6 +128,25 @@ _PRECO_MEDIA_FALLBACK = os.environ.get("LEROY_PRECO_MEDIA_FALLBACK", "0") in ("1
 # PDPs íntegros seguidos sem preço no JSON-LD = layout novo; seguidos sem chegar
 # = bloqueio. Em ambos, a passada aborta em vez de gastar o turno à toa.
 _PRECO_MAX_FALHAS_SEGUIDAS = 8
+
+# --- Produtos patrocinados (Nov/2026) ----------------------------------------
+# A busca sai da Algolia, que só tem o resultado ORGÂNICO — anúncio nenhum
+# passa por ela, e a Leroy nunca apareceu no 📣 Share of Voice Patrocinado. A
+# Leroy mostra mídia em duas prateleiras fora do grid: "Produtos patrocinados"
+# na página de busca e outra dentro do PDP. As duas só existem no HTML
+# renderizado, então são lidas no browser (Chrome local quando ligado) e
+# interpretadas por `utils/leroy_ads.py`.
+_ADS_SERP_ENABLED = os.environ.get("LEROY_ADS_SERP", "1") not in ("0", "false", "False")
+_ADS_PDP_ENABLED = os.environ.get("LEROY_ADS_PDP", "1") not in ("0", "false", "False")
+# Espera da prateleira hidratar na busca (ms). Busca sem anúncio paga o teto
+# inteiro — por isso não é maior.
+_ADS_SERP_TIMEOUT = float(os.environ.get("LEROY_ADS_TIMEOUT", "6000") or 6000)
+# PDPs abertos POR KEYWORD só para ler a prateleira de patrocinados (os do topo
+# orgânico). Os PDPs que buy box/preço já abrem no browser são lidos de graça,
+# mas sem rolar a página — a prateleira do PDP é carregada sob demanda.
+_ADS_PDP_AMOSTRA = int(os.environ.get("LEROY_ADS_PDP_AMOSTRA", "2") or 0)
+_ADS_PDP_TIMEOUT = float(os.environ.get("LEROY_ADS_PDP_TIMEOUT", "3000") or 3000)
+_TAG_ADS_SERP = "Patrocinado (busca)"
 
 # Tempo máximo esperando o bloco de seller hidratar no browser.
 _PDP_HYDRATE_TIMEOUT = float(os.environ.get("LEROY_PDP_HYDRATE_TIMEOUT", "10000") or 10000)
@@ -293,6 +314,13 @@ class LeroyMerlinScraper(BaseScraper):
         self._pdp_local_indisponivel = False
         self._pdp_local_aquecido = False
         self._pdp_warmup_restantes = _PDP_WARMUP_TENTATIVAS
+        # Patrocinados — estado da KEYWORD em curso (zerado em cada search()).
+        # Fora de search() (Mais Vendidos usa os PDPs) `_ads_kw` é None e
+        # nada é registrado.
+        self._ads_kw: Optional[str] = None
+        self._ads_pdp: Dict[str, Dict[str, Any]] = {}   # id anunciado → leitura
+        self._ads_pdp_lidos: Dict[str, int] = {}        # URL do PDP → nº de anúncios
+        self._ads_pdp_rolados: set[str] = set()         # PDPs lidos COM rolagem
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -322,6 +350,10 @@ class LeroyMerlinScraper(BaseScraper):
             "preco_pdp_menor_oferta": 0,  # 2+ ofertas sem casar o vencedor: ficou a menor
             "preco_sem_leitura": 0,       # sem PDP lido → sem preço (ou média)
             "preco_media_fallback": 0,    # gravou a média (LEROY_PRECO_MEDIA_FALLBACK=1)
+            "ads_serp": 0,                # anúncios lidos na prateleira da busca
+            "ads_serp_tambem_organico": 0, # anúncio que também está no orgânico
+            "ads_pdp_paginas": 0,         # PDPs lidos à procura de patrocinados
+            "ads_pdp": 0,                 # anúncios (com repetição) vistos em PDPs
         }
         if len(self._seller_cache):
             logger.info(
@@ -472,6 +504,7 @@ class LeroyMerlinScraper(BaseScraper):
                 )
                 if marker is None:
                     self._pdp_requests_strikes = 0
+                    self._registrar_ads_pdp(url, html)
                     return html
                 logger.debug(
                     f"[{self.platform_name}] PDP via requests bloqueado "
@@ -632,10 +665,12 @@ class LeroyMerlinScraper(BaseScraper):
                     pass
 
         try:
-            return page.content()
+            html = page.content()
         except Exception as exc:
             logger.debug(f"[{self.platform_name}] content() do PDP falhou: {exc}")
             return None
+        self._registrar_ads_pdp(url, html)
+        return html
 
     def _fetch_pdp_browser(self, url: str) -> Optional[str]:
         """PDP no browser esperando o rótulo do seller (buy box / nome do seller)."""
@@ -1695,6 +1730,221 @@ class LeroyMerlinScraper(BaseScraper):
         return records
 
     # ------------------------------------------------------------------
+    # Produtos patrocinados (busca + PDP) — Nov/2026
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rolar(page: Any, passos: int = 6, px: int = 900) -> None:
+        """Rola a aba em passos curtos: as prateleiras carregam sob demanda
+        (intersection observer), e um ``scrollTo`` direto ao fim pula o gatilho."""
+        for _ in range(passos):
+            try:
+                page.mouse.wheel(0, px)
+                page.wait_for_timeout(200)
+            except Exception:
+                return
+
+    def _ler_patrocinados(self, page: Any, url: str, timeout_ms: float) -> Optional[str]:
+        """Navega, rola e espera o rótulo de patrocinado; devolve o HTML.
+
+        Página sem anúncio não é erro: devolve o HTML do mesmo jeito depois do
+        teto de espera, e o parser responde lista vazia.
+        """
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+        except Exception as exc:
+            if page is self._pdp_local_page and is_target_closed(exc):
+                self._pdp_local_page = None
+            logger.debug(f"[{self.platform_name}] Patrocinados: navegação falhou ({exc})")
+            return None
+        self._rolar(page)
+        try:
+            page.wait_for_function(
+                f"() => /{SPONSORED_LABEL_PATTERN}/i.test(document.body.innerText)",
+                timeout=timeout_ms,
+            )
+            page.wait_for_timeout(500)  # cards da prateleira terminam de hidratar
+        except Exception:
+            pass
+        try:
+            return page.content()
+        except Exception as exc:
+            logger.debug(f"[{self.platform_name}] Patrocinados: content() falhou ({exc})")
+            return None
+
+    def _patrocinados_serp(self, keyword: str, html: Optional[str] = None) -> List[SponsoredItem]:
+        """Prateleira "Produtos patrocinados" da 1ª página de busca.
+
+        Args:
+            keyword: termo buscado.
+            html: HTML da busca já renderizado pelo fallback de browser, quando
+                houver — evita navegar de novo.
+
+        Returns:
+            Anúncios na ordem da prateleira (vazio se não houver, ou sem browser).
+        """
+        if not _ADS_SERP_ENABLED:
+            return []
+        itens = extract_sponsored(html) if html else []
+        if itens:
+            return itens
+        page = self._pagina_pdp()
+        if page is None:
+            return []
+        html = self._ler_patrocinados(page, self._build_url(keyword, 1), _ADS_SERP_TIMEOUT)
+        itens = extract_sponsored(html)
+        if not itens:
+            logger.info(f"[{self.platform_name}] Busca '{keyword}': nenhum patrocinado na página")
+        return itens
+
+    def _registrar_ads_pdp(self, url: str, html: Optional[str]) -> None:
+        """Anota os patrocinados de um PDP lido no turno (busca em curso).
+
+        Chamado por TODO PDP que a coleta abre (buy box, preço, nome de seller e
+        a amostra dedicada). Um PDP conta uma vez; a releitura com rolagem só
+        substitui uma leitura anterior que não achou nada.
+        """
+        if not (_ADS_PDP_ENABLED and self._ads_kw and html):
+            return
+        if self._ads_pdp_lidos.get(url, 0) > 0:
+            return
+        proprio = leroy_product_id(url)
+        itens = [i for i in extract_sponsored(html) if i.product_id != proprio]
+        if url not in self._ads_pdp_lidos:
+            self._seller_metrics["ads_pdp_paginas"] += 1
+        self._ads_pdp_lidos[url] = len(itens)
+        for item in itens:
+            reg = self._ads_pdp.get(item.product_id)
+            if reg is None:
+                self._ads_pdp[item.product_id] = {"item": item, "slot": item.slot, "vezes": 1}
+            else:
+                reg["vezes"] += 1
+                reg["slot"] = min(reg["slot"], item.slot)
+                if not reg["item"].title and item.title:
+                    reg["item"] = item
+            self._seller_metrics["ads_pdp"] += 1
+
+    def _amostrar_ads_pdp(self, records: List[Dict[str, Any]]) -> None:
+        """Abre (com rolagem) os PDPs do topo orgânico até a amostra da keyword.
+
+        A prateleira do PDP carrega sob demanda: os PDPs que buy box e preço
+        abrem não rolam a página, então podem não mostrá-la. A amostra garante
+        uma leitura de verdade por keyword, a custo fixo e baixo.
+        """
+        if not (_ADS_PDP_ENABLED and _ADS_PDP_AMOSTRA > 0):
+            return
+        urls = [
+            r.get("URL Produto") for r in records
+            if r.get("URL Produto") and r.get("Posição Orgânica")
+        ]
+        for url in dict.fromkeys(urls):
+            if len(self._ads_pdp_rolados) >= _ADS_PDP_AMOSTRA:
+                return
+            if url in self._ads_pdp_rolados:
+                continue
+            page = self._pagina_pdp()
+            if page is None:
+                return
+            self._ads_pdp_rolados.add(url)
+            html = self._ler_patrocinados(page, url, _ADS_PDP_TIMEOUT)
+            self._registrar_ads_pdp(url, html)
+            self._random_delay(min_s=_PDP_MIN_INTERVAL, max_s=_PDP_MAX_INTERVAL)
+
+    def _aplicar_patrocinados_serp(
+        self,
+        itens: List[SponsoredItem],
+        records: List[Dict[str, Any]],
+        keyword: str,
+        keyword_category_map: dict,
+    ) -> List[Dict[str, Any]]:
+        """Funde os anúncios da busca nos registros da keyword.
+
+        Anúncio de produto que também está no orgânico vira MARCA na linha
+        orgânica (``Posição Patrocinada`` + ``Patrocinado? = Sim``): a chave
+        única de `coletas` é (keyword, produto), e uma segunda linha do mesmo
+        produto seria descartada no banco — o anúncio sumiria. O resto vira
+        linha própria, com ``Posição Geral = Posição Patrocinada = slot``.
+
+        Returns:
+            Registros novos (só os anúncios que não estavam no orgânico).
+        """
+        por_id: Dict[str, Dict[str, Any]] = {}
+        for rec in records:
+            pid = str(rec.get("ID Produto Marketplace") or "") or leroy_product_id(rec.get("URL Produto"))
+            if pid:
+                por_id.setdefault(pid, rec)
+
+        novos: List[Dict[str, Any]] = []
+        for item in itens:
+            self._seller_metrics["ads_serp"] += 1
+            rec = por_id.get(item.product_id)
+            if rec is not None:
+                self._seller_metrics["ads_serp_tambem_organico"] += 1
+                rec["Posição Patrocinada"] = item.slot
+                rec["Patrocinado?"] = "Sim"
+                rec["Tag Destaque"] = rec.get("Tag Destaque") or _TAG_ADS_SERP
+                continue
+            if not item.title:
+                continue
+            novos.append(self._build_record(
+                keyword=keyword,
+                keyword_category_map=keyword_category_map,
+                title=item.title,
+                position_general=item.slot,
+                position_organic=None,
+                position_sponsored=item.slot,
+                price_float=item.price,
+                tag_destaque=_TAG_ADS_SERP,
+                url_produto=item.url,
+                marketplace_product_id=item.product_id,
+            ))
+        if itens:
+            logger.info(
+                f"[{self.platform_name}] Busca '{keyword}': {len(itens)} patrocinado(s) "
+                f"({len(itens) - len(novos)} também no orgânico)"
+            )
+        return novos
+
+    def _registros_ads_pdp(self, keyword: str) -> List[Dict[str, Any]]:
+        """Uma linha por produto anunciado nos PDPs desta keyword.
+
+        Gravado sob ``keyword = "PDP · <busca>"`` / ``categoria = "Patrocinado
+        PDP"`` (``utils.keyword_taxonomy.TIPO_ANUNCIO_PDP``): na keyword da
+        própria busca colidiria com a linha orgânica do mesmo produto. A
+        frequência (em quantos PDPs lidos o anúncio apareceu) vai na tag.
+        """
+        lidos = len(self._ads_pdp_lidos)
+        if not self._ads_pdp or not lidos:
+            return []
+        kw = pdp_keyword(keyword)
+        mapa = {CATEGORIA_PDP: [kw]}
+        ordenados = sorted(
+            self._ads_pdp.values(), key=lambda r: (-r["vezes"], r["slot"])
+        )
+        out: List[Dict[str, Any]] = []
+        for reg in ordenados:
+            item: SponsoredItem = reg["item"]
+            if not item.title:
+                continue
+            out.append(self._build_record(
+                keyword=kw,
+                keyword_category_map=mapa,
+                title=item.title,
+                position_general=reg["slot"],
+                position_organic=None,
+                position_sponsored=reg["slot"],
+                price_float=item.price,
+                tag_destaque=f"Patrocinado (PDP) · em {reg['vezes']} de {lidos} PDPs",
+                url_produto=item.url,
+                marketplace_product_id=item.product_id,
+            ))
+        logger.info(
+            f"[{self.platform_name}] PDPs de '{keyword}': {len(out)} produto(s) "
+            f"patrocinado(s) em {lidos} PDP(s) lido(s)"
+        )
+        return out
+
+    # ------------------------------------------------------------------
     # Estratégia 2: XHR interception (Algolia + APIs internas)
     # ------------------------------------------------------------------
 
@@ -1930,6 +2180,13 @@ class LeroyMerlinScraper(BaseScraper):
         """
         all_records: List[Dict[str, Any]] = []
         self._setup_xhr_intercept()
+        # Patrocinados: estado da keyword (os PDPs abertos durante o parse
+        # anotam a prateleira de anúncio deles enquanto `_ads_kw` está setado).
+        self._ads_kw = keyword
+        self._ads_pdp = {}
+        self._ads_pdp_lidos = {}
+        self._ads_pdp_rolados = set()
+        html_busca_p1: Optional[str] = None
 
         for page in range(1, page_limit + 1):
             url = self._build_url(keyword, page)
@@ -1977,6 +2234,8 @@ class LeroyMerlinScraper(BaseScraper):
                     self._last_screenshot_busca = self.capture_screenshot(identifier=f"{keyword}_p{page}", tipo="busca")
 
                     html = self._page.content()
+                    if page == 1:
+                        html_busca_p1 = html
 
                     if self._captured_products:
                         logger.info(
@@ -2004,6 +2263,21 @@ class LeroyMerlinScraper(BaseScraper):
 
             if page < page_limit:
                 self._random_delay()
+
+        # --- Patrocinados (busca + PDP): a Algolia não tem anúncio nenhum ---
+        if all_records:
+            try:
+                ads = self._patrocinados_serp(keyword, html_busca_p1)
+                novos = self._aplicar_patrocinados_serp(
+                    ads, all_records, keyword, keyword_category_map
+                )
+                self._amostrar_ads_pdp(all_records)
+                all_records.extend(novos)
+                all_records.extend(self._registros_ads_pdp(keyword))
+            except Exception as exc:
+                # Anúncio é camada extra: falha aqui nunca derruba o orgânico.
+                logger.warning(f"[{self.platform_name}] Patrocinados de '{keyword}' falharam: {exc}")
+        self._ads_kw = None
 
         self._log_search_result(keyword, len(all_records))
         logger.info(json.dumps({
