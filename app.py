@@ -8033,10 +8033,9 @@ def page_sov_patrocinado() -> None:
         _como_ler(
             "A análise considera todas as plataformas coletadas. Hoje quem "
             "marca anúncio patrocinado na coleta é Mercado Livre (Product Ads), "
-            "Amazon (AMS) e Leroy Merlin (em validação contra o site desde "
-            "Nov/2026 — Leroy zerada aqui ainda pode ser falha de leitura, não "
-            "ausência de mídia: prateleira \"Produtos "
-            "patrocinados\" da busca e dos PDPs — o anúncio de PDP fica na "
+            "Amazon (AMS) e Leroy Merlin (desde Nov/2026: prateleira \"Produtos "
+            "patrocinados\" da busca, que fica no FIM da página — Posição Geral "
+            "depois dos orgânicos —, e a dos PDPs, ainda em validação, na "
             "keyword `PDP · <busca>`); Google Shopping/Magalu/Shopee ainda não "
             "sinalizam o flag na SERP capturada. A cobertura real por plataforma "
             "aparece no expander de cobertura e na página 🩺 Saúde do Dado."

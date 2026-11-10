@@ -454,3 +454,54 @@ class TestAbrirBusca:
         scraper._page = _AbaFalsa()
         itens = scraper._patrocinados_serp("ar condicionado")
         assert [i.product_id for i in itens] == ["91000001", "91000002"]
+
+
+
+# --- Posição da prateleira na página (3º probe, 10/11/2026) ------------------
+from utils.leroy_ads import organic_before_shelf
+
+
+def _card_gtm(pid: int, lista: str, parceiro: str, preco: str = "1000") -> str:
+    return (
+        f'<div data-testid="ProductThumb"><a data-gtm-item-list="{lista}" '
+        f'data-gtm-partner-name="{parceiro}" data-gtm-item-price="{preco}" '
+        f'href="https://www.leroymerlin.com.br/ar-{pid}_{pid}"><h3>Ar Condicionado {pid}</h3></a></div>'
+    )
+
+
+# Como a busca real: grid orgânico (algolia) primeiro, prateleira no fim.
+BUSCA_REAL = (
+    "<title>Resultados da Busca por: ar condicionado</title><main><div>"
+    + "".join(_card_gtm(9100000 + i, "entry-key-ar condicionado", "algolia") for i in range(36))
+    + "</div><h2>Produtos Patrocinados</h2><div>"
+    + _card_gtm(3165336429, "Produtos Patrocinados", "retail media", "2169")
+    + _card_gtm(3884636121, "Produtos Patrocinados", "retail media", "3444")
+    + "</div></main>"
+)
+
+
+class TestPosicaoDaPrateleira:
+    def test_organicos_antes_da_prateleira(self):
+        assert organic_before_shelf(BUSCA_REAL) == 36
+        assert [i.product_id for i in extract_sponsored(BUSCA_REAL)] == ["3165336429", "3884636121"]
+
+    def test_prateleira_no_topo_nao_desloca(self):
+        topo = (
+            "<h2>Produtos Patrocinados</h2>"
+            + _card_gtm(1111111, "Produtos Patrocinados", "retail media")
+            + _card_gtm(2222222, "entry-key-x", "algolia")
+        )
+        assert organic_before_shelf(topo) == 0
+
+    def test_sem_anuncio_marcado_nao_mede(self):
+        assert organic_before_shelf(_card_gtm(2222222, "entry-key-x", "algolia")) == 0
+        assert organic_before_shelf(None) == 0
+
+    def test_anuncio_no_fim_da_pagina_nao_disputa_o_top10(self, scraper):
+        itens = scraper._patrocinados_serp("ar condicionado", BUSCA_REAL)
+        novos = scraper._aplicar_patrocinados_serp(
+            itens, [], "ar condicionado", {"Genérica": ["ar condicionado"]},
+        )
+        assert [r["Posição Patrocinada"] for r in novos] == [1, 2]
+        assert [r["Posição Geral"] for r in novos] == [37, 38]
+        assert novos[0]["Preço (R$)"] == pytest.approx(2169.0)

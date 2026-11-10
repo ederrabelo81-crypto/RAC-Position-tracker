@@ -45,6 +45,7 @@ __all__ = [
     "leroy_product_id",
     "is_not_found_page",
     "is_search_results_url",
+    "organic_before_shelf",
     "serp_url_template",
     "fill_serp_template",
 ]
@@ -436,3 +437,40 @@ def is_search_results_url(url: Optional[str]) -> bool:
         return False
     q = parse_qs(parsed.query)
     return any(q.get(k, [""])[0].strip() for k in ("term", "searchTerm", "q"))
+
+
+_RE_ORGANICO = re.compile(r"algolia", re.I)
+
+
+def organic_before_shelf(html: Optional[str]) -> int:
+    """Quantos produtos ORGÂNICOS a página mostra antes da prateleira de anúncio.
+
+    No dump real (10/11/2026) a prateleira "Produtos Patrocinados" fica DEPOIS
+    dos 36 produtos da busca (cards com ``data-gtm-partner-name="algolia"``).
+    Gravar o anúncio com ``Posição Geral`` 1..10 o poria no "top-10" do 📣
+    Share of Voice, quando o consumidor só o vê depois de rolar a página
+    inteira. Este número é o deslocamento da posição geral dos anúncios.
+
+    Args:
+        html: HTML renderizado da página de busca.
+
+    Returns:
+        Produtos orgânicos distintos antes do 1º anúncio (0 se a prateleira
+        vem antes do grid, ou se a página não marca os orgânicos).
+    """
+    if not html:
+        return 0
+    soup = BeautifulSoup(html, "html.parser")
+    vistos: Dict[str, None] = {}
+    for a in soup.find_all("a", href=True):
+        lista = a.get("data-gtm-item-list") or ""
+        parceiro = a.get("data-gtm-partner-name") or ""
+        if _RE_LABEL.search(lista) or re.search("retail media", parceiro, re.I):
+            break
+        if _RE_ORGANICO.search(parceiro):
+            pid = leroy_product_id(a["href"])
+            if pid:
+                vistos.setdefault(pid, None)
+    else:
+        return 0  # nenhum anúncio marcado: sem como medir
+    return len(vistos)

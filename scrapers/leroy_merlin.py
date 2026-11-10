@@ -54,6 +54,7 @@ from utils.leroy_ads import (
     is_not_found_page,
     is_search_results_url,
     leroy_product_id,
+    organic_before_shelf,
     serp_url_template,
 )
 from utils.leroy_price import PdpPrice, extract_pdp_price
@@ -335,6 +336,9 @@ class LeroyMerlinScraper(BaseScraper):
         # quando a montada por `_build_url` cai na página de erro.
         self._serp_template: Optional[str] = None
         self._serp_busca_quebrada = False   # o campo de busca também falhou
+        # Orgânicos que a página mostra ANTES da prateleira de patrocinados da
+        # busca em curso — desloca a Posição Geral dos anúncios.
+        self._ads_serp_offset = 0
         self._seller_metrics: dict[str, int] = {
             "total_hits": 0,
             "marketplace_sellers_absent": 0,    # 1P puro
@@ -1904,10 +1908,12 @@ class LeroyMerlinScraper(BaseScraper):
         Returns:
             Anúncios na ordem da prateleira (vazio se não houver, ou sem browser).
         """
+        self._ads_serp_offset = 0
         if not _ADS_SERP_ENABLED:
             return []
         itens = extract_sponsored(html) if html else []
         if itens:
+            self._ads_serp_offset = organic_before_shelf(html)
             return itens
         page = self._pagina_pdp()
         if page is None:
@@ -1916,6 +1922,8 @@ class LeroyMerlinScraper(BaseScraper):
         if html is None:
             return []
         itens = extract_sponsored(html)
+        if itens:
+            self._ads_serp_offset = organic_before_shelf(html)
         if not itens:
             logger.info(f"[{self.platform_name}] Busca '{keyword}': nenhum patrocinado na página")
         return itens
@@ -1992,7 +2000,10 @@ class LeroyMerlinScraper(BaseScraper):
         orgânica (``Posição Patrocinada`` + ``Patrocinado? = Sim``): a chave
         única de `coletas` é (keyword, produto), e uma segunda linha do mesmo
         produto seria descartada no banco — o anúncio sumiria. O resto vira
-        linha própria, com ``Posição Geral = Posição Patrocinada = slot``.
+        linha própria, com ``Posição Patrocinada = slot`` e ``Posição Geral =
+        slot + orgânicos exibidos antes da prateleira`` (`_ads_serp_offset`):
+        na busca real a prateleira vem DEPOIS dos 36 produtos, e o anúncio não
+        pode disputar o top-10 como se estivesse no topo.
 
         Returns:
             Registros novos (só os anúncios que não estavam no orgânico).
@@ -2019,7 +2030,7 @@ class LeroyMerlinScraper(BaseScraper):
                 keyword=keyword,
                 keyword_category_map=keyword_category_map,
                 title=item.title,
-                position_general=item.slot,
+                position_general=self._ads_serp_offset + item.slot,
                 position_organic=None,
                 position_sponsored=item.slot,
                 price_float=item.price,
