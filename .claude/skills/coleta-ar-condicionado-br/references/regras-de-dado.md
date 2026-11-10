@@ -46,6 +46,7 @@ BTUs. O classificador (`offer_kind.py`) separa:
 | `PARCIAL` | só a condensadora ou só a evaporadora |
 | `MULTIPLO` | "kit 2 ar condicionado" |
 | `COM_INSTALACAO` | aparelho + serviço |
+| `FORA_ESCOPO` | não é ar condicionado (geladeira "Inverter" patrocinada) |
 
 Na dúvida ele responde `UNIDADE`: só exclui com evidência. Os outros tipos
 continuam na coleta (posição, presença), só não entram em preço.
@@ -68,7 +69,9 @@ substitui preço à vista ausente.
 
 Geladeira, lavadora e micro-ondas também são "Inverter". Termo que não é
 exclusivo de ar condicionado só classifica junto de "ar condicionado", "split"
-ou da capacidade em BTU (`is_valid_product`).
+ou da capacidade em BTU (`is_valid_product`). O que não passa nesse filtro
+fica na coleta como `FORA_ESCOPO`: a posição que ocupou é fato da página, mas
+não entra em preço nem em presença de marca.
 
 ## 9. Posição é ordinal
 

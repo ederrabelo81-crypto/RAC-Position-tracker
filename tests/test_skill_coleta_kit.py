@@ -327,6 +327,17 @@ class TestSaida:
         r = self._registro(titulo="Kit Instalação Ar Condicionado Split 9000 a 12000 BTUs 3m")
         assert r["Tipo Anúncio"] != "UNIDADE"
 
+    def test_geladeira_inverter_fica_marcada_fora_de_escopo(self):
+        # A busca aceita anúncio de qualquer produto; a linha fica (a posição
+        # é fato da página) mas não pode contar como ar condicionado.
+        r = self._registro(titulo="Geladeira Midea Frost Free Inverter 411L")
+        assert r["Tipo Anúncio"] == "FORA_ESCOPO"
+        assert r["Posição Geral"] == 1
+
+    def test_csv_nao_sobrescreve_rodada_do_mesmo_minuto(self, tmp_path):
+        nome = gravar_csv([], tmp_path, "amazon").name
+        assert re.fullmatch(r"coleta_amazon_\d{8}_\d{6}\.csv", nome)
+
     def test_buy_box_do_pdp_leva_a_fonte(self):
         r = self._registro(buy_box_seller="Loja Z", fonte_buy_box="rotulo")
         assert (r["Buy Box Seller"], r["Fonte Buy Box"]) == ("Loja Z", "rotulo")

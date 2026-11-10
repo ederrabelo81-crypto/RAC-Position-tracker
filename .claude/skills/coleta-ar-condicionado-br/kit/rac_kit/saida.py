@@ -11,7 +11,12 @@ from typing import Any, Dict, Iterable, List, Optional
 from .offer_identity import build_identity
 from .offer_kind import classify_offer
 from .sites import Site
-from .texto import extract_brand, extract_btu, get_turno, now_brt
+from .texto import extract_brand, extract_btu, get_turno, is_valid_product, now_brt
+
+# Produto que a busca devolveu mas não é ar condicionado (anúncio de geladeira
+# "Inverter", por exemplo). A linha fica — a posição que ele ocupa é fato da
+# página — mas com este tipo, para não entrar em preço nem em share de marca.
+FORA_ESCOPO = "FORA_ESCOPO"
 
 COLUNAS: List[str] = [
     "Data", "Turno", "Horário", "Plataforma", "Keyword Buscada",
@@ -33,7 +38,7 @@ def montar_registro(
     ``Buy Box Seller`` só é preenchido quando foi OBSERVADO (no card ou no
     PDP). ``Tipo Anúncio`` separa o aparelho (UNIDADE) de kit de instalação,
     peça, meia unidade e pacote com 2+ aparelhos, que não entram em série de
-    preço.
+    preço — e marca como ``FORA_ESCOPO`` o que nem é ar condicionado.
     """
     agora = momento or now_brt()
     titulo = card.get("titulo") or ""
@@ -54,7 +59,10 @@ def montar_registro(
         "Marca Monitorada": extract_brand(titulo),
         "Produto / SKU": titulo or None,
         "BTU": extract_btu(titulo),
-        "Tipo Anúncio": classify_offer(titulo, url),
+        "Tipo Anúncio": (
+            FORA_ESCOPO if titulo and not is_valid_product(titulo)
+            else classify_offer(titulo, url)
+        ),
         "Posição Orgânica": card.get("posicao_organica"),
         "Posição Patrocinada": card.get("posicao_patrocinada"),
         "Posição Geral": card.get("posicao_geral"),
@@ -73,7 +81,7 @@ def montar_registro(
 def gravar_csv(registros: Iterable[Dict[str, Any]], pasta: Path, rotulo: str) -> Path:
     """Grava o CSV (``;`` + UTF-8 com BOM, que o Excel brasileiro abre direto)."""
     pasta.mkdir(parents=True, exist_ok=True)
-    caminho = pasta / f"coleta_{rotulo}_{now_brt():%Y%m%d_%H%M}.csv"
+    caminho = pasta / f"coleta_{rotulo}_{now_brt():%Y%m%d_%H%M%S}.csv"
     with caminho.open("w", newline="", encoding="utf-8-sig") as f:
         escritor = csv.DictWriter(f, fieldnames=COLUNAS, delimiter=";")
         escritor.writeheader()

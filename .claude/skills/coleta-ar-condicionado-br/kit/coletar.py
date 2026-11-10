@@ -68,6 +68,10 @@ def main() -> int:
     )
     log = logging.getLogger("coletar")
 
+    if args.paginas < 1:
+        parser.error("--paginas precisa ser 1 ou mais")
+    if args.buy_box < 0:
+        parser.error("--buy-box não pode ser negativo")
     keywords = _keywords(args)
     if not keywords:
         parser.error("informe --keyword ou --keywords-arquivo")
