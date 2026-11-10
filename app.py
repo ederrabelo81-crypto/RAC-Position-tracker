@@ -7978,10 +7978,12 @@ def page_sov_patrocinado() -> None:
         st.info("Defina os filtros na barra lateral e clique em **Carregar SoV**.")
         _como_ler(
             "A análise considera todas as plataformas coletadas. Hoje quem "
-            "marca anúncio patrocinado na coleta é Mercado Livre (Product Ads) e "
-            "Amazon (AMS); Google Shopping/Magalu/Shopee ainda não sinalizam o "
-            "flag na SERP capturada. A cobertura real por plataforma aparece no "
-            "expander de cobertura e na página 🩺 Saúde do Dado."
+            "marca anúncio patrocinado na coleta é Mercado Livre (Product Ads), "
+            "Amazon (AMS) e Leroy Merlin (desde Nov/2026: prateleira \"Produtos "
+            "patrocinados\" da busca e dos PDPs — o anúncio de PDP fica na "
+            "keyword `PDP · <busca>`); Google Shopping/Magalu/Shopee ainda não "
+            "sinalizam o flag na SERP capturada. A cobertura real por plataforma "
+            "aparece no expander de cobertura e na página 🩺 Saúde do Dado."
         )
         return
 

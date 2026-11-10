@@ -42,6 +42,9 @@ __all__ = [
     "TIPO_MARCA_PROPRIA",
     "TIPO_MARCA_CONCORRENTE",
     "TIPO_VITRINE_DEALER",
+    "TIPO_ANUNCIO_PDP",
+    "CATEGORIA_PDP",
+    "pdp_keyword",
     "TIPOS_BUSCA",
     "TIPOS_BUSCA_REAIS",
     "ICONE_TIPO",
@@ -59,6 +62,14 @@ TIPO_GENERICA = "Genérica"
 TIPO_MARCA_PROPRIA = "Marca própria"
 TIPO_MARCA_CONCORRENTE = "Marca concorrente"
 TIPO_VITRINE_DEALER = "Vitrine de dealer"
+#: Anúncio exibido DENTRO de um PDP (Leroy Merlin, Nov/2026). Não é busca: a
+#: prateleira de patrocinados do PDP é gravada com ``keyword = "PDP · <busca>"``
+#: (a busca que levou ao PDP) e ``categoria = CATEGORIA_PDP``. Keyword própria
+#: porque a chave única de `coletas` é (keyword, produto): na keyword da busca o
+#: anúncio do PDP colidiria com a linha orgânica do mesmo produto e sumiria.
+TIPO_ANUNCIO_PDP = "Anúncio em PDP"
+CATEGORIA_PDP = "Patrocinado PDP"
+_PDP_PREFIX = "PDP · "
 
 #: Ordem de exibição — a genérica primeiro porque é onde a disputa acontece.
 TIPOS_BUSCA: tuple = (
@@ -66,10 +77,11 @@ TIPOS_BUSCA: tuple = (
     TIPO_MARCA_PROPRIA,
     TIPO_MARCA_CONCORRENTE,
     TIPO_VITRINE_DEALER,
+    TIPO_ANUNCIO_PDP,
 )
 
 #: Tipos que são BUSCA de fato. A vitrine de dealer fica de fora: ela é o
-#: filtro de plataforma/canal disfarçado de keyword.
+#: filtro de plataforma/canal disfarçado de keyword. O anúncio em PDP também.
 TIPOS_BUSCA_REAIS: tuple = TIPOS_BUSCA[:3]
 
 ICONE_TIPO: Dict[str, str] = {
@@ -77,6 +89,7 @@ ICONE_TIPO: Dict[str, str] = {
     TIPO_MARCA_PROPRIA: "🟦",
     TIPO_MARCA_CONCORRENTE: "🥊",
     TIPO_VITRINE_DEALER: "🏪",
+    TIPO_ANUNCIO_PDP: "📌",
 }
 
 #: Pseudo-opções do multiselect de keyword: escolher uma delas equivale a
@@ -169,6 +182,20 @@ _RE_GRUPO_MIDEA = re.compile(
 )
 
 
+def pdp_keyword(keyword: str) -> str:
+    """Keyword sob a qual se grava o anúncio visto no PDP aberto a partir de `keyword`.
+
+    Example:
+        >>> pdp_keyword("ar condicionado 12000 btus")
+        'PDP · ar condicionado 12000 btus'
+    """
+    return f"{_PDP_PREFIX}{keyword}"
+
+
+def _is_pdp_keyword(kw_norm: str, categoria: Optional[str]) -> bool:
+    return categoria == CATEGORIA_PDP or kw_norm.startswith(_norm(_PDP_PREFIX))
+
+
 def keyword_intent(keyword: Optional[str], categoria: Optional[str] = None) -> str:
     """Intenção da busca (a categoria da coleta), com fallback pelo config.
 
@@ -185,9 +212,10 @@ def keyword_intent(keyword: Optional[str], categoria: Optional[str] = None) -> s
 
 
 def classify_keyword(keyword: Optional[str], categoria: Optional[str] = None) -> str:
-    """Classifica a keyword num dos quatro tipos de busca.
+    """Classifica a keyword num dos tipos de `TIPOS_BUSCA`.
 
-    Precedência: vitrine de dealer (categoria ``Dealers`` ou nome de loja
+    Precedência: anúncio em PDP (prefixo ``PDP · `` ou categoria
+    ``Patrocinado PDP``) → vitrine de dealer (categoria ``Dealers`` ou nome de loja
     própria) → categoria dirigida a marca (própria vs. concorrente pelo texto)
     → marca citada no texto de uma keyword sem categoria → genérica.
 
@@ -206,6 +234,9 @@ def classify_keyword(keyword: Optional[str], categoria: Optional[str] = None) ->
     """
     kw = _norm(keyword)
     cat = keyword_intent(keyword, categoria)
+
+    if _is_pdp_keyword(kw, cat):
+        return TIPO_ANUNCIO_PDP
 
     if cat == _CATEGORIA_DEALER or (kw and kw in _DEALERS):
         return TIPO_VITRINE_DEALER
@@ -266,8 +297,9 @@ def keyword_options(
     Args:
         keywords: valores distintos de `coletas.keyword`.
         categorias: {keyword: categoria} observado, quando disponível.
-        incluir_dealers: mantém as vitrines de dealer na lista. Padrão False:
-            elas são filtradas pelo filtro de Plataforma/Canal, não por busca.
+        incluir_dealers: mantém as vitrines de dealer e os anúncios em PDP na
+            lista. Padrão False: não são buscas (a vitrine se filtra por
+            Plataforma/Canal; o anúncio em PDP aparece no 📣 Share of Voice).
 
     Returns:
         ``GROUP_TOKENS`` dos tipos presentes + keywords ordenadas.
@@ -276,7 +308,8 @@ def keyword_options(
     if not incluir_dealers:
         ordenadas = [
             k for k in ordenadas
-            if classify_keyword(k, (categorias or {}).get(k)) != TIPO_VITRINE_DEALER
+            if classify_keyword(k, (categorias or {}).get(k))
+            not in (TIPO_VITRINE_DEALER, TIPO_ANUNCIO_PDP)
         ]
     presentes = {classify_keyword(k, (categorias or {}).get(k)) for k in ordenadas}
     atalhos = [tok for tok, tipo in GROUP_TOKENS.items() if tipo in presentes]
