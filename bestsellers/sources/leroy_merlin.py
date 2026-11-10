@@ -56,6 +56,7 @@ from loguru import logger
 from bestsellers.base import BestSellerSource
 from bestsellers.config import LEROY_CATEGORIA_URL
 from bestsellers.models import BestSellerItem, TIPO_FORA_ESCOPO, classificar_tipo
+from bestsellers.sources.leroy_ordenacao import ordenacao_da_pagina, ordenado_por_vendas
 from scrapers.leroy_merlin import (
     _ALGOLIA_API_KEY,
     _ALGOLIA_APP_ID,
@@ -70,6 +71,30 @@ _URL_ALGOLIA = (
     f"?x-algolia-application-id={_ALGOLIA_APP_ID}"
     f"&x-algolia-api-key={_ALGOLIA_API_KEY}"
 )
+
+
+def _url_indice(indice: str) -> str:
+    """URL de query Algolia para um índice (réplica) dado."""
+    return (
+        f"https://{_ALGOLIA_APP_ID}-dsn.algolia.net"
+        f"/1/indexes/{indice}/query"
+        f"?x-algolia-application-id={_ALGOLIA_APP_ID}"
+        f"&x-algolia-api-key={_ALGOLIA_API_KEY}"
+    )
+
+
+# Índice PADRÃO (relevância). Nunca serve de série de mais vendidos — ver o
+# aviso em `bestsellers/config.py` (regressão de 26/08/2026).
+_INDICE_RELEVANCIA = "production_products"
+
+# Nomes de réplica Algolia citados pela página (URL/corpo das queries do JS).
+_RE_INDICE = re.compile(r"production_products[A-Za-z0-9_]*")
+
+# Marcador do endpoint quando a réplica foi DESCOBERTA na página com a
+# ordenação "Mais vendidos" confirmada no controle da tela (Nov/2026). Está em
+# `parametros_ordenacao` da fonte.
+MARCADOR_ORDENACAO_UI = "ordenacao_ui=mais_vendidos"
+
 _TERMO = "ar condicionado"
 _HITS_POR_PAGINA = 36
 _TIMEOUT = 8
@@ -117,6 +142,9 @@ class LeroyMerlinBestSellers(BestSellerSource):
         super().__init__(headless=headless)
         # Instanciado só pela lógica de seller/URL — não abre browser.
         self._leroy: Optional[LeroyMerlinScraper] = None
+        # Réplica de vendas em uso. Começa na conhecida; troca só pela
+        # descoberta na página com "Mais vendidos" confirmado na tela.
+        self._indice: str = _INDICE_MAIS_VENDIDOS
 
     def _abrir(self) -> None:
         self._leroy = LeroyMerlinScraper(headless=self.headless)
@@ -139,6 +167,31 @@ class LeroyMerlinBestSellers(BestSellerSource):
         # ainda vale como semente do fallback se a âncora não pegar. Uma chamada
         # Algolia a mais, barata.
         sonda = self._consultar(0, facet=None)
+        if not sonda:
+            # 07/10–10/11/2026: a réplica `production_products_most_sales`
+            # passou a responder 200 com ZERO hits (sem 404) enquanto a coleta
+            # de oferta seguia lendo `production_products` normalmente. A Leroy
+            # trocou a réplica de vendas; a página sabe qual é.
+            logger.warning(
+                f"[{self.nome}] Réplica '{self._indice}' devolveu 0 hits — "
+                "procurando a réplica de 'Mais vendidos' na própria página."
+            )
+            novo = self._descobrir_indice_pela_pagina()
+            if not novo:
+                raise RuntimeError(
+                    f"réplica Algolia '{self._indice}' devolveu 0 hits e a "
+                    "réplica de 'Mais vendidos' não foi descoberta na página "
+                    f"({_CATEGORIA_URL}). Rode com RAC_LOCAL_CHROME=1 (a "
+                    "descoberta usa o Chrome local) e veja logs/leroy_maisvendidos_*.html"
+                )
+            self._indice = novo
+            self.endpoint = f"{_url_indice(novo)} [{MARCADOR_ORDENACAO_UI}]"
+            sonda = self._consultar(0, facet=None)
+            if not sonda:
+                raise RuntimeError(
+                    f"réplica descoberta '{novo}' também devolveu 0 hits para "
+                    f"'{_TERMO}'."
+                )
         facet = self._descobrir_facet(sonda)
 
         if facet:
@@ -290,7 +343,10 @@ class LeroyMerlinBestSellers(BestSellerSource):
             payload["query"] = _TERMO
         try:
             resposta = requests.post(
-                _URL_ALGOLIA, headers=_ALGOLIA_HEADERS, json=payload, timeout=_TIMEOUT
+                _url_indice(self._indice),
+                headers=_ALGOLIA_HEADERS,
+                json=payload,
+                timeout=_TIMEOUT,
             )
         except Exception as exc:
             raise RuntimeError(f"Algolia inacessível: {exc}") from exc
@@ -301,7 +357,7 @@ class LeroyMerlinBestSellers(BestSellerSource):
             # caíssemos no índice padrão. Tipo próprio: é a única falha que a
             # coleta ancorada NÃO degrada para texto (o texto usa o mesmo índice).
             raise _IndiceInexistente(
-                f"índice '{_INDICE_MAIS_VENDIDOS}' não existe mais (HTTP 404). "
+                f"índice '{self._indice}' não existe mais (HTTP 404). "
                 "A Leroy renomeou a ordenação — confira o parâmetro sortBy na "
                 "UI antes de trocar a constante."
             )
@@ -316,6 +372,167 @@ class LeroyMerlinBestSellers(BestSellerSource):
                 f"hits (página {pagina + 1}/{dados.get('nbPages', '?')})"
             )
         return hits
+
+    # ------------------------------------------------------------------
+    # Descoberta da réplica de vendas pela página (Nov/2026)
+    # ------------------------------------------------------------------
+
+    def _descobrir_indice_pela_pagina(self) -> Optional[str]:
+        """
+        Abre a prateleira, escolhe "Ordenar por: Mais vendidos" e lê qual
+        réplica Algolia a própria página consulta.
+
+        A prova de ordenação vem da TELA (`ordenado_por_vendas`, o controle
+        Radix "Ordenar por"); o nome da réplica vem das requisições que o JS
+        da página faz à Algolia DEPOIS da escolha. Sem a ordenação confirmada
+        na tela, nada é devolvido — e `production_products` (relevância) nunca
+        é aceita.
+
+        Returns:
+            Nome da réplica de vendas, ou None.
+        """
+        if self._leroy is None:
+            return None
+        try:
+            page = self._leroy._pagina_pdp()
+        except Exception as exc:
+            logger.warning(f"[{self.nome}] Sem aba de browser para a descoberta: {exc}")
+            return None
+        if page is None:
+            return None
+
+        vistos: List[str] = []
+
+        def _na_requisicao(req) -> None:
+            try:
+                if "algolia" not in (req.url or ""):
+                    return
+                vistos.extend(_RE_INDICE.findall(f"{req.url} {req.post_data or ''}"))
+            except Exception:
+                pass
+
+        page.on("request", _na_requisicao)
+        try:
+            try:
+                page.goto(_CATEGORIA_URL, wait_until="domcontentloaded", timeout=45_000)
+                page.wait_for_load_state("networkidle", timeout=15_000)
+            except Exception as exc:
+                logger.debug(f"[{self.nome}] prateleira: {exc}")
+
+            if not ordenado_por_vendas(self._html(page)):
+                antes = len(vistos)
+                if not self._escolher_mais_vendidos(page):
+                    self._dump_leroy("sem_controle", self._html(page))
+                    logger.warning(
+                        f"[{self.nome}] Não achei o 'Ordenar por' → 'Mais "
+                        "vendidos' na prateleira."
+                    )
+                    return None
+                depois = vistos[antes:]
+            else:
+                depois = list(vistos)
+
+            html = self._html(page)
+            lida = ordenacao_da_pagina(html)
+            if not ordenado_por_vendas(html):
+                self._dump_leroy("sem_ordenacao", html)
+                logger.warning(
+                    f"[{self.nome}] A tela não confirma 'Mais vendidos' "
+                    f"(lido: {lida!r}) — réplica não descoberta."
+                )
+                return None
+
+            # Também vale o nome citado no HTML (config do InstantSearch).
+            candidatos = depois + _RE_INDICE.findall(html)
+            escolhido = self._escolher_indice(candidatos)
+            if escolhido:
+                logger.success(
+                    f"[{self.nome}] Réplica de 'Mais vendidos' descoberta na "
+                    f"página: '{escolhido}' (tela: {lida!r})."
+                )
+            else:
+                self._dump_leroy("sem_indice", html)
+                logger.warning(
+                    f"[{self.nome}] Tela em 'Mais vendidos', mas nenhuma réplica "
+                    f"diferente da de relevância nas queries ({sorted(set(candidatos))})."
+                )
+            return escolhido
+        finally:
+            try:
+                page.remove_listener("request", _na_requisicao)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _escolher_indice(candidatos: List[str]) -> Optional[str]:
+        """
+        A réplica de vendas entre os nomes vistos.
+
+        Descarta a de relevância e prefere nome com semântica de venda; entre
+        empates, a MAIS RECENTE (a última query depois da escolha na tela).
+        """
+        validos = [c for c in candidatos if c and c != _INDICE_RELEVANCIA]
+        if not validos:
+            return None
+        de_venda = [c for c in validos if re.search(r"sale|vend|sold|best|popular|top", c, re.I)]
+        return (de_venda or validos)[-1]
+
+    def _escolher_mais_vendidos(self, page: Any) -> bool:
+        """Abre o combobox "Ordenar por" e clica em "Mais vendidos"."""
+        rotulo = re.compile(r"mais\s+vendid", re.I)
+        gatilhos = (
+            page.locator("[role='combobox']").filter(
+                has_text=re.compile(r"relev|vendid|pre[cç]o|recentes|avalia|desconto", re.I)
+            ),
+            page.locator("[role='combobox']"),
+        )
+        for gatilho in gatilhos:
+            try:
+                n = min(gatilho.count(), 4)
+            except Exception:
+                continue
+            for i in range(n):
+                try:
+                    gatilho.nth(i).click(timeout=5_000)
+                    opcao = page.get_by_role("option", name=rotulo).first
+                    opcao.click(timeout=5_000)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=15_000)
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(2_000)
+                    if ordenado_por_vendas(self._html(page)):
+                        return True
+                except Exception:
+                    try:
+                        page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+        return False
+
+    @staticmethod
+    def _html(page: Any) -> str:
+        try:
+            return page.content() or ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _dump_leroy(rotulo: str, html: str) -> None:
+        """Evidência para a próxima conferência (logs/leroy_maisvendidos_*.html)."""
+        if not html:
+            return
+        try:
+            from pathlib import Path
+            import time as _time
+
+            pasta = Path("logs")
+            pasta.mkdir(parents=True, exist_ok=True)
+            caminho = pasta / f"leroy_maisvendidos_{rotulo}_{_time.strftime('%Y%m%d_%H%M%S')}.html"
+            caminho.write_text(html[:2_000_000], encoding="utf-8")
+            logger.info(f"[Leroy Merlin] HTML salvo em {caminho}")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Descoberta de facet de categoria

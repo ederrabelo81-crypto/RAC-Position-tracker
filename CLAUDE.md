@@ -74,7 +74,10 @@ python utils/session_grabber.py --site shopee
 > (`bestsellers/cobertura.py`): lista que fica fora de ≥ 2 dias de coleta
 > seguidos — dias em que OUTRAS fontes gravaram — vira alerta 🟠 no Telegram
 > (exit 2, mesmo crônica). Foi assim que a **Leroy Merlin, parada desde
-> 07/10/2026**, apareceu. As que nunca coletaram vão só para o relatório
+> 07/10/2026**, apareceu. Causa (10/11/2026): a réplica Algolia
+> `production_products_most_sales` passou a responder 200 com 0 hits; a fonte
+> agora descobre a réplica de "Mais vendidos" na própria prateleira (Chrome
+> local, ordenação confirmada no controle da tela) e falha alto se não achar. As que nunca coletaram vão só para o relatório
 > (`nunca_coletaram` no JSON). O passo que falta é recadastrar
 > `RAC_Bestsellers` no agendador.
 >
