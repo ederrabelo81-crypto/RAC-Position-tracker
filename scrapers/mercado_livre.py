@@ -1830,6 +1830,8 @@ class MLScraper(BaseScraper):
             "conserto:\n"
             "  1) Logue o perfil dedicado (resolve o device-verification):\n"
             "     python scripts/setup_local_profile.py --site mercadolivre\n"
+            "     (fecha o Chrome de debug e abre o perfil SEM debug — o ML\n"
+            "     recusa o login com o DevTools exposto; logue, FECHE a janela)\n"
             "     (com ML_EMAIL/ML_PASSWORD no .env o turno tenta relogar sozinho"
             f" — desta vez: {self._relogin_status or 'não tentado'})\n"
             "  2) Confira o HTML salvo em logs/ml_gate_*.html — se ele tiver "
