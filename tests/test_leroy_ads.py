@@ -247,3 +247,19 @@ class TestTaxonomiaPdp:
     def test_fora_do_filtro_de_busca(self):
         opcoes = keyword_options(["ar condicionado", pdp_keyword("ar condicionado")])
         assert pdp_keyword("ar condicionado") not in opcoes
+
+
+class TestSovSeparaPdp:
+    def test_anuncio_de_pdp_fica_fora_das_metricas_de_busca(self):
+        """Linha de PDP não pode virar slot de busca no 📣 Share of Voice."""
+        import pandas as pd
+
+        import app
+
+        df = pd.DataFrame({
+            "keyword": ["ar condicionado", pdp_keyword("ar condicionado"), "outra"],
+            "categoria": ["Genérica", CATEGORIA_PDP, CATEGORIA_PDP],
+        })
+        pdp, busca = app._split_anuncios_pdp(df)
+        assert len(pdp) == 2
+        assert busca["keyword"].tolist() == ["ar condicionado"]
