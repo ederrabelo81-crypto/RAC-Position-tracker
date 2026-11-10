@@ -97,8 +97,10 @@ python utils/session_grabber.py --site shopee
 > de verdade. Ela nunca coletou.
 >
 > **Causa (10/11/2026):** a Casas Bahia saiu da VTEX (URL de produto virou
-> `/<slug>/p/<id>`; a coleta de oferta em produção só funciona pelo DOM, 0 buy
-> box). A API IS `orders_desc` responde 200 com a vitrine em HTML — não é
+> `/<slug>/p/<id>`). Efeito também na coleta de OFERTA: o fallback VTEX
+> (`sellers[]`/buy box) segue no código de `scrapers/casas_bahia.py`, mas em
+> produção (09–10/11/2026) não devolveu nada — 254–310 linhas/turno, todas pelo
+> DOM, 0 com buy box. A API IS `orders_desc` responde 200 com a vitrine em HTML — não é
 > Akamai e sessão não resolve. A fonte agora lê a **vitrine** no Chrome real,
 > com a ordenação "Mais vendidos" **confirmada** (rótulo selecionado na tela ou
 > parâmetro que o próprio site escreveu na URL); sem confirmação não grava nada
