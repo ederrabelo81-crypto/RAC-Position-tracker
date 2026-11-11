@@ -8005,7 +8005,11 @@ def _sov_share_plataforma_marca(df: pd.DataFrame) -> pd.DataFrame:
     """
     if df.empty or not {"_spon", "plataforma", "marca"} <= set(df.columns):
         return pd.DataFrame(columns=["plataforma", "marca", "Anúncios", "Share na plataforma (%)"])
-    ads = df[df["_spon"]]
+    from utils.shelf_insights import dedup_snapshot
+
+    # Gravação dupla de cada turno do PC até 30/09/2026 (run_id UUID4 + UUID5):
+    # sem dedup, o mesmo anúncio contaria duas vezes nos dias antigos.
+    ads = dedup_snapshot(df[df["_spon"]])
     if ads.empty:
         return pd.DataFrame(columns=["plataforma", "marca", "Anúncios", "Share na plataforma (%)"])
     out = (
@@ -8019,11 +8023,23 @@ def _sov_share_plataforma_marca(df: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
-def _render_sov_share_plataforma(df: pd.DataFrame, start_date, end_date) -> None:
+def _render_sov_share_plataforma(
+    df: pd.DataFrame, start_date, end_date, marcas_filtradas: bool = False,
+) -> None:
     """Share dos anúncios por marca em cada plataforma, todas as posições."""
-    share = _sov_share_plataforma_marca(df)
     st.divider()
     st.markdown("**Share dos anúncios por plataforma — todas as posições da busca**")
+    if marcas_filtradas:
+        # O filtro de Marcas é aplicado na consulta: o denominador perderia as
+        # outras marcas e a marca escolhida daria 100% em toda plataforma.
+        _empty_state(
+            "fora_cobertura",
+            "Share precisa de todas as marcas no denominador: com o filtro de "
+            "Marcas, a marca escolhida daria 100% em toda plataforma.",
+            acao="Limpe o filtro de Marcas e clique em Carregar SoV.",
+        )
+        return
+    share = _sov_share_plataforma_marca(df)
     if share.empty:
         st.info("Nenhum anúncio na busca no período/filtros.")
         return
@@ -8053,7 +8069,10 @@ def _render_sov_share_plataforma(df: pd.DataFrame, start_date, end_date) -> None
         "quadro conta todo anúncio da busca, esteja onde estiver na página. Na "
         "Leroy Merlin a prateleira \"Produtos Patrocinados\" fica no fim da "
         "página, depois dos 36 produtos orgânicos, então ela quase não aparece "
-        "no top-10. Os anúncios dentro de PDPs ficam na aba 📌 Anúncios em PDP."
+        "no top-10. Os anúncios dentro de PDPs ficam na aba 📌 Anúncios em PDP. "
+        "Entram também as buscas de marca (anúncio comprado na busca pelo nome "
+        "de uma marca é mídia de conquista/defesa); para medir só a disputa "
+        "neutra, ligue \"Excluir keywords de marca\" no topo da página."
     )
 
 
@@ -8095,7 +8114,10 @@ def page_sov_patrocinado() -> None:
                 keywords=sel_keywords or None,
                 limit=50000,
             )
-        st.session_state["sov_params"] = {"start_date": start_date, "end_date": end_date}
+        st.session_state["sov_params"] = {
+            "start_date": start_date, "end_date": end_date,
+            "marcas_filtradas": bool(sel_brands),
+        }
 
     df = st.session_state.get("sov_df")
     if df is None:
@@ -8263,7 +8285,10 @@ def page_sov_patrocinado() -> None:
                         "⬇️ Exportar top-10", key="sov_t10_csv",
                     )
 
-        _render_sov_share_plataforma(df, start_date, end_date)
+        _render_sov_share_plataforma(
+            df, start_date, end_date,
+            marcas_filtradas=bool(_sov_params.get("marcas_filtradas")),
+        )
 
     # ── Tab 2: keywords com maior densidade de patrocinados ─────────────────
     with tab_kw:

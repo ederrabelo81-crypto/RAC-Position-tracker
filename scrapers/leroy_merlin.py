@@ -1934,7 +1934,10 @@ class LeroyMerlinScraper(BaseScraper):
                 polling=200,
             )
         except Exception:
-            page.wait_for_timeout(500)
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                pass  # aba fechada: quem lê o HTML trata a falha
 
     def _patrocinados_serp(self, keyword: str, html: Optional[str] = None) -> List[SponsoredItem]:
         """Prateleira "Produtos patrocinados" da 1ª página de busca.
