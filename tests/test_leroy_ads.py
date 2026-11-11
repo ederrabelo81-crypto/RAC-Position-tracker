@@ -554,3 +554,70 @@ class TestProbePdp:
         codigo, dump = self._rodar(monkeypatch, tmp_path, self.PDP, None)
         assert codigo == 1
         assert not dump.exists()
+
+
+# --- Painel: a Leroy sumia do 📣 Share of Voice (11/11/2026) ----------------
+class TestSovSharePorPlataforma:
+    """Turno de 10/11/2026: 18 anúncios da busca gravados, 17 com Posição Geral
+    37+ (prateleira no fim da página) — o top-10 da página não mostrava a
+    Leroy. O quadro por plataforma conta todas as posições."""
+
+    def test_leroy_aparece_com_anuncio_fora_do_top10(self):
+        import pandas as pd
+
+        import app
+
+        df = pd.DataFrame({
+            "plataforma": ["Leroy Merlin"] * 4 + ["Mercado Livre"] * 2,
+            "marca": ["Midea", "Midea", "LG", "Gree", "Midea", "LG"],
+            "posicao_geral": [37, 38, 39, 5, 2, 3],
+            "_spon": [True, True, True, False, True, True],
+        })
+        share = app._sov_share_plataforma_marca(df)
+        leroy = share[share["plataforma"] == "Leroy Merlin"].set_index("marca")
+        assert leroy.loc["Midea", "Anúncios"] == 2
+        assert leroy.loc["Midea", "Share na plataforma (%)"] == pytest.approx(66.7)
+        assert "Gree" not in leroy.index        # orgânico não é anúncio
+        ml = share[share["plataforma"] == "Mercado Livre"]
+        assert ml["Share na plataforma (%)"].sum() == pytest.approx(100.0)
+
+    def test_sem_anuncio_devolve_vazio(self):
+        import pandas as pd
+
+        import app
+
+        df = pd.DataFrame({"plataforma": ["Leroy Merlin"], "marca": ["Midea"], "_spon": [False]})
+        assert app._sov_share_plataforma_marca(df).empty
+        assert app._sov_share_plataforma_marca(pd.DataFrame()).empty
+
+
+class TestEsperaCards:
+    def test_leva_a_prateleira_a_tela_e_espera_os_cards(self, scraper):
+        chamadas = []
+
+        class _Aba:
+            def evaluate(self, js, arg=None):
+                chamadas.append(("evaluate", arg))
+
+            def wait_for_function(self, js, **kw):
+                chamadas.append(("wait", kw.get("timeout")))
+
+            def wait_for_timeout(self, ms):
+                chamadas.append(("sleep", ms))
+
+        scraper._esperar_cards_patrocinados(_Aba())
+        assert chamadas[0][0] == "evaluate"
+        assert chamadas[1] == ("wait", 4000.0)
+
+    def test_sem_cards_no_teto_nao_quebra(self, scraper):
+        class _Aba:
+            def evaluate(self, *_a):
+                raise RuntimeError("aba fechada")
+
+            def wait_for_function(self, *_a, **_kw):
+                raise TimeoutError("sem cards")
+
+            def wait_for_timeout(self, _ms):
+                pass
+
+        scraper._esperar_cards_patrocinados(_Aba())  # não levanta
