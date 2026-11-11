@@ -157,6 +157,8 @@ _ADS_SERP_TIMEOUT = float(os.environ.get("LEROY_ADS_TIMEOUT", "6000") or 6000)
 _ADS_PDP_AMOSTRA = int(os.environ.get("LEROY_ADS_PDP_AMOSTRA", "2") or 0)
 _ADS_PDP_TIMEOUT = float(os.environ.get("LEROY_ADS_PDP_TIMEOUT", "3000") or 3000)
 _TAG_ADS_SERP = "Patrocinado (busca)"
+# Teto da espera pelos cards da prateleira depois do título (ms).
+_ADS_CARDS_TIMEOUT = float(os.environ.get("LEROY_ADS_CARDS_TIMEOUT", "4000") or 4000)
 
 # Tempo máximo esperando o bloco de seller hidratar no browser.
 _PDP_HYDRATE_TIMEOUT = float(os.environ.get("LEROY_PDP_HYDRATE_TIMEOUT", "10000") or 10000)
@@ -1892,10 +1894,50 @@ class LeroyMerlinScraper(BaseScraper):
                 f"() => /{SPONSORED_LABEL_PATTERN}/i.test(document.body.innerText)",
                 timeout=timeout_ms,
             )
-            page.wait_for_timeout(500)  # cards da prateleira terminam de hidratar
+        except Exception:
+            return self._html_da_aba(page)
+        self._esperar_cards_patrocinados(page)
+        return self._html_da_aba(page)
+
+    def _esperar_cards_patrocinados(self, page: Any) -> None:
+        """Leva a prateleira à tela e espera a contagem de cards parar de mudar.
+
+        O título "Produtos Patrocinados" aparece antes dos cards: no turno de
+        10/11/2026 várias buscas gravaram só 1–2 anúncios, contra 10 da
+        prateleira cheia no probe. Esperar o título + 500 ms lia a prateleira
+        no meio da hidratação. Teto: ``_ADS_CARDS_TIMEOUT`` ms.
+        """
+        try:
+            page.evaluate(
+                """(padrao) => {
+                    const re = new RegExp(padrao, "i");
+                    const h = [...document.querySelectorAll("h1,h2,h3,h4")]
+                        .find(e => re.test(e.innerText || ""));
+                    if (h) h.scrollIntoView({block: "center"});
+                }""",
+                SPONSORED_LABEL_PATTERN,
+            )
         except Exception:
             pass
-        return self._html_da_aba(page)
+        try:
+            # Estável = mesma contagem por 800 ms (cada card tem 2 links).
+            page.wait_for_function(
+                """() => {
+                    const n = document.querySelectorAll(
+                        'a[data-gtm-partner-name="retail media"]').length;
+                    const w = window.__racAdsCards || {n: -1, t: 0};
+                    const agora = Date.now();
+                    if (n !== w.n) { window.__racAdsCards = {n: n, t: agora}; return false; }
+                    return n > 0 && agora - w.t > 800;
+                }""",
+                timeout=_ADS_CARDS_TIMEOUT,
+                polling=200,
+            )
+        except Exception:
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                pass  # aba fechada: quem lê o HTML trata a falha
 
     def _patrocinados_serp(self, keyword: str, html: Optional[str] = None) -> List[SponsoredItem]:
         """Prateleira "Produtos patrocinados" da 1ª página de busca.
