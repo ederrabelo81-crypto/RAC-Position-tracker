@@ -117,7 +117,7 @@ def ranking(bruto: Dict[str, Any], mes: dt.date, dimensao: str) -> List[Dict[str
                 "categoria_id": CATEGORIA, "mes": mes.isoformat(), "dimensao": dimensao,
                 "posicao": ordem, "nome": str(t.get("search_term") or "").strip(),
                 "tendencia": t.get("ranking_trend"),
-                "posicao_anterior": int(t["position_before"]) if t.get("position_before") else None,
+                "posicao_anterior": int(t["position_before"]) if t.get("position_before") is not None else None,
             })
         return out
     # Posição = ordem da lista (1..N), não o `position` da API: o ranking de
@@ -133,8 +133,9 @@ def ranking(bruto: Dict[str, Any], mes: dt.date, dimensao: str) -> List[Dict[str
             "share_brl": _num(r.get("share")),
             "cresc_receita_pct": _num(r.get("growth_gmv")), "cresc_unid_pct": _num(r.get("growth_si")),
             "tendencia": r.get("ranking_trend"),
-            "qtd_sellers": int(r["sellers_quantity"]) if r.get("sellers_quantity") else None,
-            "qtd_anuncios": int(r["items_quantity"]) if r.get("items_quantity") else None,
+            # `is not None`: zero explícito é dado (0 sellers), não ausência.
+            "qtd_sellers": int(r["sellers_quantity"]) if r.get("sellers_quantity") is not None else None,
+            "qtd_anuncios": int(r["items_quantity"]) if r.get("items_quantity") is not None else None,
             "catalogo_pct": _num(r.get("catalog_percentage")),
         })
     return out

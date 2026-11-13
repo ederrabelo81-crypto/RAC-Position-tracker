@@ -91,6 +91,11 @@ def transformar(bruto: Dict[str, Any], hoje: dt.date) -> Dict[str, Any]:
         "mercado": load.mercado_sem_rebaixar_real(mercado),
         "rankings": rankings,
         "anuncios": transform.anuncios(bruto["anuncios"], hoje),
+        # Parquet guarda o bruto do explorador + a classificação: campo que o
+        # transform não modela (installments, oem…) não se perde no histórico.
+        "anuncios_historico": [{**{f"raw_{k}": v for k, v in raw.items()}, **norm}
+                               for raw, norm in zip(bruto["anuncios"],
+                                                    transform.anuncios(bruto["anuncios"], hoje))],
         "concorrente": transform.concorrente(bruto["concorrente"]),
         "avisos": avisos,
     }
@@ -100,7 +105,8 @@ def gravar(dados: Dict[str, Any], hoje: dt.date) -> int:
     """Grava tudo. O histórico (Parquet) vem ANTES da foto no banco: a foto
     troca a anterior, então um histórico que falhasse depois deixaria um buraco
     irrecuperável. Falha do Parquet vira ressalva (PARTIAL), não silêncio."""
-    if dados["anuncios"] and not load.parquet(dados["anuncios"], hoje, run_id=os.getenv("GITHUB_RUN_ID")):
+    historico = dados.get("anuncios_historico") or dados["anuncios"]
+    if dados["anuncios"] and not load.parquet(historico, hoje, run_id=os.getenv("GITHUB_RUN_ID")):
         dados["avisos"].append("histórico Parquet dos anúncios NÃO gravado (ver log)")
     client = load.cliente()
     total = load.upsert(client, "nubi_mercado_mensal", dados["mercado"])

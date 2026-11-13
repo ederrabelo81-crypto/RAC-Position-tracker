@@ -16,7 +16,9 @@ Nubimetrics MCP (mcp.nubimetrics.com)          Coletas do Tracker (ML, 2 dias)
 nubi_mercado_mensal · nubi_ranking_mensal ──► página 🛒 Sell-out ML ◄── coletas
 nubi_anuncios (foto) · nubi_concorrente_diario   (st.cache_data 1 h, só leitura)
         │
-        └─► Parquet no Drive (dataset `nubimetrics`) — histórico dos anúncios
+        └─► Parquet (dataset `nubimetrics`) — histórico dos anúncios: no Google
+            Drive com GDRIVE_* configurado; SEM elas, cai no disco local do
+            runner (no Actions isso some ao fim do job — configure os secrets)
 ```
 
 | Arquivo | O que faz |
@@ -24,7 +26,7 @@ nubi_anuncios (foto) · nubi_concorrente_diario   (st.cache_data 1 h, só leitur
 | `discover.py` | Lista as tools do MCP e grava as amostras e o `catalog/MAPPING_auto.md` |
 | `catalog/MAPPING.md` | Mapeamento revisado: tool × fonte, campos, limites e decisões |
 | `client.py` | Sessão MCP com retry, intervalo mínimo entre chamadas e cache diário em disco |
-| `extract.py` | Uma função por fonte (sempre `MLB1646`, paginando até o fim) |
+| `extract.py` | Uma função por fonte (sempre `MLB1646`). Explorador e grupos de concorrência paginam até o fim; rankings e buscas são **top 100** por limite da própria API (uma chamada `limit=100`) |
 | `filters.py` | Regra única de segmento, BTU, voltagem e marca |
 | `transform.py` | Payload → linhas das tabelas da migração 023 |
 | `load.py` | Upsert no Supabase (service_role) + Parquet |

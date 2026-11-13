@@ -37,6 +37,13 @@ class Contexto:
     empty_state: Callable[..., None]
 
 
+def _hoje_brt() -> date:
+    """Dia em BRT (o Streamlit Cloud roda em UTC: às 21h BRT já seria amanhã)."""
+    from utils.text import now_brt
+
+    return now_brt().date()
+
+
 # ── leitura (cache de 1 h) ──────────────────────────────────────────────────
 
 def _ler(client: Any, tabela: str, colunas: str = "*", filtros: Optional[List[Tuple[str, str, Any]]] = None,
@@ -88,7 +95,7 @@ def carregar(_get_client: Callable[[], Any]) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 — tabela ausente = migração não aplicada
         return {"erro": f"{exc}"}
     try:
-        desde = (date.today() - timedelta(days=2)).isoformat()
+        desde = (_hoje_brt() - timedelta(days=2)).isoformat()
         out["coletas"] = _ler(
             client, "coletas",
             "data,turno,keyword,marca,produto,posicao_organica,preco,buy_box_seller,seller",
@@ -131,6 +138,9 @@ def _tabela_brl(df: pd.DataFrame, brl: List[str] = (), pct: List[str] = (), inte
 
 def _sidebar(anuncios: pd.DataFrame, ranking: pd.DataFrame, parceiros: pd.DataFrame) -> Dict[str, Any]:
     st.sidebar.subheader("Filtros — Sell-out ML")
+    st.sidebar.caption("Os 🌐 filtros globais acima (período, canal, plataformas, marcas) **não "
+                       "valem nesta página**: a Nubimetrics publica mês fechado, só do Mercado "
+                       "Livre, e o share precisa de todas as marcas no denominador.")
     meses = an.meses_disponiveis(ranking)
     mes = st.sidebar.selectbox(
         "Mês fechado (rankings)", meses, format_func=lambda m: pd.Timestamp(m).strftime("%m/%Y"),
@@ -252,7 +262,7 @@ def _aba_oportunidades(d: Dict[str, Any], f: Dict[str, Any], rec: pd.DataFrame, 
         "acao": "Ação sugerida", "impacto_brl": "Impacto est.", "regra": "Regra"}),
         hide_index=True, use_container_width=True, height=460)
     b = st.columns(3)
-    b[0].download_button("⬇️ CSV para os sellers", vis.to_csv(index=False, sep=";").encode("utf-8-sig"),
+    b[0].download_button("⬇️ CSV para os sellers", vis.to_csv(index=False, sep=";", decimal=",", float_format="%.2f").encode("utf-8-sig"),
                          "oportunidades_sellout_ml.csv", "text/csv", use_container_width=True)
     b[1].download_button("⬇️ XLSX para os sellers", _xlsx(vis, "Oportunidades"), "oportunidades_sellout_ml.xlsx",
                          use_container_width=True)
@@ -433,7 +443,7 @@ def _aba_forecast(d: Dict[str, Any], k: Dict[str, Any]) -> None:
         c[1].metric("Oportunidade", u["oportunidade"] or "—")
         c[2].metric("% vendas via catálogo", an.fmt_pct(pd.to_numeric(u["pct_catalogo"], errors="coerce")))
         c[3].metric("% anúncios com desconto", an.fmt_pct(pd.to_numeric(u["pct_desconto"], errors="coerce")))
-    prev = m[(m["tipo"] == "previsao") & (m["mes"] >= pd.Timestamp(date.today().replace(day=1)))]
+    prev = m[(m["tipo"] == "previsao") & (m["mes"] >= pd.Timestamp(_hoje_brt().replace(day=1)))]
     if prev.empty or not k or k.get("share") is None:
         return
     alvo = prev.iloc[0]

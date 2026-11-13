@@ -54,7 +54,7 @@ _ONOFF = re.compile(r"on[\s/-]*off|convencional", re.I)
 _BTU = re.compile(
     r"(?<![\d.])(\d{1,2}(?:[.\s]\d{3}|\d{3})|\d{1,2}\s?k)\s*(?:btu|btus|btu/h)?(?![\d])", re.I
 )
-_BTU_MODELO = re.compile(r"(?<!\d)(07|09|12|18|22|24|30|36)(?!\d)")
+_BTU_MODELO = re.compile(r"(?<!\d)(07|09|12|18|22|24|30|36|48|60)(?!\d)")
 _VOLT = re.compile(r"\b(220|127|110)\s?v\b|\bbivolt\b", re.I)
 _BIVOLT_PAR = re.compile(r"\b(110|127)\s?v?\s*(/|e|-)\s*220\s?v\b|\b220\s?v?\s*(/|e|-)\s*(110|127)\s?v\b", re.I)
 
@@ -105,7 +105,10 @@ def parse_btu(texto: Optional[str]) -> Optional[int]:
 
 
 def btu_do_modelo(modelo: Optional[str]) -> Optional[int]:
-    """BTU pelo código de modelo (``38EZVCC12M5`` → 12000). Só modelos com letras."""
+    """BTU pelo código de modelo (``38EZVCC12M5`` → 12000). Só modelos com letras.
+
+    Não reconhece 42: é prefixo de série Carrier/Springer (``42XQV…``), não BTU.
+    """
     if not modelo or not re.search(r"[A-Za-z]", modelo):
         return None
     m = _BTU_MODELO.search(modelo)

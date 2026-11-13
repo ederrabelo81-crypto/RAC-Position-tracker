@@ -658,8 +658,11 @@ ML** (seção Demanda), módulo `nubimetrics/` (README próprio).
    gravada sob o mês pedido, porque seria o mês anterior com outro rótulo.
 3. **`item_id` do explorador é hash, não MLB.** O cruzamento com as coletas é
    por marca × BTU (e título só como auditoria, com score).
-4. **Segmento/BTU saem do título** (`filters.classificar`), com `match_source`.
-   O MCP não entrega atributo, e o painel mostra o % inferido.
+4. **Segmento/BTU saem do texto** (`filters.classificar`): título primeiro e,
+   se o título não traz BTU (vem truncado em 40 caracteres), o código de
+   modelo (`38EZVCC12M5` → 12k, `model_regex`). Acessório/peça no início do
+   título e título sem o núcleo do produto vão para "Outros". Tudo com
+   `match_source`: o MCP não entrega atributo, e o painel mostra o % inferido.
 5. **`nubi_anuncios` só troca pela RPC `nubi_substituir_anuncios`**
    (TRUNCATE + INSERT numa transação). DELETE incharia o banco (regra da 022),
    e lote vazio mantém a foto anterior.

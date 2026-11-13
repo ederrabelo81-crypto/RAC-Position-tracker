@@ -227,32 +227,41 @@ class NubiClient:
 
         path = self._cache_path(tool, args)
         if self.cache and path.exists():
-            self.do_cache += 1
-            return json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+            try:
+                dado = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+                self.do_cache += 1
+                return dado
+            except (OSError, EOFError, ValueError) as exc:
+                # Arquivo truncado (rodada interrompida): conta como cache vazio.
+                logger.warning(f"[Nubimetrics] cache ilegível ({path.name}): {exc} — buscando de novo")
 
         espera = self.intervalo_s - (time.monotonic() - self._ultimo)
         if espera > 0:
             await asyncio.sleep(espera)
-        ultimo_erro: Optional[Exception] = None
+        res: Any = None
         for tentativa in range(1, self.tentativas + 1):
             try:
                 self._ultimo = time.monotonic()
                 res = await self._session.call_tool(tool, args)
                 break
             except Exception as exc:  # noqa: BLE001 — transporte: repete
-                ultimo_erro = exc
+                if tentativa == self.tentativas:
+                    # Última tentativa: sobe já, sem esperar à toa.
+                    raise RuntimeError(f"{tool}: {redact(str(exc))}") from exc
                 atraso = 2 ** tentativa
                 logger.warning(f"[Nubimetrics] {tool} falhou ({tentativa}/{self.tentativas}): "
                                f"{redact(str(exc))[:200]} — nova tentativa em {atraso}s")
                 await asyncio.sleep(atraso)
-        else:
-            raise RuntimeError(f"{tool}: {redact(str(ultimo_erro))}")
         self.chamadas += 1
         payload = result_payload(res)
         if bool(getattr(res, "isError", False) or getattr(res, "is_error", False)):
-            raise NubiToolError(f"{tool}: {redact(json.dumps(payload, ensure_ascii=False))[:400]}")
+            raise NubiToolError(f"{tool}: {redact(json.dumps(mascarar(payload), ensure_ascii=False))[:400]}")
         logger.debug(f"[Nubimetrics] {tool} {json.dumps(args, ensure_ascii=False)[:160]}")
         if self.cache:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(gzip.compress(json.dumps(mascarar(payload), ensure_ascii=False).encode("utf-8")))
+            # Escrita atômica: grava ao lado e renomeia (rodada interrompida não
+            # deixa um .gz truncado no lugar do bom).
+            tmp = path.with_suffix(".tmp")
+            tmp.write_bytes(gzip.compress(json.dumps(mascarar(payload), ensure_ascii=False).encode("utf-8")))
+            tmp.replace(path)
         return payload

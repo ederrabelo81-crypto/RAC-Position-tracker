@@ -157,11 +157,19 @@ BEGIN
                              'nubi_concorrente_diario', 'dim_partner_sellers']
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-        EXECUTE format('DROP POLICY IF EXISTS %I ON %I', t || '_leitura', t);
-        EXECUTE format('CREATE POLICY %I ON %I FOR SELECT TO anon, authenticated USING (true)',
-                       t || '_leitura', t);
-        EXECUTE format('GRANT SELECT ON %I TO anon, authenticated', t);
-        EXECUTE format('GRANT ALL ON %I TO service_role', t);
+        -- Papéis anon/authenticated/service_role são do Supabase (a 019 os cria
+        -- em Postgres puro). Sem eles — Postgres direto via RAC_DB_DSN sem a
+        -- 019 — a policy/grant é pulada em vez de abortar a migração inteira.
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon')
+           AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+            EXECUTE format('DROP POLICY IF EXISTS %I ON %I', t || '_leitura', t);
+            EXECUTE format('CREATE POLICY %I ON %I FOR SELECT TO anon, authenticated USING (true)',
+                           t || '_leitura', t);
+            EXECUTE format('GRANT SELECT ON %I TO anon, authenticated', t);
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+            EXECUTE format('GRANT ALL ON %I TO service_role', t);
+        END IF;
     END LOOP;
 END $$;
 
@@ -192,5 +200,16 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.nubi_substituir_anuncios(jsonb) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.nubi_substituir_anuncios(jsonb) TO service_role;
+DO $$
+BEGIN
+    REVOKE ALL ON FUNCTION public.nubi_substituir_anuncios(jsonb) FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL ON FUNCTION public.nubi_substituir_anuncios(jsonb) FROM anon;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        REVOKE ALL ON FUNCTION public.nubi_substituir_anuncios(jsonb) FROM authenticated;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        GRANT EXECUTE ON FUNCTION public.nubi_substituir_anuncios(jsonb) TO service_role;
+    END IF;
+END $$;

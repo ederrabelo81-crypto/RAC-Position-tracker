@@ -322,7 +322,9 @@ JOBS: Tuple[JobSpec, ...] = (
         dias=TODOS_OS_DIAS,
         tolerancia_min=120,
         deadline_min=480,
-        destino="nubi_anuncios / nubi_ranking_mensal / nubi_mercado_mensal",
+        # `nubi_*`: o supervisor sonda nubi_ranking_mensal + nubi_mercado_mensal
+        # pelo carimbo `atualizado_em` do dia (pipeline_watch._contar_nubimetrics).
+        destino="nubi_ranking_mensal + nubi_mercado_mensal (+ nubi_anuncios)",
         # Rankings são de mês fechado e a foto de anúncios é sobrescrita a cada
         # rodada: um dia perdido some na rodada seguinte. Tolerante.
         severidade=SEV_TOLERANTE,

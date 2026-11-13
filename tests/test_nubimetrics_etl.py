@@ -395,3 +395,90 @@ def test_cliente_tem_ao_menos_uma_tentativa():
     from nubimetrics.client import NubiClient
 
     assert NubiClient(tentativas=0).tentativas == 1
+
+
+# ── revisão do PR #449 (Cubic, 3ª passada) ──────────────────────────────────
+
+def test_btu_do_modelo_ate_60k():
+    assert btu_do_modelo("38CCU48M5") == 48000 and btu_do_modelo("38CCU60M5") == 60000
+    assert btu_do_modelo("42XQV048515LC") is None          # 42 é série Carrier, não BTU
+
+
+def test_zero_explicito_do_ranking_nao_vira_nulo():
+    bruto = {"period_fallback": False, "items": [{"position": 1, "name": "X", "gmv": 0, "units": 0,
+                                                  "sellers_quantity": 0, "items_quantity": 0}]}
+    linha = transform.ranking(bruto, dt.date(2026, 10, 1), "brands")[0]
+    assert linha["qtd_sellers"] == 0 and linha["qtd_anuncios"] == 0
+
+
+class _SessaoMCP:
+    """Sessão MCP falsa para o NubiClient (sem rede)."""
+
+    def __init__(self, resultados):
+        self.resultados = list(resultados)
+        self.n = 0
+
+    async def call_tool(self, tool, args):
+        self.n += 1
+        r = self.resultados.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def _cliente_mcp(monkeypatch, tmp_path, resultados, **kw):
+    import nubimetrics.client as client
+
+    monkeypatch.setattr(client, "CACHE_DIR", tmp_path)
+    nubi = client.NubiClient(intervalo_s=0, **kw)
+    nubi._session = _SessaoMCP(resultados)
+    return nubi
+
+
+def _resultado(payload, erro=False):
+    """CallToolResult de verdade do SDK `mcp` (mesma forma que a sessão devolve;
+    no SDK 2.x o atributo é `is_error`, o alias JSON é `isError`)."""
+    from mcp.types import CallToolResult, TextContent
+
+    return CallToolResult(content=[TextContent(type="text", text=json.dumps(payload))],
+                          structuredContent=payload, isError=erro)
+
+
+def test_cache_corrompido_vira_cache_vazio(monkeypatch, tmp_path):
+    ok = _resultado({"a": 1})
+    nubi = _cliente_mcp(monkeypatch, tmp_path, [ok])
+    caminho = nubi._cache_path("t", {"x": 1})
+    caminho.parent.mkdir(parents=True)
+    caminho.write_bytes(b"\x1f\x8b truncado")
+    assert asyncio.run(nubi.call("t", {"x": 1})) == {"a": 1}
+    assert nubi._session.n == 1 and not caminho.with_suffix(".tmp").exists()
+    assert asyncio.run(nubi.call("t", {"x": 1})) == {"a": 1} and nubi.do_cache == 1   # agora do cache
+
+
+def test_erro_de_negocio_sai_mascarado(monkeypatch, tmp_path):
+    from nubimetrics.client import NubiToolError
+
+    erro = _resultado({"account_id": "uuid-secreto", "msg": "x"}, erro=True)
+    nubi = _cliente_mcp(monkeypatch, tmp_path, [erro], cache=False)
+    with pytest.raises(NubiToolError) as exc:
+        asyncio.run(nubi.call("t", {}))
+    assert "uuid-secreto" not in str(exc.value) and "***" in str(exc.value)
+
+
+def test_ultima_tentativa_sobe_sem_esperar(monkeypatch, tmp_path):
+    esperas = []
+
+    async def _dorme(s):
+        esperas.append(s)
+
+    monkeypatch.setattr(asyncio, "sleep", _dorme)
+    nubi = _cliente_mcp(monkeypatch, tmp_path, [OSError("rede")] * 3, cache=False, tentativas=3)
+    with pytest.raises(RuntimeError):
+        asyncio.run(nubi.call("t", {}))
+    assert esperas == [2, 4]                       # nenhuma espera depois da 3ª falha
+
+
+def test_historico_guarda_o_bruto_do_explorador(dados):
+    h = dados["anuncios_historico"]
+    assert len(h) == len(dados["anuncios"])
+    assert {"raw_installments", "raw_oem", "raw_item_id", "segmento", "btu"} <= set(h[0])

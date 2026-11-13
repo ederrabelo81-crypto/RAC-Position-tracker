@@ -439,6 +439,43 @@ def test_clima_sem_tabela_nao_cega_o_supervisor():
     assert pw._linhas_do_job(_Quebra(), JOBS_POR_ID["gh_clima"], DIA) is None
 
 
+def test_nubimetrics_conta_linhas_regravadas_no_dia_e_nao_cega():
+    """gh_nubimetrics: soma ranking + mercado com `atualizado_em` do dia; sem a 023, None."""
+    import scripts.pipeline_watch as pw
+
+    class _Q:
+        def __init__(self, n):
+            self.n = n
+
+        def select(self, *a, **k):
+            return self
+
+        def gte(self, *a):
+            return self
+
+        def lt(self, *a):
+            return self
+
+        def limit(self, *a):
+            return self
+
+        def execute(self):
+            return type("R", (), {"count": self.n})()
+
+    class _Cli:
+        def table(self, nome):
+            return _Q({"nubi_ranking_mensal": 1074, "nubi_mercado_mensal": 25}[nome])
+
+    class _Quebra:
+        def table(self, nome):
+            raise RuntimeError("relation nubi_ranking_mensal does not exist")
+
+    job = JOBS_POR_ID["gh_nubimetrics"]
+    assert pw._linhas_do_job(_Cli(), job, DIA) == 1099
+    assert pw._linhas_do_job(_Quebra(), job, DIA) is None
+    assert job.auto_heal is None                     # o guard não tem mcp nem a chave
+
+
 def test_descricao_marca_piso_quando_o_ultimo_dado_e_antigo():
     from bestsellers.cobertura import FonteMuda
     from scripts.pipeline_watch import _descrever_fonte
