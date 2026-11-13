@@ -1,0 +1,40 @@
+{
+  "status": "ok",
+  "args": {
+    "inp": {
+      "group_id": 549473,
+      "days": 30,
+      "category_id": "MLB1646"
+    }
+  },
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"total_gmv\":\"0\",\"total_units\":\"0\",\"total_visits\":0.0,\"avg_price\":null,\"member_count\":0,\"date_from\":\"2026-10-15\",\"date_to\":\"2026-11-13\",\"currency\":\"BRL\"}"
+      }
+    ],
+    "structuredContent": {
+      "total_gmv": "0",
+      "total_units": "0",
+      "total_visits": 0.0,
+      "avg_price": null,
+      "member_count": 0,
+      "date_from": "2026-10-15",
+      "date_to": "2026-11-13",
+      "currency": "BRL"
+    },
+    "isError": false,
+    "resultType": "complete"
+  },
+  "payload": {
+    "total_gmv": "0",
+    "total_units": "0",
+    "total_visits": 0.0,
+    "avg_price": null,
+    "member_count": 0,
+    "date_from": "2026-10-15",
+    "date_to": "2026-11-13",
+    "currency": "BRL"
+  }
+}

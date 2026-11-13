@@ -1,0 +1,70 @@
+{
+  "status": "ok",
+  "args": {
+    "inp": {
+      "seller_id_competitor": "2DA447C9EBABE53E0E8177A452EAD3C8A36826D89F05C8C14645012A52293BB6BD57B0FE291D2FA7A4AA2F62F930E0282E3B028510EA4D4AD413C567D9D9F723",
+      "category_id": "MLB1646",
+      "days": 30
+    }
+  },
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"gmv\":\"3M\",\"visits\":102468.0,\"units\":\"1.3K\",\"items\":4.0,\"avg_ticket\":2330.769230769231,\"convertion\":1.27161650466487,\"category_id\":\"MLB1646\",\"last_update\":\"2026-11-13T13:19:47.9791872\",\"currency\":\"BRL\",\"category_breakdown\":[{\"category_id\":\"MLB1646\",\"name\":\"Ares Condicionados\",\"gmv\":3030000.0,\"share_pct\":100.0}],\"pareto\":{\"pareto_items\":15,\"pareto_value_share_pct\":81.494984283032,\"long_tail_items\":31,\"long_tail_value_share_pct\":18.505015716968}}"
+      }
+    ],
+    "structuredContent": {
+      "gmv": "3M",
+      "visits": 102468.0,
+      "units": "1.3K",
+      "items": 4.0,
+      "avg_ticket": 2330.769230769231,
+      "convertion": 1.27161650466487,
+      "category_id": "MLB1646",
+      "last_update": "2026-11-13T13:19:47.9791872",
+      "currency": "BRL",
+      "category_breakdown": [
+        {
+          "category_id": "MLB1646",
+          "name": "Ares Condicionados",
+          "gmv": 3030000.0,
+          "share_pct": 100.0
+        }
+      ],
+      "pareto": {
+        "pareto_items": 15,
+        "pareto_value_share_pct": 81.494984283032,
+        "long_tail_items": 31,
+        "long_tail_value_share_pct": 18.505015716968
+      }
+    },
+    "isError": false,
+    "resultType": "complete"
+  },
+  "payload": {
+    "gmv": "3M",
+    "visits": 102468.0,
+    "units": "1.3K",
+    "items": 4.0,
+    "avg_ticket": 2330.769230769231,
+    "convertion": 1.27161650466487,
+    "category_id": "MLB1646",
+    "last_update": "2026-11-13T13:19:47.9791872",
+    "currency": "BRL",
+    "category_breakdown": [
+      {
+        "category_id": "MLB1646",
+        "name": "Ares Condicionados",
+        "gmv": 3030000.0,
+        "share_pct": 100.0
+      }
+    ],
+    "pareto": {
+      "pareto_items": 15,
+      "pareto_value_share_pct": 81.494984283032,
+      "long_tail_items": 31,
+      "long_tail_value_share_pct": 18.505015716968
+    }
+  }
+}

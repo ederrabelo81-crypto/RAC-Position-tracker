@@ -1,6 +1,6 @@
 # MAPPING — tools do MCP Nubimetrics × fontes do módulo
 
-Gerado por `python -m nubimetrics.discover` em 13/11/2026 14:49 a partir de `tools/list` real (24 tools). Categoria de teste `MLB1646`, mês atual.
+Gerado por `python -m nubimetrics.discover` em 13/11/2026 12:07 a partir de `tools/list` real (24 tools). Categoria de teste `MLB1646`, mês atual.
 
 > A coluna **Fonte** é heurística (nome/descrição da tool) — **a confirmar** na revisão.
 
@@ -8,30 +8,30 @@ Gerado por `python -m nubimetrics.discover` em 13/11/2026 14:49 a partir de `too
 
 | Tool | Fonte (seção 2) | Teste | Registros | Grão | Paginação | Campos retornados (1º registro) |
 |---|---|---|---|---|---|---|
-| `meli_category_detail` | C, D, I, N | erro da tool | — | dia/mês | — | — |
-| `meli_category_explorer` | C, D, G, H, I, M | erro da tool | — | mês | — | — |
-| `nubi_category_forecast` | H, I, M | erro da tool | — | dia/mês | — | — |
-| `nubi_category_market_size` | I, M | erro da tool | — | dia/mês | — | — |
-| `nubi_category_market_structure` | I, M | erro da tool | — | dia/mês | — | — |
+| `meli_category_detail` | C, D, I, N | ok | — | dia/mês | — | `data`, `data_available`, `currency`, `period_applied`, `period_fallback` |
+| `meli_category_explorer` | C, D, G, H, I, M | ok | — | mês | — | `name`, `path`, `scoring`, `gmv_scoring`, `visits_scoring`, `listings_scoring`, `item_quantity_scoring`, `catalog_scoring`, `growth_ytd`, `growth_yoy`, `visits`, `competitivity`, `has_sales`, `saturation_platinum`, `saturation_gold`, `saturation_silver`, `saturation_normal`, `peak_month`, `low_month`, `sellers`, `successful_items`, `avg_ticket` |
+| `nubi_category_forecast` | H, I, M | ok | — | dia/mês | — | `date`, `successful_items_forecasted`, `successful_items_growth_yoy`, `gmv_usd_forecasted`, `gmv_local_forecasted`, `gmv_usd_growth_yoy`, `gmv_local_growth_yoy`, `gmv_local_before_forecasted` |
+| `nubi_category_market_size` | I, M | ok | — | dia/mês | — | `date`, `value`, `previous_period_value`, `previous_period_date` |
+| `nubi_category_market_structure` | I, M | ok | — | dia/mês | — | `date`, `value`, `previous_period_value`, `previous_period_date` |
 | `nubi_competition_publication_detail` | L | sem args: member_owner, member_code (dependência sem dado) | — | dia | — | — |
 | `nubi_competition_publication_evolution` | L | sem args: member_owner, member_code (dependência sem dado) | — | dia/mês | — | — |
-| `nubi_competition_publication_group_members` | L | sem args: group_id (dependência sem dado) | — | ? | — | — |
-| `nubi_competition_publication_group_metrics` | F, L | sem args: group_id (dependência sem dado) | — | dia | — | — |
-| `nubi_competition_publication_groups` | J, L | erro da tool | — | ? | — | — |
+| `nubi_competition_publication_group_members` | L | ok | — | ? | — | `group_id`, `group_name`, `group_description`, `is_favorite`, `member_count`, `members`, `returned`, `has_more` |
+| `nubi_competition_publication_group_metrics` | F, L | ok | — | dia | — | `total_gmv`, `total_units`, `total_visits`, `avg_price`, `member_count`, `date_from`, `date_to`, `currency` |
+| `nubi_competition_publication_groups` | J, L | ok | — | ? | — | `group_id`, `group_name`, `group_description`, `is_favorite`, `member_count` |
 | `nubi_competition_publication_log` | L | sem args: member_owner, member_code (dependência sem dado) | — | ? | — | — |
-| `nubi_competition_seller_evolution` | G, J | sem args: seller_id_competitor (dependência sem dado) | — | dia/mês | — | — |
-| `nubi_competition_seller_group_members` | J, M | sem args: group_id (dependência sem dado) | — | ? | — | — |
-| `nubi_competition_seller_group_metrics` | J | sem args: group_id (dependência sem dado) | — | dia | — | — |
-| `nubi_competition_seller_groups` | J, L | erro da tool | — | ? | — | — |
-| `nubi_competition_seller_items` | J | sem args: seller_id_competitor (dependência sem dado) | — | dia | — | — |
-| `nubi_competition_seller_metrics` | G, J | sem args: seller_id_competitor (dependência sem dado) | — | dia | — | — |
-| `nubi_evaluate_categories` | C, I | erro da tool | — | dia/mês | — | — |
+| `nubi_competition_seller_evolution` | G, J | ok | — | dia/mês | — | `name`, `points` |
+| `nubi_competition_seller_group_members` | J, M | ok | — | ? | — | `member_code`, `active`, `tracking_information`, `is_self` |
+| `nubi_competition_seller_group_metrics` | J | ok | — | dia | — | `total_gmv`, `total_units`, `avg_ticket`, `member_count`, `date_from`, `date_to`, `currency` |
+| `nubi_competition_seller_groups` | J, L | ok | — | ? | — | `group_id`, `group_name`, `group_description`, `is_favorite`, `member_count` |
+| `nubi_competition_seller_items` | J | ok | — | dia | — | `item_id`, `title`, `gmv`, `units`, `price`, `condition`, `is_catalog`, `category_id`, `free_shipping`, `mercado_envios`, `listing_type_name`, `brand` |
+| `nubi_competition_seller_metrics` | G, J | ok | — | dia | — | `category_id`, `name`, `gmv`, `share_pct` |
+| `nubi_evaluate_categories` | C, I | ok | — | dia/mês | — | `categories`, `total`, `period_fallback` |
 | `meli_market_rankings` | C, I | não chamada | — | dia/mês | — | — |
-| `meli_publication_explorer` | G, I, M | erro da tool | — | mês | — | — |
-| `meli_search_trends_rankings` | C, G, I | erro da tool | — | dia/mês | — | — |
-| `nubi_seller_info` | M | erro da tool | — | ? | — | — |
+| `meli_publication_explorer` | G, I, M | ok | — | mês | — | `title`, `gmv`, `units`, `cum_units`, `price`, `is_catalog`, `full`, `flex`, `free_shipping`, `brand`, `seller`, `creation_date`, `exposition`, `installments`, `model`, `official_store_id`, `official_store_alias`, `item_id`, `seller_id_hash`, `sku`, `gtin`, `part_number`, `oem`, `category_path`, `category_name` … (+1) |
+| `meli_search_trends_rankings` | C, G, I | ok | — | dia/mês | — | `position`, `search_term`, `ranking_trend`, `position_before` |
+| `nubi_seller_info` | M | ok | — | ? | — | `id`, `name`, `path` |
 | `nubi_user_feedback` | F, M | pulada (grava do lado da Nubimetrics) | — | ? | — | — |
-| `nubi_user_info` | M | erro da tool | — | ? | — | — |
+| `nubi_user_info` | M | ok | — | ? | — | `seller_id`, `seller_nickname`, `site_id`, `main_account` |
 
 ## Cobertura das fontes da seção 2
 
@@ -69,9 +69,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {"category_id": "MLB1646", "date": "2026-11-01"}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `meli_category_explorer`
 
@@ -90,9 +89,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {"search_term": "Ar Condicionado"}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `nubi_category_forecast`
 
@@ -108,9 +106,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {"category_id": "MLB1646", "date": "2026-10-01"}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `nubi_category_market_size`
 
@@ -127,9 +124,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {"category_id": "MLB1646", "date_from": "2025-11-01", "date_to": "2026-11-01"}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `nubi_category_market_structure`
 
@@ -146,9 +142,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {"category_id": "MLB1646", "date_from": "2025-11-01", "date_to": "2026-11-01"}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `nubi_competition_publication_detail`
 
@@ -194,8 +189,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **sem args: group_id (dependência sem dado)**
-Args: `{"inp": {}}`
+Teste: **ok**
+Args: `{"inp": {"group_id": 549473}}`
 
 ### `nubi_competition_publication_group_metrics`
 
@@ -209,8 +204,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **sem args: group_id (dependência sem dado)**
-Args: `{"inp": {"days": 30, "category_id": "MLB1646"}}`
+Teste: **ok**
+Args: `{"inp": {"group_id": 549473, "days": 30, "category_id": "MLB1646"}}`
 
 ### `nubi_competition_publication_groups`
 
@@ -224,9 +219,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `nubi_competition_publication_log`
 
@@ -256,8 +250,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **sem args: seller_id_competitor (dependência sem dado)**
-Args: `{"inp": {"days": 30, "category_id": "MLB1646"}}`
+Teste: **ok**
+Args: `{"inp": {"seller_id_competitor": "2DA447C9EBABE53E0E8177A452EAD3C8A36826D89F05C8C14645012A52293BB6BD57B0FE291D2FA7A4AA2F62F930E0282E3B028510EA4D4AD413C567D9D9F723", "days": 30, "category_id": "MLB1646"}}`
 
 ### `nubi_competition_seller_group_members`
 
@@ -272,8 +266,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **sem args: group_id (dependência sem dado)**
-Args: `{"inp": {}}`
+Teste: **ok**
+Args: `{"inp": {"group_id": 549471}}`
 
 ### `nubi_competition_seller_group_metrics`
 
@@ -289,8 +283,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **sem args: group_id (dependência sem dado)**
-Args: `{"inp": {"days": 30, "category_id": "MLB1646"}}`
+Teste: **ok**
+Args: `{"inp": {"group_id": 549471, "days": 30, "category_id": "MLB1646"}}`
 
 ### `nubi_competition_seller_groups`
 
@@ -304,9 +298,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `nubi_competition_seller_items`
 
@@ -323,8 +316,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **sem args: seller_id_competitor (dependência sem dado)**
-Args: `{"inp": {"category_id": "MLB1646", "days": 30}}`
+Teste: **ok**
+Args: `{"inp": {"seller_id_competitor": "2DA447C9EBABE53E0E8177A452EAD3C8A36826D89F05C8C14645012A52293BB6BD57B0FE291D2FA7A4AA2F62F930E0282E3B028510EA4D4AD413C567D9D9F723", "category_id": "MLB1646", "days": 30}}`
 
 ### `nubi_competition_seller_metrics`
 
@@ -340,8 +333,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **sem args: seller_id_competitor (dependência sem dado)**
-Args: `{"inp": {"category_id": "MLB1646", "days": 30}}`
+Teste: **ok**
+Args: `{"inp": {"seller_id_competitor": "2DA447C9EBABE53E0E8177A452EAD3C8A36826D89F05C8C14645012A52293BB6BD57B0FE291D2FA7A4AA2F62F930E0282E3B028510EA4D4AD413C567D9D9F723", "category_id": "MLB1646", "days": 30}}`
 
 ### `nubi_evaluate_categories`
 
@@ -356,9 +349,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {"date_from": "2026-11-01", "date_to": "2026-11-13"}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `meli_market_rankings`
 
@@ -394,9 +386,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {"title": "ar condicionado", "sort_by": "gmv", "category_id": "MLB1646"}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `meli_search_trends_rankings`
 
@@ -412,9 +403,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {"date": "2026-11-01", "category_id": "MLB1646"}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `nubi_seller_info`
 
@@ -429,9 +419,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 
 ### `nubi_user_feedback`
 
@@ -462,7 +451,6 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **erro da tool**
+Teste: **ok**
 Args: `{"inp": {}}`
-Erro: `"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive)."`
 

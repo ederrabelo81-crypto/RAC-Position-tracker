@@ -1,0 +1,29 @@
+{
+  "status": "ok",
+  "args": {
+    "inp": {
+      "date_from": "2026-11-01",
+      "date_to": "2026-11-13"
+    }
+  },
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"categories\":[],\"total\":0,\"period_fallback\":true}"
+      }
+    ],
+    "structuredContent": {
+      "categories": [],
+      "total": 0,
+      "period_fallback": true
+    },
+    "isError": false,
+    "resultType": "complete"
+  },
+  "payload": {
+    "categories": [],
+    "total": 0,
+    "period_fallback": true
+  }
+}

@@ -1,0 +1,698 @@
+{
+  "status": "ok",
+  "args": {
+    "inp": {
+      "category_id": "MLB1646",
+      "date_from": "2025-11-01",
+      "date_to": "2026-11-01"
+    }
+  },
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"category_id\":\"MLB1646\",\"date_from\":\"2025-11-01\",\"date_to\":\"2026-11-01\",\"data_available\":true,\"visits\":[],\"sellers\":[{\"date\":\"2026-11-01T00:00:00.0000000+00:00\",\"value\":217.0,\"previous_period_value\":189.0,\"previous_period_date\":\"2025-11-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-10-01T00:00:00.0000000+00:00\",\"value\":295.0,\"previous_period_value\":185.0,\"previous_period_date\":\"2025-10-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-09-01T00:00:00.0000000+00:00\",\"value\":273.0,\"previous_period_value\":173.0,\"previous_period_date\":\"2025-09-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-08-01T00:00:00.0000000+00:00\",\"value\":246.0,\"previous_period_value\":165.0,\"previous_period_date\":\"2025-08-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-07-01T00:00:00.0000000+00:00\",\"value\":216.0,\"previous_period_value\":130.0,\"previous_period_date\":\"2025-07-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-06-01T00:00:00.0000000+00:00\",\"value\":174.0,\"previous_period_value\":106.0,\"previous_period_date\":\"2025-06-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-05-01T00:00:00.0000000+00:00\",\"value\":186.0,\"previous_period_value\":121.0,\"previous_period_date\":\"2025-05-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-04-01T00:00:00.0000000+00:00\",\"value\":192.0,\"previous_period_value\":136.0,\"previous_period_date\":\"2025-04-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-03-01T00:00:00.0000000+00:00\",\"value\":207.0,\"previous_period_value\":167.0,\"previous_period_date\":\"2025-03-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-02-01T00:00:00.0000000+00:00\",\"value\":221.0,\"previous_period_value\":213.0,\"previous_period_date\":\"2025-02-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-01-01T00:00:00.0000000+00:00\",\"value\":264.0,\"previous_period_value\":185.0,\"previous_period_date\":\"2025-01-01T00:00:00.0000000+00:00\"},{\"date\":\"2025-12-01T00:00:00.0000000+00:00\",\"value\":258.0,\"previous_period_value\":150.0,\"previous_period_date\":\"2024-12-01T00:00:00.0000000+00:00\"},{\"date\":\"2025-11-01T00:00:00.0000000+00:00\",\"value\":189.0,\"previous_period_value\":156.0,\"previous_period_date\":\"2024-11-01T00:00:00.0000000+00:00\"}],\"sellers_professional\":[{\"date\":\"2026-11-01T00:00:00.0000000+00:00\",\"value\":115.0,\"previous_period_value\":119.0,\"previous_period_date\":\"2025-11-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-10-01T00:00:00.0000000+00:00\",\"value\":141.0,\"previous_period_value\":90.0,\"previous_period_date\":\"2025-10-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-09-01T00:00:00.0000000+00:00\",\"value\":144.0,\"previous_period_value\":97.0,\"previous_period_date\":\"2025-09-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-08-01T00:00:00.0000000+00:00\",\"value\":136.0,\"previous_period_value\":101.0,\"previous_period_date\":\"2025-08-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-07-01T00:00:00.0000000+00:00\",\"value\":126.0,\"previous_period_value\":74.0,\"previous_period_date\":\"2025-07-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-06-01T00:00:00.0000000+00:00\",\"value\":103.0,\"previous_period_value\":59.0,\"previous_period_date\":\"2025-06-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-05-01T00:00:00.0000000+00:00\",\"value\":119.0,\"previous_period_value\":65.0,\"previous_period_date\":\"2025-05-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-04-01T00:00:00.0000000+00:00\",\"value\":101.0,\"previous_period_value\":64.0,\"previous_period_date\":\"2025-04-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-03-01T00:00:00.0000000+00:00\",\"value\":111.0,\"previous_period_value\":87.0,\"previous_period_date\":\"2025-03-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-02-01T00:00:00.0000000+00:00\",\"value\":122.0,\"previous_period_value\":100.0,\"previous_period_date\":\"2025-02-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-01-01T00:00:00.0000000+00:00\",\"value\":137.0,\"previous_period_value\":90.0,\"previous_period_date\":\"2025-01-01T00:00:00.0000000+00:00\"},{\"date\":\"2025-12-01T00:00:00.0000000+00:00\",\"value\":156.0,\"previous_period_value\":78.0,\"previous_period_date\":\"2024-12-01T00:00:00.0000000+00:00\"},{\"date\":\"2025-11-01T00:00:00.0000000+00:00\",\"value\":119.0,\"previous_period_value\":76.0,\"previous_period_date\":\"2024-11-01T00:00:00.0000000+00:00\"}],\"listings\":[{\"date\":\"2026-11-01T00:00:00.0000000+00:00\",\"value\":2484.0,\"previous_period_value\":2952.0,\"previous_period_date\":\"2025-11-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-10-01T00:00:00.0000000+00:00\",\"value\":3332.0,\"previous_period_value\":2629.0,\"previous_period_date\":\"2025-10-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-09-01T00:00:00.0000000+00:00\",\"value\":3299.0,\"previous_period_value\":2552.0,\"previous_period_date\":\"2025-09-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-08-01T00:00:00.0000000+00:00\",\"value\":2898.0,\"previous_period_value\":2216.0,\"previous_period_date\":\"2025-08-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-07-01T00:00:00.0000000+00:00\",\"value\":2346.0,\"previous_period_value\":2087.0,\"previous_period_date\":\"2025-07-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-06-01T00:00:00.0000000+00:00\",\"value\":1987.0,\"previous_period_value\":1889.0,\"previous_period_date\":\"2025-06-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-05-01T00:00:00.0000000+00:00\",\"value\":2167.0,\"previous_period_value\":1907.0,\"previous_period_date\":\"2025-05-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-04-01T00:00:00.0000000+00:00\",\"value\":2207.0,\"previous_period_value\":1783.0,\"previous_period_date\":\"2025-04-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-03-01T00:00:00.0000000+00:00\",\"value\":2463.0,\"previous_period_value\":2088.0,\"previous_period_date\":\"2025-03-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-02-01T00:00:00.0000000+00:00\",\"value\":2387.0,\"previous_period_value\":2495.0,\"previous_period_date\":\"2025-02-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-01-01T00:00:00.0000000+00:00\",\"value\":2903.0,\"previous_period_value\":2397.0,\"previous_period_date\":\"2025-01-01T00:00:00.0000000+00:00\"},{\"date\":\"2025-12-01T00:00:00.0000000+00:00\",\"value\":3128.0,\"previous_period_value\":2219.0,\"previous_period_date\":\"2024-12-01T00:00:00.0000000+00:00\"},{\"date\":\"2025-11-01T00:00:00.0000000+00:00\",\"value\":2952.0,\"previous_period_value\":2231.0,\"previous_period_date\":\"2024-11-01T00:00:00.0000000+00:00\"}],\"successful_listings\":[{\"date\":\"2026-11-01T00:00:00.0000000+00:00\",\"value\":2484.0,\"previous_period_value\":2952.0,\"previous_period_date\":\"2025-11-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-10-01T00:00:00.0000000+00:00\",\"value\":3332.0,\"previous_period_value\":2629.0,\"previous_period_date\":\"2025-10-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-09-01T00:00:00.0000000+00:00\",\"value\":3299.0,\"previous_period_value\":2552.0,\"previous_period_date\":\"2025-09-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-08-01T00:00:00.0000000+00:00\",\"value\":2898.0,\"previous_period_value\":2216.0,\"previous_period_date\":\"2025-08-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-07-01T00:00:00.0000000+00:00\",\"value\":2346.0,\"previous_period_value\":2087.0,\"previous_period_date\":\"2025-07-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-06-01T00:00:00.0000000+00:00\",\"value\":1987.0,\"previous_period_value\":1889.0,\"previous_period_date\":\"2025-06-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-05-01T00:00:00.0000000+00:00\",\"value\":2167.0,\"previous_period_value\":1907.0,\"previous_period_date\":\"2025-05-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-04-01T00:00:00.0000000+00:00\",\"value\":2207.0,\"previous_period_value\":1783.0,\"previous_period_date\":\"2025-04-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-03-01T00:00:00.0000000+00:00\",\"value\":2463.0,\"previous_period_value\":2088.0,\"previous_period_date\":\"2025-03-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-02-01T00:00:00.0000000+00:00\",\"value\":2387.0,\"previous_period_value\":2495.0,\"previous_period_date\":\"2025-02-01T00:00:00.0000000+00:00\"},{\"date\":\"2026-01-01T00:00:00.0000000+00:00\",\"value\":2903.0,\"previous_period_value\":2397.0,\"previous_period_date\":\"2025-01-01T00:00:00.0000000+00:00\"},{\"date\":\"2025-12-01T00:00:00.0000000+00:00\",\"value\":3128.0,\"previous_period_value\":2219.0,\"previous_period_date\":\"2024-12-01T00:00:00.0000000+00:00\"},{\"date\":\"2025-11-01T00:00:00.0000000+00:00\",\"value\":2952.0,\"previous_period_value\":2231.0,\"previous_period_date\":\"2024-11-01T00:00:00.0000000+00:00\"}],\"averages\":{\"visits\":0.0,\"visits_previous\":0.0,\"sellers\":226.75,\"sellers_previous\":157.25,\"sellers_professional\":126.25,\"sellers_professional_previous\":81.75,\"listings\":2672.41666666667,\"listings_previous\":2207.75,\"successful_listings\":2672.41666666667,\"successful_listings_previous\":2207.75}}"
+      }
+    ],
+    "structuredContent": {
+      "category_id": "MLB1646",
+      "date_from": "2025-11-01",
+      "date_to": "2026-11-01",
+      "data_available": true,
+      "visits": [],
+      "sellers": [
+        {
+          "date": "2026-11-01T00:00:00.0000000+00:00",
+          "value": 217.0,
+          "previous_period_value": 189.0,
+          "previous_period_date": "2025-11-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-10-01T00:00:00.0000000+00:00",
+          "value": 295.0,
+          "previous_period_value": 185.0,
+          "previous_period_date": "2025-10-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-09-01T00:00:00.0000000+00:00",
+          "value": 273.0,
+          "previous_period_value": 173.0,
+          "previous_period_date": "2025-09-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-08-01T00:00:00.0000000+00:00",
+          "value": 246.0,
+          "previous_period_value": 165.0,
+          "previous_period_date": "2025-08-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-07-01T00:00:00.0000000+00:00",
+          "value": 216.0,
+          "previous_period_value": 130.0,
+          "previous_period_date": "2025-07-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-06-01T00:00:00.0000000+00:00",
+          "value": 174.0,
+          "previous_period_value": 106.0,
+          "previous_period_date": "2025-06-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-05-01T00:00:00.0000000+00:00",
+          "value": 186.0,
+          "previous_period_value": 121.0,
+          "previous_period_date": "2025-05-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-04-01T00:00:00.0000000+00:00",
+          "value": 192.0,
+          "previous_period_value": 136.0,
+          "previous_period_date": "2025-04-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-03-01T00:00:00.0000000+00:00",
+          "value": 207.0,
+          "previous_period_value": 167.0,
+          "previous_period_date": "2025-03-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-02-01T00:00:00.0000000+00:00",
+          "value": 221.0,
+          "previous_period_value": 213.0,
+          "previous_period_date": "2025-02-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-01-01T00:00:00.0000000+00:00",
+          "value": 264.0,
+          "previous_period_value": 185.0,
+          "previous_period_date": "2025-01-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2025-12-01T00:00:00.0000000+00:00",
+          "value": 258.0,
+          "previous_period_value": 150.0,
+          "previous_period_date": "2024-12-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2025-11-01T00:00:00.0000000+00:00",
+          "value": 189.0,
+          "previous_period_value": 156.0,
+          "previous_period_date": "2024-11-01T00:00:00.0000000+00:00"
+        }
+      ],
+      "sellers_professional": [
+        {
+          "date": "2026-11-01T00:00:00.0000000+00:00",
+          "value": 115.0,
+          "previous_period_value": 119.0,
+          "previous_period_date": "2025-11-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-10-01T00:00:00.0000000+00:00",
+          "value": 141.0,
+          "previous_period_value": 90.0,
+          "previous_period_date": "2025-10-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-09-01T00:00:00.0000000+00:00",
+          "value": 144.0,
+          "previous_period_value": 97.0,
+          "previous_period_date": "2025-09-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-08-01T00:00:00.0000000+00:00",
+          "value": 136.0,
+          "previous_period_value": 101.0,
+          "previous_period_date": "2025-08-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-07-01T00:00:00.0000000+00:00",
+          "value": 126.0,
+          "previous_period_value": 74.0,
+          "previous_period_date": "2025-07-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-06-01T00:00:00.0000000+00:00",
+          "value": 103.0,
+          "previous_period_value": 59.0,
+          "previous_period_date": "2025-06-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-05-01T00:00:00.0000000+00:00",
+          "value": 119.0,
+          "previous_period_value": 65.0,
+          "previous_period_date": "2025-05-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-04-01T00:00:00.0000000+00:00",
+          "value": 101.0,
+          "previous_period_value": 64.0,
+          "previous_period_date": "2025-04-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-03-01T00:00:00.0000000+00:00",
+          "value": 111.0,
+          "previous_period_value": 87.0,
+          "previous_period_date": "2025-03-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-02-01T00:00:00.0000000+00:00",
+          "value": 122.0,
+          "previous_period_value": 100.0,
+          "previous_period_date": "2025-02-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-01-01T00:00:00.0000000+00:00",
+          "value": 137.0,
+          "previous_period_value": 90.0,
+          "previous_period_date": "2025-01-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2025-12-01T00:00:00.0000000+00:00",
+          "value": 156.0,
+          "previous_period_value": 78.0,
+          "previous_period_date": "2024-12-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2025-11-01T00:00:00.0000000+00:00",
+          "value": 119.0,
+          "previous_period_value": 76.0,
+          "previous_period_date": "2024-11-01T00:00:00.0000000+00:00"
+        }
+      ],
+      "listings": [
+        {
+          "date": "2026-11-01T00:00:00.0000000+00:00",
+          "value": 2484.0,
+          "previous_period_value": 2952.0,
+          "previous_period_date": "2025-11-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-10-01T00:00:00.0000000+00:00",
+          "value": 3332.0,
+          "previous_period_value": 2629.0,
+          "previous_period_date": "2025-10-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-09-01T00:00:00.0000000+00:00",
+          "value": 3299.0,
+          "previous_period_value": 2552.0,
+          "previous_period_date": "2025-09-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-08-01T00:00:00.0000000+00:00",
+          "value": 2898.0,
+          "previous_period_value": 2216.0,
+          "previous_period_date": "2025-08-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-07-01T00:00:00.0000000+00:00",
+          "value": 2346.0,
+          "previous_period_value": 2087.0,
+          "previous_period_date": "2025-07-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-06-01T00:00:00.0000000+00:00",
+          "value": 1987.0,
+          "previous_period_value": 1889.0,
+          "previous_period_date": "2025-06-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-05-01T00:00:00.0000000+00:00",
+          "value": 2167.0,
+          "previous_period_value": 1907.0,
+          "previous_period_date": "2025-05-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-04-01T00:00:00.0000000+00:00",
+          "value": 2207.0,
+          "previous_period_value": 1783.0,
+          "previous_period_date": "2025-04-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-03-01T00:00:00.0000000+00:00",
+          "value": 2463.0,
+          "previous_period_value": 2088.0,
+          "previous_period_date": "2025-03-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-02-01T00:00:00.0000000+00:00",
+          "value": 2387.0,
+          "previous_period_value": 2495.0,
+          "previous_period_date": "2025-02-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-01-01T00:00:00.0000000+00:00",
+          "value": 2903.0,
+          "previous_period_value": 2397.0,
+          "previous_period_date": "2025-01-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2025-12-01T00:00:00.0000000+00:00",
+          "value": 3128.0,
+          "previous_period_value": 2219.0,
+          "previous_period_date": "2024-12-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2025-11-01T00:00:00.0000000+00:00",
+          "value": 2952.0,
+          "previous_period_value": 2231.0,
+          "previous_period_date": "2024-11-01T00:00:00.0000000+00:00"
+        }
+      ],
+      "successful_listings": [
+        {
+          "date": "2026-11-01T00:00:00.0000000+00:00",
+          "value": 2484.0,
+          "previous_period_value": 2952.0,
+          "previous_period_date": "2025-11-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-10-01T00:00:00.0000000+00:00",
+          "value": 3332.0,
+          "previous_period_value": 2629.0,
+          "previous_period_date": "2025-10-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-09-01T00:00:00.0000000+00:00",
+          "value": 3299.0,
+          "previous_period_value": 2552.0,
+          "previous_period_date": "2025-09-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-08-01T00:00:00.0000000+00:00",
+          "value": 2898.0,
+          "previous_period_value": 2216.0,
+          "previous_period_date": "2025-08-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-07-01T00:00:00.0000000+00:00",
+          "value": 2346.0,
+          "previous_period_value": 2087.0,
+          "previous_period_date": "2025-07-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-06-01T00:00:00.0000000+00:00",
+          "value": 1987.0,
+          "previous_period_value": 1889.0,
+          "previous_period_date": "2025-06-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-05-01T00:00:00.0000000+00:00",
+          "value": 2167.0,
+          "previous_period_value": 1907.0,
+          "previous_period_date": "2025-05-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-04-01T00:00:00.0000000+00:00",
+          "value": 2207.0,
+          "previous_period_value": 1783.0,
+          "previous_period_date": "2025-04-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-03-01T00:00:00.0000000+00:00",
+          "value": 2463.0,
+          "previous_period_value": 2088.0,
+          "previous_period_date": "2025-03-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-02-01T00:00:00.0000000+00:00",
+          "value": 2387.0,
+          "previous_period_value": 2495.0,
+          "previous_period_date": "2025-02-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2026-01-01T00:00:00.0000000+00:00",
+          "value": 2903.0,
+          "previous_period_value": 2397.0,
+          "previous_period_date": "2025-01-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2025-12-01T00:00:00.0000000+00:00",
+          "value": 3128.0,
+          "previous_period_value": 2219.0,
+          "previous_period_date": "2024-12-01T00:00:00.0000000+00:00"
+        },
+        {
+          "date": "2025-11-01T00:00:00.0000000+00:00",
+          "value": 2952.0,
+          "previous_period_value": 2231.0,
+          "previous_period_date": "2024-11-01T00:00:00.0000000+00:00"
+        }
+      ],
+      "averages": {
+        "visits": 0.0,
+        "visits_previous": 0.0,
+        "sellers": 226.75,
+        "sellers_previous": 157.25,
+        "sellers_professional": 126.25,
+        "sellers_professional_previous": 81.75,
+        "listings": 2672.41666666667,
+        "listings_previous": 2207.75,
+        "successful_listings": 2672.41666666667,
+        "successful_listings_previous": 2207.75
+      }
+    },
+    "isError": false,
+    "resultType": "complete"
+  },
+  "payload": {
+    "category_id": "MLB1646",
+    "date_from": "2025-11-01",
+    "date_to": "2026-11-01",
+    "data_available": true,
+    "visits": [],
+    "sellers": [
+      {
+        "date": "2026-11-01T00:00:00.0000000+00:00",
+        "value": 217.0,
+        "previous_period_value": 189.0,
+        "previous_period_date": "2025-11-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-10-01T00:00:00.0000000+00:00",
+        "value": 295.0,
+        "previous_period_value": 185.0,
+        "previous_period_date": "2025-10-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-09-01T00:00:00.0000000+00:00",
+        "value": 273.0,
+        "previous_period_value": 173.0,
+        "previous_period_date": "2025-09-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-08-01T00:00:00.0000000+00:00",
+        "value": 246.0,
+        "previous_period_value": 165.0,
+        "previous_period_date": "2025-08-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-07-01T00:00:00.0000000+00:00",
+        "value": 216.0,
+        "previous_period_value": 130.0,
+        "previous_period_date": "2025-07-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-06-01T00:00:00.0000000+00:00",
+        "value": 174.0,
+        "previous_period_value": 106.0,
+        "previous_period_date": "2025-06-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-05-01T00:00:00.0000000+00:00",
+        "value": 186.0,
+        "previous_period_value": 121.0,
+        "previous_period_date": "2025-05-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-04-01T00:00:00.0000000+00:00",
+        "value": 192.0,
+        "previous_period_value": 136.0,
+        "previous_period_date": "2025-04-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-03-01T00:00:00.0000000+00:00",
+        "value": 207.0,
+        "previous_period_value": 167.0,
+        "previous_period_date": "2025-03-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-02-01T00:00:00.0000000+00:00",
+        "value": 221.0,
+        "previous_period_value": 213.0,
+        "previous_period_date": "2025-02-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-01-01T00:00:00.0000000+00:00",
+        "value": 264.0,
+        "previous_period_value": 185.0,
+        "previous_period_date": "2025-01-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2025-12-01T00:00:00.0000000+00:00",
+        "value": 258.0,
+        "previous_period_value": 150.0,
+        "previous_period_date": "2024-12-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2025-11-01T00:00:00.0000000+00:00",
+        "value": 189.0,
+        "previous_period_value": 156.0,
+        "previous_period_date": "2024-11-01T00:00:00.0000000+00:00"
+      }
+    ],
+    "sellers_professional": [
+      {
+        "date": "2026-11-01T00:00:00.0000000+00:00",
+        "value": 115.0,
+        "previous_period_value": 119.0,
+        "previous_period_date": "2025-11-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-10-01T00:00:00.0000000+00:00",
+        "value": 141.0,
+        "previous_period_value": 90.0,
+        "previous_period_date": "2025-10-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-09-01T00:00:00.0000000+00:00",
+        "value": 144.0,
+        "previous_period_value": 97.0,
+        "previous_period_date": "2025-09-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-08-01T00:00:00.0000000+00:00",
+        "value": 136.0,
+        "previous_period_value": 101.0,
+        "previous_period_date": "2025-08-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-07-01T00:00:00.0000000+00:00",
+        "value": 126.0,
+        "previous_period_value": 74.0,
+        "previous_period_date": "2025-07-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-06-01T00:00:00.0000000+00:00",
+        "value": 103.0,
+        "previous_period_value": 59.0,
+        "previous_period_date": "2025-06-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-05-01T00:00:00.0000000+00:00",
+        "value": 119.0,
+        "previous_period_value": 65.0,
+        "previous_period_date": "2025-05-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-04-01T00:00:00.0000000+00:00",
+        "value": 101.0,
+        "previous_period_value": 64.0,
+        "previous_period_date": "2025-04-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-03-01T00:00:00.0000000+00:00",
+        "value": 111.0,
+        "previous_period_value": 87.0,
+        "previous_period_date": "2025-03-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-02-01T00:00:00.0000000+00:00",
+        "value": 122.0,
+        "previous_period_value": 100.0,
+        "previous_period_date": "2025-02-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-01-01T00:00:00.0000000+00:00",
+        "value": 137.0,
+        "previous_period_value": 90.0,
+        "previous_period_date": "2025-01-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2025-12-01T00:00:00.0000000+00:00",
+        "value": 156.0,
+        "previous_period_value": 78.0,
+        "previous_period_date": "2024-12-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2025-11-01T00:00:00.0000000+00:00",
+        "value": 119.0,
+        "previous_period_value": 76.0,
+        "previous_period_date": "2024-11-01T00:00:00.0000000+00:00"
+      }
+    ],
+    "listings": [
+      {
+        "date": "2026-11-01T00:00:00.0000000+00:00",
+        "value": 2484.0,
+        "previous_period_value": 2952.0,
+        "previous_period_date": "2025-11-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-10-01T00:00:00.0000000+00:00",
+        "value": 3332.0,
+        "previous_period_value": 2629.0,
+        "previous_period_date": "2025-10-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-09-01T00:00:00.0000000+00:00",
+        "value": 3299.0,
+        "previous_period_value": 2552.0,
+        "previous_period_date": "2025-09-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-08-01T00:00:00.0000000+00:00",
+        "value": 2898.0,
+        "previous_period_value": 2216.0,
+        "previous_period_date": "2025-08-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-07-01T00:00:00.0000000+00:00",
+        "value": 2346.0,
+        "previous_period_value": 2087.0,
+        "previous_period_date": "2025-07-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-06-01T00:00:00.0000000+00:00",
+        "value": 1987.0,
+        "previous_period_value": 1889.0,
+        "previous_period_date": "2025-06-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-05-01T00:00:00.0000000+00:00",
+        "value": 2167.0,
+        "previous_period_value": 1907.0,
+        "previous_period_date": "2025-05-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-04-01T00:00:00.0000000+00:00",
+        "value": 2207.0,
+        "previous_period_value": 1783.0,
+        "previous_period_date": "2025-04-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-03-01T00:00:00.0000000+00:00",
+        "value": 2463.0,
+        "previous_period_value": 2088.0,
+        "previous_period_date": "2025-03-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-02-01T00:00:00.0000000+00:00",
+        "value": 2387.0,
+        "previous_period_value": 2495.0,
+        "previous_period_date": "2025-02-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-01-01T00:00:00.0000000+00:00",
+        "value": 2903.0,
+        "previous_period_value": 2397.0,
+        "previous_period_date": "2025-01-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2025-12-01T00:00:00.0000000+00:00",
+        "value": 3128.0,
+        "previous_period_value": 2219.0,
+        "previous_period_date": "2024-12-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2025-11-01T00:00:00.0000000+00:00",
+        "value": 2952.0,
+        "previous_period_value": 2231.0,
+        "previous_period_date": "2024-11-01T00:00:00.0000000+00:00"
+      }
+    ],
+    "successful_listings": [
+      {
+        "date": "2026-11-01T00:00:00.0000000+00:00",
+        "value": 2484.0,
+        "previous_period_value": 2952.0,
+        "previous_period_date": "2025-11-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-10-01T00:00:00.0000000+00:00",
+        "value": 3332.0,
+        "previous_period_value": 2629.0,
+        "previous_period_date": "2025-10-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-09-01T00:00:00.0000000+00:00",
+        "value": 3299.0,
+        "previous_period_value": 2552.0,
+        "previous_period_date": "2025-09-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-08-01T00:00:00.0000000+00:00",
+        "value": 2898.0,
+        "previous_period_value": 2216.0,
+        "previous_period_date": "2025-08-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-07-01T00:00:00.0000000+00:00",
+        "value": 2346.0,
+        "previous_period_value": 2087.0,
+        "previous_period_date": "2025-07-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-06-01T00:00:00.0000000+00:00",
+        "value": 1987.0,
+        "previous_period_value": 1889.0,
+        "previous_period_date": "2025-06-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-05-01T00:00:00.0000000+00:00",
+        "value": 2167.0,
+        "previous_period_value": 1907.0,
+        "previous_period_date": "2025-05-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-04-01T00:00:00.0000000+00:00",
+        "value": 2207.0,
+        "previous_period_value": 1783.0,
+        "previous_period_date": "2025-04-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-03-01T00:00:00.0000000+00:00",
+        "value": 2463.0,
+        "previous_period_value": 2088.0,
+        "previous_period_date": "2025-03-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-02-01T00:00:00.0000000+00:00",
+        "value": 2387.0,
+        "previous_period_value": 2495.0,
+        "previous_period_date": "2025-02-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2026-01-01T00:00:00.0000000+00:00",
+        "value": 2903.0,
+        "previous_period_value": 2397.0,
+        "previous_period_date": "2025-01-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2025-12-01T00:00:00.0000000+00:00",
+        "value": 3128.0,
+        "previous_period_value": 2219.0,
+        "previous_period_date": "2024-12-01T00:00:00.0000000+00:00"
+      },
+      {
+        "date": "2025-11-01T00:00:00.0000000+00:00",
+        "value": 2952.0,
+        "previous_period_value": 2231.0,
+        "previous_period_date": "2024-11-01T00:00:00.0000000+00:00"
+      }
+    ],
+    "averages": {
+      "visits": 0.0,
+      "visits_previous": 0.0,
+      "sellers": 226.75,
+      "sellers_previous": 157.25,
+      "sellers_professional": 126.25,
+      "sellers_professional_previous": 81.75,
+      "listings": 2672.41666666667,
+      "listings_previous": 2207.75,
+      "successful_listings": 2672.41666666667,
+      "successful_listings_previous": 2207.75
+    }
+  }
+}

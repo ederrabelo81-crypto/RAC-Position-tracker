@@ -1,0 +1,44 @@
+{
+  "status": "ok",
+  "args": {
+    "inp": {}
+  },
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"groups\":[{\"group_id\":549471,\"group_name\":\"Nicknames Favoritos\",\"group_description\":\"Nicknames Favoritos\",\"is_favorite\":true,\"member_count\":1}],\"total\":1,\"returned\":1,\"has_more\":false}"
+      }
+    ],
+    "structuredContent": {
+      "groups": [
+        {
+          "group_id": 549471,
+          "group_name": "Nicknames Favoritos",
+          "group_description": "Nicknames Favoritos",
+          "is_favorite": true,
+          "member_count": 1
+        }
+      ],
+      "total": 1,
+      "returned": 1,
+      "has_more": false
+    },
+    "isError": false,
+    "resultType": "complete"
+  },
+  "payload": {
+    "groups": [
+      {
+        "group_id": 549471,
+        "group_name": "Nicknames Favoritos",
+        "group_description": "Nicknames Favoritos",
+        "is_favorite": true,
+        "member_count": 1
+      }
+    ],
+    "total": 1,
+    "returned": 1,
+    "has_more": false
+  }
+}

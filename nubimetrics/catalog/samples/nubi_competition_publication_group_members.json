@@ -1,0 +1,38 @@
+{
+  "status": "ok",
+  "args": {
+    "inp": {
+      "group_id": 549473
+    }
+  },
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"group_id\":549473,\"group_name\":\"Publicaciones Favoritas\",\"group_description\":\"Publicaciones Favoritas\",\"is_favorite\":true,\"member_count\":0,\"members\":[],\"returned\":0,\"has_more\":false}"
+      }
+    ],
+    "structuredContent": {
+      "group_id": 549473,
+      "group_name": "Publicaciones Favoritas",
+      "group_description": "Publicaciones Favoritas",
+      "is_favorite": true,
+      "member_count": 0,
+      "members": [],
+      "returned": 0,
+      "has_more": false
+    },
+    "isError": false,
+    "resultType": "complete"
+  },
+  "payload": {
+    "group_id": 549473,
+    "group_name": "Publicaciones Favoritas",
+    "group_description": "Publicaciones Favoritas",
+    "is_favorite": true,
+    "member_count": 0,
+    "members": [],
+    "returned": 0,
+    "has_more": false
+  }
+}
