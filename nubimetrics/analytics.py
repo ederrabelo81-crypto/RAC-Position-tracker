@@ -104,10 +104,21 @@ def canonizar_marcas(ranking: pd.DataFrame) -> pd.DataFrame:
     b["_uni_ant"] = b["unidades"] / (1 + b["cresc_unid_pct"] / 100)
     b["_cat_w"] = b["catalogo_pct"] * b["receita_brl"]
     chave = ["categoria_id", "mes", "dimensao", "nome"]
+    # Soma "estrita": um componente sem o mês anterior (crescimento nulo, como
+    # a MIDEA BRANCA de out/26) deixa o Δ do grupo indisponível, em vez de
+    # entrar como zero e o painel mostrar um Δ parcial como se fosse completo.
+    def _soma_estrita(s: pd.Series) -> float:
+        return s.sum(min_count=len(s))
+
+    # Nº de sellers não soma (o mesmo seller vende MIDEA e SPRINGER MIDEA) e a
+    # união não está no payload: grupo de 2+ grafias fica sem o número.
+    def _sellers(s: pd.Series) -> float:
+        return s.iloc[0] if len(s) == 1 else np.nan
+
     g = b.sort_values("receita_brl", ascending=False).groupby(chave, as_index=False, sort=False).agg(
         receita_brl=("receita_brl", "sum"), unidades=("unidades", "sum"), share_brl=("share_brl", "sum"),
-        _rec_ant=("_rec_ant", "sum"), _uni_ant=("_uni_ant", "sum"), _cat_w=("_cat_w", "sum"),
-        tendencia=("tendencia", "first"), qtd_sellers=("qtd_sellers", "max"),
+        _rec_ant=("_rec_ant", _soma_estrita), _uni_ant=("_uni_ant", _soma_estrita), _cat_w=("_cat_w", "sum"),
+        tendencia=("tendencia", "first"), qtd_sellers=("qtd_sellers", _sellers),
         **({"atualizado_em": ("atualizado_em", "max")} if "atualizado_em" in b else {}),
     )
     g["cresc_receita_pct"] = (g["receita_brl"] / g["_rec_ant"].replace(0, np.nan) - 1) * 100

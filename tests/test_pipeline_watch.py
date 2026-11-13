@@ -11,7 +11,7 @@ Rode: pytest tests/test_pipeline_watch.py
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -450,10 +450,12 @@ def test_nubimetrics_conta_linhas_regravadas_no_dia_e_nao_cega():
         def select(self, *a, **k):
             return self
 
-        def gte(self, *a):
+        def gte(self, campo, valor):
+            assert (campo, valor) == ("atualizado_em", f"{DIA.isoformat()}T00:00:00-03:00")
             return self
 
-        def lt(self, *a):
+        def lt(self, campo, valor):
+            assert (campo, valor) == ("atualizado_em", f"{(DIA + timedelta(days=1)).isoformat()}T00:00:00-03:00")
             return self
 
         def limit(self, *a):

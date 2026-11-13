@@ -389,6 +389,12 @@ def test_sub_linhas_midea_somam_no_ranking_de_marcas():
     assert "CARRIER" in set(rk["nome"])                     # Carrier sozinho é outra marca
     assert sorted(rk["posicao"]) == list(range(1, len(rk) + 1))
     assert round(rk["share_brl"].sum(), 1) == 100.0
+    midea = rk[rk["nome"] == "MIDEA"].iloc[0]
+    # MIDEA BRANCA veio sem crescimento: o Δ do grupo fica indisponível, não parcial.
+    assert pd.isna(midea["cresc_receita_pct"])
+    assert pd.isna(midea["qtd_sellers"])                  # união de sellers não está no payload
+    lg = rk[rk["nome"] == "LG"].iloc[0]
+    assert lg["qtd_sellers"] == 46 and round(lg["cresc_receita_pct"], 2) == -6.94
 
 
 def test_cliente_tem_ao_menos_uma_tentativa():
