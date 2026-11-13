@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "nubimetrics": {
+      "type": "http",
+      "url": "https://mcp.nubimetrics.com/mcp",
+      "headers": { "Authorization": "Bearer ${NUBIMETRICS_API_KEY}" }
+    }
+  }
+}

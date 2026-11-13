@@ -1,0 +1,4870 @@
+[
+  {
+    "name": "meli_category_detail",
+    "description": "Qualitative snapshot of one MercadoLibre category for one month: High/Medium/Low levels of opportunity, growth, saturation, catalog and volume; average price and its change versus the previous month; the best and worst sales months with their events; the share of listings with free shipping, Mercado Envíos, catalog and discount; and how sales split by seller medal.\n\nUse when: the user wants to judge a category's health or competitive pressure before entering it, or needs its price level, logistics mix or seasonality peak.\nNot for: revenue, units or top sellers — it returns none of them. Use nubi_category_market_size for revenue and units, and meli_market_rankings for who leads.\nRequires: a category id or path — call meli_category_explorer if unknown.\nLimitation: closed months only; if the requested month is the current one and has no data yet, it falls back to the previous one (period_fallback=true, period_applied says which month).\nNote: data_available=false means the backend has no measurement for this category and month — data is null, not zero.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "category_id": {
+              "description": "Category id or the full path from meli_category_explorer, e.g. 'MLA1246' or 'MLA1246-MLA1263-MLA414007'. A bare id is resolved to its full path. A hyphenated value is used as given, so pass the complete path — a partial or truncated path is not repaired and fails. Must belong to the seller's site (MLA, MLB, …).",
+              "type": "string"
+            },
+            "date": {
+              "description": "First day of the month to read, e.g. 2026-09-01. Only closed months have data; if this is the current month and it has no data yet, the tool falls back to the previous month (see period_fallback).",
+              "format": "date",
+              "type": "string"
+            },
+            "currency": {
+              "default": "local",
+              "description": "'local' = site currency, 'usd' = US dollars. Only avg_price is an amount here; use 'usd' to compare prices across months without inflation.",
+              "enum": [
+                "local",
+                "usd"
+              ],
+              "type": "string"
+            },
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID to use. Defaults to the authenticated user's main account. Pass a different value only if the user has multiple linked accounts. Get the linked ids from nubi_user_info."
+            }
+          },
+          "required": [
+            "category_id",
+            "date"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "properties": {
+                "opportunity": {
+                  "description": "Nubimetrics opportunity level: Low / Medium / High.",
+                  "type": "string"
+                },
+                "growth": {
+                  "description": "Growth level: Low / Medium / High.",
+                  "type": "string"
+                },
+                "saturation": {
+                  "description": "Competitive saturation level: Low / Medium / High.",
+                  "type": "string"
+                },
+                "catalg": {
+                  "description": "Catalog penetration level: Low / Medium / High. (The field name's spelling comes from the backend.)",
+                  "type": "string"
+                },
+                "volume": {
+                  "description": "Sales volume level: Low / Medium / High.",
+                  "type": "string"
+                },
+                "priceVariation": {
+                  "properties": {
+                    "avgPrice": {
+                      "description": "Average price in the category for the month, in 'currency'.",
+                      "type": "number"
+                    },
+                    "previousDate": {
+                      "description": "Month the average price is compared against.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "variation": {
+                      "description": "Change of avgPrice versus previousDate, already in % (2.44 means 2.44%) — never multiply by 100.",
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "avgPrice",
+                    "previousDate",
+                    "variation"
+                  ],
+                  "type": "object",
+                  "description": "Average price and its change versus a previous month."
+                },
+                "topSalesMilestone": {
+                  "properties": {
+                    "date": {
+                      "description": "Month of the historical sales peak.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "events": {
+                      "description": "Notable promotions in that month (e.g. Hot Sale). Often empty.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "date",
+                    "events"
+                  ],
+                  "type": "object",
+                  "description": "Best sales month in the category's history and its events."
+                },
+                "lowSalesMilestone": {
+                  "properties": {
+                    "date": {
+                      "description": "Month of the historical sales low.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "events": {
+                      "description": "Notable promotions in that month. Often empty.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "date",
+                    "events"
+                  ],
+                  "type": "object",
+                  "description": "Worst sales month in the category's history and its events."
+                },
+                "siFreeShippingPercentage": {
+                  "description": "% of the category's listings that offer free shipping. The base is all listings, not listings with sales.",
+                  "type": "number"
+                },
+                "siMercadoEnvioPercentage": {
+                  "description": "% of the category's listings that use Mercado Envíos. The base is all listings.",
+                  "type": "number"
+                },
+                "siCatalogPercentage": {
+                  "description": "% of the category's listings WITH SALES that compete in catalog — never % of units.",
+                  "type": "number"
+                },
+                "itemsDiscountPercentage": {
+                  "description": "% of the category's listings with an active discount. The base is all listings.",
+                  "type": "number"
+                },
+                "saturationRates": {
+                  "properties": {
+                    "platinum": {
+                      "description": "% of the month's units sold by sellers with this medal; the four add up to 100. Not the share of sellers.",
+                      "type": "number"
+                    },
+                    "gold": {
+                      "description": "% of the month's units sold by sellers with this medal; the four add up to 100. Not the share of sellers.",
+                      "type": "number"
+                    },
+                    "silver": {
+                      "description": "% of the month's units sold by sellers with this medal; the four add up to 100. Not the share of sellers.",
+                      "type": "number"
+                    },
+                    "normal": {
+                      "description": "% of the month's units sold by sellers with this medal; the four add up to 100. Not the share of sellers.",
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "platinum",
+                    "gold",
+                    "silver",
+                    "normal"
+                  ],
+                  "type": "object",
+                  "description": "How the month's units sold split by seller medal; the four values add up to 100."
+                }
+              },
+              "required": [
+                "opportunity",
+                "growth",
+                "saturation",
+                "catalg",
+                "volume",
+                "priceVariation",
+                "topSalesMilestone",
+                "lowSalesMilestone",
+                "siFreeShippingPercentage",
+                "siMercadoEnvioPercentage",
+                "siCatalogPercentage",
+                "itemsDiscountPercentage",
+                "saturationRates"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Category readings for period_applied. null when data_available is false."
+        },
+        "data_available": {
+          "default": true,
+          "description": "False when there is no data for this category/month — data is null. Do not report metrics as zero; tell the user data is unavailable for this query instead.",
+          "type": "boolean"
+        },
+        "currency": {
+          "description": "ISO code of avgPrice: the site's currency, or USD when currency='usd'.",
+          "type": "string"
+        },
+        "period_applied": {
+          "description": "Month actually served (YYYY-MM-DD). Cite this one, not the requested month.",
+          "type": "string"
+        },
+        "period_fallback": {
+          "default": false,
+          "description": "True when the requested month had no data and period_applied is the previous month.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "data",
+        "currency",
+        "period_applied"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "meli_category_explorer",
+    "description": "Lists MercadoLibre leaf categories with market-wide indicators, to compare categories or to find a category's path before calling a category tool.\n\nFigures are monthly averages over the last 12 closed months, except growth_ytd and growth_yoy — there is no date parameter. The *_scoring fields are Nubimetrics 1–10 scores relative to the leaf categories of the same top-level branch (10 = highest in its branch), not to the whole site: they are not comparable across branches and are not percentages, amounts or ranking positions. To compare across branches use the raw figures (visits, sellers, successful_items, avg_ticket). growth_ytd (January to the last closed month vs the same months a year earlier) and growth_yoy (last closed month vs the same month a year earlier) are unit-sales growth, capped at 1000.\n\nUse when: the user wants to discover or compare categories (competition, growth, visits, medal mix, peak and low month, sellers, ticket), or you need the 'path' of a category for meli_category_detail, meli_market_rankings, meli_search_trends_rankings, nubi_category_market_size, nubi_category_market_structure or nubi_category_forecast.\nNot for: the seller's own performance — use nubi_evaluate_categories. For one month of one category use meli_category_detail; for a monthly series use nubi_category_market_size.\nNote: results can include categories this account is not allowed to query — check the path against nubi_seller_info's allowed_categories before calling a category tool.\nNote: 'total' is the size of the site's whole category tree, not the number of matches — count the returned rows instead.\nNote: only_my_categories narrows to categories where the seller has listings; for an account with none it returns the whole site.\nCaution: fetch_all=true loads the whole tree (~10K rows) with many requests — prefer search_term, category_id_l1 or the min_/max_ filters.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "sort_by": {
+              "default": "avgSuccessfulItemsScoring",
+              "description": "Metric to order by, named after the output field's backend source: avgSuccessfulItemsScoring=scoring, avgGmvScoring=gmv_scoring, avgCompetitivityScoring=competitivity, avgVisitsScoring=visits_scoring, avgSuccessfulListingsScoring=listings_scoring, avgItemQuantityScoring=item_quantity_scoring, avgCatalogSiPercentageScoring=catalog_scoring, ytdSiVariation=growth_ytd, yoYSiVariation=growth_yoy, avgVisits=visits, avgSellers=sellers, avgTicketLocal=avg_ticket, avgSiSellers<Medal>Percentage=saturation_<medal>. The *_scoring fields order by the score within the top-level branch, so combine them with category_id_l1; across branches order by a raw figure instead. Do not use hasSales: the backend returns an empty list with it.",
+              "enum": [
+                "avgSuccessfulItemsScoring",
+                "avgGmvScoring",
+                "ytdSiVariation",
+                "yoYSiVariation",
+                "avgVisits",
+                "avgCompetitivityScoring",
+                "avgVisitsScoring",
+                "avgSuccessfulListingsScoring",
+                "avgItemQuantityScoring",
+                "avgCatalogSiPercentageScoring",
+                "hasSales",
+                "avgSellers",
+                "avgTicketLocal",
+                "avgSiSellersPlatinumPercentage",
+                "avgSiSellersGoldPercentage",
+                "avgSiSellersSilverPercentage",
+                "avgSiSellersNormalPercentage"
+              ],
+              "type": "string"
+            },
+            "order_by": {
+              "default": "desc",
+              "description": "Sort direction. Use asc with competitivity to list the least competitive categories first.",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            },
+            "only_my_categories": {
+              "default": false,
+              "description": "If true, only the categories the seller operates in. Values are still market-wide. For an account with no categories of its own it returns the whole site.",
+              "type": "boolean"
+            },
+            "page_size": {
+              "default": 50,
+              "description": "Rows per page. Ignored when fetch_all=true.",
+              "maximum": 50,
+              "minimum": 10,
+              "type": "integer"
+            },
+            "page": {
+              "default": 1,
+              "description": "Page number, from 1. Ignored when fetch_all=true.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "fetch_all": {
+              "default": false,
+              "description": "Fetch every page in one call, with the same search and filters. Without filters this is the whole site (~10K rows) and is slow — use it only for exhaustive comparisons, or to get a seller's complete list with only_my_categories.",
+              "type": "boolean"
+            },
+            "search_term": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Substring match over the category's full name (e.g. 'Cafeteras', 'Zapatillas'). Use one or two short nouns that appear in a category name — product phrases rarely match. If nothing comes back, retry once with a shorter or broader noun. Combines with sort_by and the filters."
+            },
+            "category_id_l1": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Top-level category ID, e.g. 'MLA5726' — restricts results to that branch. It is the first segment of a category path."
+            },
+            "min_sellers": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Lower bound on the output 'sellers' field, inclusive."
+            },
+            "max_sellers": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Upper bound on the output 'sellers' field, inclusive."
+            },
+            "min_avg_ticket": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Lower bound on 'avg_ticket', inclusive, in the site's local currency."
+            },
+            "max_avg_ticket": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Upper bound on 'avg_ticket', inclusive, in the site's local currency."
+            },
+            "min_visits": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Lower bound on the output 'visits' field (monthly average), inclusive."
+            },
+            "max_visits": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Upper bound on the output 'visits' field (monthly average), inclusive."
+            },
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID to use. Defaults to the authenticated user's main account. Pass a different value only if the user has multiple linked accounts. Get the linked ids from nubi_user_info."
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "categories": {
+          "description": "One row per leaf category.",
+          "items": {
+            "properties": {
+              "name": {
+                "description": "Full category name from top level to leaf, joined by '-', e.g. 'Ropa y Accesorios-Calzado-Zapatillas'.",
+                "type": "string"
+              },
+              "path": {
+                "description": "Category ids from top level to leaf joined by '-'. Pass it as category_id to the category tools; its last segment is the leaf id meli_publication_explorer takes.",
+                "type": "string"
+              },
+              "scoring": {
+                "description": "1–10 score of the units sold, relative to the leaf categories of the same top-level branch (10 = highest in its branch). Not comparable across branches: a 10 in a small branch can be small site-wide. Linear min-max scale, so most categories sit near 1: a low score means far from the branch's top category, not a poor one. Not a percentage, an amount or a position.",
+                "type": "number"
+              },
+              "gmv_scoring": {
+                "description": "1–10 score of the category's revenue, relative to the leaf categories of the same top-level branch (10 = highest in its branch). Not comparable across branches: a 10 in a small branch can be small site-wide. Linear min-max scale, so most categories sit near 1: a low score means far from the branch's top category, not a poor one. Not a percentage, an amount or a position.",
+                "type": "number"
+              },
+              "visits_scoring": {
+                "description": "1–10 score of the category's visits, relative to the leaf categories of the same top-level branch (10 = highest in its branch). Not comparable across branches: a 10 in a small branch can be small site-wide. Linear min-max scale, so most categories sit near 1: a low score means far from the branch's top category, not a poor one. Not a percentage, an amount or a position.",
+                "type": "number"
+              },
+              "listings_scoring": {
+                "description": "1–10 score of the number of listings with sales, relative to the leaf categories of the same top-level branch (10 = highest in its branch). Not comparable across branches: a 10 in a small branch can be small site-wide. Linear min-max scale, so most categories sit near 1: a low score means far from the branch's top category, not a poor one. Not a percentage, an amount or a position.",
+                "type": "number"
+              },
+              "item_quantity_scoring": {
+                "description": "1–10 score of the number of offered (active) listings, relative to the leaf categories of the same top-level branch (10 = highest in its branch). Not comparable across branches: a 10 in a small branch can be small site-wide. Linear min-max scale, so most categories sit near 1: a low score means far from the branch's top category, not a poor one. Not a percentage, an amount or a position.",
+                "type": "number"
+              },
+              "catalog_scoring": {
+                "description": "1–10 score of the share of sales made through catalog listings, relative to the leaf categories of the same top-level branch (10 = highest in its branch). Not comparable across branches: a 10 in a small branch can be small site-wide. Linear min-max scale, so most categories sit near 1: a low score means far from the branch's top category, not a poor one. Not a percentage, an amount or a position.",
+                "type": "number"
+              },
+              "growth_ytd": {
+                "description": "Units sold from January to the last closed month of the current year versus the same months of the previous year, in %. Capped at 1000: a value of 1000 means '1000% or more', not an exact figure.",
+                "type": "number"
+              },
+              "growth_yoy": {
+                "description": "Units sold in the last closed month versus the same month of the previous year, in % (whole numbers). Not revenue growth and not a 12-month comparison. Capped at 1000: a value of 1000 means '1000% or more', not an exact figure.",
+                "type": "number"
+              },
+              "visits": {
+                "description": "Average monthly visits to the category over the last 12 closed months — not a period total and not a 1–10 score.",
+                "type": "number"
+              },
+              "competitivity": {
+                "description": "1–10 score of competition, relative to the leaf categories of the same top-level branch (10 = highest in its branch). Not comparable across branches: a 10 in a small branch can be small site-wide. Linear min-max scale, so most categories sit near 1: a low score means far from the branch's top category, not a poor one. Not a percentage, an amount or a position. Higher means more competition. A score, not the raw competitiveness index.",
+                "type": "number"
+              },
+              "has_sales": {
+                "description": "True when the category is one of the seller's own and the seller meets Nubimetrics' sales minimum in its top-level category (at least 10 sales and over USD 300 in the last 90 days). Not tied to the data's period. The metrics in this tool are market-wide and come filled either way.",
+                "type": "boolean"
+              },
+              "saturation_platinum": {
+                "description": "% of the category's units sold by sellers with this MercadoLibre medal, 12-month average, rounded to whole numbers; the four add up to about 100. Not the share of sellers.",
+                "type": "number"
+              },
+              "saturation_gold": {
+                "description": "% of the category's units sold by sellers with this MercadoLibre medal, 12-month average, rounded to whole numbers; the four add up to about 100. Not the share of sellers.",
+                "type": "number"
+              },
+              "saturation_silver": {
+                "description": "% of the category's units sold by sellers with this MercadoLibre medal, 12-month average, rounded to whole numbers; the four add up to about 100. Not the share of sellers.",
+                "type": "number"
+              },
+              "saturation_normal": {
+                "description": "% of the category's units sold by sellers with this MercadoLibre medal, 12-month average, rounded to whole numbers; the four add up to about 100. Not the share of sellers.",
+                "type": "number"
+              },
+              "peak_month": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Month with the most units sold within the 12-month window, as an ISO date (first day of the month, e.g. '2026-05-01T00:00:00Z'). Not the latest month."
+              },
+              "low_month": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Month with the fewest units sold within the 12-month window, as an ISO date."
+              },
+              "sellers": {
+                "description": "Average monthly number of active sellers.",
+                "type": "number"
+              },
+              "successful_items": {
+                "description": "Average monthly number of listings with at least one sale — never units sold.",
+                "type": "number"
+              },
+              "avg_ticket": {
+                "description": "Average revenue per unit sold, in the site's local currency (revenue / units sold). Not the value of an order. Always an amount.",
+                "type": "number"
+              }
+            },
+            "required": [
+              "name",
+              "path",
+              "scoring",
+              "gmv_scoring",
+              "visits_scoring",
+              "listings_scoring",
+              "item_quantity_scoring",
+              "catalog_scoring",
+              "growth_ytd",
+              "growth_yoy",
+              "visits",
+              "competitivity",
+              "has_sales",
+              "saturation_platinum",
+              "saturation_gold",
+              "saturation_silver",
+              "saturation_normal",
+              "peak_month",
+              "low_month",
+              "sellers",
+              "successful_items",
+              "avg_ticket"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Size of the site's whole category tree — NOT the number of matches. Count the rows of 'categories' instead.",
+          "type": "integer"
+        },
+        "page": {
+          "description": "Page requested (echo of the input).",
+          "type": "integer"
+        },
+        "page_size": {
+          "description": "Page size requested (echo of the input). With fetch_all=true, all rows come back regardless.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "categories",
+        "total",
+        "page",
+        "page_size"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_category_forecast",
+    "description": "Demand forecast for one MercadoLibre category: one projected point per month for the 12 months after period_applied (the requested month, or the previous one on fallback) — units and revenue (local and USD), each with its growth versus the same month of the previous year, plus the previous year's local-currency revenue for that month — and a summary for the whole calendar year (actual closed months plus projected ones).\n\nUse when: the user asks about expected demand, future size or seasonality ahead for a category.\nRequires: a category id or path — call meli_category_explorer if unknown — and date = first day of the last closed month.\nNote: is_generated=false means there is no forecast model for that category — projection is empty and the accumulated_annual zeros are not real values.\nNote: projections are model estimates, not measurements.\nNote: not available for B2C accounts — the call is rejected whatever the category.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "category_id": {
+              "description": "Category id or the full path from meli_category_explorer, e.g. 'MLA1246' or 'MLA1246-MLA1263-MLA414007'. A bare id is resolved to its full path. A hyphenated value is used as given, so pass the complete path — a partial or truncated path is not repaired and fails. Must belong to the seller's site (MLA, MLB, …).",
+              "type": "string"
+            },
+            "date": {
+              "description": "First day of the last CLOSED month, e.g. 2026-05-01 if today is June. The tool falls back to the previous month automatically if the requested month has no data yet. The projection starts the month after period_applied.",
+              "format": "date",
+              "type": "string"
+            },
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID to use. Defaults to the authenticated user's main account. Pass a different value only if the user has multiple linked accounts. Get the linked ids from nubi_user_info."
+            }
+          },
+          "required": [
+            "category_id",
+            "date"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "is_generated": {
+          "description": "False when there is no forecast model for this category — all numeric fields will be zero.",
+          "type": "boolean"
+        },
+        "category": {
+          "description": "Leaf category id the forecast belongs to.",
+          "type": "string"
+        },
+        "currency": {
+          "description": "ISO currency code for all local-currency fields (e.g. MXN, ARS, BRL).",
+          "type": "string"
+        },
+        "period_applied": {
+          "description": "Reference month actually used (YYYY-MM-DD). May differ from the requested date when period_fallback=true.",
+          "type": "string"
+        },
+        "period_fallback": {
+          "description": "True when the requested month had no closed data and the previous month was used instead.",
+          "type": "boolean"
+        },
+        "accumulated_annual": {
+          "properties": {
+            "date_ytd": {
+              "description": "End month of that year (December 1).",
+              "type": "string"
+            },
+            "successful_items_ytd": {
+              "description": "Units for the whole year: actual closed months plus projected months.",
+              "type": "integer"
+            },
+            "successful_items_growth_ytd": {
+              "description": "Change of that year total versus the whole previous calendar year, in %.",
+              "type": "number"
+            },
+            "gmv_usd_forecasted_ytd": {
+              "description": "Same total in USD; actual months are converted with the forecast's own exchange rate.",
+              "type": "number"
+            },
+            "gmv_local_forecasted_ytd": {
+              "description": "Revenue for the whole year in local currency: actual closed months plus projected months.",
+              "type": "number"
+            },
+            "gmv_usd_growth_ytd": {
+              "description": "Change of that year total versus the whole previous calendar year, in %.",
+              "type": "number"
+            },
+            "gmv_local_growth_ytd": {
+              "description": "Change of that year total versus the whole previous calendar year, in % — includes inflation; compare with the USD figure.",
+              "type": "number"
+            }
+          },
+          "required": [
+            "date_ytd",
+            "successful_items_ytd",
+            "successful_items_growth_ytd",
+            "gmv_usd_forecasted_ytd",
+            "gmv_local_forecasted_ytd",
+            "gmv_usd_growth_ytd",
+            "gmv_local_growth_ytd"
+          ],
+          "type": "object",
+          "description": "Totals for the whole calendar year of period_applied, up to date_ytd: actual closed months plus projected months."
+        },
+        "projection": {
+          "description": "One point per month for the 12 months after period_applied, oldest first.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Projected month (first day).",
+                "type": "string"
+              },
+              "successful_items_forecasted": {
+                "description": "Projected units for the month.",
+                "type": "integer"
+              },
+              "successful_items_growth_yoy": {
+                "description": "Projected units versus the same month of the previous year, in %.",
+                "type": "number"
+              },
+              "gmv_usd_forecasted": {
+                "description": "Projected revenue for the month, in USD.",
+                "type": "number"
+              },
+              "gmv_local_forecasted": {
+                "description": "Projected revenue for the month, in local currency.",
+                "type": "number"
+              },
+              "gmv_usd_growth_yoy": {
+                "description": "Projected USD revenue versus the same month of the previous year, in %.",
+                "type": "number"
+              },
+              "gmv_local_growth_yoy": {
+                "description": "Projected local revenue versus the same month of the previous year, in %.",
+                "type": "number"
+              },
+              "gmv_local_before_forecasted": {
+                "description": "Actual GMV in local currency for the same month in the prior year — the baseline used to compute gmv_local_growth_yoy.",
+                "type": "number"
+              }
+            },
+            "required": [
+              "date",
+              "successful_items_forecasted",
+              "successful_items_growth_yoy",
+              "gmv_usd_forecasted",
+              "gmv_local_forecasted",
+              "gmv_usd_growth_yoy",
+              "gmv_local_growth_yoy",
+              "gmv_local_before_forecasted"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "is_generated",
+        "category",
+        "currency",
+        "period_applied",
+        "period_fallback",
+        "accumulated_annual",
+        "projection"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_category_market_size",
+    "description": "Monthly series for one MercadoLibre category over a month range: revenue and average ticket (each in local currency and in USD) and units sold, with every point carrying the same month of the previous year; plus the averages of each series.\n\nUse when: the user asks how big a category is or how its revenue and units evolved, including year-over-year.\nNot for: counting sellers or listings — use nubi_category_market_structure.\nRequires: a category id or path — call meli_category_explorer if unknown.\nNote: data_available=false means no measurement for that category and range — the zeros are not real values.\nNote: this backend checks category access from a different source than nubi_seller_info, so a category listed there as allowed can still be rejected here. A rejection is stable, not a transient error — do not retry.\nNote: not available for B2C accounts — the call is rejected whatever the category.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "category_id": {
+              "description": "Category id or the full path from meli_category_explorer, e.g. 'MLA1246' or 'MLA1246-MLA1263-MLA414007'. A bare id is resolved to its full path. A hyphenated value is used as given, so pass the complete path — a partial or truncated path is not repaired and fails. Must belong to the seller's site (MLA, MLB, …).",
+              "type": "string"
+            },
+            "date_from": {
+              "description": "First day of the starting month, e.g. 2025-05-01.",
+              "format": "date",
+              "type": "string"
+            },
+            "date_to": {
+              "description": "First day of the ending month, e.g. 2026-05-01. Inclusive — this month is returned.",
+              "format": "date",
+              "type": "string"
+            },
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID to use. Defaults to the authenticated user's main account. Pass a different value only if the user has multiple linked accounts. Get the linked ids from nubi_user_info."
+            }
+          },
+          "required": [
+            "category_id",
+            "date_from",
+            "date_to"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "category_id": {
+          "description": "Category as passed in the request.",
+          "type": "string"
+        },
+        "currency": {
+          "description": "ISO code of the *_local series (the site's currency).",
+          "type": "string"
+        },
+        "date_from": {
+          "description": "Requested month range, both months included.",
+          "type": "string"
+        },
+        "date_to": {
+          "description": "Requested month range, both months included.",
+          "type": "string"
+        },
+        "data_available": {
+          "default": true,
+          "description": "False when there is no data for this category/date range — all numeric fields below are 0, not a real measurement. Do not report them as actual zeros; tell the user data is unavailable for this query instead.",
+          "type": "boolean"
+        },
+        "gmv_local": {
+          "description": "Monthly revenue in local currency, one point per month — read each point's date.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Month of the point (ISO date, first day of the month).",
+                "type": "string"
+              },
+              "value": {
+                "description": "Value of the series in that month.",
+                "type": "number"
+              },
+              "previous_period_value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Same month in the prior year — enables direct YoY comparison."
+              },
+              "previous_period_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Date of the prior-year reference point."
+              }
+            },
+            "required": [
+              "date",
+              "value",
+              "previous_period_value",
+              "previous_period_date"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "gmv_usd": {
+          "description": "Monthly revenue in USD, one point per month.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Month of the point (ISO date, first day of the month).",
+                "type": "string"
+              },
+              "value": {
+                "description": "Value of the series in that month.",
+                "type": "number"
+              },
+              "previous_period_value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Same month in the prior year — enables direct YoY comparison."
+              },
+              "previous_period_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Date of the prior-year reference point."
+              }
+            },
+            "required": [
+              "date",
+              "value",
+              "previous_period_value",
+              "previous_period_date"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "successful_items": {
+          "description": "Monthly units sold, one point per month.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Month of the point (ISO date, first day of the month).",
+                "type": "string"
+              },
+              "value": {
+                "description": "Value of the series in that month.",
+                "type": "number"
+              },
+              "previous_period_value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Same month in the prior year — enables direct YoY comparison."
+              },
+              "previous_period_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Date of the prior-year reference point."
+              }
+            },
+            "required": [
+              "date",
+              "value",
+              "previous_period_value",
+              "previous_period_date"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "avg_ticket_local": {
+          "description": "Monthly average ticket (revenue per sale) in local currency.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Month of the point (ISO date, first day of the month).",
+                "type": "string"
+              },
+              "value": {
+                "description": "Value of the series in that month.",
+                "type": "number"
+              },
+              "previous_period_value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Same month in the prior year — enables direct YoY comparison."
+              },
+              "previous_period_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Date of the prior-year reference point."
+              }
+            },
+            "required": [
+              "date",
+              "value",
+              "previous_period_value",
+              "previous_period_date"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "avg_ticket_usd": {
+          "description": "Monthly average ticket in USD.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Month of the point (ISO date, first day of the month).",
+                "type": "string"
+              },
+              "value": {
+                "description": "Value of the series in that month.",
+                "type": "number"
+              },
+              "previous_period_value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Same month in the prior year — enables direct YoY comparison."
+              },
+              "previous_period_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Date of the prior-year reference point."
+              }
+            },
+            "required": [
+              "date",
+              "value",
+              "previous_period_value",
+              "previous_period_date"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "averages": {
+          "properties": {
+            "gmv_local": {
+              "description": "Average monthly value of that series over the range.",
+              "type": "number"
+            },
+            "gmv_local_previous": {
+              "description": "Same average over the same months one year earlier.",
+              "type": "number"
+            },
+            "gmv_usd": {
+              "description": "Average monthly value of that series over the range.",
+              "type": "number"
+            },
+            "gmv_usd_previous": {
+              "description": "Same average over the same months one year earlier.",
+              "type": "number"
+            },
+            "successful_items": {
+              "description": "Average monthly value of that series over the range.",
+              "type": "number"
+            },
+            "successful_items_previous": {
+              "description": "Same average over the same months one year earlier.",
+              "type": "number"
+            },
+            "avg_ticket_local": {
+              "description": "Average monthly value of that series over the range.",
+              "type": "number"
+            },
+            "avg_ticket_local_previous": {
+              "description": "Same average over the same months one year earlier.",
+              "type": "number"
+            },
+            "avg_ticket_usd": {
+              "description": "Average monthly value of that series over the range.",
+              "type": "number"
+            },
+            "avg_ticket_usd_previous": {
+              "description": "Same average over the same months one year earlier.",
+              "type": "number"
+            }
+          },
+          "required": [
+            "gmv_local",
+            "gmv_local_previous",
+            "gmv_usd",
+            "gmv_usd_previous",
+            "successful_items",
+            "successful_items_previous",
+            "avg_ticket_local",
+            "avg_ticket_local_previous",
+            "avg_ticket_usd",
+            "avg_ticket_usd_previous"
+          ],
+          "type": "object",
+          "description": "Average of each series over the range, with its prior-year counterpart (*_previous)."
+        }
+      },
+      "required": [
+        "category_id",
+        "currency",
+        "date_from",
+        "date_to",
+        "gmv_local",
+        "gmv_usd",
+        "successful_items",
+        "avg_ticket_local",
+        "avg_ticket_usd",
+        "averages"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_category_market_structure",
+    "description": "Monthly series for one MercadoLibre category over a month range: active sellers, professional sellers and listings, with every point carrying the same month of the previous year; plus the averages of each series.\n\nUse when: the user asks how many sellers or listings compete in a category and how that changed.\nNot for: visits — this backend never returns them; use meli_category_explorer. Not for revenue or units — use nubi_category_market_size.\nRequires: a category id or path — call meli_category_explorer if unknown.\nNote: data_available=false means no measurement for that category and range — the zeros are not real values.\nNote: category access is checked from a different source than nubi_seller_info; a rejection is stable, do not retry.\nNote: not available for B2C accounts — the call is rejected whatever the category.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "category_id": {
+              "description": "Category id or the full path from meli_category_explorer, e.g. 'MLA1246' or 'MLA1246-MLA1263-MLA414007'. A bare id is resolved to its full path. A hyphenated value is used as given, so pass the complete path — a partial or truncated path is not repaired and fails. Must belong to the seller's site (MLA, MLB, …).",
+              "type": "string"
+            },
+            "date_from": {
+              "description": "First day of the starting month, e.g. 2025-05-01.",
+              "format": "date",
+              "type": "string"
+            },
+            "date_to": {
+              "description": "First day of the ending month, e.g. 2026-05-01. Inclusive — this month is returned.",
+              "format": "date",
+              "type": "string"
+            },
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID to use. Defaults to the authenticated user's main account. Pass a different value only if the user has multiple linked accounts. Get the linked ids from nubi_user_info."
+            }
+          },
+          "required": [
+            "category_id",
+            "date_from",
+            "date_to"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "category_id": {
+          "description": "Category as passed in the request.",
+          "type": "string"
+        },
+        "date_from": {
+          "description": "Requested month range, both months included.",
+          "type": "string"
+        },
+        "date_to": {
+          "description": "Requested month range, both months included.",
+          "type": "string"
+        },
+        "data_available": {
+          "default": true,
+          "description": "False when there is no data for this category/date range — all numeric fields below are 0, not a real measurement. Do not report them as actual zeros; tell the user data is unavailable for this query instead.",
+          "type": "boolean"
+        },
+        "visits": {
+          "description": "Always empty — this backend returns no visits. Use meli_category_explorer for visits.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Always empty.",
+                "type": "string"
+              },
+              "value": {
+                "description": "Always empty.",
+                "type": "number"
+              },
+              "previous_period_value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Always empty."
+              },
+              "previous_period_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Always empty."
+              }
+            },
+            "required": [
+              "date",
+              "value",
+              "previous_period_value",
+              "previous_period_date"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sellers": {
+          "description": "Active sellers, one point per month — read each point's date.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Month of the point.",
+                "type": "string"
+              },
+              "value": {
+                "description": "Value of the series in that month.",
+                "type": "number"
+              },
+              "previous_period_value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Same month in the prior year."
+              },
+              "previous_period_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Date of that prior-year month."
+              }
+            },
+            "required": [
+              "date",
+              "value",
+              "previous_period_value",
+              "previous_period_date"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sellers_professional": {
+          "description": "Professional sellers per month.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Month of the point.",
+                "type": "string"
+              },
+              "value": {
+                "description": "Value of the series in that month.",
+                "type": "number"
+              },
+              "previous_period_value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Same month in the prior year."
+              },
+              "previous_period_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Date of that prior-year month."
+              }
+            },
+            "required": [
+              "date",
+              "value",
+              "previous_period_value",
+              "previous_period_date"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "listings": {
+          "description": "Listings per month.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Month of the point.",
+                "type": "string"
+              },
+              "value": {
+                "description": "Value of the series in that month.",
+                "type": "number"
+              },
+              "previous_period_value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Same month in the prior year."
+              },
+              "previous_period_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Date of that prior-year month."
+              }
+            },
+            "required": [
+              "date",
+              "value",
+              "previous_period_value",
+              "previous_period_date"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "successful_listings": {
+          "description": "Currently identical to 'listings' — not a count of listings with sales.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Month of the point.",
+                "type": "string"
+              },
+              "value": {
+                "description": "Value of the series in that month.",
+                "type": "number"
+              },
+              "previous_period_value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Same month in the prior year."
+              },
+              "previous_period_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Date of that prior-year month."
+              }
+            },
+            "required": [
+              "date",
+              "value",
+              "previous_period_value",
+              "previous_period_date"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "averages": {
+          "properties": {
+            "visits": {
+              "description": "Always 0 — visits are not returned.",
+              "type": "number"
+            },
+            "visits_previous": {
+              "description": "Always 0 — visits are not returned.",
+              "type": "number"
+            },
+            "sellers": {
+              "description": "Average monthly value of that series over the range.",
+              "type": "number"
+            },
+            "sellers_previous": {
+              "description": "Same average one year earlier.",
+              "type": "number"
+            },
+            "sellers_professional": {
+              "description": "Average monthly value of that series over the range.",
+              "type": "number"
+            },
+            "sellers_professional_previous": {
+              "description": "Same average one year earlier.",
+              "type": "number"
+            },
+            "listings": {
+              "description": "Average monthly value of that series over the range.",
+              "type": "number"
+            },
+            "listings_previous": {
+              "description": "Same average one year earlier.",
+              "type": "number"
+            },
+            "successful_listings": {
+              "description": "Average monthly value of that series over the range.",
+              "type": "number"
+            },
+            "successful_listings_previous": {
+              "description": "Same average one year earlier.",
+              "type": "number"
+            }
+          },
+          "required": [
+            "visits",
+            "visits_previous",
+            "sellers",
+            "sellers_previous",
+            "sellers_professional",
+            "sellers_professional_previous",
+            "listings",
+            "listings_previous",
+            "successful_listings",
+            "successful_listings_previous"
+          ],
+          "type": "object",
+          "description": "Average of each series over the range, with *_previous for the prior year."
+        }
+      },
+      "required": [
+        "category_id",
+        "date_from",
+        "date_to",
+        "visits",
+        "sellers",
+        "sellers_professional",
+        "listings",
+        "successful_listings",
+        "averages"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_publication_detail",
+    "description": "Snapshot of one followed publication: title, seller, official store, category path, price, original price and discount, condition, status, Full/Flex/catalog/free-shipping flags, listing type, brand, model, SKU and last update; plus revenue, units, visits, conversion and questions over a day window ending today.\n\nUse when: the user wants the current state and recent performance of one followed publication.\nRequires: member_code and member_owner from nubi_competition_publication_group_members.\nNote: gmv and units are rounded display strings such as '1.2M'. For a daily series use nubi_competition_publication_evolution; for its change history use nubi_competition_publication_log.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "member_code": {
+              "description": "Obfuscated item hash from nubi_competition_publication_group_members.",
+              "pattern": "^[0-9A-Fa-f]{128}$",
+              "type": "string"
+            },
+            "member_owner": {
+              "description": "Obfuscated hash of the seller who owns this publication, from nubi_competition_publication_group_members.",
+              "pattern": "^[0-9A-Fa-f]{128}$",
+              "type": "string"
+            },
+            "days": {
+              "default": 30,
+              "description": "Size of the KPI/analysis window in days, counting back from today (inclusive). E.g. 30 = last 30 days, 90 = last 90 days. Any value in range works — not limited to a fixed set of buckets.",
+              "maximum": 730,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "member_code",
+            "member_owner"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "data": {
+          "properties": {
+            "item_id": {
+              "description": "Hashed publication id (same as member_code).",
+              "type": "string"
+            },
+            "title": {
+              "description": "Title, cut at 40 characters.",
+              "type": "string"
+            },
+            "seller_nickname": {
+              "description": "Seller's display name; for competitors it is obfuscated (e.g. 'AVESTRUZ.LINO.RESPETUOSO').",
+              "type": "string"
+            },
+            "owner_seller_id": {
+              "description": "Hash of the seller who owns this publication — distinct from the top-level seller_id parameter, which identifies the querying account.",
+              "type": "string"
+            },
+            "official_store_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Hashed official store id; null when the listing has none."
+            },
+            "official_store_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Obfuscated official store name (e.g. 'TIENDA.OFICIAL.63196')."
+            },
+            "category_path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Full breadcrumb path from root, e.g. 'Accesorios para Vehículos/.../Camperas'. Not a category_id."
+            },
+            "price": {
+              "description": "Current price, in 'currency'.",
+              "type": "number"
+            },
+            "original_price": {
+              "description": "Price before discount.",
+              "type": "number"
+            },
+            "discount_percentage": {
+              "description": "Discount versus original_price, in %.",
+              "type": "number"
+            },
+            "condition": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "'new' or 'used'."
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Listing status, e.g. 'active', 'paused'."
+            },
+            "is_full": {
+              "description": "Uses Mercado Libre Full.",
+              "type": "boolean"
+            },
+            "is_flex": {
+              "description": "Uses Mercado Libre Flex.",
+              "type": "boolean"
+            },
+            "is_catalog": {
+              "description": "True for a catalog (BuyBox) listing.",
+              "type": "boolean"
+            },
+            "free_shipping": {
+              "description": "Offers free shipping.",
+              "type": "boolean"
+            },
+            "accepts_mercadopago": {
+              "description": "Accepts Mercado Pago.",
+              "type": "boolean"
+            },
+            "listing_type_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "MercadoLibre listing type id, e.g. 'gold_special', 'gold_pro'."
+            },
+            "brand": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Brand declared on the listing."
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Model declared on the listing."
+            },
+            "sku": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seller-defined SKU."
+            },
+            "installments": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Raw installments code (e.g. 'gsnq'); decoding not confirmed."
+            },
+            "last_updated": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "When the listing data was last refreshed."
+            },
+            "gmv": {
+              "description": "Revenue in the window, as a rounded display string.",
+              "type": "string"
+            },
+            "units": {
+              "description": "Units sold in the window, as a display string.",
+              "type": "string"
+            },
+            "visits": {
+              "description": "Visits in the window.",
+              "type": "number"
+            },
+            "convertion": {
+              "description": "Conversion in the window, in %.",
+              "type": "number"
+            },
+            "questions": {
+              "description": "Questions received in the window.",
+              "type": "number"
+            }
+          },
+          "required": [
+            "item_id",
+            "title",
+            "seller_nickname",
+            "owner_seller_id",
+            "official_store_id",
+            "official_store_name",
+            "category_path",
+            "price",
+            "original_price",
+            "discount_percentage",
+            "condition",
+            "status",
+            "is_full",
+            "is_flex",
+            "is_catalog",
+            "free_shipping",
+            "accepts_mercadopago",
+            "listing_type_id",
+            "brand",
+            "model",
+            "sku",
+            "installments",
+            "last_updated",
+            "gmv",
+            "units",
+            "visits",
+            "convertion",
+            "questions"
+          ],
+          "type": "object",
+          "description": "Listing snapshot plus its KPIs for the day window."
+        },
+        "currency": {
+          "description": "ISO code of the amounts.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_publication_evolution",
+    "description": "Daily series for one followed publication: revenue (gmv), units (si), price, visits and conversion.\n\nUse when: the user wants to see how a followed publication evolved, or compare it with the previous period.\nRequires: member_code and member_owner from nubi_competition_publication_group_members.\nNote: with no data for the publication it returns no series. For a closed publication it returns only the requested window (5 series). Otherwise it returns the requested window (ending today, today included) and the previous window of the same length, 5 series each, with the names repeated — tell them apart by the dates of their points.\nNote: points are strings 'YYYY-MM-DD value', ascending by date — split on the space.\nNote: unlike nubi_competition_seller_evolution, this series has 'price' instead of 'items'.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "member_code": {
+              "description": "Obfuscated item hash from nubi_competition_publication_group_members.",
+              "pattern": "^[0-9A-Fa-f]{128}$",
+              "type": "string"
+            },
+            "member_owner": {
+              "description": "Obfuscated hash of the seller who owns this publication, from nubi_competition_publication_group_members.",
+              "pattern": "^[0-9A-Fa-f]{128}$",
+              "type": "string"
+            },
+            "days": {
+              "default": 30,
+              "description": "Size of the series window in days, counting back from today (inclusive). E.g. 30 = last 30 days, 90 = last 90 days. Any value in range works — not limited to a fixed set of buckets. The previous window of the same length is returned too (not for a closed publication), and today is included.",
+              "maximum": 730,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "member_code",
+            "member_owner"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "metrics": {
+          "description": "No series when there is no data for the publication; only the requested window (5 series) for a closed publication; otherwise the requested window and the previous window of the same length, 5 series each. Names repeat — tell the windows apart by the dates.",
+          "items": {
+            "properties": {
+              "name": {
+                "description": "Series name: 'gmv', 'price', 'si', 'visits' or 'convertion' (twice when both windows are returned).",
+                "enum": [
+                  "visits",
+                  "gmv",
+                  "si",
+                  "price",
+                  "convertion"
+                ],
+                "type": "string"
+              },
+              "points": {
+                "description": "Points as 'YYYY-MM-DD value' strings, oldest first; the requested window includes today. 'convertion' values have 2 decimals; all other metrics are whole numbers.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "name",
+              "points"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "currency": {
+          "description": "ISO code of the gmv and price series.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metrics",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_publication_group_members",
+    "description": "Lists the publications inside one followed-publication group. Each one comes with two hashes that the publication tools need together: member_code (the publication) and member_owner (the seller who owns it).\n\nUse when: you need to see which publications a group follows, or need member_code/member_owner for nubi_competition_publication_detail, nubi_competition_publication_evolution or nubi_competition_publication_log.\nRequires: a group_id from nubi_competition_publication_groups.\nNote: both values are obfuscated hashes, not MercadoLibre ids, and the output has no title — call nubi_competition_publication_detail for it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "group_id": {
+              "description": "Group id exactly as returned by nubi_competition_publication_groups — never the group name or its position in the list.",
+              "type": "integer"
+            },
+            "limit": {
+              "default": 50,
+              "description": "Max members to return.",
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "description": "Number of members to skip.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "group_id"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "group_id": {
+          "description": "Id of the group (echo of the input).",
+          "type": "integer"
+        },
+        "group_name": {
+          "description": "Display name of the group.",
+          "type": "string"
+        },
+        "group_description": {
+          "description": "Description of the group; often empty.",
+          "type": "string"
+        },
+        "is_favorite": {
+          "description": "True when the group is marked as favorite.",
+          "type": "boolean"
+        },
+        "member_count": {
+          "description": "Total publications in the group.",
+          "type": "integer"
+        },
+        "members": {
+          "description": "Publications in the group — the seller's own and competitors' can be mixed.",
+          "items": {
+            "properties": {
+              "member_code": {
+                "description": "Obfuscated item hash. Use as member_code in nubi_competition_publication_evolution and nubi_competition_publication_detail.",
+                "type": "string"
+              },
+              "member_owner": {
+                "description": "Obfuscated hash of the seller who owns this publication. Required as member_owner in nubi_competition_publication_detail.",
+                "type": "string"
+              },
+              "active": {
+                "description": "True when the member is active in the group.",
+                "type": "boolean"
+              },
+              "tracking_information": {
+                "description": "Backend tracking flag; its meaning is not documented.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "member_code",
+              "member_owner",
+              "active",
+              "tracking_information"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "returned": {
+          "description": "Members in this response.",
+          "type": "integer"
+        },
+        "has_more": {
+          "description": "True when more members are available with offset.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "group_id",
+        "group_name",
+        "group_description",
+        "is_favorite",
+        "member_count",
+        "members",
+        "returned",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_publication_group_metrics",
+    "description": "Totals for a whole followed-publication group over a day window: combined revenue, units and visits, and the average price, plus the window's dates. One summary for the group, not a per-publication breakdown.\n\nUse when: the user wants the overall activity of a followed-publication group.\nRequires: a group_id from nubi_competition_publication_groups. For one publication use nubi_competition_publication_detail.\nNote: days is an exact day count ending today. total_gmv and total_units are rounded display strings such as '1.2M'. avg_price is null when no member reports a price.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "group_id": {
+              "description": "Group id exactly as returned by nubi_competition_publication_groups — never the group name or its position in the list.",
+              "type": "integer"
+            },
+            "days": {
+              "default": 30,
+              "description": "Size of the analysis window in days, counting back from today (inclusive). E.g. 30 = last 30 days, 90 = last 90 days. Any value in range works — not limited to a fixed set of buckets.",
+              "maximum": 730,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "category_id": {
+              "default": "",
+              "description": "Restrict to one category id, e.g. 'MLA1051'. Empty string = all categories.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "group_id"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "total_gmv": {
+          "description": "Sum of the publications' revenue in the window, as a rounded display string.",
+          "type": "string"
+        },
+        "total_units": {
+          "description": "Sum of units, as a rounded display string.",
+          "type": "string"
+        },
+        "total_visits": {
+          "description": "Sum of visits in the window.",
+          "type": "number"
+        },
+        "avg_price": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Simple (unweighted) average of the members' current prices. null when no member reports a price."
+        },
+        "member_count": {
+          "description": "Publications with data that were added up.",
+          "type": "integer"
+        },
+        "date_from": {
+          "description": "First day of the window (included).",
+          "format": "date",
+          "type": "string"
+        },
+        "date_to": {
+          "description": "Last day of the window (included).",
+          "format": "date",
+          "type": "string"
+        },
+        "currency": {
+          "description": "ISO code of the amounts: always the site's currency.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "total_gmv",
+        "total_units",
+        "total_visits",
+        "avg_price",
+        "member_count",
+        "date_from",
+        "date_to",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_publication_groups",
+    "description": "Lists the seller's saved groups of PUBLICATIONS they follow — each group can mix the seller's own listings and competitors' listings: group id, name, description, favorite flag and member count. The full list always includes the default 'Publicaciones Favoritas' group.\n\nUse when: the user mentions followed or tracked publications, or you need a group_id for nubi_competition_publication_group_members or nubi_competition_publication_group_metrics.\nNot for: groups of sellers — use nubi_competition_seller_groups.\nNote: pass group_id exactly as returned, never the list position.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "limit": {
+              "default": 50,
+              "description": "Max groups to return.",
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "description": "Number of groups to skip.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "groups": {
+          "description": "Saved groups, in backend order.",
+          "items": {
+            "properties": {
+              "group_id": {
+                "description": "Group id — pass it exactly as is to the members and metrics tools.",
+                "type": "integer"
+              },
+              "group_name": {
+                "description": "Display name of the group.",
+                "type": "string"
+              },
+              "group_description": {
+                "description": "Description of the group; often empty.",
+                "type": "string"
+              },
+              "is_favorite": {
+                "description": "True for the group marked as favorite.",
+                "type": "boolean"
+              },
+              "member_count": {
+                "description": "Members the group has (can be 0).",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "group_id",
+              "group_name",
+              "group_description",
+              "is_favorite",
+              "member_count"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Total groups the seller has.",
+          "type": "integer"
+        },
+        "returned": {
+          "description": "Groups in this response.",
+          "type": "integer"
+        },
+        "has_more": {
+          "description": "True when more groups are available with offset.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "groups",
+        "total",
+        "returned",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_publication_log",
+    "description": "Full change history of one followed publication: one entry per change with its date, what changed (e.g. price, status, title) and the old and new values, newest first.\n\nUse when: the user asks what changed on a followed publication and when — price moves, pauses, title edits.\nRequires: member_code and member_owner from nubi_competition_publication_group_members.\nNote: there is no date filter; it always returns the whole history. old_value and new_value are text even for prices.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "member_code": {
+              "description": "Obfuscated item hash from nubi_competition_publication_group_members.",
+              "pattern": "^[0-9A-Fa-f]{128}$",
+              "type": "string"
+            },
+            "member_owner": {
+              "description": "Obfuscated hash of the seller who owns this publication, from nubi_competition_publication_group_members.",
+              "pattern": "^[0-9A-Fa-f]{128}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "member_code",
+            "member_owner"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "item_id": {
+          "description": "Hashed publication id.",
+          "type": "string"
+        },
+        "entries": {
+          "description": "Changes, newest first.",
+          "items": {
+            "properties": {
+              "date": {
+                "description": "Day of the change.",
+                "format": "date-time",
+                "type": "string"
+              },
+              "what_changed": {
+                "description": "Kind of change, e.g. 'Price change', 'Status change', 'Title change'.",
+                "type": "string"
+              },
+              "old_value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Value before the change, as text (prices included)."
+              },
+              "new_value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Value after the change, as text."
+              }
+            },
+            "required": [
+              "date",
+              "what_changed",
+              "old_value",
+              "new_value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Number of changes returned (the whole history).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item_id",
+        "entries",
+        "total"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_seller_evolution",
+    "description": "Daily series for one competitor over a day window: visits, revenue (gmv), units (si), items and conversion — one point per day, today excluded because it is still in progress.\n\nUse when: the user asks how a competitor is trending.\nRequires: seller_id_competitor from nubi_competition_seller_group_members. To compare several competitors call once per competitor.\nNote: points are strings 'YYYY-MM-DD value', ascending by date — split on the space.\nNote: unlike nubi_competition_publication_evolution, this series has 'items' instead of 'price' and does not include the previous period.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "seller_id_competitor": {
+              "description": "member_code of a competitor from nubi_competition_seller_group_members — an obfuscated hash, not a MercadoLibre id or nickname. Entries with is_self=true are rejected.",
+              "type": "string"
+            },
+            "days": {
+              "default": 30,
+              "description": "Size of the series window in days, counting back from today (inclusive). E.g. 30 = last 30 days, 90 = last 90 days. Any value in range works — not limited to a fixed set of buckets. Today is excluded from the series.",
+              "maximum": 730,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "category_id": {
+              "default": "",
+              "description": "Restrict to one category id, e.g. 'MLA1051'. Empty string = all categories.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "seller_id_competitor"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "metrics": {
+          "description": "Five daily series: visits, gmv, si (units), items, convertion (%). One point per day, today excluded.",
+          "items": {
+            "properties": {
+              "name": {
+                "description": "Series name: 'visits', 'gmv', 'si', 'items' or 'convertion'.",
+                "enum": [
+                  "visits",
+                  "gmv",
+                  "si",
+                  "items",
+                  "convertion"
+                ],
+                "type": "string"
+              },
+              "points": {
+                "description": "Points as 'YYYY-MM-DD value' strings, oldest first. 'convertion' values have 2 decimals; all other metrics are whole numbers.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "name",
+              "points"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "currency": {
+          "description": "ISO code of the gmv series.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metrics",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_seller_group_members",
+    "description": "Lists the sellers inside one saved seller group, with the competitor hash needed by nubi_competition_seller_metrics, nubi_competition_seller_items and nubi_competition_seller_evolution.\n\nUse when: you need to see who is in a seller group, or need a seller_id_competitor.\nRequires: a group_id from nubi_competition_seller_groups.\nNote: member_code is an obfuscated hash, not a MercadoLibre seller id, and the output has no seller nickname.\nNote: is_self=true marks the seller's own account added to the group — nubi_competition_seller_metrics and nubi_competition_seller_evolution reject its member_code.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "group_id": {
+              "description": "Group id exactly as returned by nubi_competition_seller_groups — never the group name or its position in the list.",
+              "type": "integer"
+            },
+            "limit": {
+              "default": 50,
+              "description": "Max members to return.",
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "description": "Number of members to skip.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "group_id"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "group_id": {
+          "description": "Id of the group (echo of the input).",
+          "type": "integer"
+        },
+        "group_name": {
+          "description": "Display name of the group.",
+          "type": "string"
+        },
+        "group_description": {
+          "description": "Description of the group; often empty.",
+          "type": "string"
+        },
+        "is_favorite": {
+          "description": "True when the group is marked as favorite.",
+          "type": "boolean"
+        },
+        "member_count": {
+          "description": "Total members in the group.",
+          "type": "integer"
+        },
+        "members": {
+          "description": "Sellers in the group.",
+          "items": {
+            "properties": {
+              "member_code": {
+                "description": "Obfuscated competitor hash. Use as seller_id_competitor in nubi_competition_seller_metrics/nubi_competition_seller_items/nubi_competition_seller_evolution.",
+                "type": "string"
+              },
+              "active": {
+                "description": "True when the member is active in the group.",
+                "type": "boolean"
+              },
+              "tracking_information": {
+                "description": "Backend tracking flag; its meaning is not documented.",
+                "type": "boolean"
+              },
+              "is_self": {
+                "description": "True when member_code is the authenticated seller's own plain numeric seller_id instead of a competitor hash (the seller added their own account to this group). Using this member_code as seller_id_competitor in any downstream nubi_competition_seller_* tool fails with a 500 — plain numeric IDs are rejected and there is no confirmed way to query your own seller data through this family.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "member_code",
+              "active",
+              "tracking_information",
+              "is_self"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "returned": {
+          "description": "Members in this response.",
+          "type": "integer"
+        },
+        "has_more": {
+          "description": "True when more members are available with offset.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "group_id",
+        "group_name",
+        "group_description",
+        "is_favorite",
+        "member_count",
+        "members",
+        "returned",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_seller_group_metrics",
+    "description": "Totals for a whole saved seller group over a day window: combined revenue, combined units and average ticket, plus the window's dates. One summary for the group, not a per-seller breakdown.\n\nUse when: the user wants the overall size of a competitor group's activity.\nRequires: a group_id from nubi_competition_seller_groups. For one competitor use nubi_competition_seller_metrics.\nNote: days is an exact day count ending today; date_from/date_to echo the window.\nNote: total_gmv and total_units are rounded display strings such as '539.7M' or '23.9K', not exact numbers.\nSee nubi://nubi_rules/obfuscation — competitor figures are approximate.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "group_id": {
+              "description": "Group id exactly as returned by nubi_competition_seller_groups — never the group name or its position in the list.",
+              "type": "integer"
+            },
+            "days": {
+              "default": 30,
+              "description": "Size of the analysis window in days, counting back from today (inclusive). E.g. 30 = last 30 days, 90 = last 90 days. Any value in range works — not limited to a fixed set of buckets.",
+              "maximum": 730,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "category_id": {
+              "default": "",
+              "description": "Restrict to one category id, e.g. 'MLA1051'. Empty string = all categories.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "group_id"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "total_gmv": {
+          "description": "Sum of the members' revenue in the window, as a rounded display string ('539.7M'), in 'currency'. Not exact.",
+          "type": "string"
+        },
+        "total_units": {
+          "description": "Sum of the members' units, as a rounded display string ('23.9K').",
+          "type": "string"
+        },
+        "avg_ticket": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "total revenue / total units, computed before rounding, in 'currency'. null when no units."
+        },
+        "member_count": {
+          "description": "Members with data in the response that were added up.",
+          "type": "integer"
+        },
+        "date_from": {
+          "description": "First day of the window (included).",
+          "format": "date",
+          "type": "string"
+        },
+        "date_to": {
+          "description": "Last day of the window (included).",
+          "format": "date",
+          "type": "string"
+        },
+        "currency": {
+          "description": "ISO code of the amounts: always the site's currency.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "total_gmv",
+        "total_units",
+        "avg_ticket",
+        "member_count",
+        "date_from",
+        "date_to",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_seller_groups",
+    "description": "Lists the seller's saved groups of OTHER SELLERS (competitors / stores they follow): group id, name, description, favorite flag and member count.\n\nUse when: the user mentions a saved group of sellers, or you need a group_id for nubi_competition_seller_group_members or nubi_competition_seller_group_metrics.\nNot for: groups of publications — use nubi_competition_publication_groups.\nNote: pass group_id exactly as returned, never the list position.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "limit": {
+              "default": 50,
+              "description": "Max groups to return.",
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "description": "Number of groups to skip.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "groups": {
+          "description": "Saved groups, in backend order.",
+          "items": {
+            "properties": {
+              "group_id": {
+                "description": "Group id — pass it exactly as is to the members and metrics tools.",
+                "type": "integer"
+              },
+              "group_name": {
+                "description": "Display name of the group.",
+                "type": "string"
+              },
+              "group_description": {
+                "description": "Description of the group; often empty.",
+                "type": "string"
+              },
+              "is_favorite": {
+                "description": "True for the group marked as favorite.",
+                "type": "boolean"
+              },
+              "member_count": {
+                "description": "Members the group has (can be 0).",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "group_id",
+              "group_name",
+              "group_description",
+              "is_favorite",
+              "member_count"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Total groups the seller has.",
+          "type": "integer"
+        },
+        "returned": {
+          "description": "Groups in this response.",
+          "type": "integer"
+        },
+        "has_more": {
+          "description": "True when more groups are available with offset.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "groups",
+        "total",
+        "returned",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_seller_items",
+    "description": "One competitor's publications over a day window, ordered by revenue: title, revenue, units, price, condition, catalog flag, leaf category id, shipping flags, listing type and brand.\n\nUse when: the user wants to see what a specific competitor sells and which of their publications perform best.\nRequires: seller_id_competitor from nubi_competition_seller_group_members (an obfuscated hash, not a MercadoLibre id).\nNote: gmv and units are rounded display strings such as '1.9M'. total is how many publications the window returned; page with limit/offset.\nNote: this is the heaviest competition call — large windows on big catalogs can hit the 120 s timeout.\nNote: categories come as ids only; nubi_competition_seller_metrics names the top-level categories.\nSee nubi://nubi_rules/obfuscation — competitor figures are approximate.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "seller_id_competitor": {
+              "description": "member_code of a competitor from nubi_competition_seller_group_members — an obfuscated hash, not a MercadoLibre id or nickname.",
+              "type": "string"
+            },
+            "category_id": {
+              "default": "",
+              "description": "Restrict to one category id, e.g. 'MLA1051'. Empty string = all categories.",
+              "type": "string"
+            },
+            "days": {
+              "default": 30,
+              "description": "Size of the analysis window in days, counting back from today (inclusive). E.g. 30 = last 30 days, 90 = last 90 days. Any value in range works — not limited to a fixed set of buckets. Large windows on a competitor with a big catalog risk the 120s request timeout — this is the heaviest call in the domain (a ~8600-item catalog over 90D took ~1m51s in testing).",
+              "maximum": 365,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "in_cache": {
+              "default": false,
+              "description": "If true, only reads a result already stored for this competitor and window; if none is stored, the call fails with a backend error — call again with false. A stored result comes back much faster.",
+              "type": "boolean"
+            },
+            "limit": {
+              "default": 10,
+              "description": "Max publications to return, taken in GMV-descending order. No server-side pagination is available for this data.",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "description": "Number of publications to skip.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "seller_id_competitor"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "publications": {
+          "description": "The competitor's publications in the window, highest revenue first.",
+          "items": {
+            "properties": {
+              "item_id": {
+                "description": "Hashed publication id — not MercadoLibre's public id.",
+                "type": "string"
+              },
+              "title": {
+                "description": "Publication title, cut at 40 characters.",
+                "type": "string"
+              },
+              "gmv": {
+                "description": "Revenue in the window, as a rounded display string ('1.9M'). Approximate (obfuscated).",
+                "type": "string"
+              },
+              "units": {
+                "description": "Units in the window, as a display string. Approximate.",
+                "type": "string"
+              },
+              "price": {
+                "description": "Current price, in 'currency'.",
+                "type": "number"
+              },
+              "condition": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "'new' or 'used'."
+              },
+              "is_catalog": {
+                "description": "True for a catalog (BuyBox) publication.",
+                "type": "boolean"
+              },
+              "category_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Leaf category id (no name — nubi_competition_seller_metrics names the top-level categories)."
+              },
+              "free_shipping": {
+                "description": "Offers free shipping.",
+                "type": "boolean"
+              },
+              "mercado_envios": {
+                "description": "Uses Mercado Envíos.",
+                "type": "boolean"
+              },
+              "listing_type_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Listing type name in the site's language, e.g. 'Clásica', 'Premium'."
+              },
+              "brand": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Brand."
+              }
+            },
+            "required": [
+              "item_id",
+              "title",
+              "gmv",
+              "units",
+              "price",
+              "condition",
+              "is_catalog",
+              "category_id",
+              "free_shipping",
+              "mercado_envios",
+              "listing_type_name",
+              "brand"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Publications the backend returned for the window (before limit/offset).",
+          "type": "integer"
+        },
+        "returned": {
+          "description": "Publications in this response.",
+          "type": "integer"
+        },
+        "has_more": {
+          "description": "True when more are available with offset.",
+          "type": "boolean"
+        },
+        "currency": {
+          "description": "ISO code of the amounts (site's currency).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "publications",
+        "total",
+        "returned",
+        "has_more",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_competition_seller_metrics",
+    "description": "Snapshot of one competitor over a day window: revenue, units, visits, items, average ticket and conversion; revenue split by top-level category (with names and share %); and the Pareto split (how many publications make 80% of revenue and how many make the rest).\n\nUse when: the user wants a quick performance summary of one competitor, or where their sales concentrate.\nRequires: seller_id_competitor from nubi_competition_seller_group_members.\nNext step: nubi_competition_seller_evolution for the daily trend, nubi_competition_seller_items for the publications.\nNote: gmv and units are rounded display strings such as '58.7M'. days is an exact day count ending today.\nSee nubi://nubi_rules/pareto and nubi://nubi_rules/obfuscation.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID of the querying account — not a group member or competitor. Defaults to the authenticated user's main account. Only needed if the user has multiple linked accounts."
+            },
+            "seller_id_competitor": {
+              "description": "member_code of a competitor from nubi_competition_seller_group_members — an obfuscated hash, not a MercadoLibre id or nickname. Entries with is_self=true are rejected.",
+              "type": "string"
+            },
+            "category_id": {
+              "default": "",
+              "description": "Restrict to one category id, e.g. 'MLA1051'. Empty string = all categories.",
+              "type": "string"
+            },
+            "days": {
+              "default": 30,
+              "description": "Size of the analysis window in days, counting back from today (inclusive). E.g. 30 = last 30 days, 90 = last 90 days. Any value in range works — not limited to a fixed set of buckets.",
+              "maximum": 730,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "in_cache": {
+              "default": false,
+              "description": "Has no effect on the result: true and false return the same data.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "seller_id_competitor"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "gmv": {
+          "description": "Competitor revenue in the window, as a rounded display string ('58.7M'). Approximate.",
+          "type": "string"
+        },
+        "visits": {
+          "description": "Visits in the window.",
+          "type": "number"
+        },
+        "units": {
+          "description": "Units in the window, as a display string ('3.4K').",
+          "type": "string"
+        },
+        "items": {
+          "description": "Value of the 'items' daily series (see nubi_competition_seller_evolution) on the last day of the window. Not the number of publications with sales — see pareto for that.",
+          "type": "number"
+        },
+        "avg_ticket": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "gmv / units. None when units is 0."
+        },
+        "convertion": {
+          "description": "Conversion in the window, in % (8.84 = 8.84%). The field name's spelling comes from the backend.",
+          "type": "number"
+        },
+        "category_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Echo of the category filter; null when no filter was passed."
+        },
+        "last_update": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When the backend last refreshed this competitor's data."
+        },
+        "currency": {
+          "description": "ISO code of the amounts.",
+          "type": "string"
+        },
+        "category_breakdown": {
+          "description": "Revenue by top-level category, alphabetical.",
+          "items": {
+            "properties": {
+              "category_id": {
+                "description": "Top-level category id.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Top-level category name.",
+                "type": "string"
+              },
+              "gmv": {
+                "description": "Competitor revenue in that category, as a number (approximate).",
+                "type": "number"
+              },
+              "share_pct": {
+                "description": "gmv / total_gmv * 100 across all categories in this breakdown.",
+                "type": "number"
+              }
+            },
+            "required": [
+              "category_id",
+              "name",
+              "gmv",
+              "share_pct"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "pareto": {
+          "anyOf": [
+            {
+              "description": "80/20 split of the competitor's catalog by accumulated GMV — see nubi://nubi_rules/pareto.",
+              "properties": {
+                "pareto_items": {
+                  "description": "Publications that together make ~80% of revenue.",
+                  "type": "integer"
+                },
+                "pareto_value_share_pct": {
+                  "description": "Share of revenue those publications make, in % (about 80).",
+                  "type": "number"
+                },
+                "long_tail_items": {
+                  "description": "Publications that make the remaining revenue.",
+                  "type": "integer"
+                },
+                "long_tail_value_share_pct": {
+                  "description": "Share of revenue of the long tail, in % (about 20).",
+                  "type": "number"
+                }
+              },
+              "required": [
+                "pareto_items",
+                "pareto_value_share_pct",
+                "long_tail_items",
+                "long_tail_value_share_pct"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "None when there is no item distribution data for this range."
+        }
+      },
+      "required": [
+        "gmv",
+        "visits",
+        "units",
+        "items",
+        "avg_ticket",
+        "convertion",
+        "category_id",
+        "last_update",
+        "currency",
+        "category_breakdown",
+        "pareto"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_evaluate_categories",
+    "description": "The authenticated seller's own categories for a date range: the seller's revenue in each, the seller's ranking position in that category, and a Pareto flag marking the categories that together make 80% of the seller's revenue.\n\nUse when: the user asks about their own category performance — where they earn most, where they lead (position 1–2) and where they are weak.\nNot for: browsing the market. It only returns categories where the seller sold; use meli_category_explorer for the whole category tree.\nLimitation: closed months only; if the requested month is the current one and has no data yet, it falls back to the previous month (period_fallback).\nSee nubi://nubi_rules/pareto for how to use the pareto flag.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "date_from": {
+              "description": "Start of the evaluation period (inclusive), e.g. 2026-04-01.",
+              "format": "date",
+              "type": "string"
+            },
+            "date_to": {
+              "description": "End of the evaluation period (inclusive), e.g. 2026-04-30.",
+              "format": "date",
+              "type": "string"
+            },
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID to evaluate. Defaults to the authenticated user's main account. Pass a different value only if the user has multiple linked accounts."
+            },
+            "limit": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Max categories to return. Omit for all."
+            },
+            "sort_by": {
+              "default": "revenue",
+              "description": "'revenue' = the seller's revenue, highest first; 'ranking' = the seller's position in each category, best first.",
+              "enum": [
+                "revenue",
+                "ranking"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "date_from",
+            "date_to"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "categories": {
+          "description": "One row per category where the seller sold in the period.",
+          "items": {
+            "properties": {
+              "name": {
+                "description": "Leaf category name.",
+                "type": "string"
+              },
+              "path": {
+                "description": "Category ids from top level to leaf joined by '-'.",
+                "type": "string"
+              },
+              "revenue": {
+                "description": "The seller's own revenue in this category for the period, in local currency.",
+                "type": "number"
+              },
+              "ranking": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The seller's position among the category's sellers (1 = leader). null when unranked."
+              },
+              "pareto": {
+                "description": "True if this category is among the ones that make 80% of the seller's revenue (the 80/20 split's pareto subset) — see nubi://nubi_rules/pareto.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "path",
+              "revenue",
+              "ranking",
+              "pareto"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Number of categories returned.",
+          "type": "integer"
+        },
+        "period_fallback": {
+          "default": false,
+          "description": "True when the requested period had no data and an earlier month was used.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "categories",
+        "total"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "meli_market_rankings",
+    "description": "Top-100 MercadoLibre ranking for one category and month, in one dimension: items, brands, catalog products, sellers or official stores, ranked by revenue (ranking_type='gmv') or units ('si').\n\nUse when: the user asks who or what leads a category — top products, brands, sellers or official stores — or how concentrated it is.\nNote: a ranking proves a position only within its own dimension. Leading the brand ranking is not the category's size and is not \"dominating the market\" — compare more than one dimension before concluding.\nNote: with topic='items' titles come truncated; request topic='catalog' for full product names.\nRequires: a category id at any level — call meli_category_explorer if unknown.\nLimitation: closed months only; if the requested month is the current one and has no data yet, it falls back to the previous month (period_fallback). Raises a guidance error if the category is not found.\nSee nubi://nubi_rules/obfuscation — seller figures are approximate, not exact.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "date": {
+              "description": "First day of the month to read, e.g. 2026-09-01. Only closed months have data; if this is the current month and it has no data yet, the tool falls back to the previous month (see period_fallback).",
+              "format": "date",
+              "type": "string"
+            },
+            "topic": {
+              "description": "Ranking dimension: items = best-selling listings, brands = brands (not seller accounts), catalog = catalog products, seller = seller accounts, official_store = official stores. Use seller, not brands, for 'who are the top sellers'. The output reports official_store as dimension 'os'.",
+              "enum": [
+                "items",
+                "brands",
+                "catalog",
+                "seller",
+                "official_store"
+              ],
+              "type": "string"
+            },
+            "ranking_type": {
+              "default": "gmv",
+              "description": "'gmv' ranks by revenue; 'si' ranks by units sold.",
+              "enum": [
+                "gmv",
+                "si"
+              ],
+              "type": "string"
+            },
+            "category_id": {
+              "description": "Category id or the full path from meli_category_explorer, e.g. 'MLA1246' or 'MLA1246-MLA1263-MLA414007'. A bare id is resolved to its full path. A hyphenated value is used as given, so pass the complete path — a partial or truncated path is not repaired and fails. Must belong to the seller's site (MLA, MLB, …).",
+              "type": "string"
+            },
+            "limit": {
+              "default": 100,
+              "description": "Max positions to return (1–100). The ranking has at most 100 positions.",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "description": "Positions to skip. Only offsets below 100 return rows.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "currency": {
+              "default": "local",
+              "description": "'local' = site currency, 'usd' = US dollars. Use 'usd' to compare months without inflation.",
+              "enum": [
+                "local",
+                "usd"
+              ],
+              "type": "string"
+            },
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID to use. Defaults to the authenticated user's main account. Pass a different value only if the user has multiple linked accounts. Get the linked ids from nubi_user_info."
+            }
+          },
+          "required": [
+            "date",
+            "topic",
+            "category_id"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "items": {
+          "description": "Ranking rows, best first. What a row is depends on 'dimension'.",
+          "items": {
+            "properties": {
+              "position": {
+                "description": "Position in the ranking; 1 is first.",
+                "type": "integer"
+              },
+              "name": {
+                "description": "Listing title, brand, catalog product, seller alias or official store, depending on 'dimension'. With dimension 'items' it is cut at 40 characters, mid-word — request topic='catalog' for full names.",
+                "type": "string"
+              },
+              "gmv": {
+                "description": "Revenue in the month, in 'currency'.",
+                "type": "number"
+              },
+              "units": {
+                "description": "Units sold in the month.",
+                "type": "number"
+              },
+              "is_catalog": {
+                "description": "True for a catalog (BuyBox) listing.",
+                "type": "boolean"
+              },
+              "ranking_trend": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "'GoingUp', 'GoingDown' or 'Stable' versus the previous ranking."
+              },
+              "full": {
+                "description": "True when the listing uses Mercado Libre Full.",
+                "type": "boolean"
+              },
+              "growth_gmv": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Revenue change versus the PREVIOUS MONTH, in % — never versus the same month last year."
+              },
+              "growth_si": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Units change versus the previous month, in %."
+              },
+              "sellers_quantity": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Sellers competing in the entry. Only filled for brands and catalog; 0 for items and seller."
+              },
+              "items_quantity": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Listings grouped under the entry (brand, catalog product, store). 0 for dimension 'items'."
+              },
+              "catalog_percentage": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Catalog percentage of the entry. Its base is not documented — do not call it '% of sales'. 0 for dimension 'items'."
+              },
+              "share": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Share of the category total in the metric the ranking is sorted by (revenue for type 'gmv', units for 'si'); a full ranking adds up to 100. Only for brands and seller; null for items, catalog and official stores."
+              }
+            },
+            "required": [
+              "position",
+              "name",
+              "gmv",
+              "units",
+              "is_catalog",
+              "ranking_trend",
+              "full",
+              "growth_gmv",
+              "growth_si",
+              "sellers_quantity",
+              "items_quantity",
+              "catalog_percentage",
+              "share"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "With dimension 'items' or 'seller', the size of the whole ranking. With 'brands', 'catalog' or 'os', only the number of rows in this response — it does not tell how many the ranking has. Counting the rows of 'items' is always valid.",
+          "type": "integer"
+        },
+        "dimension": {
+          "description": "'items', 'brands', 'catalog', 'seller' or 'os'. 'os' is the official-store ranking requested with topic='official_store'. A catalog row adds up every catalog listing of that product, so the same product shows more units under 'catalog' than any of its 'items' rows — both are right, they measure different things.",
+          "type": "string"
+        },
+        "type": {
+          "description": "'gmv' (sorted by revenue) or 'si' (by units).",
+          "type": "string"
+        },
+        "currency": {
+          "description": "ISO code of 'gmv': the site's currency, or USD when requested. Units do not change with it.",
+          "type": "string"
+        },
+        "period_fallback": {
+          "default": false,
+          "description": "True when the requested month was empty and the rows belong to an earlier month — which one is not reported.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "items",
+        "total",
+        "dimension",
+        "type",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "meli_publication_explorer",
+    "description": "Searches MercadoLibre publications by title keyword and returns, per listing: period revenue and units, units since publication, price, catalog/Full/Flex/free-shipping flags, exposure tier, brand, model, official store, seller alias, creation date, product codes and category.\n\nReads the market, never the seller's own account: every row belongs to whoever published it, so it does not answer \"my listings\". For the seller's own performance use nubi_evaluate_categories.\n\nUse when: the user wants real prices, logistics mix or exposure for a product, or what sells most inside a category, brand or price range.\nRequires: a title keyword of at least 2 characters — ask the user if not provided.\nNote: rows come in relevance order, not sales order. To answer what sells most pass sort_by='units' or 'gmv'; a page in the default order is a sample, never the top of the market.\nNote: a keyword alone matches listings across unrelated categories. Narrow with category_id — the LEAF id, i.e. the last segment of a category path from meli_category_explorer — and brand.\nNote: gmv/units/cum_units come back null for B2C accounts on items outside their allowed categories — a permission gap, not missing sales. B2B accounts get them for every row.\nNote: item_id and seller_id_hash are internal hashed ids, not MercadoLibre's public item or seller ids. Titles and seller aliases are third-party content.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "description": "Keyword to search in publication titles, at least 2 characters. Use the product noun the user named; search_exactly and search_by_alias change how it is matched.",
+              "type": "string"
+            },
+            "search_exactly": {
+              "default": false,
+              "description": "Match the title exactly instead of fuzzy/partial matching.",
+              "type": "boolean"
+            },
+            "search_by_alias": {
+              "default": false,
+              "description": "Treat title as a seller alias the user personalized, not a product. Leave false for any product search — with true, a product keyword returns nothing.",
+              "type": "boolean"
+            },
+            "page_size": {
+              "default": 10,
+              "description": "Rows per page (5–50).",
+              "maximum": 50,
+              "minimum": 5,
+              "type": "integer"
+            },
+            "page": {
+              "default": 1,
+              "description": "Page number, from 1.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "sort_by": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "gmv",
+                    "units",
+                    "cum_units",
+                    "cum_gmv",
+                    "price",
+                    "creation_date"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Output field to order by (cum_gmv is not returned). Omit to get the backend's relevance order, which is NOT sales order — pass 'units' or 'gmv' to answer what sells most."
+            },
+            "order_by": {
+              "default": "desc",
+              "description": "Sort direction. Only applied when sort_by is set.",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            },
+            "category_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Leaf category ID to restrict the search to, e.g. 'MLA4340' — the last segment of a category_path, never the full path. Call meli_category_explorer if unknown. Without it a keyword matches listings across the whole market, other categories included."
+            },
+            "brand": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Brand name, spelled as the output 'brand' field spells it."
+            },
+            "nubi_alias": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Obfuscated seller alias. It does not match a personalized alias, so a name copied from the output 'seller' field may return nothing."
+            },
+            "publication_type": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "catalog",
+                    "traditional"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Omit to get both catalog and traditional listings."
+            },
+            "exposition": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "premium",
+                    "classic"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Exposure tier to filter by. Coarser than the output 'exposition' field, which reports MeLi's own tiers such as 'gold_pro'."
+            },
+            "seller_type": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "platinum",
+                    "gold",
+                    "silver",
+                    "normal"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MeLi reputation medal of the publication's seller."
+            },
+            "only_full": {
+              "default": false,
+              "description": "Restrict to Fulfillment listings.",
+              "type": "boolean"
+            },
+            "only_flex": {
+              "default": false,
+              "description": "Restrict to Flex listings.",
+              "type": "boolean"
+            },
+            "min_price": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Lower bound on 'price', inclusive, in the site's local currency."
+            },
+            "max_price": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Upper bound on 'price', inclusive, in the site's local currency."
+            },
+            "min_cum_units": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filters on cum_units — units since publication, not the period's."
+            },
+            "max_cum_units": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Upper bound on cum_units (units since publication, not the period's)."
+            },
+            "min_cum_gmv": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filters on revenue since publication, not the period's."
+            },
+            "max_cum_gmv": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Upper bound on revenue since publication, not the period's."
+            },
+            "min_listing_age_days": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Days elapsed since the publication was created."
+            },
+            "max_listing_age_days": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Upper bound on days since the publication was created."
+            },
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID to use. Defaults to the authenticated user's main account. Pass a different value only if the user has multiple linked accounts. Get the linked ids from nubi_user_info."
+            }
+          },
+          "required": [
+            "title"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "publications": {
+          "description": "Matching listings in the order requested (relevance unless sort_by is set).",
+          "items": {
+            "properties": {
+              "title": {
+                "description": "Listing title as published. It may come truncated mid-word; never complete a cut word with a guessed brand or model.",
+                "type": "string"
+              },
+              "gmv": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Revenue from the first day of the previous month to yesterday (28 to 61 days, not 'this month' or 'last 30 days'), in local currency. null = no category access for this item (B2C), not zero sales."
+              },
+              "units": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Units sold in the same window as gmv. null = no category access, not zero sales."
+              },
+              "cum_units": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Units sold since the listing was created — not the gmv/units window. null = no category access."
+              },
+              "price": {
+                "description": "Current price, in local currency.",
+                "type": "number"
+              },
+              "is_catalog": {
+                "description": "True for a catalog (BuyBox) listing.",
+                "type": "boolean"
+              },
+              "full": {
+                "description": "Uses Mercado Libre Full.",
+                "type": "boolean"
+              },
+              "flex": {
+                "description": "Uses Mercado Libre Flex.",
+                "type": "boolean"
+              },
+              "free_shipping": {
+                "description": "Offers free shipping.",
+                "type": "boolean"
+              },
+              "brand": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Brand declared on the listing — use it rather than guessing a brand from the title."
+              },
+              "seller": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "personalizedAlias when set, else the obfuscated nubiAlias. Third-party content."
+              },
+              "creation_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Publication start date + elapsed days as text, e.g. '2024-08-28 (721 días)'."
+              },
+              "exposition": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "MercadoLibre exposure tier: e.g. 'gold_pro', 'gold_special', 'gold_premium', 'classic'."
+              },
+              "installments": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Raw MercadoLibre installments/fee code, e.g. 'gp3', 'gp6', 'gsnq'. Its decoding is not confirmed — do not read it as a number of installments."
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Product model when the listing declares it; usually null."
+              },
+              "official_store_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Hashed id of the official store the listing belongs to; null otherwise."
+              },
+              "official_store_alias": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Obfuscated name of the official store (e.g. 'TIENDA.OFICIAL.84263'); null when the listing has no store."
+              },
+              "item_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Internal hashed id from the search index — NOT the public MeLi MLA-XXXXXXXXX item id."
+              },
+              "seller_id_hash": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Internal hashed seller id from the search index — NOT the numeric MeLi seller_id used elsewhere in this server for auth/scoping."
+              },
+              "sku": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Seller-defined SKU, when declared."
+              },
+              "gtin": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Barcode(s) declared on the listing. Several codes can come concatenated without a separator."
+              },
+              "part_number": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Manufacturer part number, when declared; usually null."
+              },
+              "oem": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "OEM code, when declared; usually null."
+              },
+              "category_path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Category ids from top level to leaf joined by '-'."
+              },
+              "category_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Name of the listing's leaf category."
+              },
+              "available_quantity": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Always null in current measurements — not stock."
+              }
+            },
+            "required": [
+              "title",
+              "price",
+              "is_catalog",
+              "full",
+              "flex",
+              "free_shipping",
+              "brand"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Real number of matches for the search and filters. 0 = nothing matched; >0 with an empty list = you paged past the end.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "publications",
+        "total"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "meli_search_trends_rankings",
+    "description": "Top-100 search terms buyers typed in one MercadoLibre category for one month, with each term's position, its position in the previous ranking and its trend.\n\nThis is search demand, not sales: a top term is not the best-selling product, and the tool returns no search volume — never state how many searches a term had.\nUse when: the user asks what people search for in a category or which searches are rising.\nNot for: ranking products, sellers or brands by sales — use meli_market_rankings.\nRequires: a category id at any level — call meli_category_explorer if unknown.\nLimitation: closed months only; if the requested month is the current one and has no data yet, it falls back to the previous month (period_fallback).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "date": {
+              "description": "First day of the month to read, e.g. 2026-09-01. Only closed months have data; if this is the current month and it has no data yet, the tool falls back to the previous month (see period_fallback).",
+              "format": "date",
+              "type": "string"
+            },
+            "category_id": {
+              "description": "Category id or the full path from meli_category_explorer, e.g. 'MLA1246' or 'MLA1246-MLA1263-MLA414007'. A bare id is resolved to its full path. A hyphenated value is used as given, so pass the complete path — a partial or truncated path is not repaired and fails. Must belong to the seller's site (MLA, MLB, …).",
+              "type": "string"
+            },
+            "limit": {
+              "default": 100,
+              "description": "Max terms to return (1–100). The ranking has at most 100 positions.",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "description": "Positions to skip.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID to use. Defaults to the authenticated user's main account. Pass a different value only if the user has multiple linked accounts. Get the linked ids from nubi_user_info."
+            }
+          },
+          "required": [
+            "date",
+            "category_id"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "terms": {
+          "description": "Search terms, most searched first.",
+          "items": {
+            "properties": {
+              "position": {
+                "description": "Position by searches; 1 is the most searched. A rank, not a magnitude.",
+                "type": "integer"
+              },
+              "search_term": {
+                "description": "What buyers typed, typos and abbreviations included. Quote it as is.",
+                "type": "string"
+              },
+              "ranking_trend": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "'GoingUp', 'GoingDown' or 'Stable' versus the previous period. It does not always match the change between position_before and position."
+              },
+              "position_before": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Position in the previous period. A rank, not a magnitude."
+              }
+            },
+            "required": [
+              "position",
+              "search_term",
+              "ranking_trend",
+              "position_before"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Number of terms in the whole ranking, not the rows returned in this response.",
+          "type": "integer"
+        },
+        "period_fallback": {
+          "default": false,
+          "description": "True when the requested month was empty and the terms belong to an earlier month — which one is not reported.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "terms",
+        "total"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_seller_info",
+    "description": "Account details for one MercadoLibre seller: plan, plan due date, site, currency, Nubimetrics account id, competition slots, segment (b2b/b2c) and the categories it is allowed to query.\n\nUse when: you need a seller's currency, plan or allowed categories before calling a category tool, or the user asks about their plan.\nNote: a b2c account is granted top-level categories and everything below them; a b2b account is granted specific categories one level down or more, so asking for a parent of a granted category is rejected (e.g. allowed MLA1002 but not its parent MLA1000).\nNote: nubi_category_market_size and nubi_category_market_structure resolve access from another source and can reject a category listed here.\nUse nubi_user_info to list the seller_ids linked to the user.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "seller_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "MercadoLibre seller ID to use. Defaults to the authenticated user's main account. Pass a different value only if the user has multiple linked accounts — see nubi_user_info's linked_sellers."
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "seller_id": {
+          "description": "MercadoLibre seller id of the resolved account.",
+          "type": "integer"
+        },
+        "seller_nickname": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "MercadoLibre nickname of the account."
+        },
+        "site_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "'MLA', 'MLB', 'MLM', 'MLC' or 'MLU'."
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Nubimetrics plan id."
+        },
+        "plan_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Nubimetrics plan name, e.g. 'BUSINESS CORPORATE'."
+        },
+        "due_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Plan due date (ISO date-time)."
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "ISO code of the site's local currency."
+        },
+        "account_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Nubi account GUID (IdCuentaNubi) this seller belongs to."
+        },
+        "competition_slots": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How many competitors the plan lets the account save."
+        },
+        "category_segment": {
+          "description": "Inferred access segment ('b2b' or 'b2c') — see nubi_category_forecast etc. for how this gates category_path access. Heuristic, not an officially confirmed value.",
+          "type": "string"
+        },
+        "allowed_categories": {
+          "description": "Categories this seller is currently entitled to query with category_path tools. Empty means no category-scoped tool call will currently succeed for this seller. A grant covers its whole subtree.",
+          "items": {
+            "properties": {
+              "id": {
+                "description": "Granted category id.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Granted category name.",
+                "type": "string"
+              },
+              "path": {
+                "description": "Ids from top level to the granted category.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "seller_id",
+        "seller_nickname",
+        "site_id",
+        "plan_id",
+        "plan_name",
+        "due_date",
+        "currency",
+        "competition_slots",
+        "category_segment"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_user_feedback",
+    "description": "Records feedback about the product, a tool, or the data it returned, for the Nubimetrics team to review. Does not change or fix anything in this conversation.\n\nUse when: the user explicitly complains, praises, reports a bug, or suggests something; OR you notice a problem yourself while using another tool (e.g. implausible, inconsistent, or contradictory data) — you do not need the user to say something first.\n\nProactively suggest this tool when the user describes a problem that looks like a product/data issue rather than something you can resolve by retrying or adjusting parameters — offer to log it before dropping the issue.\n\nBefore calling: tell the user the summary you're about to submit (it's filed under their account) and get a quick go-ahead — don't submit silently.\n\nDo not use when: the issue is something you can fix directly (e.g. wrong category_path — correct it and retry instead of filing feedback).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "description": "bug: something broke or returned wrong data. feature_request: the user wants new functionality. data_quality: the numbers/data look incorrect or inconsistent, not a code bug. general: anything else (praise, complaint, unstructured comment).",
+              "enum": [
+                "bug",
+                "feature_request",
+                "data_quality",
+                "general"
+              ],
+              "type": "string"
+            },
+            "summary": {
+              "description": "Your own synthesis of the issue, written in third person. You do not need a verbatim user complaint to write this — infer it from the conversation, including problems you noticed yourself (e.g. a tool returned implausible or inconsistent data).",
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "user_quote": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Verbatim excerpt from the user's own message that supports the summary above. Omit if the feedback originates purely from your own observation."
+            },
+            "tool_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The tool this feedback refers to, if applicable. Omit for general feedback."
+            }
+          },
+          "required": [
+            "category",
+            "summary"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "received": {
+          "description": "Always true when the feedback was stored.",
+          "type": "boolean"
+        },
+        "feedback_id": {
+          "description": "Id of the stored feedback record.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "received",
+        "feedback_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "nubi_user_info",
+    "description": "Identity of the authenticated user: email, name, user type, status, main seller account, and every MercadoLibre seller account linked to it (seller_id, nickname, site, which one is main).\n\nUse when: you need to know who the user is, or which seller_id values exist before passing one to nubi_seller_info or to any tool's seller_id.\nNot for: plan, currency or allowed categories — use nubi_seller_info.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inp": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "required": [
+        "inp"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "email": {
+          "description": "Email of the authenticated user.",
+          "type": "string"
+        },
+        "user_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "User's name."
+        },
+        "user_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Nubimetrics user type, e.g. 'OPERADOR'."
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "User status, e.g. 'ACTIVO'."
+        },
+        "seller_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Main account's seller_id — see linked_sellers for others."
+        },
+        "seller_nickname": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Nickname of the main account."
+        },
+        "site_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Site of the main account."
+        },
+        "linked_sellers": {
+          "description": "Every seller account linked to the user, the main one included.",
+          "items": {
+            "properties": {
+              "seller_id": {
+                "description": "Seller id of that account.",
+                "type": "integer"
+              },
+              "seller_nickname": {
+                "description": "Nickname of that account.",
+                "type": "string"
+              },
+              "site_id": {
+                "description": "Site of that account.",
+                "type": "string"
+              },
+              "main_account": {
+                "description": "True for the main account.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "seller_id",
+              "seller_nickname",
+              "site_id",
+              "main_account"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "email",
+        "user_name",
+        "user_type",
+        "status",
+        "seller_nickname",
+        "site_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  }
+]
