@@ -488,3 +488,78 @@ def test_historico_guarda_o_bruto_do_explorador(dados):
     h = dados["anuncios_historico"]
     assert len(h) == len(dados["anuncios"])
     assert {"raw_installments", "raw_oem", "raw_item_id", "segmento", "btu"} <= set(h[0])
+
+
+# ── 1ª rodada de produção (13/11/2026): limite de 100 chamadas/min ──────────
+
+def test_limite_de_taxa_espera_e_repete(monkeypatch, tmp_path):
+    esperas = []
+
+    async def _dorme(s):
+        esperas.append(s)
+
+    monkeypatch.setattr(asyncio, "sleep", _dorme)
+    limite = _resultado("Rate limit exceeded: 100/minute. Retry after 1s.", erro=True)
+    nubi = _cliente_mcp(monkeypatch, tmp_path, [limite, limite, _resultado({"ok": 1})], cache=False)
+    assert asyncio.run(nubi.call("t", {})) == {"ok": 1}
+    assert nubi.esperas_limite == 2 and esperas == [3.0, 5.0]       # retry_after + 2^n
+
+
+def test_limite_de_taxa_persistente_desiste(monkeypatch, tmp_path):
+    from nubimetrics.client import NubiToolError
+
+    async def _dorme(s):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _dorme)
+    limite = _resultado("Rate limit exceeded: 100/minute. Retry after 1s.", erro=True)
+    nubi = _cliente_mcp(monkeypatch, tmp_path, [limite] * 10, cache=False)
+    with pytest.raises(NubiToolError):
+        asyncio.run(nubi.call("t", {}))
+    assert nubi.esperas_limite == nubi.MAX_ESPERAS_LIMITE
+
+
+def test_intervalo_padrao_fica_abaixo_de_100_por_minuto():
+    from nubimetrics.client import NubiClient
+
+    assert 60 / NubiClient().intervalo_s < 100
+
+
+def test_explorador_falhando_nao_derruba_rankings(monkeypatch):
+    import nubimetrics.client as client
+    import nubimetrics.run_daily as run
+
+    class Limite(FakeNubi):
+        async def call(self, tool, args):
+            if tool == "meli_publication_explorer":
+                raise client.NubiToolError("meli_publication_explorer: Rate limit exceeded")
+            return await super().call(tool, args)
+
+    gravado = {}
+    batidas = []
+    monkeypatch.setattr(client, "NubiClient", lambda *a, **k: Limite())
+    monkeypatch.setattr(run, "gravar", lambda dados, hoje: gravado.update(dados) or 1)
+    monkeypatch.setattr(run, "_bater", lambda status, **k: batidas.append((status, k.get("detalhe", ""))))
+    assert run.main([]) == run.EXIT_RESSALVA
+    assert gravado["rankings"] and gravado["mercado"] and gravado["anuncios"] == []
+    assert batidas[-1][0] == "PARTIAL" and "explorador de anúncios falhou" in batidas[-1][1]
+    assert "0 anúncios" not in batidas[-1][1]               # a causa é a falha, não "veio vazio"
+
+
+def test_sem_fonte_principal_falha_de_vez(monkeypatch):
+    import nubimetrics.client as client
+    import nubimetrics.run_daily as run
+
+    class Fora(FakeNubi):
+        async def call(self, tool, args):
+            raise client.NubiToolError(f"{tool}: indisponível")
+
+    monkeypatch.setattr(client, "NubiClient", lambda *a, **k: Fora())
+    monkeypatch.setattr(run, "_bater", lambda *a, **k: None)
+    assert run.main(["--dry-run"]) == run.EXIT_FALHA
+
+
+def test_analises_toleram_foto_vazia():
+    vazio = pd.DataFrame()
+    assert an.gap_preco_midea_lg(vazio).empty
+    assert an.cruzar_por_grupo(vazio, pd.DataFrame({"x": [1]})).empty

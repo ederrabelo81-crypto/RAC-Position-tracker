@@ -491,7 +491,7 @@ def cruzar_por_grupo(anuncios: pd.DataFrame, coletas: pd.DataFrame) -> pd.DataFr
     Grão de grupo porque o explorador não traz o MLB (``item_id`` é hash):
     casar anúncio a anúncio só por título é frágil. Ver ``casar_anuncios``.
     """
-    if anuncios.empty or coletas.empty:
+    if anuncios.empty or coletas.empty or "faixa_btu" not in anuncios:
         return pd.DataFrame()
     v = anuncios.dropna(subset=["faixa_btu"]).groupby(["marca", "faixa_btu"], as_index=False).agg(
         receita_brl=("receita_brl", "sum"), unidades=("unidades", "sum"), preco_nubi=("preco", "median"))
@@ -535,6 +535,8 @@ def casar_anuncios(anuncios: pd.DataFrame, coletas: pd.DataFrame, limiar: float 
 
 def gap_preco_midea_lg(anuncios: pd.DataFrame) -> pd.DataFrame:
     """Preço mediano e unidades Midea × LG por faixa BTU (mesmo segmento)."""
+    if anuncios.empty or not {"marca", "faixa_btu", "preco", "unidades"} <= set(anuncios.columns):
+        return pd.DataFrame()
     d = anuncios[anuncios["marca"].isin([MIDEA, LG])].dropna(subset=["faixa_btu"])
     if d.empty:
         return pd.DataFrame()

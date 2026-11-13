@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
@@ -155,6 +156,10 @@ def mascarar(obj: Any) -> Any:
     return obj
 
 
+_RATE_LIMIT = re.compile(r"rate limit|too many requests|429", re.I)
+_RETRY_AFTER = re.compile(r"retry after (\d+(?:\.\d+)?)\s*s", re.I)
+
+
 class NubiToolError(RuntimeError):
     """A tool respondeu com ``isError`` (erro de negócio, não de rede)."""
 
@@ -164,8 +169,9 @@ class NubiClient:
 
     - **retry exponencial** em erro de rede/transporte (``tentativas``);
       erro de negócio da tool (``isError``) sobe na hora como `NubiToolError`;
-    - **intervalo mínimo** entre chamadas (``intervalo_s``), para não estourar
-      cota;
+    - **intervalo mínimo** entre chamadas (``intervalo_s`` = 0,7 s ≈ 85/min):
+      a API limita a **100 chamadas por minuto**; se mesmo assim estourar, o
+      erro "Rate limit exceeded … Retry after Ns" é esperado e repetido;
     - **cache em disco** por ``tool + args + dia`` (``cache=True``): rodar de
       novo no mesmo dia não gasta chamada. Arquivos em ``nubimetrics/cache/``
       (fora do git).
@@ -176,12 +182,16 @@ class NubiClient:
             payload = await nubi.call("meli_market_rankings", {"inp": {...}})
     """
 
-    def __init__(self, cache: bool = True, tentativas: int = 3, intervalo_s: float = 0.4) -> None:
+    #: Esperas por limite de taxa toleradas numa mesma chamada antes de desistir.
+    MAX_ESPERAS_LIMITE = 6
+
+    def __init__(self, cache: bool = True, tentativas: int = 3, intervalo_s: float = 0.7) -> None:
         self.cache = cache
         self.tentativas = max(1, int(tentativas))   # 0 deixaria o cliente sem sessão
         self.intervalo_s = intervalo_s
         self.chamadas = 0
         self.do_cache = 0
+        self.esperas_limite = 0
         self._stack: Optional[contextlib.AsyncExitStack] = None
         self._session: Any = None
         self._ultimo = 0.0
@@ -235,27 +245,46 @@ class NubiClient:
                 # Arquivo truncado (rodada interrompida): conta como cache vazio.
                 logger.warning(f"[Nubimetrics] cache ilegível ({path.name}): {exc} — buscando de novo")
 
-        espera = self.intervalo_s - (time.monotonic() - self._ultimo)
-        if espera > 0:
-            await asyncio.sleep(espera)
         res: Any = None
-        for tentativa in range(1, self.tentativas + 1):
-            try:
-                self._ultimo = time.monotonic()
-                res = await self._session.call_tool(tool, args)
-                break
-            except Exception as exc:  # noqa: BLE001 — transporte: repete
-                if tentativa == self.tentativas:
-                    # Última tentativa: sobe já, sem esperar à toa.
-                    raise RuntimeError(f"{tool}: {redact(str(exc))}") from exc
-                atraso = 2 ** tentativa
-                logger.warning(f"[Nubimetrics] {tool} falhou ({tentativa}/{self.tentativas}): "
-                               f"{redact(str(exc))[:200]} — nova tentativa em {atraso}s")
+        payload: Any = None
+        limite = 0
+        while True:
+            espera = self.intervalo_s - (time.monotonic() - self._ultimo)
+            if espera > 0:
+                await asyncio.sleep(espera)
+            for tentativa in range(1, self.tentativas + 1):
+                try:
+                    self._ultimo = time.monotonic()
+                    res = await self._session.call_tool(tool, args)
+                    break
+                except Exception as exc:  # noqa: BLE001 — transporte: repete
+                    if tentativa == self.tentativas:
+                        # Última tentativa: sobe já, sem esperar à toa.
+                        raise RuntimeError(f"{tool}: {redact(str(exc))}") from exc
+                    atraso = 2 ** tentativa
+                    logger.warning(f"[Nubimetrics] {tool} falhou ({tentativa}/{self.tentativas}): "
+                                   f"{redact(str(exc))[:200]} — nova tentativa em {atraso}s")
+                    await asyncio.sleep(atraso)
+            self.chamadas += 1
+            payload = result_payload(res)
+            erro = bool(getattr(res, "isError", False) or getattr(res, "is_error", False))
+            texto = json.dumps(payload, ensure_ascii=False) if erro else ""
+            # "Rate limit exceeded: 100/minute. Retry after 1s." chega como erro
+            # de NEGÓCIO (isError), não de transporte — 1ª rodada de produção
+            # (13/11/2026) caiu inteira por isso. Espera o que o servidor pede
+            # (com folga crescente) e repete.
+            if erro and _RATE_LIMIT.search(texto) and limite < self.MAX_ESPERAS_LIMITE:
+                limite += 1
+                self.esperas_limite += 1
+                m = _RETRY_AFTER.search(texto)
+                atraso = max(float(m.group(1)) if m else 1.0, 1.0) + 2 ** limite
+                logger.warning(f"[Nubimetrics] {tool}: limite de taxa da API — esperando {atraso:.0f}s "
+                               f"({limite}/{self.MAX_ESPERAS_LIMITE})")
                 await asyncio.sleep(atraso)
-        self.chamadas += 1
-        payload = result_payload(res)
-        if bool(getattr(res, "isError", False) or getattr(res, "is_error", False)):
-            raise NubiToolError(f"{tool}: {redact(json.dumps(mascarar(payload), ensure_ascii=False))[:400]}")
+                continue
+            if erro:
+                raise NubiToolError(f"{tool}: {redact(json.dumps(mascarar(payload), ensure_ascii=False))[:400]}")
+            break
         logger.debug(f"[Nubimetrics] {tool} {json.dumps(args, ensure_ascii=False)[:160]}")
         if self.cache:
             path.parent.mkdir(parents=True, exist_ok=True)

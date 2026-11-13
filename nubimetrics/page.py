@@ -388,6 +388,11 @@ def _aba_busca(d: Dict[str, Any], f: Dict[str, Any], rec: pd.DataFrame) -> None:
 def _aba_cruzamento(ctx: Contexto, d: Dict[str, Any], rec: pd.DataFrame) -> None:
     import plotly.express as px
 
+    if rec.empty:
+        ctx.empty_state("sem_coleta", "Sem anúncios do Nubimetrics no recorte (a foto do explorador ainda "
+                        "não foi gravada ou o filtro zerou o recorte).",
+                        "rode o workflow **Nubimetrics Sell-out** ou afrouxe os filtros.")
+        return
     col = an.preparar_coletas(d.get("coletas", pd.DataFrame()))
     if col.empty:
         ctx.empty_state("sem_coleta", "Sem coletas do Mercado Livre nos últimos 2 dias no banco.",
