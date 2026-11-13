@@ -30,7 +30,7 @@ Lavadores e Pequenos Eletrodomésticos.
 | I | Explorador de anúncios | `meli_publication_explorer` | ✅ | **sem parâmetro de data** (janela do backend) | `page` 1.., `page_size` ≤ 50; 4.057 anúncios para "ar condicionado" em `MLB1646` |
 | J | Análise de concorrente | `nubi_competition_seller_metrics` / `_evolution` / `_items` + grupos | ✅ **limitado a 1 slot** | `days` até hoje; série diária | `limit`/`offset` (items); sem paginação no servidor |
 | K | Lojas oficiais (análise) | — (só pelo ranking C, com nome mascarado) | ❌ indisponível via MCP | — | — |
-| L | Grupo de anúncios | `nubi_competition_publication_*` (5 tools) | ✅ tools existem, **grupo vazio** | `days`; série diária | `limit`/`offset` |
+| L | Grupo de anúncios | `nubi_competition_publication_*` (6 tools) | ✅ tools existem, **grupo vazio** | `days`; série diária | `limit`/`offset` |
 | M | Meu negócio | `nubi_evaluate_categories` | ⚠️ conta Midea Brasil sem vendas próprias → vazio | período | — |
 | N | Oportunidades | `meli_category_detail` / `meli_category_explorer` | ⚠️ só nível categoria | mês | — |
 | O | Reportes Estratégicos IA | — | ❌ indisponível via MCP | — | — |
@@ -48,6 +48,7 @@ Lavadores e Pequenos Eletrodomésticos.
 
 **`meli_publication_explorer`** → `nubi_item_sales` (único grão de anúncio disponível):
 `item_id` (**hash**, não MLB), `title`, `brand`, `model`, `sku`, `gtin` (9 de 10 preenchidos), `part_number`, `oem`, `seller` (nickname legível), `seller_id_hash`, `official_store_alias`, `price`, `gmv`, `units`, `cum_units`, `is_catalog`, `full`, `flex`, `free_shipping`, `exposition` (ex.: `gold_pro`), `creation_date`, `category_path`.
+**Atenção:** `cum_units` vem **arredondado** (centenas: 1.800, 2.300…) e pode ficar ABAIXO de `units` da janela (ex.: 1.847 × 1.800) — o ETL grava como veio e nenhuma conta do painel usa `cum_units`.
 **Não tem:** visitas, conversão, preço original/desconto, cancelamentos, UF/cidade, atributos (BTU, inverter, voltagem, tipo).
 
 **`nubi_category_market_size`**: séries `gmv_local`, `gmv_usd`, `successful_items`, `avg_ticket_local/usd`, cada ponto com o mesmo mês do ano anterior.

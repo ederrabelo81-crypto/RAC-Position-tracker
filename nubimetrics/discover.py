@@ -5,8 +5,9 @@ Primeira tarefa obrigatória do módulo (seção 1.1 do prompt):
 1. ``tools/list`` → ``catalog/tools.json`` (nome, descrição, inputSchema);
 2. uma chamada de teste por tool (``MLB1646``, mês atual) →
    ``catalog/samples/<tool>.json`` (resposta bruta);
-3. ``catalog/MAPPING.md``: tool × fonte da seção 2 (A–O), campos, grão,
-   paginação e limites.
+3. ``catalog/MAPPING_auto.md``: tabela heurística tool × fonte (A–O), campos,
+   grão e paginação. A versão revisada à mão é ``catalog/MAPPING.md`` — o
+   discover nunca a sobrescreve.
 
 Nada é simulado: tool cujo argumento obrigatório não dá para inferir NÃO é
 chamada — vai para o MAPPING como "precisa de args" e aceita override via
@@ -15,10 +16,10 @@ chamada — vai para o MAPPING como "precisa de args" e aceita override via
 
 Uso::
 
-    python -m nubimetrics.discover                 # lista + amostras + MAPPING
-    python -m nubimetrics.discover --so-listar     # só tools.json + MAPPING
+    python -m nubimetrics.discover                 # lista + amostras + MAPPING_auto.md
+    python -m nubimetrics.discover --so-listar     # só tools.json + MAPPING_auto.md
     python -m nubimetrics.discover --args nubimetrics/catalog/args.json
-    python -m nubimetrics.discover --offline       # refaz o MAPPING do catálogo salvo
+    python -m nubimetrics.discover --offline       # refaz o MAPPING_auto.md do catálogo salvo
 """
 from __future__ import annotations
 
@@ -152,11 +153,18 @@ def pagination_params(tool: Dict[str, Any]) -> List[str]:
 
 
 def granularity(tool: Dict[str, Any]) -> str:
-    """Grão temporal pelo schema/descrição: dia, mês, ambos ou ?."""
-    txt = json.dumps(tool.get("inputSchema") or {}).lower() + " " + (tool.get("description") or "").lower()
-    day = bool(re.search(r"daily|diari|\bday\b|\bdia\b|date_from|date_to|desde|hasta|start_date", txt))
-    month = bool(re.search(r"monthly|mensual|mensal|\bmonth\b|\bmes\b|period", txt))
-    return {(True, True): "dia/mês", (True, False): "dia", (False, True): "mês"}.get((day, month), "?")
+    """Grão temporal: ``dia`` só com série diária (parâmetro ``days`` ou
+    "daily" na descrição); parâmetro de data de 1º-do-mês é ``mês``."""
+    schema = json.dumps(tool.get("inputSchema") or {}).lower()
+    desc = (tool.get("description") or "").lower()
+    day = bool(re.search(r'"days"', schema) or re.search(r"\bdaily\b|\bdiári", desc))
+    month = bool(re.search(r"first day of the|month|\bmes\b", schema + " " + desc))
+    return {(True, True): "dia/mês", (True, False): "dia", (False, True): "mês"}.get((day, month), "—")
+
+
+#: Chaves de lista tabular nas respostas reais do MCP (ver samples/).
+_LIST_KEYS = ("data", "items", "results", "rows", "records", "ranking", "result",
+              "publications", "terms", "categories", "groups", "members", "projection", "metrics")
 
 
 def first_record(payload: Any) -> Optional[Dict[str, Any]]:
@@ -167,12 +175,11 @@ def first_record(payload: Any) -> Optional[Dict[str, Any]]:
                 return item
         return None
     if isinstance(payload, dict):
-        for key in ("data", "items", "results", "rows", "records", "ranking", "result"):
+        for key in _LIST_KEYS:
             if isinstance(payload.get(key), list):
                 return first_record(payload[key])
-        for val in payload.values():
-            if isinstance(val, list) and val and isinstance(val[0], dict):
-                return val[0]
+        # Sem lista conhecida: o registro é o próprio objeto (ex.: nubi_seller_info),
+        # nunca a 1ª lista aninhada (allowed_categories não é o schema da tool).
         return payload
     return None
 
@@ -181,16 +188,29 @@ def count_records(payload: Any) -> Optional[int]:
     if isinstance(payload, list):
         return len(payload)
     if isinstance(payload, dict):
-        for key in ("data", "items", "results", "rows", "records", "ranking", "result"):
+        for key in _LIST_KEYS:
             if isinstance(payload.get(key), list):
                 return len(payload[key])
     return None
 
 
+def _sample_for(name: str, samples: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Amostra da tool; com variantes (``<tool>__<topic>``), resume as variantes."""
+    if name in samples:
+        return samples[name]
+    var = {k: v for k, v in samples.items() if k.startswith(f"{name}__")}
+    if not var:
+        return {}
+    oks = [k.split("__", 1)[1] for k, v in var.items() if v.get("status") == "ok"]
+    first = next(iter(var.values()))
+    return {**first, "status": f"ok ({len(oks)}/{len(var)} variantes: {', '.join(oks)})"
+            if oks else first.get("status")}
+
+
 def render_mapping(tools: List[Dict[str, Any]], samples: Dict[str, Dict[str, Any]], generated_at: str) -> str:
-    """Monta o MAPPING.md (markdown) do catálogo + amostras."""
+    """Monta o MAPPING_auto.md (markdown heurístico) do catálogo + amostras."""
     lines = [
-        "# MAPPING — tools do MCP Nubimetrics × fontes do módulo",
+        "# MAPPING_auto — tools do MCP Nubimetrics × fontes (heurístico; revisado em MAPPING.md)",
         "",
         f"Gerado por `python -m nubimetrics.discover` em {generated_at} a partir de "
         f"`tools/list` real ({len(tools)} tools). Categoria de teste `{CATEGORY_ID}`, mês atual.",
@@ -208,7 +228,7 @@ def render_mapping(tools: List[Dict[str, Any]], samples: Dict[str, Dict[str, Any
         srcs = guess_sources(tool)
         for s in srcs:
             covered[s].append(name)
-        smp = samples.get(name, {})
+        smp = _sample_for(name, samples)
         status = smp.get("status", "não chamada")
         rec = first_record(smp.get("payload"))
         fields = ", ".join(f"`{k}`" for k in list(rec)[:25]) if isinstance(rec, dict) else "—"
@@ -228,7 +248,7 @@ def render_mapping(tools: List[Dict[str, Any]], samples: Dict[str, Dict[str, Any
     lines += ["", "## Detalhe por tool", ""]
     for tool in tools:
         name = tool["name"]
-        smp = samples.get(name, {})
+        smp = _sample_for(name, samples)
         lines += [
             f"### `{name}`",
             "",
@@ -430,8 +450,8 @@ def _load_offline() -> None:
     for f in SAMPLES_DIR.glob("*.json"):
         data = json.loads(f.read_text(encoding="utf-8"))
         for t in tools:
-            if _safe(t["name"]) == f.stem:
-                samples[t["name"]] = data
+            if f.stem == _safe(t["name"]) or f.stem.startswith(_safe(t["name"]) + "__"):
+                samples[f.stem] = data
     _write_mapping(tools, samples)
 
 
@@ -455,7 +475,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--so-listar", action="store_true", help="só tools/list, sem chamadas de teste")
     ap.add_argument("--args", type=Path, help='JSON {"<tool>": {args}} que sobrepõe os args inferidos')
     ap.add_argument("--incluir-escrita", action="store_true", help="também chama tools com cara de escrita")
-    ap.add_argument("--offline", action="store_true", help="refaz o MAPPING.md do catálogo já salvo")
+    ap.add_argument("--offline", action="store_true", help="refaz o MAPPING_auto.md do catálogo já salvo")
     a = ap.parse_args(argv)
     if a.offline:
         _load_offline()

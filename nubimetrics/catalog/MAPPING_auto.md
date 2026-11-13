@@ -1,6 +1,6 @@
-# MAPPING — tools do MCP Nubimetrics × fontes do módulo
+# MAPPING_auto — tools do MCP Nubimetrics × fontes (heurístico; revisado em MAPPING.md)
 
-Gerado por `python -m nubimetrics.discover` em 13/11/2026 12:07 a partir de `tools/list` real (24 tools). Categoria de teste `MLB1646`, mês atual.
+Gerado por `python -m nubimetrics.discover` em 13/11/2026 15:33 a partir de `tools/list` real (24 tools). Categoria de teste `MLB1646`, mês atual.
 
 > A coluna **Fonte** é heurística (nome/descrição da tool) — **a confirmar** na revisão.
 
@@ -8,30 +8,30 @@ Gerado por `python -m nubimetrics.discover` em 13/11/2026 12:07 a partir de `too
 
 | Tool | Fonte (seção 2) | Teste | Registros | Grão | Paginação | Campos retornados (1º registro) |
 |---|---|---|---|---|---|---|
-| `meli_category_detail` | C, D, I, N | ok | — | dia/mês | — | `data`, `data_available`, `currency`, `period_applied`, `period_fallback` |
-| `meli_category_explorer` | C, D, G, H, I, M | ok | — | mês | — | `name`, `path`, `scoring`, `gmv_scoring`, `visits_scoring`, `listings_scoring`, `item_quantity_scoring`, `catalog_scoring`, `growth_ytd`, `growth_yoy`, `visits`, `competitivity`, `has_sales`, `saturation_platinum`, `saturation_gold`, `saturation_silver`, `saturation_normal`, `peak_month`, `low_month`, `sellers`, `successful_items`, `avg_ticket` |
-| `nubi_category_forecast` | H, I, M | ok | — | dia/mês | — | `date`, `successful_items_forecasted`, `successful_items_growth_yoy`, `gmv_usd_forecasted`, `gmv_local_forecasted`, `gmv_usd_growth_yoy`, `gmv_local_growth_yoy`, `gmv_local_before_forecasted` |
-| `nubi_category_market_size` | I, M | ok | — | dia/mês | — | `date`, `value`, `previous_period_value`, `previous_period_date` |
-| `nubi_category_market_structure` | I, M | ok | — | dia/mês | — | `date`, `value`, `previous_period_value`, `previous_period_date` |
+| `meli_category_detail` | C, D, I, N | ok | — | mês | — | `data`, `data_available`, `currency`, `period_applied`, `period_fallback` |
+| `meli_category_explorer` | C, D, G, H, I, M | ok | 50 | mês | — | `name`, `path`, `scoring`, `gmv_scoring`, `visits_scoring`, `listings_scoring`, `item_quantity_scoring`, `catalog_scoring`, `growth_ytd`, `growth_yoy`, `visits`, `competitivity`, `has_sales`, `saturation_platinum`, `saturation_gold`, `saturation_silver`, `saturation_normal`, `peak_month`, `low_month`, `sellers`, `successful_items`, `avg_ticket` |
+| `nubi_category_forecast` | H, I, M | ok | 12 | mês | — | `date`, `successful_items_forecasted`, `successful_items_growth_yoy`, `gmv_usd_forecasted`, `gmv_local_forecasted`, `gmv_usd_growth_yoy`, `gmv_local_growth_yoy`, `gmv_local_before_forecasted` |
+| `nubi_category_market_size` | I, M | ok | — | mês | — | `category_id`, `currency`, `date_from`, `date_to`, `data_available`, `gmv_local`, `gmv_usd`, `successful_items`, `avg_ticket_local`, `avg_ticket_usd`, `averages` |
+| `nubi_category_market_structure` | I, M | ok | — | mês | — | `category_id`, `date_from`, `date_to`, `data_available`, `visits`, `sellers`, `sellers_professional`, `listings`, `successful_listings`, `averages` |
 | `nubi_competition_publication_detail` | L | sem args: member_owner, member_code (dependência sem dado) | — | dia | — | — |
-| `nubi_competition_publication_evolution` | L | sem args: member_owner, member_code (dependência sem dado) | — | dia/mês | — | — |
-| `nubi_competition_publication_group_members` | L | ok | — | ? | — | `group_id`, `group_name`, `group_description`, `is_favorite`, `member_count`, `members`, `returned`, `has_more` |
+| `nubi_competition_publication_evolution` | L | sem args: member_owner, member_code (dependência sem dado) | — | dia | — | — |
+| `nubi_competition_publication_group_members` | L | ok | 0 | — | — | — |
 | `nubi_competition_publication_group_metrics` | F, L | ok | — | dia | — | `total_gmv`, `total_units`, `total_visits`, `avg_price`, `member_count`, `date_from`, `date_to`, `currency` |
-| `nubi_competition_publication_groups` | J, L | ok | — | ? | — | `group_id`, `group_name`, `group_description`, `is_favorite`, `member_count` |
-| `nubi_competition_publication_log` | L | sem args: member_owner, member_code (dependência sem dado) | — | ? | — | — |
-| `nubi_competition_seller_evolution` | G, J | ok | — | dia/mês | — | `name`, `points` |
-| `nubi_competition_seller_group_members` | J, M | ok | — | ? | — | `member_code`, `active`, `tracking_information`, `is_self` |
+| `nubi_competition_publication_groups` | J, L | ok | 1 | — | — | `group_id`, `group_name`, `group_description`, `is_favorite`, `member_count` |
+| `nubi_competition_publication_log` | L | sem args: member_owner, member_code (dependência sem dado) | — | — | — | — |
+| `nubi_competition_seller_evolution` | G, J | ok | 5 | dia | — | `name`, `points` |
+| `nubi_competition_seller_group_members` | J, M | ok | 1 | — | — | `member_code`, `active`, `tracking_information`, `is_self` |
 | `nubi_competition_seller_group_metrics` | J | ok | — | dia | — | `total_gmv`, `total_units`, `avg_ticket`, `member_count`, `date_from`, `date_to`, `currency` |
-| `nubi_competition_seller_groups` | J, L | ok | — | ? | — | `group_id`, `group_name`, `group_description`, `is_favorite`, `member_count` |
-| `nubi_competition_seller_items` | J | ok | — | dia | — | `item_id`, `title`, `gmv`, `units`, `price`, `condition`, `is_catalog`, `category_id`, `free_shipping`, `mercado_envios`, `listing_type_name`, `brand` |
-| `nubi_competition_seller_metrics` | G, J | ok | — | dia | — | `category_id`, `name`, `gmv`, `share_pct` |
-| `nubi_evaluate_categories` | C, I | ok | — | dia/mês | — | `categories`, `total`, `period_fallback` |
-| `meli_market_rankings` | C, I | não chamada | — | dia/mês | — | — |
-| `meli_publication_explorer` | G, I, M | ok | — | mês | — | `title`, `gmv`, `units`, `cum_units`, `price`, `is_catalog`, `full`, `flex`, `free_shipping`, `brand`, `seller`, `creation_date`, `exposition`, `installments`, `model`, `official_store_id`, `official_store_alias`, `item_id`, `seller_id_hash`, `sku`, `gtin`, `part_number`, `oem`, `category_path`, `category_name` … (+1) |
-| `meli_search_trends_rankings` | C, G, I | ok | — | dia/mês | — | `position`, `search_term`, `ranking_trend`, `position_before` |
-| `nubi_seller_info` | M | ok | — | ? | — | `id`, `name`, `path` |
-| `nubi_user_feedback` | F, M | pulada (grava do lado da Nubimetrics) | — | ? | — | — |
-| `nubi_user_info` | M | ok | — | ? | — | `seller_id`, `seller_nickname`, `site_id`, `main_account` |
+| `nubi_competition_seller_groups` | J, L | ok | 1 | — | — | `group_id`, `group_name`, `group_description`, `is_favorite`, `member_count` |
+| `nubi_competition_seller_items` | J | ok | 10 | dia | — | `item_id`, `title`, `gmv`, `units`, `price`, `condition`, `is_catalog`, `category_id`, `free_shipping`, `mercado_envios`, `listing_type_name`, `brand` |
+| `nubi_competition_seller_metrics` | G, J | ok | — | dia | — | `gmv`, `visits`, `units`, `items`, `avg_ticket`, `convertion`, `category_id`, `last_update`, `currency`, `category_breakdown`, `pareto` |
+| `nubi_evaluate_categories` | C, I | ok | 0 | mês | — | — |
+| `meli_market_rankings` | C, I | ok (5/5 variantes: items, brands, catalog, seller, official_store) | 99 | mês | — | `position`, `name`, `gmv`, `units`, `is_catalog`, `ranking_trend`, `full`, `growth_gmv`, `growth_si`, `sellers_quantity`, `items_quantity`, `catalog_percentage`, `share` |
+| `meli_publication_explorer` | G, I, M | ok | 10 | — | — | `title`, `gmv`, `units`, `cum_units`, `price`, `is_catalog`, `full`, `flex`, `free_shipping`, `brand`, `seller`, `creation_date`, `exposition`, `installments`, `model`, `official_store_id`, `official_store_alias`, `item_id`, `seller_id_hash`, `sku`, `gtin`, `part_number`, `oem`, `category_path`, `category_name` … (+1) |
+| `meli_search_trends_rankings` | C, G, I | ok | 76 | mês | — | `position`, `search_term`, `ranking_trend`, `position_before` |
+| `nubi_seller_info` | M | ok | — | — | — | `seller_id`, `seller_nickname`, `site_id`, `plan_id`, `plan_name`, `due_date`, `currency`, `account_id`, `competition_slots`, `category_segment`, `allowed_categories` |
+| `nubi_user_feedback` | F, M | pulada (grava do lado da Nubimetrics) | — | — | — | — |
+| `nubi_user_info` | M | omitida (e-mail/conta — não versionada) | — | — | — | — |
 
 ## Cobertura das fontes da seção 2
 
@@ -367,7 +367,8 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **não chamada**
+Teste: **ok (5/5 variantes: items, brands, catalog, seller, official_store)**
+Args: `{"inp": {"date": "2026-11-01", "category_id": "MLB1646", "topic": "items"}}`
 
 ### `meli_publication_explorer`
 
@@ -451,6 +452,6 @@ Parâmetros:
 
 - `inp` (object, obrigatório) — 
 
-Teste: **ok**
+Teste: **omitida (e-mail/conta — não versionada)**
 Args: `{"inp": {}}`
 
