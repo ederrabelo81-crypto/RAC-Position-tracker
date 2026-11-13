@@ -103,6 +103,20 @@ async def anuncios(nubi: NubiClient, termos: Sequence[str] = TERMOS_EXPLORADOR,
     return list(vistos.values())
 
 
+async def _paginar(nubi: NubiClient, tool: str, base: Dict[str, Any], chave: str,
+                   limite: int = 50) -> List[Dict[str, Any]]:
+    """Lista paginada por ``limit``/``offset`` até ``has_more`` falso."""
+    linhas: List[Dict[str, Any]] = []
+    offset = 0
+    while True:
+        payload = await nubi.call(tool, {"inp": {**base, "limit": limite, "offset": offset}})
+        lote = payload.get(chave) or []
+        linhas.extend(lote)
+        if not payload.get("has_more") or not lote:
+            return linhas
+        offset += len(lote)
+
+
 async def concorrente(nubi: NubiClient, dias: int = 30) -> List[Dict[str, Any]]:
     """Série diária do(s) concorrente(s) no(s) grupo(s) de sellers seguidos.
 
@@ -110,13 +124,16 @@ async def concorrente(nubi: NubiClient, dias: int = 30) -> List[Dict[str, Any]]:
     rejeitado pela tool e fica de fora.
     """
     saida: List[Dict[str, Any]] = []
-    grupos = (await nubi.call("nubi_competition_seller_groups", {"inp": {}})).get("groups") or []
+    vistos: set = set()
+    grupos = await _paginar(nubi, "nubi_competition_seller_groups", {}, "groups")
     for grupo in grupos:
-        membros = (await nubi.call("nubi_competition_seller_group_members",
-                                   {"inp": {"group_id": grupo["group_id"]}})).get("members") or []
+        membros = await _paginar(nubi, "nubi_competition_seller_group_members",
+                                 {"group_id": grupo["group_id"]}, "members")
         for m in membros:
-            if m.get("is_self") or not m.get("member_code"):
+            # O mesmo concorrente em dois grupos daria (data, concorrente) duplicado.
+            if m.get("is_self") or not m.get("member_code") or m["member_code"] in vistos:
                 continue
+            vistos.add(m["member_code"])
             try:
                 serie = await nubi.call("nubi_competition_seller_evolution", {"inp": {
                     "seller_id_competitor": m["member_code"], "days": dias, "category_id": CATEGORIA,

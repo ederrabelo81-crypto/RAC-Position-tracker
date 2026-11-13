@@ -37,6 +37,17 @@ _JANELA = re.compile(r"\bjanela\b|\bde parede tipo janela\b|\bwindow\b", re.I)
 _PISO_TETO = re.compile(r"piso[\s-]*teto|\bcassete\b|\bk7\b|\bduto\b|\bdutado\b", re.I)
 _OUTROS = re.compile(r"\bmulti[\s-]*split\b|\bbi[\s-]*split\b|\btri[\s-]*split\b|\bclimatizador\b|"
                      r"\bpe[cç]as?\b|\bsuporte\b|\bkit (de )?instala", re.I)
+#: Acessório/peça: nunca entra no hi-wall por padrão (o default só vale com o
+#: núcleo do produto no título — "ar condicionado", "split", "hi wall", BTU).
+_ACESSORIO = re.compile(
+    # Ancorado no INÍCIO: o substantivo do produto abre o título ("Controle
+    # Remoto ...", "Capa Para Ar ..."). No meio do título "filtro"/"placa" são
+    # atributos de ar de verdade ("Split Inverter com Filtro de Prata").
+    r"^\W*(controle remoto|capa\b|tubula[cç][aã]o|compressor|placa\b|filtro\b|dreno|bomba\b|"
+    r"mangueira|cabo\b|g[aá]s\b|motor\b|kit\b|suporte|pe[cç]as?\b|ventilador\b|serpentina|"
+    r"capacitor|sensor|termostato|v[aá]lvula)",
+    re.I)
+_NUCLEO = re.compile(r"ar[\s-]*condicionado|\bsplit\b|hi[\s-]?wall|high[\s-]?wall|\bbtus?\b|inverter", re.I)
 _HW = re.compile(r"hi[\s-]?wall|high[\s-]?wall|\bsplit\b|\bhw\b|\bparede\b", re.I)
 _INVERTER = re.compile(r"inverter|\binv\b|\binvt\b|\binvert\b", re.I)
 _ONOFF = re.compile(r"on[\s/-]*off|convencional", re.I)
@@ -45,6 +56,7 @@ _BTU = re.compile(
 )
 _BTU_MODELO = re.compile(r"(?<!\d)(07|09|12|18|22|24|30|36)(?!\d)")
 _VOLT = re.compile(r"\b(220|127|110)\s?v\b|\bbivolt\b", re.I)
+_BIVOLT_PAR = re.compile(r"\b(110|127)\s?v?\s*(/|e|-)\s*220\s?v\b|\b220\s?v?\s*(/|e|-)\s*(110|127)\s?v\b", re.I)
 
 #: Grafia de exibição por marca normalizada (cor em utils/ui_tokens.py).
 _MARCA_EXIBICAO = {
@@ -119,6 +131,8 @@ def parse_voltagem(texto: Optional[str]) -> Optional[str]:
     """``220v`` → ``220V``; ``110v``/``127v`` → ``127V``; ``bivolt``."""
     if not texto:
         return None
+    if _BIVOLT_PAR.search(str(texto)):
+        return "Bivolt"
     m = _VOLT.search(str(texto))
     if not m:
         return None
@@ -161,7 +175,7 @@ def classificar(titulo: Optional[str], modelo: Optional[str] = None) -> Classifi
         seg = SEG_JANELA
     elif _PISO_TETO.search(t):
         seg = SEG_PISO_TETO
-    elif _OUTROS.search(t):
+    elif _OUTROS.search(t) or _ACESSORIO.search(t) or not _NUCLEO.search(t):
         seg = SEG_OUTROS
     elif inverter is False:
         seg = SEG_HW_ONOFF

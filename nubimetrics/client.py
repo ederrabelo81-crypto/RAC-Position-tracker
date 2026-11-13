@@ -187,8 +187,23 @@ class NubiClient:
         self._ultimo = 0.0
 
     async def __aenter__(self) -> "NubiClient":
-        self._stack = contextlib.AsyncExitStack()
-        self._session = await self._stack.enter_async_context(open_session())
+        import asyncio
+
+        # Abrir a sessão (TLS + initialize) também é rede: repete como as chamadas.
+        for tentativa in range(1, self.tentativas + 1):
+            self._stack = contextlib.AsyncExitStack()
+            try:
+                self._session = await self._stack.enter_async_context(open_session())
+                return self
+            except MissingApiKeyError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — transporte: repete
+                await self._stack.aclose()
+                if tentativa == self.tentativas:
+                    raise RuntimeError(f"MCP indisponível: {redact(str(exc))}") from exc
+                logger.warning(f"[Nubimetrics] sessão falhou ({tentativa}/{self.tentativas}): "
+                               f"{redact(str(exc))[:200]} — nova tentativa em {2 ** tentativa}s")
+                await asyncio.sleep(2 ** tentativa)
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -239,5 +254,5 @@ class NubiClient:
         logger.debug(f"[Nubimetrics] {tool} {json.dumps(args, ensure_ascii=False)[:160]}")
         if self.cache:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(gzip.compress(json.dumps(payload, ensure_ascii=False).encode("utf-8")))
+            path.write_bytes(gzip.compress(json.dumps(mascarar(payload), ensure_ascii=False).encode("utf-8")))
         return payload

@@ -1,6 +1,6 @@
 # MAPPING_auto — tools do MCP Nubimetrics × fontes (heurístico; revisado em MAPPING.md)
 
-Gerado por `python -m nubimetrics.discover` em 13/11/2026 15:33 a partir de `tools/list` real (24 tools). Categoria de teste `MLB1646`, mês atual.
+Gerado por `python -m nubimetrics.discover` em 13/11/2026 15:48 a partir de `tools/list` real (24 tools). Categoria de teste `MLB1646`, mês atual.
 
 > A coluna **Fonte** é heurística (nome/descrição da tool) — **a confirmar** na revisão.
 

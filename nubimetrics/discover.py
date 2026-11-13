@@ -202,9 +202,10 @@ def _sample_for(name: str, samples: Dict[str, Dict[str, Any]]) -> Dict[str, Any]
     if not var:
         return {}
     oks = [k.split("__", 1)[1] for k, v in var.items() if v.get("status") == "ok"]
-    first = next(iter(var.values()))
-    return {**first, "status": f"ok ({len(oks)}/{len(var)} variantes: {', '.join(oks)})"
-            if oks else first.get("status")}
+    # Representante: uma variante que deu certo; a falha só quando todas falharam.
+    rep = next((v for v in var.values() if v.get("status") == "ok"), next(iter(var.values())))
+    return {**rep, "status": f"ok ({len(oks)}/{len(var)} variantes: {', '.join(oks)})"
+            if oks else rep.get("status")}
 
 
 def render_mapping(tools: List[Dict[str, Any]], samples: Dict[str, Dict[str, Any]], generated_at: str) -> str:
@@ -309,7 +310,9 @@ async def _call_one(session: Any, tool: Dict[str, Any], args: Dict[str, Any]) ->
 
 
 # Ferramentas que gravam algo do lado da Nubimetrics (apesar de readOnlyHint).
-NEVER_CALL = {"nubi_user_feedback"}
+#: Nunca chamadas: feedback grava do lado da Nubimetrics; user_info só traz
+#: e-mail/identidade da conta (não vira amostra versionada).
+NEVER_CALL = {"nubi_user_feedback", "nubi_user_info"}
 # Ordem: quem produz ids (grupos, membros, categoria-folha) antes de quem consome.
 _ORDER = [
     "nubi_user_info", "nubi_seller_info", "meli_category_explorer",
@@ -423,7 +426,8 @@ async def discover(only_list: bool, overrides: Dict[str, Dict[str, Any]], allow_
         for tool in ordered if not only_list else []:
             name = tool["name"]
             if (name in NEVER_CALL or is_write_tool(tool)) and not allow_write:
-                samples[name] = {"status": "pulada (grava do lado da Nubimetrics)"}
+                samples[name] = {"status": "omitida (e-mail/conta — não versionada)"
+                                 if name == "nubi_user_info" else "pulada (grava do lado da Nubimetrics)"}
                 continue
             for label, args, missing in plan_calls(tool, ctx, today):
                 key = f"{name}__{label}" if label else name

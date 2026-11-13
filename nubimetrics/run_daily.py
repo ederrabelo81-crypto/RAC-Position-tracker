@@ -97,12 +97,16 @@ def transformar(bruto: Dict[str, Any], hoje: dt.date) -> Dict[str, Any]:
 
 
 def gravar(dados: Dict[str, Any], hoje: dt.date) -> int:
+    """Grava tudo. O histórico (Parquet) vem ANTES da foto no banco: a foto
+    troca a anterior, então um histórico que falhasse depois deixaria um buraco
+    irrecuperável. Falha do Parquet vira ressalva (PARTIAL), não silêncio."""
+    if dados["anuncios"] and not load.parquet(dados["anuncios"], hoje, run_id=os.getenv("GITHUB_RUN_ID")):
+        dados["avisos"].append("histórico Parquet dos anúncios NÃO gravado (ver log)")
     client = load.cliente()
     total = load.upsert(client, "nubi_mercado_mensal", dados["mercado"])
     total += load.upsert(client, "nubi_ranking_mensal", dados["rankings"])
     total += load.upsert(client, "nubi_concorrente_diario", dados["concorrente"])
     total += load.substituir_anuncios(client, dados["anuncios"])
-    load.parquet(dados["anuncios"], hoje, run_id=os.getenv("GITHUB_RUN_ID"))
     return total
 
 
@@ -121,12 +125,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="não grava nada")
     a = ap.parse_args(argv)
     meses = 13 if a.backfill else max(1, a.meses)
-    hoje = dt.date.today()
+    from utils.text import now_brt
+
+    hoje = now_brt().date()   # convenção do projeto: dia em BRT, nunca o do host
     inicio = time.monotonic()
-    _bater("STARTED")
+    if not a.dry_run:          # dry-run não abre batida (ficaria STARTED para sempre)
+        _bater("STARTED")
     try:
         bruto = asyncio.run(extrair(meses, not a.sem_anuncios, hoje))
         dados = transformar(bruto, hoje)
+        if not a.sem_anuncios and not dados["anuncios"]:
+            # Explorador pedido e vazio ≠ rodada saudável: a foto de ontem fica,
+            # mas o livro-razão precisa saber.
+            dados["avisos"].append("explorador devolveu 0 anúncios — foto anterior mantida")
         logger.info(f"[Nubimetrics] {resumo(dados)}")
         for aviso in dados["avisos"]:
             logger.warning(f"[Nubimetrics] {aviso}")

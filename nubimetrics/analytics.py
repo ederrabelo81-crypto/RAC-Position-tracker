@@ -155,6 +155,9 @@ def preparar_anuncios(df: pd.DataFrame, parceiros: Optional[pd.DataFrame] = None
         if col in out:
             out[col] = pd.to_numeric(out[col], errors="coerce")
     out["marca"] = out["marca"].fillna("").map(normalizar_marca)
+    # Sub-linhas (MIDEA AI ECOMASTER, SPRINGER MIDEA…) contam como MIDEA em
+    # toda conta do painel.
+    out.loc[out["marca"].map(is_midea), "marca"] = MIDEA
     out["marca_exib"] = out["marca"].map(marca_exibicao)
     out["is_midea"] = out["marca"].map(is_midea)
     out["premium"] = out["exposicao"].eq(PREMIUM)
@@ -227,13 +230,19 @@ def heatmap_btu_marca(df: pd.DataFrame, marcas: Sequence[str] = MARCAS_PADRAO) -
     return piv.loc[linhas, cols].round(1)
 
 
+def _sku_chave(df: pd.DataFrame) -> pd.Series:
+    """Chave de SKU: modelo; se vazio/genérico, os 40 primeiros caracteres do título."""
+    chave = df["modelo"].fillna("").astype(str).str.strip()
+    generico = chave.isin(["", "INVERTER"])
+    return chave.where(~generico, df["titulo"].fillna("").astype(str).str.slice(0, 40))
+
+
 def top_skus_midea(df: pd.DataFrame, n: int = 15) -> pd.DataFrame:
     """SKUs Midea por receita (agrupados por modelo, senão título) e onde vendem."""
     m = df[df["is_midea"]].copy()
     if m.empty:
         return pd.DataFrame()
-    m["sku_chave"] = m["modelo"].fillna("").str.strip()
-    m.loc[m["sku_chave"].isin(["", "INVERTER"]), "sku_chave"] = m["titulo"].str.slice(0, 40)
+    m["sku_chave"] = _sku_chave(m)
     g = m.groupby("sku_chave").agg(
         titulo=("titulo", "first"), btu=("faixa_btu", "first"),
         receita_brl=("receita_brl", "sum"), unidades=("unidades", "sum"),
@@ -335,7 +344,7 @@ def oportunidades(df: pd.DataFrame, buscas: Optional[pd.DataFrame] = None,
     skus = top_skus_midea(df, n=10)
     if not skus.empty:
         m = df[df["is_midea"]].copy()
-        m["sku_chave"] = m["modelo"].fillna("").str.strip()
+        m["sku_chave"] = _sku_chave(m)
         for seller, g in alvo.groupby("seller_exib"):
             faixas_seller = set(g["faixa_btu"].dropna())
             tem = set(m.loc[m["seller_exib"] == seller, "sku_chave"])

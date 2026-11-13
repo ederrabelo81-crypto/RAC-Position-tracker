@@ -36,7 +36,12 @@ class FakeNubi:
             p = copy.deepcopy(amostra(tool)); p["period_fallback"] = False
             return p
         if tool == "meli_publication_explorer":
-            p = copy.deepcopy(amostra(tool)); p["total"] = len(p["publications"])
+            # Paginação de verdade: o `total` real (4.057) fica; a página 1 traz
+            # 5 anúncios, a 2 traz os outros 5 + 1 repetido, a 3 vem vazia.
+            p = copy.deepcopy(amostra(tool))
+            pubs = p["publications"]
+            pagina = inp.get("page", 1)
+            p["publications"] = {1: pubs[:5], 2: pubs[5:] + pubs[:1]}.get(pagina, [])
             return p
         if tool == "meli_category_detail":
             p = copy.deepcopy(amostra(tool)); p["period_applied"] = inp["date"]

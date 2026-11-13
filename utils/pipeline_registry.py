@@ -330,7 +330,9 @@ JOBS: Tuple[JobSpec, ...] = (
             "Actions → Nubimetrics Sell-out → Run workflow "
             "(ou: python -m nubimetrics.run_daily)"
         ),
-        auto_heal="python -m nubimetrics.run_daily",
+        # Sem auto_heal local: o guard não tem `mcp` nem NUBIMETRICS_API_KEY.
+        # A cura é re-disparar o próprio workflow (campo `workflow`).
+        auto_heal=None,
         observacao=(
             "MCP remoto da Nubimetrics (API key da conta Midea Brasil no secret "
             "NUBIMETRICS_API_KEY). Roda no Actions para não disputar o PC "

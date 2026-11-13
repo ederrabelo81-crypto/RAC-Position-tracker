@@ -227,3 +227,121 @@ def test_resumo_em_ingles(dados):
 def test_meta_de_share():
     r = an.meta_share(100.0, 13.0, 15.0)
     assert r["falta"] == pytest.approx(2.0)
+
+
+# ── revisão do PR #449 (Cubic, 2ª passada) ──────────────────────────────────
+
+def test_explorador_pagina_ate_o_fim_e_deduplica(monkeypatch):
+    from nubimetrics import extract
+
+    nubi = FakeNubi()
+    linhas = asyncio.run(extract.anuncios(nubi, termos=("ar condicionado",)))
+    paginas = [a["inp"]["page"] for t, a in nubi.log if t == "meli_publication_explorer"]
+    assert paginas == [1, 2, 3]                       # total real 4.057: só para na página vazia
+    assert len(linhas) == 10 == len({x["item_id"] for x in linhas})
+
+
+def test_grupos_paginam_e_concorrente_nao_duplica():
+    from nubimetrics import extract
+
+    class Nubi(FakeNubi):
+        async def call(self, tool, args):
+            self.log.append((tool, args))
+            off = args["inp"].get("offset", 0)
+            if tool == "nubi_competition_seller_groups":
+                return {"groups": [{"group_id": 1}, {"group_id": 2}][off:off + 1], "has_more": off == 0}
+            if tool == "nubi_competition_seller_group_members":
+                return {"members": [{"member_code": "X"}, {"member_code": "Y", "is_self": True}], "has_more": False}
+            return {"metrics": []}
+
+    nubi = Nubi()
+    saida = asyncio.run(extract.concorrente(nubi))
+    assert [c["concorrente"] for c in saida] == ["X"]          # X está nos 2 grupos: 1 vez só
+    assert sum(t == "nubi_competition_seller_groups" for t, _ in nubi.log) == 2
+
+
+def test_rpc_troca_a_foto_e_falha_alto():
+    cli = _Cliente()
+    assert load.substituir_anuncios(cli, [{"item_hash": "a"}, {"item_hash": "b"}]) == 2
+    assert cli.rpcs[0][0] == "nubi_substituir_anuncios" and len(cli.rpcs[0][1]["p_linhas"]) == 2
+
+    class Recusa(_Cliente):
+        def rpc(self, nome, params):
+            raise RuntimeError("permission denied")
+
+    with pytest.raises(load.LoadError):
+        load.substituir_anuncios(Recusa(), [{"item_hash": "a"}])
+
+
+def test_parquet_antes_do_banco_e_falha_vira_ressalva(monkeypatch):
+    import nubimetrics.run_daily as run
+
+    ordem = []
+    monkeypatch.setattr(load, "parquet", lambda *a, **k: ordem.append("parquet") or None)
+    monkeypatch.setattr(load, "cliente", lambda: ordem.append("banco") or _Cliente())
+    dados = {"mercado": [], "rankings": [], "concorrente": [], "anuncios": [{"item_hash": "a"}], "avisos": []}
+    run.gravar(dados, HOJE)
+    assert ordem[:2] == ["parquet", "banco"]
+    assert any("Parquet" in a for a in dados["avisos"])
+
+
+def test_dry_run_nao_abre_batida(monkeypatch):
+    import nubimetrics.client as client
+    import nubimetrics.run_daily as run
+
+    batidas = []
+    monkeypatch.setattr(client, "NubiClient", lambda *a, **k: FakeNubi())
+    monkeypatch.setattr(run, "_bater", lambda status, **k: batidas.append(status))
+    assert run.main(["--dry-run"]) == run.EXIT_OK and batidas == []
+
+
+def test_explorador_vazio_vira_ressalva(monkeypatch):
+    import nubimetrics.client as client
+    import nubimetrics.run_daily as run
+
+    class Vazio(FakeNubi):
+        async def call(self, tool, args):
+            if tool == "meli_publication_explorer":
+                return {"publications": [], "total": 0}
+            return await super().call(tool, args)
+
+    batidas = []
+    monkeypatch.setattr(client, "NubiClient", lambda *a, **k: Vazio())
+    monkeypatch.setattr(run, "gravar", lambda *a, **k: 0)
+    monkeypatch.setattr(run, "_bater", lambda status, **k: batidas.append((status, k.get("detalhe", ""))))
+    assert run.main([]) == run.EXIT_RESSALVA
+    assert batidas[-1][0] == "PARTIAL" and "0 anúncios" in batidas[-1][1]
+
+
+@pytest.mark.parametrize("titulo", [
+    "Controle Remoto Universal Para Ar Condicionado Split",
+    "Capa Para Ar Condicionado Split 12000",
+    "Kit Instalação Ar Condicionado 3m",
+    "Ventilador de Teto 3 Pás",
+])
+def test_acessorio_nao_entra_no_high_wall(titulo):
+    assert classificar(titulo).segmento != SEG_HW_INVERTER
+
+
+def test_atributo_no_meio_do_titulo_nao_vira_acessorio():
+    assert classificar("Ar Condicionado Split Inverter 12000 Btus com Filtro de Prata").segmento == SEG_HW_INVERTER
+
+
+def test_bivolt_em_par():
+    assert parse_voltagem("Ar 110/220V") == parse_voltagem("127v e 220v") == "Bivolt"
+
+
+def test_sub_linha_midea_conta_como_midea_e_sku_por_titulo():
+    df = an.preparar_anuncios(pd.DataFrame([
+        {"item_hash": "a", "marca": "Springer Midea", "modelo": "", "titulo": "Ar Split Midea Xtreme 12k",
+         "seller": "S1", "exposicao": "gold_pro", "receita_brl": 10, "unidades": 1, "preco": 10,
+         "faixa_btu": "12k", "catalogo": False, "full_": False},
+    ]))
+    assert df.loc[0, "marca"] == "MIDEA"
+    assert an._sku_chave(df).iloc[0] == "Ar Split Midea Xtreme 12k"
+
+
+def test_discover_nunca_chama_user_info():
+    from nubimetrics.discover import NEVER_CALL
+
+    assert {"nubi_user_feedback", "nubi_user_info"} <= NEVER_CALL

@@ -80,6 +80,19 @@ jobs:
           pip install "mcp>=1.9.0" supabase python-dotenv loguru pandas numpy psycopg2-binary \
                       "pyarrow>=15.0.0,<25" google-api-python-client google-auth google-auth-oauthlib
 
+      # Cache diário do MCP (nubimetrics/cache/<dia>/): re-rodar no mesmo dia
+      # não gasta cota de novo. A chave leva a data; o conteúdo já vem mascarado.
+      - name: Date
+        id: hoje
+        run: echo "dia=$(date +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache MCP do dia
+        uses: actions/cache@v4
+        with:
+          path: nubimetrics/cache
+          key: nubimetrics-mcp-${{ steps.hoje.outputs.dia }}-${{ github.run_id }}
+          restore-keys: nubimetrics-mcp-${{ steps.hoje.outputs.dia }}-
+
       - name: Check secret
         run: |
           if [ -z "$NUBIMETRICS_API_KEY" ]; then

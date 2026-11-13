@@ -232,8 +232,8 @@ def _aba_oportunidades(d: Dict[str, Any], f: Dict[str, Any], rec: pd.DataFrame, 
         st.info("Sem anúncios no recorte.")
         return pd.DataFrame()
     buscas = an.ranking_mes(d["ranking"], "search_terms", f["mes"]) if f["mes"] is not None else None
-    so_parc = bool(rec["parceiro"].any())
-    opps = an.oportunidades(rec, buscas, so_parceiros=so_parc)
+    # Segue o toggle da barra lateral ("Só sellers parceiros Midea").
+    opps = an.oportunidades(rec, buscas, so_parceiros=bool(f["so_parceiros"]))
     if opps.empty:
         st.success("Nenhuma regra disparou neste recorte.", icon="✅")
         return opps
