@@ -625,3 +625,96 @@ def test_backfill_tem_total_da_categoria_para_todo_mes_de_ranking(monkeypatch):
     asyncio.run(run.extrair(13, False, HOJE))
     args = next(a["inp"] for t, a in nubi.log if t == "nubi_category_market_size")
     assert args["date_from"] == "2025-10-01"          # 13º mês fechado para trás (out/25)
+
+
+# ── seletor de período: Mês / Ano (YTD) / Dia ───────────────────────────────
+
+def _ranking_multimes(meses_receita: dict) -> pd.DataFrame:
+    """Ranking sintético de marcas: {mes: {marca: receita}}."""
+    linhas = []
+    for mes, marcas in meses_receita.items():
+        total = sum(marcas.values())
+        for pos, (nome, rec) in enumerate(sorted(marcas.items(), key=lambda x: -x[1]), start=1):
+            linhas.append({"categoria_id": "MLB1646", "mes": mes, "dimensao": "brands", "posicao": pos, "nome": nome,
+                           "receita_brl": rec, "unidades": rec / 1000, "share_brl": rec / total * 100,
+                           "tendencia": "Stable", "catalogo_pct": 50.0, "qtd_sellers": 10})
+    return pd.DataFrame(linhas)
+
+
+def _rk_dois_anos():
+    meses = {}
+    for ano, fator in ((2025, 1.0), (2026, 1.5)):
+        for m in (1, 2, 3):
+            meses[f"{ano}-{m:02d}-01"] = {"MIDEA": 20 * fator, "LG": 30, "PHILCO": 50}
+    return _ranking_multimes(meses)
+
+
+def test_periodo_mes_compara_com_o_anterior():
+    rk = _rk_dois_anos()
+    per = an.periodo_mes(pd.Timestamp("2026-03-01"), rk)
+    assert per.rotulo == "03/2026" and per.comp == (pd.Timestamp("2026-02-01"),) and per.comp_completo
+    assert an.periodo_mes(pd.Timestamp("2025-01-01"), rk).comp == ()
+
+
+def test_ytd_soma_os_meses_e_compara_com_o_mesmo_periodo_do_ano_anterior():
+    rk = _rk_dois_anos()
+    per = an.periodo_ano(2026, rk)
+    assert per.rotulo == "YTD 2026 (jan–mar)" and per.rotulo_comp == "YTD 2025 (jan–mar)" and per.comp_completo
+    r = an.ranking_periodo(rk, "brands", per).set_index("nome")
+    assert r.loc["MIDEA", "receita_brl"] == 90 and r.loc["MIDEA", "meses_presente"] == 3
+    assert round(r.loc["MIDEA", "share_brl"], 2) == round(90 / (90 + 90 + 150) * 100, 2)
+    assert round(r.loc["MIDEA", "cresc_receita_pct"], 1) == 50.0            # 90 vs 60
+    k = an.kpis_periodo(rk, per)
+    assert k["delta_share_pp"] is not None and k["delta_share_pp"] > 0 and k["rotulo"] == per.rotulo
+
+
+def test_ytd_com_comparacao_incompleta_nao_mostra_delta():
+    rk = _ranking_multimes({"2025-03-01": {"MIDEA": 10, "LG": 10},
+                            "2026-01-01": {"MIDEA": 20, "LG": 10}, "2026-02-01": {"MIDEA": 20, "LG": 10},
+                            "2026-03-01": {"MIDEA": 20, "LG": 10}})
+    per = an.periodo_ano(2026, rk)
+    assert per.comp and not per.comp_completo
+    k = an.kpis_periodo(rk, per)
+    assert k["delta_share_pp"] is None and k["delta_mercado_pct"] is None
+    assert pd.isna(an.ranking_periodo(rk, "brands", per)["cresc_receita_pct"]).all()
+
+
+def test_dia_usa_o_mes_fechado_de_referencia():
+    rk = _rk_dois_anos()
+    per = an.periodo_dia(dt.date(2026, 11, 13), rk)           # nov/26 não fechado → último disponível
+    assert per.visao == an.VISAO_DIA and per.dia == dt.date(2026, 11, 13)
+    assert per.meses == (pd.Timestamp("2026-03-01"),) and "mensal: 03/2026" in per.rotulo
+
+
+def test_buscas_no_ytd_por_posicao_media():
+    linhas = [{"mes": m, "dimensao": "search_terms", "posicao": p, "nome": n, "tendencia": "Stable"}
+              for m, n, p in [("2026-01-01", "a", 1), ("2026-02-01", "a", 3), ("2026-01-01", "b", 2),
+                              ("2026-02-01", "b", 1)]]
+    rk = pd.DataFrame(linhas)
+    rk_marcas = _ranking_multimes({"2026-01-01": {"MIDEA": 1}, "2026-02-01": {"MIDEA": 1}})
+    per = an.periodo_ano(2026, rk_marcas)
+    b = an.ranking_periodo(rk, "search_terms", per)
+    assert list(b["nome"]) == ["b", "a"] and list(b["posicao_media"]) == [1.5, 2.0]
+
+
+def test_mercado_do_periodo_com_ano_anterior():
+    m = pd.DataFrame([{"mes": f"2026-{i:02d}-01", "tipo": "real", "receita_brl": 100.0, "unidades": 10.0,
+                       "receita_brl_aa": 80.0} for i in (1, 2)])
+    rk = _ranking_multimes({"2026-01-01": {"MIDEA": 1}, "2026-02-01": {"MIDEA": 1}})
+    r = an.mercado_periodo(m, an.periodo_ano(2026, rk))
+    assert r["receita"] == 200 and r["yoy_pct"] == pytest.approx(25.0) and r["meses"] == 2
+
+
+def test_backfill_cobre_dois_anos_para_o_ytd(monkeypatch):
+    import nubimetrics.run_daily as run
+
+    pedidos = {}
+
+    async def _extrair(meses, com_anuncios, hoje):
+        pedidos["meses"] = meses
+        raise RuntimeError("parar aqui")
+
+    monkeypatch.setattr(run, "extrair", _extrair)
+    monkeypatch.setattr(run, "_bater", lambda *a, **k: None)
+    run.main(["--backfill", "--dry-run"])
+    assert pedidos["meses"] == 25

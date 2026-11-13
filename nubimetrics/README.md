@@ -81,16 +81,38 @@ O MCP não entrega tudo o que a interface web do Nubimetrics mostra
 4. **Banco:** aplique `docs/migrations/023_nubimetrics.sql` no SQL Editor do
    Supabase. Ele é idempotente e traz o seed de `dim_partner_sellers`.
 5. **Backfill (uma vez):** Actions → **Nubimetrics Sell-out** → Run workflow
-   com `backfill=true` (13 meses de ranking, que formam a série de
-   brandshare). Depois ele roda sozinho todo dia às 10:43.
+   com `backfill=true` (25 meses de ranking: série de brandshare e YTD com o
+   ano anterior completo para comparar). Depois ele roda sozinho todo dia às 10:43.
 6. **Sellers parceiros:** edite `dim_partner_sellers` no SQL Editor
    (`is_midea_partner`, `tier`, `account_manager`). O seed é provisório.
 
 ```bash
 python -m nubimetrics.discover              # re-mapear as tools (se o MCP mudar)
 python -m nubimetrics.run_daily --dry-run   # extrai e transforma, não grava
-python -m nubimetrics.run_daily --backfill  # 13 meses de ranking
+python -m nubimetrics.run_daily --backfill  # 25 meses de ranking (YTD × ano anterior)
 ```
+
+## Período: Mês, Ano (YTD) e Dia
+
+A barra lateral tem três visões. Cada fonte só existe no grão que a
+Nubimetrics publica:
+
+| Dado | Mês | Ano (YTD) | Dia |
+|---|---|---|---|
+| Mercado da categoria, marcas, sellers e buscas | mês fechado, comparado ao mês anterior | soma dos meses fechados do ano, comparada aos mesmos meses do ano anterior | usa o mês fechado de referência |
+| Δ vs ano anterior do mercado | série oficial da categoria (`*_aa`) | idem | idem |
+| Foto de anúncios (produtos, sellers, oportunidades, cruzamento) | a mais recente | a mais recente | **a do dia** (Parquet no Drive) |
+| Concorrente acompanhado (visitas, conversão) | dias do mês | dias do ano | **o dia** |
+
+- O **YTD** só mostra Δ quando o ano anterior tem todos os meses
+  equivalentes. Com comparação incompleta o Δ fica vazio, porque comparar
+  parcial com completo engana. O backfill de 25 meses resolve isso.
+- O ranking mensal é **top 100**. No YTD, uma marca ou seller pequeno pode
+  faltar em algum mês (a coluna "meses no top 100" mostra quantos). O nº de
+  sellers por marca não soma entre meses e fica vazio no YTD.
+- A visão **Dia** só lista dias com foto gravada: a primeira foto é da 1ª
+  rodada do ETL. Sem `GDRIVE_*` no Actions, as fotos antigas se perdem
+  (ver Configurar).
 
 ## O que cada aba responde
 

@@ -13831,7 +13831,8 @@ def page_sellout_ml() -> None:
     """Página 🛒 Sell-out ML — vendas estimadas Nubimetrics × coletas (nubimetrics/page.py)."""
     from nubimetrics.page import Contexto, render
 
-    render(Contexto(get_client=_get_supabase, como_ler=_como_ler, empty_state=_empty_state))
+    render(Contexto(get_client=_get_supabase, como_ler=_como_ler, empty_state=_empty_state,
+                    get_store=_history_store))
 
 
 def page_clima() -> None:

@@ -13,7 +13,7 @@ name: Nubimetrics Sell-out
 #
 # Diário: rankings dos 2 últimos meses fechados + série de 13 meses do mercado
 # + previsão + foto de todos os anúncios de AC (~80–160 chamadas).
-# Backfill: Run workflow com backfill=true (13 meses de ranking, uma vez — é o
+# Backfill: Run workflow com backfill=true (25 meses de ranking, uma vez — é o
 # que dá a série de brandshare).
 #
 # Horário: 13:43 UTC = 10:43 BRT. A Nubimetrics atualiza 1×/dia (D-1/D-2);
@@ -31,7 +31,7 @@ on:
   workflow_dispatch:
     inputs:
       backfill:
-        description: 'Backfill de 13 meses de ranking (uma vez)'
+        description: 'Backfill de 25 meses de ranking (uma vez; YTD × ano anterior)'
         type: boolean
         default: false
       sem_anuncios:

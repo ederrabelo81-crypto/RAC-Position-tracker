@@ -35,6 +35,8 @@ class Contexto:
     get_client: Callable[[], Any]
     como_ler: Callable[..., None]
     empty_state: Callable[..., None]
+    #: Histórico frio (Parquet no Drive) — fotos diárias de anúncios para a visão Dia.
+    get_store: Optional[Callable[[], Any]] = None
 
 
 def _hoje_brt() -> date:
@@ -106,6 +108,38 @@ def carregar(_get_client: Callable[[], Any]) -> Dict[str, Any]:
     return out
 
 
+@st.cache_data(ttl=_TTL, show_spinner=False)
+def dias_historico(_get_store: Optional[Callable[[], Any]]) -> List[date]:
+    """Dias com foto de anúncios no Parquet (dataset `nubimetrics`)."""
+    if _get_store is None:
+        return []
+    try:
+        from nubimetrics.load import DATASET_PARQUET
+
+        return list(_get_store().days(DATASET_PARQUET))
+    except Exception:  # noqa: BLE001 — histórico indisponível não quebra a página
+        return []
+
+
+@st.cache_data(ttl=_TTL, show_spinner="Carregando a foto de anúncios do dia…")
+def foto_do_dia(_get_store: Optional[Callable[[], Any]], dia: date) -> pd.DataFrame:
+    """Foto do explorador gravada no Parquet naquele dia (colunas da `nubi_anuncios`)."""
+    if _get_store is None:
+        return pd.DataFrame()
+    try:
+        from nubimetrics.load import DATASET_PARQUET
+
+        df = _get_store().read(DATASET_PARQUET, start=dia, end=dia)
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    # A mesma rodada pode ter regravado o dia: fica a última foto.
+    if "atualizado_em" in df:
+        df = df[df["atualizado_em"] == df["atualizado_em"].max()]
+    return df.drop(columns=[c for c in df.columns if c.startswith("raw_")]).drop_duplicates("item_hash")
+
+
 # ── componentes ─────────────────────────────────────────────────────────────
 
 def _cores(valores) -> Dict[str, str]:
@@ -136,15 +170,43 @@ def _tabela_brl(df: pd.DataFrame, brl: List[str] = (), pct: List[str] = (), inte
     return out
 
 
-def _sidebar(anuncios: pd.DataFrame, ranking: pd.DataFrame, parceiros: pd.DataFrame) -> Dict[str, Any]:
+def _rotulo_foto(rec: pd.DataFrame) -> str:
+    """De onde vêm os números de anúncio (não seguem Mês/YTD: é a foto do explorador)."""
+    dia = pd.to_datetime(rec["snapshot_date"]).max() if "snapshot_date" in rec and len(rec) else None
+    quando = f"de **{dia:%d/%m/%Y}**" if dia is not None and not pd.isna(dia) else "mais recente"
+    return (f"📸 Foto de anúncios {quando} — receita/unidades na janela do explorador da Nubimetrics "
+            "(~30 dias até a foto). Não muda com Mês/YTD; na visão **Dia**, é a foto do dia escolhido.")
+
+
+def _sidebar(anuncios: pd.DataFrame, ranking: pd.DataFrame, parceiros: pd.DataFrame,
+             dias: List[date]) -> Dict[str, Any]:
     st.sidebar.subheader("Filtros — Sell-out ML")
     st.sidebar.caption("Os 🌐 filtros globais acima (período, canal, plataformas, marcas) **não "
                        "valem nesta página**: a Nubimetrics publica mês fechado, só do Mercado "
                        "Livre, e o share precisa de todas as marcas no denominador.")
     meses = an.meses_disponiveis(ranking)
-    mes = st.sidebar.selectbox(
-        "Mês fechado (rankings)", meses, format_func=lambda m: pd.Timestamp(m).strftime("%m/%Y"),
-        key="nubi_mes", help="O Nubimetrics só publica ranking de mês fechado.") if meses else None
+    visao = st.sidebar.radio("Período", [an.VISAO_MES, an.VISAO_ANO, an.VISAO_DIA], horizontal=True,
+                             key="nubi_visao",
+                             help="**Mês** e **Ano (YTD)**: mercado, marcas, sellers e buscas (mês fechado). "
+                                  "**Dia**: foto de anúncios do dia e série diária do concorrente — o "
+                                  "mensal fica no mês de referência.")
+    per: Optional[an.Periodo] = None
+    if visao == an.VISAO_MES and meses:
+        mes = st.sidebar.selectbox("Mês fechado", meses, format_func=lambda m: pd.Timestamp(m).strftime("%m/%Y"),
+                                   key="nubi_mes")
+        per = an.periodo_mes(mes, ranking)
+    elif visao == an.VISAO_ANO and meses:
+        ano = st.sidebar.selectbox("Ano", an.anos_disponiveis(ranking), key="nubi_ano",
+                                   help="YTD = meses fechados do ano com dado, contra os mesmos meses do ano anterior.")
+        per = an.periodo_ano(int(ano), ranking)
+    elif visao == an.VISAO_DIA:
+        if dias:
+            dia = st.sidebar.selectbox("Dia", sorted(dias, reverse=True), format_func=lambda d: d.strftime("%d/%m/%Y"),
+                                       key="nubi_dia", help="Dias com foto de anúncios gravada.")
+            per = an.periodo_dia(dia, ranking)
+        else:
+            st.sidebar.info("Ainda não há foto diária de anúncios gravada.")
+    mes = per.meses[-1] if per is not None and per.meses else None
     segs = st.sidebar.multiselect("Segmento", list(SEGMENTOS), default=[SEG_HW_INVERTER], key="nubi_seg",
                                   help="Padrão: High Wall Inverter. Limpe para ver todos os tipos.")
     faixas = st.sidebar.multiselect("BTU", list(FAIXAS_BTU), key="nubi_btu")
@@ -156,7 +218,7 @@ def _sidebar(anuncios: pd.DataFrame, ranking: pd.DataFrame, parceiros: pd.DataFr
     so_parc = st.sidebar.toggle("Só sellers parceiros Midea", value=False, key="nubi_parc")
     so_cat = st.sidebar.toggle("Só catálogo", value=False, key="nubi_cat")
     so_full = st.sidebar.toggle("Só Full", value=False, key="nubi_full")
-    return {"mes": mes, "segmentos": segs, "faixas": faixas, "voltagens": volts, "marcas": marcas,
+    return {"mes": mes, "periodo": per, "visao": visao, "segmentos": segs, "faixas": faixas, "voltagens": volts, "marcas": marcas,
             "so_parceiros": so_parc, "so_catalogo": so_cat, "so_full": so_full}
 
 
@@ -166,20 +228,29 @@ def _aba_executiva(ctx: Contexto, d: Dict[str, Any], f: Dict[str, Any], rec: pd.
     import plotly.express as px
 
     ranking, mercado = d["ranking"], d["mercado"]
-    if f["mes"] is None:
-        ctx.empty_state("sem_coleta", "Ainda não há ranking mensal gravado.",
+    per: Optional[an.Periodo] = f["periodo"]
+    if per is None or not per.meses:
+        ctx.empty_state("sem_coleta", "Ainda não há ranking mensal gravado para este período.",
                         "rode o workflow **Nubimetrics Sell-out** com backfill=true.")
         return {}
-    k = an.kpis_marca(ranking, f["mes"])
-    mes_txt = pd.Timestamp(f["mes"]).strftime("%m/%Y")
-    st.caption(f"Ar condicionado no Mercado Livre — mês fechado **{mes_txt}** (todos os tipos de AC). "
+    k = an.kpis_periodo(ranking, per)
+    mes_txt = per.rotulo
+    mp = an.mercado_periodo(mercado, per)
+    comp_txt = f" · comparação: **{per.rotulo_comp}**" if per.rotulo_comp else ""
+    if per.comp and not per.comp_completo:
+        comp_txt += " (incompleta — Δ omitido; rode o backfill de 25 meses)"
+    st.caption(f"Ar condicionado no Mercado Livre — **{mes_txt}** (todos os tipos de AC){comp_txt}. "
                "Midea = MIDEA + Springer Midea + demais grafias com Midea no nome.")
     c = st.columns(5)
-    c[0].metric("Mercado AC", an.fmt_brl(k["mercado_receita"]), help="Soma das marcas do ranking no mês.")
+    yoy = mp.get("yoy_pct")
+    c[0].metric("Mercado AC", an.fmt_brl(k["mercado_receita"]),
+                delta=f"{an._br(f'{yoy:+.1f}')}% vs ano anterior" if yoy is not None else None,
+                help="Soma das marcas do ranking no período. Δ: mesmo período do ano anterior "
+                     "(série oficial da categoria na Nubimetrics).")
     c[1].metric("Unidades", an.fmt_int(k["mercado_unidades"], " un"))
     c[2].metric("Ticket médio", an.fmt_brl(k["ticket_medio"]))
     c[3].metric("Share Midea (R$)", an.fmt_pct(k["share"]), delta=an.fmt_pp(k["delta_share_pp"]) if k["delta_share_pp"] is not None else None,
-                help="Δ vs mês fechado anterior.")
+                help=f"Δ vs {per.rotulo_comp or 'comparação indisponível'}.")
     c[4].metric(f"Midea vs LG ({an.fmt_pct(k['rival_share'])})", an.fmt_pp(k["gap_rival_pp"]),
                 help="Diferença de share em R$ entre Midea e LG.")
 
@@ -196,6 +267,10 @@ def _aba_executiva(ctx: Contexto, d: Dict[str, Any], f: Dict[str, Any], rec: pd.
     col1, col2 = st.columns([3, 2])
     with col1:
         bs = an.brandshare(ranking)
+        if not bs.empty:
+            # Janela: 12 meses antes do início do período até o fim dele.
+            ini, fim = min(per.meses) - pd.DateOffset(months=12), max(per.meses)
+            bs = bs[(bs["mes"] >= ini) & (bs["mes"] <= fim)]
         if bs["mes"].nunique() > 1:
             fig = px.line(bs, x="mes", y="share_brl", color="marca", markers=True,
                           color_discrete_map=_cores(bs["marca"]),
@@ -204,9 +279,9 @@ def _aba_executiva(ctx: Contexto, d: Dict[str, Any], f: Dict[str, Any], rec: pd.
             fig.update_layout(height=360, margin=dict(t=50, b=10))
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Série de brandshare com 1 mês só — rode o backfill (13 meses) uma vez.", icon="📈")
+            st.info("Série de brandshare com 1 mês só — rode o backfill (25 meses) uma vez.", icon="📈")
     with col2:
-        rk = an.ranking_mes(ranking, "brands", f["mes"]).head(10).copy()
+        rk = an.ranking_periodo(ranking, "brands", per).head(10).copy()
         rk["marca"] = rk["nome"].map(marca_exibicao)
         fig = px.bar(rk.iloc[::-1], x="share_brl", y="marca", orientation="h",
                      color="marca", color_discrete_map=_cores(rk["marca"]),
@@ -215,15 +290,22 @@ def _aba_executiva(ctx: Contexto, d: Dict[str, Any], f: Dict[str, Any], rec: pd.
         st.plotly_chart(fig, use_container_width=True)
 
     with st.expander("Ranking de marcas (tabela)"):
-        t = an.ranking_mes(ranking, "brands", f["mes"])[
+        t = an.ranking_periodo(ranking, "brands", per)[
             ["posicao", "nome", "receita_brl", "cresc_receita_pct", "unidades", "cresc_unid_pct",
              "share_brl", "qtd_sellers", "tendencia"]].copy()
+        if per.comp and per.comp_completo:
+            ant = an.ranking_periodo(ranking, "brands", an.Periodo(per.visao, per.comp)).set_index("nome")["share_brl"]
+            t.insert(7, "delta_share", t["share_brl"] - t["nome"].map(ant))
         t["nome"] = t["nome"].map(marca_exibicao)
         st.dataframe(_tabela_brl(t, brl=["receita_brl"], pct=["cresc_receita_pct", "cresc_unid_pct", "share_brl"],
                                  inteiro=["unidades"]).rename(columns={
             "posicao": "#", "nome": "Marca", "receita_brl": "Receita", "cresc_receita_pct": "Δ receita",
             "unidades": "Unid.", "cresc_unid_pct": "Δ unid.", "share_brl": "Share R$",
-            "qtd_sellers": "Sellers", "tendencia": "Tendência"}), hide_index=True, use_container_width=True)
+            "qtd_sellers": "Sellers", "tendencia": "Tendência", "delta_share": "Δ share (p.p.)"})
+            .style.format({"Δ share (p.p.)": "{:+.1f}"}, na_rep="—"), hide_index=True, use_container_width=True)
+        if per.visao == an.VISAO_ANO:
+            st.caption("YTD = soma dos meses; o ranking mensal é top 100, então a cauda longa de marcas "
+                       "pequenas pode ficar de fora em algum mês. Nº de sellers não soma entre meses.")
         st.caption("Saturação e ranking de demanda por marca não existem no MCP da Nubimetrics "
                    "(saturação só por categoria — aba Forecast & mercado).")
 
@@ -231,8 +313,10 @@ def _aba_executiva(ctx: Contexto, d: Dict[str, Any], f: Dict[str, Any], rec: pd.
     if not real.empty:
         real["mes"] = pd.to_datetime(real["mes"])
         real["rotulo"] = real["parcial"].map({True: "mês corrente (parcial)", False: "fechado"})
+        real.loc[real["mes"].isin(list(per.meses)), "rotulo"] = "período selecionado"
         fig = px.bar(real, x="mes", y="receita_brl", color="rotulo",
-                     color_discrete_map={"fechado": "#94a3b8", "mês corrente (parcial)": "#cbd5e1"},
+                     color_discrete_map={"fechado": "#94a3b8", "mês corrente (parcial)": "#cbd5e1",
+                                         "período selecionado": "#0f766e"},
                      labels={"receita_brl": "Receita (R$)", "mes": "", "rotulo": ""},
                      title="Mercado de AC no ML — receita mensal")
         fig.update_layout(height=300, margin=dict(t=50, b=10))
@@ -245,6 +329,7 @@ def _aba_oportunidades(d: Dict[str, Any], f: Dict[str, Any], rec: pd.DataFrame, 
         st.info("Sem anúncios no recorte.")
         return pd.DataFrame()
     buscas = an.ranking_mes(d["ranking"], "search_terms", f["mes"]) if f["mes"] is not None else None
+    st.caption(_rotulo_foto(rec))
     # Segue o toggle da barra lateral ("Só sellers parceiros Midea").
     opps = an.oportunidades(rec, buscas, so_parceiros=bool(f["so_parceiros"]))
     if opps.empty:
@@ -267,7 +352,7 @@ def _aba_oportunidades(d: Dict[str, Any], f: Dict[str, Any], rec: pd.DataFrame, 
     b[1].download_button("⬇️ XLSX para os sellers", _xlsx(vis, "Oportunidades"), "oportunidades_sellout_ml.xlsx",
                          use_container_width=True)
     if k and f["mes"] is not None:
-        en = an.resumo_en(k, f["mes"], vis)
+        en = an.resumo_en(k, f["periodo"].rotulo if f.get("periodo") else f["mes"], vis)
         b[2].download_button("🌐 Export EN summary", en.to_csv(index=False).encode("utf-8"),
                              "midea_ml_sellout_summary_en.csv", "text/csv", use_container_width=True)
     return opps
@@ -279,6 +364,7 @@ def _aba_produtos(rec: pd.DataFrame) -> None:
     if rec.empty:
         st.info("Sem anúncios no recorte.")
         return
+    st.caption(_rotulo_foto(rec))
     top = rec.sort_values("receita_brl", ascending=False).head(30)[
         ["titulo", "marca_exib", "faixa_btu", "seller_exib", "preco", "receita_brl", "unidades",
          "catalogo", "full_", "premium"]]
@@ -314,11 +400,11 @@ def _aba_sellers(d: Dict[str, Any], f: Dict[str, Any], rec: pd.DataFrame) -> Non
     import plotly.express as px
 
     if f["mes"] is not None:
-        rk = an.ranking_mes(d["ranking"], "seller", f["mes"]).head(20).copy()
+        rk = an.ranking_periodo(d["ranking"], "seller", f["periodo"]).head(20).copy()
         if not rk.empty:
             nomes = dict(zip(d["parceiros"].get("nickname", []), d["parceiros"].get("display_name", [])))
             rk["seller"] = rk["nome"].map(lambda s: nomes.get(s, s))
-            st.subheader(f"Ranking de sellers em AC — {pd.Timestamp(f['mes']):%m/%Y}")
+            st.subheader(f"Ranking de sellers em AC — {f['periodo'].rotulo}")
             st.dataframe(_tabela_brl(rk[["posicao", "seller", "receita_brl", "cresc_receita_pct", "unidades",
                                         "share_brl", "catalogo_pct", "tendencia"]],
                                      brl=["receita_brl"], pct=["cresc_receita_pct", "share_brl", "catalogo_pct"],
@@ -355,10 +441,26 @@ def _aba_sellers(d: Dict[str, Any], f: Dict[str, Any], rec: pd.DataFrame) -> Non
             st.caption("A conta tem 1 slot de concorrência: é o seller do grupo 'Nicknames Favoritos' no "
                        "Nubimetrics (o MCP não informa o nickname). Trocar o seller = trocar no app do Nubimetrics.")
             conc = conc.assign(data=pd.to_datetime(conc["data"]))
-            fig = px.line(conc, x="data", y=["visitas", "unidades"], labels={"value": "", "data": "", "variable": ""})
-            fig.update_layout(height=280, margin=dict(t=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-            st.metric("Conversão média (30d)", an.fmt_pct(conc["conversao_pct"].mean(), 2))
+            per = f.get("periodo")
+            if per is not None and per.visao == an.VISAO_DIA and per.dia:
+                sel = conc[conc["data"].dt.date == per.dia]
+                rot = per.dia.strftime("%d/%m/%Y")
+            elif per is not None and per.meses:
+                sel = conc[conc["data"].dt.to_period("M").dt.to_timestamp().isin(list(per.meses))]
+                rot = per.rotulo
+            else:
+                sel, rot = conc, "série completa"
+            if sel.empty:
+                st.info(f"Sem série do concorrente em {rot} (a tabela acumula a partir da 1ª rodada do ETL).")
+            else:
+                if len(sel) > 1:
+                    fig = px.line(sel, x="data", y=["visitas", "unidades"], labels={"value": "", "data": "", "variable": ""})
+                    fig.update_layout(height=280, margin=dict(t=10, b=10))
+                    st.plotly_chart(fig, use_container_width=True)
+                cc = st.columns(3)
+                cc[0].metric(f"Visitas — {rot}", an.fmt_int(sel["visitas"].sum()))
+                cc[1].metric("Unidades", an.fmt_int(sel["unidades"].sum(), " un"))
+                cc[2].metric("Conversão média", an.fmt_pct(sel["conversao_pct"].mean(), 2))
 
 
 def _aba_busca(d: Dict[str, Any], f: Dict[str, Any], rec: pd.DataFrame) -> None:
@@ -366,10 +468,11 @@ def _aba_busca(d: Dict[str, Any], f: Dict[str, Any], rec: pd.DataFrame) -> None:
 
     if f["mes"] is None:
         return
-    b = an.ranking_mes(d["ranking"], "search_terms", f["mes"]).copy()
+    b = an.ranking_periodo(d["ranking"], "search_terms", f["periodo"]).copy()
     if b.empty:
-        st.info("Sem ranking de buscas no mês.")
+        st.info("Sem ranking de buscas no período.")
         return
+    ytd = "posicao_media" in b
     b["Δ posições"] = (b["posicao_anterior"] - b["posicao"]).where(b["posicao_anterior"].notna())
     b["faixa_btu"] = b["nome"].map(lambda t: faixa_btu(parse_btu(str(t))))
     share_fx = {}
@@ -380,8 +483,15 @@ def _aba_busca(d: Dict[str, Any], f: Dict[str, Any], rec: pd.DataFrame) -> None:
     b["Share Midea no BTU"] = b["faixa_btu"].map(share_fx).map(an.fmt_pct)
     st.caption("Ranking de termos digitados na categoria AC (sem volume de busca — o MCP não informa). "
                "A ponte termo → BTU → oferta Midea usa o share da Midea na faixa do termo.")
-    st.dataframe(b[["posicao", "nome", "Δ posições", "tendencia", "faixa_btu", "Share Midea no BTU"]].rename(columns={
-        "posicao": "#", "nome": "Termo", "tendencia": "Tendência", "faixa_btu": "BTU"}),
+    cols = (["posicao", "nome", "posicao_media", "melhor_posicao", "meses_presente", "tendencia"] if ytd
+            else ["posicao", "nome", "Δ posições", "tendencia"]) + ["faixa_btu", "Share Midea no BTU"]
+    if ytd:
+        st.caption(f"{f['periodo'].rotulo}: termos ordenados pela **posição média** nos meses do período "
+                   "(tendência = a do último mês).")
+    st.dataframe(b[cols].rename(columns={
+        "posicao": "#", "nome": "Termo", "tendencia": "Tendência", "faixa_btu": "BTU",
+        "posicao_media": "Posição média", "melhor_posicao": "Melhor posição", "meses_presente": "Meses no top 100"})
+        .style.format({"Posição média": "{:.1f}"}, na_rep="—"),
         hide_index=True, use_container_width=True, height=520)
 
 
@@ -485,8 +595,19 @@ def render(ctx: Contexto) -> None:
                         "aplique `docs/migrations/023_nubimetrics.sql` e rode o workflow "
                         "**Nubimetrics Sell-out** (Actions) com backfill=true.")
         return
-    anuncios = an.preparar_anuncios(d["anuncios"], d["parceiros"])
-    f = _sidebar(anuncios, d["ranking"], d["parceiros"])
+    ultima = None
+    if not d["anuncios"].empty and "snapshot_date" in d["anuncios"]:
+        ultima = pd.to_datetime(d["anuncios"]["snapshot_date"]).max().date()
+    dias = sorted(set(dias_historico(ctx.get_store)) | ({ultima} if ultima else set()))
+    f = _sidebar(an.preparar_anuncios(d["anuncios"], d["parceiros"]), d["ranking"], d["parceiros"], dias)
+    bruto = d["anuncios"]
+    per = f["periodo"]
+    if per is not None and per.visao == an.VISAO_DIA and per.dia and per.dia != ultima:
+        bruto = foto_do_dia(ctx.get_store, per.dia)
+        if bruto.empty:
+            ctx.empty_state("sem_coleta", f"Não há foto de anúncios gravada em {per.dia:%d/%m/%Y}.",
+                            "escolha outro dia (a foto diária começou com a 1ª rodada do ETL).")
+    anuncios = an.preparar_anuncios(bruto, d["parceiros"])
     rec = an.filtrar(anuncios, f["segmentos"], f["faixas"], f["voltagens"], f["marcas"], (),
                      f["so_catalogo"], f["so_full"]) if not anuncios.empty else anuncios
     if f["so_parceiros"] and not rec.empty:

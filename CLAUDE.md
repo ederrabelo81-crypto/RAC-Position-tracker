@@ -671,6 +671,11 @@ ML** (seção Demanda), módulo `nubimetrics/` (README próprio).
    lote zerava a receita das marcas.
 7. **`nubi_user_feedback` nunca é chamada** (grava do lado da Nubimetrics), e
    amostra versionada passa por `client.mascarar` (account_id, seller_id, e-mail).
+8. **Período = `analytics.Periodo` (Mês / Ano YTD / Dia).** Mercado, marcas,
+   sellers e buscas são mensais: o YTD soma os meses fechados e só mostra Δ
+   com a comparação **completa** (mesmos meses do ano anterior; backfill de
+   25 meses). "Dia" existe só para a foto de anúncios (Parquet no Drive) e o
+   concorrente acompanhado. O mensal nunca é "rateado" por dia.
 
 ## Radar meteorológico — clima × venda (Out/2026) 🆕
 
