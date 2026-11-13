@@ -11,7 +11,7 @@ Rode: pytest tests/test_pipeline_watch.py
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -437,6 +437,45 @@ def test_clima_sem_tabela_nao_cega_o_supervisor():
             raise RuntimeError("relation clima_diario does not exist")
 
     assert pw._linhas_do_job(_Quebra(), JOBS_POR_ID["gh_clima"], DIA) is None
+
+
+def test_nubimetrics_conta_linhas_regravadas_no_dia_e_nao_cega():
+    """gh_nubimetrics: soma ranking + mercado com `atualizado_em` do dia; sem a 023, None."""
+    import scripts.pipeline_watch as pw
+
+    class _Q:
+        def __init__(self, n):
+            self.n = n
+
+        def select(self, *a, **k):
+            return self
+
+        def gte(self, campo, valor):
+            assert (campo, valor) == ("atualizado_em", f"{DIA.isoformat()}T00:00:00-03:00")
+            return self
+
+        def lt(self, campo, valor):
+            assert (campo, valor) == ("atualizado_em", f"{(DIA + timedelta(days=1)).isoformat()}T00:00:00-03:00")
+            return self
+
+        def limit(self, *a):
+            return self
+
+        def execute(self):
+            return type("R", (), {"count": self.n})()
+
+    class _Cli:
+        def table(self, nome):
+            return _Q({"nubi_ranking_mensal": 1074, "nubi_mercado_mensal": 25}[nome])
+
+    class _Quebra:
+        def table(self, nome):
+            raise RuntimeError("relation nubi_ranking_mensal does not exist")
+
+    job = JOBS_POR_ID["gh_nubimetrics"]
+    assert pw._linhas_do_job(_Cli(), job, DIA) == 1099
+    assert pw._linhas_do_job(_Quebra(), job, DIA) is None
+    assert job.auto_heal is None                     # o guard não tem mcp nem a chave
 
 
 def test_descricao_marca_piso_quando_o_ultimo_dado_e_antigo():

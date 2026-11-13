@@ -13827,6 +13827,13 @@ def query_clima(anos: int = 11) -> tuple:
     return pd.DataFrame(), motivo or "tabela `clima_diario` vazia"
 
 
+def page_sellout_ml() -> None:
+    """Página 🛒 Sell-out ML — vendas estimadas Nubimetrics × coletas (nubimetrics/page.py)."""
+    from nubimetrics.page import Contexto, render
+
+    render(Contexto(get_client=_get_supabase, como_ler=_como_ler, empty_state=_empty_state))
+
+
 def page_clima() -> None:
     """Página 🌡️ Clima × Vendas — temperatura por região e efeito na venda."""
     from utils import clima
@@ -14069,6 +14076,7 @@ PAGES = {
     # DEMANDA
     "🥇 Mais Vendidos":            page_bestsellers,
     "🌡️ Clima × Vendas":           page_clima,
+    "🛒 Sell-out ML":              page_sellout_ml,
     # PRODUTO
     "🗂️ Ficha do Produto":         page_product_sheet,
     # OPERAÇÃO
@@ -14088,7 +14096,7 @@ _NAV_GROUPS: dict[str, list[str]] = {
         "📅 Preço do Dia", "📈 Evolução de Preço", "📊 Análise de Mercado",
         "💰 Preços 9K/12K", "🩻 Diagnóstico", "🛡️ Compliance de Preço",
     ],
-    "DEMANDA": ["🥇 Mais Vendidos", "🌡️ Clima × Vendas"],
+    "DEMANDA": ["🥇 Mais Vendidos", "🌡️ Clima × Vendas", "🛒 Sell-out ML"],
     "PRODUTO": ["🗂️ Ficha do Produto"],
     "OPERAÇÃO": ["🩺 Saúde do Dado", "📂 Importar Histórico", "📧 Resumo por E-mail"],
     "ADMIN": ["🤖 Automação", "🧬 Família & SKU"],

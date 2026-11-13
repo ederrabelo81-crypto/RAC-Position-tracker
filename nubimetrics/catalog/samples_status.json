@@ -1,94 +1,89 @@
 {
   "nubi_user_info": {
-    "status": "erro da tool",
+    "status": "omitida (e-mail/conta — não versionada)",
     "args": {
       "inp": {}
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "nubi_seller_info": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {}
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "meli_category_explorer": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "search_term": "Ar Condicionado"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "nubi_competition_seller_groups": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {}
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "nubi_competition_seller_group_members": {
-    "status": "sem args: group_id (dependência sem dado)",
+    "status": "ok",
     "args": {
-      "inp": {}
+      "inp": {
+        "group_id": 549471
+      }
     }
   },
   "nubi_competition_publication_groups": {
-    "status": "erro da tool",
-    "args": {
-      "inp": {}
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
-  },
-  "nubi_competition_publication_group_members": {
-    "status": "sem args: group_id (dependência sem dado)",
+    "status": "ok",
     "args": {
       "inp": {}
     }
   },
+  "nubi_competition_publication_group_members": {
+    "status": "ok",
+    "args": {
+      "inp": {
+        "group_id": 549473
+      }
+    }
+  },
   "meli_category_detail": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "category_id": "MLB1646",
         "date": "2026-11-01"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "nubi_category_forecast": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "category_id": "MLB1646",
         "date": "2026-10-01"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "nubi_category_market_size": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "category_id": "MLB1646",
         "date_from": "2025-11-01",
         "date_to": "2026-11-01"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "nubi_category_market_structure": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "category_id": "MLB1646",
         "date_from": "2025-11-01",
         "date_to": "2026-11-01"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "nubi_competition_publication_detail": {
     "status": "sem args: member_owner, member_code (dependência sem dado)",
@@ -107,9 +102,10 @@
     }
   },
   "nubi_competition_publication_group_metrics": {
-    "status": "sem args: group_id (dependência sem dado)",
+    "status": "ok",
     "args": {
       "inp": {
+        "group_id": 549473,
         "days": 30,
         "category_id": "MLB1646"
       }
@@ -122,126 +118,122 @@
     }
   },
   "nubi_competition_seller_evolution": {
-    "status": "sem args: seller_id_competitor (dependência sem dado)",
+    "status": "ok",
     "args": {
       "inp": {
+        "seller_id_competitor": "2DA447C9EBABE53E0E8177A452EAD3C8A36826D89F05C8C14645012A52293BB6BD57B0FE291D2FA7A4AA2F62F930E0282E3B028510EA4D4AD413C567D9D9F723",
         "days": 30,
         "category_id": "MLB1646"
       }
     }
   },
   "nubi_competition_seller_group_metrics": {
-    "status": "sem args: group_id (dependência sem dado)",
+    "status": "ok",
     "args": {
       "inp": {
+        "group_id": 549471,
         "days": 30,
         "category_id": "MLB1646"
       }
     }
   },
   "nubi_competition_seller_items": {
-    "status": "sem args: seller_id_competitor (dependência sem dado)",
+    "status": "ok",
     "args": {
       "inp": {
+        "seller_id_competitor": "2DA447C9EBABE53E0E8177A452EAD3C8A36826D89F05C8C14645012A52293BB6BD57B0FE291D2FA7A4AA2F62F930E0282E3B028510EA4D4AD413C567D9D9F723",
         "category_id": "MLB1646",
         "days": 30
       }
     }
   },
   "nubi_competition_seller_metrics": {
-    "status": "sem args: seller_id_competitor (dependência sem dado)",
+    "status": "ok",
     "args": {
       "inp": {
+        "seller_id_competitor": "2DA447C9EBABE53E0E8177A452EAD3C8A36826D89F05C8C14645012A52293BB6BD57B0FE291D2FA7A4AA2F62F930E0282E3B028510EA4D4AD413C567D9D9F723",
         "category_id": "MLB1646",
         "days": 30
       }
     }
   },
   "nubi_evaluate_categories": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "date_from": "2026-11-01",
         "date_to": "2026-11-13"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "meli_market_rankings__items": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "date": "2026-11-01",
         "category_id": "MLB1646",
         "topic": "items"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "meli_market_rankings__brands": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "date": "2026-11-01",
         "category_id": "MLB1646",
         "topic": "brands"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "meli_market_rankings__catalog": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "date": "2026-11-01",
         "category_id": "MLB1646",
         "topic": "catalog"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "meli_market_rankings__seller": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "date": "2026-11-01",
         "category_id": "MLB1646",
         "topic": "seller"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "meli_market_rankings__official_store": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "date": "2026-11-01",
         "category_id": "MLB1646",
         "topic": "official_store"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "meli_publication_explorer": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "title": "ar condicionado",
         "sort_by": "gmv",
         "category_id": "MLB1646"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "meli_search_trends_rankings": {
-    "status": "erro da tool",
+    "status": "ok",
     "args": {
       "inp": {
         "date": "2026-11-01",
         "category_id": "MLB1646"
       }
-    },
-    "error": "\"Invalid Authorization header format. Expected header: 'Authorization: Bearer <token>' (scheme is case-sensitive).\""
+    }
   },
   "nubi_user_feedback": {
     "status": "pulada (grava do lado da Nubimetrics)"

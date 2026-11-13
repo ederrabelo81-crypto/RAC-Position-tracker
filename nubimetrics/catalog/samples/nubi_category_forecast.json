@@ -1,0 +1,295 @@
+{
+  "status": "ok",
+  "args": {
+    "inp": {
+      "category_id": "MLB1646",
+      "date": "2026-10-01"
+    }
+  },
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"is_generated\":true,\"category\":\"MLB1646\",\"currency\":\"BRL\",\"period_applied\":\"2026-10-01\",\"period_fallback\":false,\"accumulated_annual\":{\"date_ytd\":\"2026-12-01T00:00:00.0000000\",\"successful_items_ytd\":913992,\"successful_items_growth_ytd\":37.93524,\"gmv_usd_forecasted_ytd\":416813200.0,\"gmv_local_forecasted_ytd\":2187619000.0,\"gmv_usd_growth_ytd\":38.52474,\"gmv_local_growth_ytd\":30.7935},\"projection\":[{\"date\":\"2026-11-01T00:00:00.0000000\",\"successful_items_forecasted\":154187,\"successful_items_growth_yoy\":8.274346,\"gmv_usd_forecasted\":66182990.0,\"gmv_local_forecasted\":358791200.0,\"gmv_usd_growth_yoy\":9.509156,\"gmv_local_growth_yoy\":9.146758,\"gmv_local_before_forecasted\":328723700.0},{\"date\":\"2026-12-01T00:00:00.0000000\",\"successful_items_forecasted\":116475,\"successful_items_growth_yoy\":11.4796,\"gmv_usd_forecasted\":50101560.0,\"gmv_local_forecasted\":271610600.0,\"gmv_usd_growth_yoy\":13.18399,\"gmv_local_growth_yoy\":11.5875,\"gmv_local_before_forecasted\":243405900.0},{\"date\":\"2027-01-01T00:00:00.0000000\",\"successful_items_forecasted\":85787,\"successful_items_growth_yoy\":16.3466,\"gmv_usd_forecasted\":41543840.0,\"gmv_local_forecasted\":225217400.0,\"gmv_usd_growth_yoy\":16.44214,\"gmv_local_growth_yoy\":18.59174,\"gmv_local_before_forecasted\":189909900.0},{\"date\":\"2027-02-01T00:00:00.0000000\",\"successful_items_forecasted\":70397,\"successful_items_growth_yoy\":20.66885,\"gmv_usd_forecasted\":32989720.0,\"gmv_local_forecasted\":178843900.0,\"gmv_usd_growth_yoy\":21.63879,\"gmv_local_growth_yoy\":27.06757,\"gmv_local_before_forecasted\":140747100.0},{\"date\":\"2027-03-01T00:00:00.0000000\",\"successful_items_forecasted\":83574,\"successful_items_growth_yoy\":16.84912,\"gmv_usd_forecasted\":37339980.0,\"gmv_local_forecasted\":202427500.0,\"gmv_usd_growth_yoy\":18.63529,\"gmv_local_growth_yoy\":22.88558,\"gmv_local_before_forecasted\":164728400.0},{\"date\":\"2027-04-01T00:00:00.0000000\",\"successful_items_forecasted\":62183,\"successful_items_growth_yoy\":24.04349,\"gmv_usd_forecasted\":29700430.0,\"gmv_local_forecasted\":161012000.0,\"gmv_usd_growth_yoy\":24.61344,\"gmv_local_growth_yoy\":34.65034,\"gmv_local_before_forecasted\":119577800.0},{\"date\":\"2027-05-01T00:00:00.0000000\",\"successful_items_forecasted\":54317,\"successful_items_growth_yoy\":28.52748,\"gmv_usd_forecasted\":25538320.0,\"gmv_local_forecasted\":138448400.0,\"gmv_usd_growth_yoy\":29.8296,\"gmv_local_growth_yoy\":40.66533,\"gmv_local_before_forecasted\":98423940.0},{\"date\":\"2027-06-01T00:00:00.0000000\",\"successful_items_forecasted\":53016,\"successful_items_growth_yoy\":29.42096,\"gmv_usd_forecasted\":24309760.0,\"gmv_local_forecasted\":131788100.0,\"gmv_usd_growth_yoy\":31.80103,\"gmv_local_growth_yoy\":38.9263,\"gmv_local_before_forecasted\":94861860.0},{\"date\":\"2027-07-01T00:00:00.0000000\",\"successful_items_forecasted\":65324,\"successful_items_growth_yoy\":22.63272,\"gmv_usd_forecasted\":30406640.0,\"gmv_local_forecasted\":164840500.0,\"gmv_usd_growth_yoy\":23.91472,\"gmv_local_growth_yoy\":31.58367,\"gmv_local_before_forecasted\":125274300.0},{\"date\":\"2027-08-01T00:00:00.0000000\",\"successful_items_forecasted\":87850,\"successful_items_growth_yoy\":15.90168,\"gmv_usd_forecasted\":41738530.0,\"gmv_local_forecasted\":226272900.0,\"gmv_usd_growth_yoy\":16.35221,\"gmv_local_growth_yoy\":22.09295,\"gmv_local_before_forecasted\":185328400.0},{\"date\":\"2027-09-01T00:00:00.0000000\",\"successful_items_forecasted\":97679,\"successful_items_growth_yoy\":14.07633,\"gmv_usd_forecasted\":47370130.0,\"gmv_local_forecasted\":256803000.0,\"gmv_usd_growth_yoy\":14.13845,\"gmv_local_growth_yoy\":19.52336,\"gmv_local_before_forecasted\":214855900.0},{\"date\":\"2027-10-01T00:00:00.0000000\",\"successful_items_forecasted\":103742,\"successful_items_growth_yoy\":13.14676,\"gmv_usd_forecasted\":48958040.0,\"gmv_local_forecasted\":265411300.0,\"gmv_usd_growth_yoy\":13.61368,\"gmv_local_growth_yoy\":18.74745,\"gmv_local_before_forecasted\":223509100.0}]}"
+      }
+    ],
+    "structuredContent": {
+      "is_generated": true,
+      "category": "MLB1646",
+      "currency": "BRL",
+      "period_applied": "2026-10-01",
+      "period_fallback": false,
+      "accumulated_annual": {
+        "date_ytd": "2026-12-01T00:00:00.0000000",
+        "successful_items_ytd": 913992,
+        "successful_items_growth_ytd": 37.93524,
+        "gmv_usd_forecasted_ytd": 416813200.0,
+        "gmv_local_forecasted_ytd": 2187619000.0,
+        "gmv_usd_growth_ytd": 38.52474,
+        "gmv_local_growth_ytd": 30.7935
+      },
+      "projection": [
+        {
+          "date": "2026-11-01T00:00:00.0000000",
+          "successful_items_forecasted": 154187,
+          "successful_items_growth_yoy": 8.274346,
+          "gmv_usd_forecasted": 66182990.0,
+          "gmv_local_forecasted": 358791200.0,
+          "gmv_usd_growth_yoy": 9.509156,
+          "gmv_local_growth_yoy": 9.146758,
+          "gmv_local_before_forecasted": 328723700.0
+        },
+        {
+          "date": "2026-12-01T00:00:00.0000000",
+          "successful_items_forecasted": 116475,
+          "successful_items_growth_yoy": 11.4796,
+          "gmv_usd_forecasted": 50101560.0,
+          "gmv_local_forecasted": 271610600.0,
+          "gmv_usd_growth_yoy": 13.18399,
+          "gmv_local_growth_yoy": 11.5875,
+          "gmv_local_before_forecasted": 243405900.0
+        },
+        {
+          "date": "2027-01-01T00:00:00.0000000",
+          "successful_items_forecasted": 85787,
+          "successful_items_growth_yoy": 16.3466,
+          "gmv_usd_forecasted": 41543840.0,
+          "gmv_local_forecasted": 225217400.0,
+          "gmv_usd_growth_yoy": 16.44214,
+          "gmv_local_growth_yoy": 18.59174,
+          "gmv_local_before_forecasted": 189909900.0
+        },
+        {
+          "date": "2027-02-01T00:00:00.0000000",
+          "successful_items_forecasted": 70397,
+          "successful_items_growth_yoy": 20.66885,
+          "gmv_usd_forecasted": 32989720.0,
+          "gmv_local_forecasted": 178843900.0,
+          "gmv_usd_growth_yoy": 21.63879,
+          "gmv_local_growth_yoy": 27.06757,
+          "gmv_local_before_forecasted": 140747100.0
+        },
+        {
+          "date": "2027-03-01T00:00:00.0000000",
+          "successful_items_forecasted": 83574,
+          "successful_items_growth_yoy": 16.84912,
+          "gmv_usd_forecasted": 37339980.0,
+          "gmv_local_forecasted": 202427500.0,
+          "gmv_usd_growth_yoy": 18.63529,
+          "gmv_local_growth_yoy": 22.88558,
+          "gmv_local_before_forecasted": 164728400.0
+        },
+        {
+          "date": "2027-04-01T00:00:00.0000000",
+          "successful_items_forecasted": 62183,
+          "successful_items_growth_yoy": 24.04349,
+          "gmv_usd_forecasted": 29700430.0,
+          "gmv_local_forecasted": 161012000.0,
+          "gmv_usd_growth_yoy": 24.61344,
+          "gmv_local_growth_yoy": 34.65034,
+          "gmv_local_before_forecasted": 119577800.0
+        },
+        {
+          "date": "2027-05-01T00:00:00.0000000",
+          "successful_items_forecasted": 54317,
+          "successful_items_growth_yoy": 28.52748,
+          "gmv_usd_forecasted": 25538320.0,
+          "gmv_local_forecasted": 138448400.0,
+          "gmv_usd_growth_yoy": 29.8296,
+          "gmv_local_growth_yoy": 40.66533,
+          "gmv_local_before_forecasted": 98423940.0
+        },
+        {
+          "date": "2027-06-01T00:00:00.0000000",
+          "successful_items_forecasted": 53016,
+          "successful_items_growth_yoy": 29.42096,
+          "gmv_usd_forecasted": 24309760.0,
+          "gmv_local_forecasted": 131788100.0,
+          "gmv_usd_growth_yoy": 31.80103,
+          "gmv_local_growth_yoy": 38.9263,
+          "gmv_local_before_forecasted": 94861860.0
+        },
+        {
+          "date": "2027-07-01T00:00:00.0000000",
+          "successful_items_forecasted": 65324,
+          "successful_items_growth_yoy": 22.63272,
+          "gmv_usd_forecasted": 30406640.0,
+          "gmv_local_forecasted": 164840500.0,
+          "gmv_usd_growth_yoy": 23.91472,
+          "gmv_local_growth_yoy": 31.58367,
+          "gmv_local_before_forecasted": 125274300.0
+        },
+        {
+          "date": "2027-08-01T00:00:00.0000000",
+          "successful_items_forecasted": 87850,
+          "successful_items_growth_yoy": 15.90168,
+          "gmv_usd_forecasted": 41738530.0,
+          "gmv_local_forecasted": 226272900.0,
+          "gmv_usd_growth_yoy": 16.35221,
+          "gmv_local_growth_yoy": 22.09295,
+          "gmv_local_before_forecasted": 185328400.0
+        },
+        {
+          "date": "2027-09-01T00:00:00.0000000",
+          "successful_items_forecasted": 97679,
+          "successful_items_growth_yoy": 14.07633,
+          "gmv_usd_forecasted": 47370130.0,
+          "gmv_local_forecasted": 256803000.0,
+          "gmv_usd_growth_yoy": 14.13845,
+          "gmv_local_growth_yoy": 19.52336,
+          "gmv_local_before_forecasted": 214855900.0
+        },
+        {
+          "date": "2027-10-01T00:00:00.0000000",
+          "successful_items_forecasted": 103742,
+          "successful_items_growth_yoy": 13.14676,
+          "gmv_usd_forecasted": 48958040.0,
+          "gmv_local_forecasted": 265411300.0,
+          "gmv_usd_growth_yoy": 13.61368,
+          "gmv_local_growth_yoy": 18.74745,
+          "gmv_local_before_forecasted": 223509100.0
+        }
+      ]
+    },
+    "isError": false,
+    "resultType": "complete"
+  },
+  "payload": {
+    "is_generated": true,
+    "category": "MLB1646",
+    "currency": "BRL",
+    "period_applied": "2026-10-01",
+    "period_fallback": false,
+    "accumulated_annual": {
+      "date_ytd": "2026-12-01T00:00:00.0000000",
+      "successful_items_ytd": 913992,
+      "successful_items_growth_ytd": 37.93524,
+      "gmv_usd_forecasted_ytd": 416813200.0,
+      "gmv_local_forecasted_ytd": 2187619000.0,
+      "gmv_usd_growth_ytd": 38.52474,
+      "gmv_local_growth_ytd": 30.7935
+    },
+    "projection": [
+      {
+        "date": "2026-11-01T00:00:00.0000000",
+        "successful_items_forecasted": 154187,
+        "successful_items_growth_yoy": 8.274346,
+        "gmv_usd_forecasted": 66182990.0,
+        "gmv_local_forecasted": 358791200.0,
+        "gmv_usd_growth_yoy": 9.509156,
+        "gmv_local_growth_yoy": 9.146758,
+        "gmv_local_before_forecasted": 328723700.0
+      },
+      {
+        "date": "2026-12-01T00:00:00.0000000",
+        "successful_items_forecasted": 116475,
+        "successful_items_growth_yoy": 11.4796,
+        "gmv_usd_forecasted": 50101560.0,
+        "gmv_local_forecasted": 271610600.0,
+        "gmv_usd_growth_yoy": 13.18399,
+        "gmv_local_growth_yoy": 11.5875,
+        "gmv_local_before_forecasted": 243405900.0
+      },
+      {
+        "date": "2027-01-01T00:00:00.0000000",
+        "successful_items_forecasted": 85787,
+        "successful_items_growth_yoy": 16.3466,
+        "gmv_usd_forecasted": 41543840.0,
+        "gmv_local_forecasted": 225217400.0,
+        "gmv_usd_growth_yoy": 16.44214,
+        "gmv_local_growth_yoy": 18.59174,
+        "gmv_local_before_forecasted": 189909900.0
+      },
+      {
+        "date": "2027-02-01T00:00:00.0000000",
+        "successful_items_forecasted": 70397,
+        "successful_items_growth_yoy": 20.66885,
+        "gmv_usd_forecasted": 32989720.0,
+        "gmv_local_forecasted": 178843900.0,
+        "gmv_usd_growth_yoy": 21.63879,
+        "gmv_local_growth_yoy": 27.06757,
+        "gmv_local_before_forecasted": 140747100.0
+      },
+      {
+        "date": "2027-03-01T00:00:00.0000000",
+        "successful_items_forecasted": 83574,
+        "successful_items_growth_yoy": 16.84912,
+        "gmv_usd_forecasted": 37339980.0,
+        "gmv_local_forecasted": 202427500.0,
+        "gmv_usd_growth_yoy": 18.63529,
+        "gmv_local_growth_yoy": 22.88558,
+        "gmv_local_before_forecasted": 164728400.0
+      },
+      {
+        "date": "2027-04-01T00:00:00.0000000",
+        "successful_items_forecasted": 62183,
+        "successful_items_growth_yoy": 24.04349,
+        "gmv_usd_forecasted": 29700430.0,
+        "gmv_local_forecasted": 161012000.0,
+        "gmv_usd_growth_yoy": 24.61344,
+        "gmv_local_growth_yoy": 34.65034,
+        "gmv_local_before_forecasted": 119577800.0
+      },
+      {
+        "date": "2027-05-01T00:00:00.0000000",
+        "successful_items_forecasted": 54317,
+        "successful_items_growth_yoy": 28.52748,
+        "gmv_usd_forecasted": 25538320.0,
+        "gmv_local_forecasted": 138448400.0,
+        "gmv_usd_growth_yoy": 29.8296,
+        "gmv_local_growth_yoy": 40.66533,
+        "gmv_local_before_forecasted": 98423940.0
+      },
+      {
+        "date": "2027-06-01T00:00:00.0000000",
+        "successful_items_forecasted": 53016,
+        "successful_items_growth_yoy": 29.42096,
+        "gmv_usd_forecasted": 24309760.0,
+        "gmv_local_forecasted": 131788100.0,
+        "gmv_usd_growth_yoy": 31.80103,
+        "gmv_local_growth_yoy": 38.9263,
+        "gmv_local_before_forecasted": 94861860.0
+      },
+      {
+        "date": "2027-07-01T00:00:00.0000000",
+        "successful_items_forecasted": 65324,
+        "successful_items_growth_yoy": 22.63272,
+        "gmv_usd_forecasted": 30406640.0,
+        "gmv_local_forecasted": 164840500.0,
+        "gmv_usd_growth_yoy": 23.91472,
+        "gmv_local_growth_yoy": 31.58367,
+        "gmv_local_before_forecasted": 125274300.0
+      },
+      {
+        "date": "2027-08-01T00:00:00.0000000",
+        "successful_items_forecasted": 87850,
+        "successful_items_growth_yoy": 15.90168,
+        "gmv_usd_forecasted": 41738530.0,
+        "gmv_local_forecasted": 226272900.0,
+        "gmv_usd_growth_yoy": 16.35221,
+        "gmv_local_growth_yoy": 22.09295,
+        "gmv_local_before_forecasted": 185328400.0
+      },
+      {
+        "date": "2027-09-01T00:00:00.0000000",
+        "successful_items_forecasted": 97679,
+        "successful_items_growth_yoy": 14.07633,
+        "gmv_usd_forecasted": 47370130.0,
+        "gmv_local_forecasted": 256803000.0,
+        "gmv_usd_growth_yoy": 14.13845,
+        "gmv_local_growth_yoy": 19.52336,
+        "gmv_local_before_forecasted": 214855900.0
+      },
+      {
+        "date": "2027-10-01T00:00:00.0000000",
+        "successful_items_forecasted": 103742,
+        "successful_items_growth_yoy": 13.14676,
+        "gmv_usd_forecasted": 48958040.0,
+        "gmv_local_forecasted": 265411300.0,
+        "gmv_usd_growth_yoy": 13.61368,
+        "gmv_local_growth_yoy": 18.74745,
+        "gmv_local_before_forecasted": 223509100.0
+      }
+    ]
+  }
+}

@@ -303,6 +303,31 @@ def _contar_clima(client, dia: date) -> int:
     return resp.count or 0
 
 
+def _contar_nubimetrics(client, dia: date) -> int:
+    """Linhas de `nubi_ranking_mensal` + `nubi_mercado_mensal` regravadas no dia.
+
+    Toda rodada do `gh_nubimetrics` regrava os rankings dos 2 últimos meses
+    fechados e a série de 13 meses (upsert com `atualizado_em` novo), então
+    zero linha com carimbo do dia = a rodada não gravou.
+    """
+    # O dia é BRT; `atualizado_em` é TIMESTAMPTZ. Limites com fuso explícito
+    # (-03:00): uma rodada depois das 21h BRT cai no dia seguinte em UTC.
+    inicio = f"{dia.isoformat()}T00:00:00-03:00"
+    fim = f"{(dia + timedelta(days=1)).isoformat()}T00:00:00-03:00"
+    total = 0
+    for tabela in ("nubi_ranking_mensal", "nubi_mercado_mensal"):
+        resp = (
+            client.table(tabela)
+            .select("mes", count="exact")
+            .gte("atualizado_em", inicio)
+            .lt("atualizado_em", fim)
+            .limit(1)
+            .execute()
+        )
+        total += resp.count or 0
+    return total
+
+
 def _linhas_do_job(client, job: JobSpec, dia: date) -> Optional[int]:
     """Quantas linhas o job deveria ter produzido e produziu.
 
@@ -324,6 +349,13 @@ def _linhas_do_job(client, job: JobSpec, dia: date) -> Optional[int]:
             return _contar_clima(client, dia)
         except Exception as exc:
             logger.warning(f"[Supervisor] clima_diario não sondável: {exc}")
+            return None
+    if job.destino.startswith("nubi_"):
+        # Mesma blindagem: migração 023 ausente não cega o supervisor.
+        try:
+            return _contar_nubimetrics(client, dia)
+        except Exception as exc:
+            logger.warning(f"[Supervisor] tabelas nubi_* não sondáveis: {exc}")
             return None
     return None
 

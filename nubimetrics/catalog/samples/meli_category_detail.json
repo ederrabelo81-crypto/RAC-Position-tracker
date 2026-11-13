@@ -1,0 +1,91 @@
+{
+  "status": "ok",
+  "args": {
+    "inp": {
+      "category_id": "MLB1646",
+      "date": "2026-11-01"
+    }
+  },
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"data\":{\"opportunity\":\"Medium\",\"growth\":\"High\",\"saturation\":\"Medium\",\"catalg\":\"High\",\"volume\":\"High\",\"priceVariation\":{\"avgPrice\":2200.0,\"previousDate\":\"2026-10-01T00:00:00\",\"variation\":-8.333333333333332},\"topSalesMilestone\":{\"date\":\"2025-12-01T00:00:00Z\",\"events\":[]},\"lowSalesMilestone\":{\"date\":\"2026-06-01T00:00:00Z\",\"events\":[]},\"siFreeShippingPercentage\":37.1309437480576,\"siMercadoEnvioPercentage\":94.92515280223765,\"siCatalogPercentage\":46.09500805152979,\"itemsDiscountPercentage\":46.77938808373591,\"saturationRates\":{\"platinum\":52.7102973168963,\"gold\":1.2224179011706204,\"silver\":1.4257225732932766,\"normal\":44.641562208639805}},\"data_available\":true,\"currency\":\"BRL\",\"period_applied\":\"2026-11-01\",\"period_fallback\":false}"
+      }
+    ],
+    "structuredContent": {
+      "data": {
+        "opportunity": "Medium",
+        "growth": "High",
+        "saturation": "Medium",
+        "catalg": "High",
+        "volume": "High",
+        "priceVariation": {
+          "avgPrice": 2200.0,
+          "previousDate": "2026-10-01T00:00:00",
+          "variation": -8.333333333333332
+        },
+        "topSalesMilestone": {
+          "date": "2025-12-01T00:00:00Z",
+          "events": []
+        },
+        "lowSalesMilestone": {
+          "date": "2026-06-01T00:00:00Z",
+          "events": []
+        },
+        "siFreeShippingPercentage": 37.1309437480576,
+        "siMercadoEnvioPercentage": 94.92515280223765,
+        "siCatalogPercentage": 46.09500805152979,
+        "itemsDiscountPercentage": 46.77938808373591,
+        "saturationRates": {
+          "platinum": 52.7102973168963,
+          "gold": 1.2224179011706204,
+          "silver": 1.4257225732932766,
+          "normal": 44.641562208639805
+        }
+      },
+      "data_available": true,
+      "currency": "BRL",
+      "period_applied": "2026-11-01",
+      "period_fallback": false
+    },
+    "isError": false,
+    "resultType": "complete"
+  },
+  "payload": {
+    "data": {
+      "opportunity": "Medium",
+      "growth": "High",
+      "saturation": "Medium",
+      "catalg": "High",
+      "volume": "High",
+      "priceVariation": {
+        "avgPrice": 2200.0,
+        "previousDate": "2026-10-01T00:00:00",
+        "variation": -8.333333333333332
+      },
+      "topSalesMilestone": {
+        "date": "2025-12-01T00:00:00Z",
+        "events": []
+      },
+      "lowSalesMilestone": {
+        "date": "2026-06-01T00:00:00Z",
+        "events": []
+      },
+      "siFreeShippingPercentage": 37.1309437480576,
+      "siMercadoEnvioPercentage": 94.92515280223765,
+      "siCatalogPercentage": 46.09500805152979,
+      "itemsDiscountPercentage": 46.77938808373591,
+      "saturationRates": {
+        "platinum": 52.7102973168963,
+        "gold": 1.2224179011706204,
+        "silver": 1.4257225732932766,
+        "normal": 44.641562208639805
+      }
+    },
+    "data_available": true,
+    "currency": "BRL",
+    "period_applied": "2026-11-01",
+    "period_fallback": false
+  }
+}

@@ -1,0 +1,943 @@
+{
+  "status": "ok",
+  "args": {
+    "inp": {
+      "date": "2026-11-01",
+      "category_id": "MLB1646"
+    }
+  },
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"terms\":[{\"position\":1,\"search_term\":\"ar condicionado 12000 btus\",\"ranking_trend\":\"Stable\",\"position_before\":1},{\"position\":2,\"search_term\":\"ar condicionado 9000 btus\",\"ranking_trend\":\"Stable\",\"position_before\":2},{\"position\":3,\"search_term\":\"ar condicionado inverter 12000\",\"ranking_trend\":\"Stable\",\"position_before\":3},{\"position\":4,\"search_term\":\"ar condicionado 18000 btu\",\"ranking_trend\":\"Stable\",\"position_before\":4},{\"position\":5,\"search_term\":\"ar condicionado\",\"ranking_trend\":\"GoingUp\",\"position_before\":9},{\"position\":6,\"search_term\":\"ar condicionado inverter 9000\",\"ranking_trend\":\"GoingDown\",\"position_before\":5},{\"position\":7,\"search_term\":\"ar condicionado portatil lg\",\"ranking_trend\":\"GoingDown\",\"position_before\":6},{\"position\":8,\"search_term\":\"ar condicionado 24000 btus\",\"ranking_trend\":\"GoingDown\",\"position_before\":7},{\"position\":9,\"search_term\":\"ar condicionado 12000 btus quente e frio\",\"ranking_trend\":\"GoingDown\",\"position_before\":8},{\"position\":10,\"search_term\":\"ar condicionado portatil 12000\",\"ranking_trend\":\"Stable\",\"position_before\":10},{\"position\":11,\"search_term\":\"ar condicionado inverter\",\"ranking_trend\":\"Stable\",\"position_before\":11},{\"position\":12,\"search_term\":\"ar condicionado portatil philco\",\"ranking_trend\":\"Stable\",\"position_before\":12},{\"position\":13,\"search_term\":\"ar condicionado lg 30000 btus\",\"ranking_trend\":\"Stable\",\"position_before\":13},{\"position\":14,\"search_term\":\"ar condicionado inverter 7000 btus\",\"ranking_trend\":\"Stable\",\"position_before\":14},{\"position\":15,\"search_term\":\"ar condicionado split 127v 12000 btus\",\"ranking_trend\":\"Stable\",\"position_before\":15},{\"position\":16,\"search_term\":\"ar condicionado portatil 12000 btus 220v\",\"ranking_trend\":\"Stable\",\"position_before\":16},{\"position\":17,\"search_term\":\"split 9000 btus 127v\",\"ranking_trend\":\"Stable\",\"position_before\":17},{\"position\":18,\"search_term\":\"ar condicionado split 12000 btus quente frio\",\"ranking_trend\":\"Stable\",\"position_before\":18},{\"position\":19,\"search_term\":\"ar condicionado split 12000 btus 110v\",\"ranking_trend\":\"Stable\",\"position_before\":19},{\"position\":20,\"search_term\":\"ar condicionado gree 9000\",\"ranking_trend\":\"Stable\",\"position_before\":20},{\"position\":21,\"search_term\":\"ar condicionado 110v\",\"ranking_trend\":\"Stable\",\"position_before\":21},{\"position\":22,\"search_term\":\"ar condicionado gree 12000 btus\",\"ranking_trend\":\"Stable\",\"position_before\":22},{\"position\":23,\"search_term\":\"ar condicionado split 24000 btus consul\",\"ranking_trend\":\"Stable\",\"position_before\":23},{\"position\":24,\"search_term\":\"ar condicionado usado\",\"ranking_trend\":\"Stable\",\"position_before\":24},{\"position\":25,\"search_term\":\"ar condicionado portatil sem cano\",\"ranking_trend\":\"Stable\",\"position_before\":25},{\"position\":26,\"search_term\":\"ar condicionado split 127v\",\"ranking_trend\":\"Stable\",\"position_before\":26},{\"position\":27,\"search_term\":\"ar condicionado lg 9000 btus\",\"ranking_trend\":\"Stable\",\"position_before\":27},{\"position\":28,\"search_term\":\"ar condicionado lg inverter quente e frio 12000\",\"ranking_trend\":\"Stable\",\"position_before\":28},{\"position\":29,\"search_term\":\"ar condicionado daikin\",\"ranking_trend\":\"Stable\",\"position_before\":29},{\"position\":30,\"search_term\":\"ar condicionado split 12000 btus quente frio inverter\",\"ranking_trend\":\"Stable\",\"position_before\":30},{\"position\":31,\"search_term\":\"ar condicionado philco split 24000 btus\",\"ranking_trend\":\"Stable\",\"position_before\":31},{\"position\":32,\"search_term\":\"ar condicionado janela 12000 btus\",\"ranking_trend\":\"Stable\",\"position_before\":32},{\"position\":33,\"search_term\":\"ar condicionado samsung 12000 btus quente frio\",\"ranking_trend\":\"Stable\",\"position_before\":33},{\"position\":34,\"search_term\":\"ar condicionado 20000 btus\",\"ranking_trend\":\"GoingUp\",\"position_before\":39},{\"position\":35,\"search_term\":\"ar condicionado lg 12000 btus\",\"ranking_trend\":\"GoingDown\",\"position_before\":34},{\"position\":36,\"search_term\":\"ar condicionado samsung windfree quente e frio 9000\",\"ranking_trend\":\"GoingDown\",\"position_before\":35},{\"position\":37,\"search_term\":\"ar condicionado samsung inverter 12000\",\"ranking_trend\":\"GoingDown\",\"position_before\":36},{\"position\":38,\"search_term\":\"ar condicionado portatil lg 12000\",\"ranking_trend\":\"GoingDown\",\"position_before\":37},{\"position\":39,\"search_term\":\"ar condicionado split 18000 btus inverter menor preco\",\"ranking_trend\":\"GoingDown\",\"position_before\":38},{\"position\":40,\"search_term\":\"samsung windfree 12000\",\"ranking_trend\":\"GoingDown\",\"position_before\":40},{\"position\":41,\"search_term\":\"ar condicionado 9000\",\"ranking_trend\":\"GoingUp\",\"position_before\":44},{\"position\":42,\"search_term\":\"arcondicionado1200 btus\",\"ranking_trend\":\"GoingUp\",\"position_before\":63},{\"position\":43,\"search_term\":\"ar condicionado elgin 12000btus\",\"ranking_trend\":\"GoingDown\",\"position_before\":43},{\"position\":44,\"search_term\":\"ar condicionado 12000 btus 127v\",\"ranking_trend\":\"GoingDown\",\"position_before\":44},{\"position\":45,\"search_term\":\"ar condicionado elgin 9000\",\"ranking_trend\":\"GoingUp\",\"position_before\":48},{\"position\":46,\"search_term\":\"midea ecomaster 12000\",\"ranking_trend\":\"GoingDown\",\"position_before\":46},{\"position\":47,\"search_term\":\"ar condicionado 12000\",\"ranking_trend\":\"GoingUp\",\"position_before\":62},{\"position\":48,\"search_term\":\"central de ar\",\"ranking_trend\":\"GoingDown\",\"position_before\":45},{\"position\":49,\"search_term\":\"ar condicionado janela\",\"ranking_trend\":\"GoingUp\",\"position_before\":67},{\"position\":50,\"search_term\":\"arcondicionado9000 btus\",\"ranking_trend\":\"GoingUp\",\"position_before\":65},{\"position\":51,\"search_term\":\"ar condicionado split\",\"ranking_trend\":\"GoingDown\",\"position_before\":49},{\"position\":52,\"search_term\":\"ar condicionado 127 volts\",\"ranking_trend\":\"GoingUp\",\"position_before\":53},{\"position\":53,\"search_term\":\"ar condicionado 110\",\"ranking_trend\":\"GoingDown\",\"position_before\":53},{\"position\":54,\"search_term\":\"ar condicionado 18000 btus\",\"ranking_trend\":\"GoingDown\",\"position_before\":52},{\"position\":55,\"search_term\":\"ar condicionado daikin 12000\",\"ranking_trend\":\"GoingDown\",\"position_before\":55},{\"position\":56,\"search_term\":\"ar\",\"ranking_trend\":\"GoingDown\",\"position_before\":56},{\"position\":57,\"search_term\":\"ar condicionado 9000 110v\",\"ranking_trend\":\"GoingDown\",\"position_before\":57},{\"position\":58,\"search_term\":\"ar condicionado inverter 12000 btus\",\"ranking_trend\":\"GoingDown\",\"position_before\":50},{\"position\":59,\"search_term\":\"promoçao ar condicionado 9000 btus\",\"ranking_trend\":\"GoingDown\",\"position_before\":59},{\"position\":60,\"search_term\":\"ar condicionado midea 9000\",\"ranking_trend\":\"GoingDown\",\"position_before\":51},{\"position\":61,\"search_term\":\"mercado livre\",\"ranking_trend\":\"GoingUp\",\"position_before\":66},{\"position\":62,\"search_term\":\"ar condicionado gree 12000\",\"ranking_trend\":\"GoingDown\",\"position_before\":62},{\"position\":63,\"search_term\":\"ar condicionado de janela\",\"ranking_trend\":\"GoingDown\",\"position_before\":43},{\"position\":64,\"search_term\":\"ar condicionado 12000 inverter\",\"ranking_trend\":\"Stable\",\"position_before\":64},{\"position\":65,\"search_term\":\"ar condicionado 18000 inverter\",\"ranking_trend\":\"GoingUp\",\"position_before\":68},{\"position\":66,\"search_term\":\"ar condicionado lg 18000 btus\",\"ranking_trend\":\"GoingDown\",\"position_before\":40},{\"position\":67,\"search_term\":\"ar condicionado tcl\",\"ranking_trend\":\"GoingDown\",\"position_before\":67},{\"position\":68,\"search_term\":\"ar condicionado midea\",\"ranking_trend\":\"GoingDown\",\"position_before\":59},{\"position\":69,\"search_term\":\"ar condicionado 24000 inverter\",\"ranking_trend\":\"GoingUp\",\"position_before\":71},{\"position\":70,\"search_term\":\"arcondicionado\",\"ranking_trend\":\"GoingDown\",\"position_before\":70},{\"position\":71,\"search_term\":\"ar condicionado 9000 inverter\",\"ranking_trend\":\"GoingDown\",\"position_before\":69},{\"position\":72,\"search_term\":\"ar condicionado 18000\",\"ranking_trend\":\"GoingDown\",\"position_before\":70},{\"position\":73,\"search_term\":\"ar condicionado lg 9000\",\"ranking_trend\":\"GoingDown\",\"position_before\":46},{\"position\":74,\"search_term\":\"ar condicionado midea 12000btus\",\"ranking_trend\":\"GoingDown\",\"position_before\":74},{\"position\":75,\"search_term\":\"ar condicionado elgin\",\"ranking_trend\":\"GoingDown\",\"position_before\":41},{\"position\":76,\"search_term\":\"ar condicionado gree\",\"ranking_trend\":\"GoingDown\",\"position_before\":58}],\"total\":76,\"period_fallback\":true}"
+      }
+    ],
+    "structuredContent": {
+      "terms": [
+        {
+          "position": 1,
+          "search_term": "ar condicionado 12000 btus",
+          "ranking_trend": "Stable",
+          "position_before": 1
+        },
+        {
+          "position": 2,
+          "search_term": "ar condicionado 9000 btus",
+          "ranking_trend": "Stable",
+          "position_before": 2
+        },
+        {
+          "position": 3,
+          "search_term": "ar condicionado inverter 12000",
+          "ranking_trend": "Stable",
+          "position_before": 3
+        },
+        {
+          "position": 4,
+          "search_term": "ar condicionado 18000 btu",
+          "ranking_trend": "Stable",
+          "position_before": 4
+        },
+        {
+          "position": 5,
+          "search_term": "ar condicionado",
+          "ranking_trend": "GoingUp",
+          "position_before": 9
+        },
+        {
+          "position": 6,
+          "search_term": "ar condicionado inverter 9000",
+          "ranking_trend": "GoingDown",
+          "position_before": 5
+        },
+        {
+          "position": 7,
+          "search_term": "ar condicionado portatil lg",
+          "ranking_trend": "GoingDown",
+          "position_before": 6
+        },
+        {
+          "position": 8,
+          "search_term": "ar condicionado 24000 btus",
+          "ranking_trend": "GoingDown",
+          "position_before": 7
+        },
+        {
+          "position": 9,
+          "search_term": "ar condicionado 12000 btus quente e frio",
+          "ranking_trend": "GoingDown",
+          "position_before": 8
+        },
+        {
+          "position": 10,
+          "search_term": "ar condicionado portatil 12000",
+          "ranking_trend": "Stable",
+          "position_before": 10
+        },
+        {
+          "position": 11,
+          "search_term": "ar condicionado inverter",
+          "ranking_trend": "Stable",
+          "position_before": 11
+        },
+        {
+          "position": 12,
+          "search_term": "ar condicionado portatil philco",
+          "ranking_trend": "Stable",
+          "position_before": 12
+        },
+        {
+          "position": 13,
+          "search_term": "ar condicionado lg 30000 btus",
+          "ranking_trend": "Stable",
+          "position_before": 13
+        },
+        {
+          "position": 14,
+          "search_term": "ar condicionado inverter 7000 btus",
+          "ranking_trend": "Stable",
+          "position_before": 14
+        },
+        {
+          "position": 15,
+          "search_term": "ar condicionado split 127v 12000 btus",
+          "ranking_trend": "Stable",
+          "position_before": 15
+        },
+        {
+          "position": 16,
+          "search_term": "ar condicionado portatil 12000 btus 220v",
+          "ranking_trend": "Stable",
+          "position_before": 16
+        },
+        {
+          "position": 17,
+          "search_term": "split 9000 btus 127v",
+          "ranking_trend": "Stable",
+          "position_before": 17
+        },
+        {
+          "position": 18,
+          "search_term": "ar condicionado split 12000 btus quente frio",
+          "ranking_trend": "Stable",
+          "position_before": 18
+        },
+        {
+          "position": 19,
+          "search_term": "ar condicionado split 12000 btus 110v",
+          "ranking_trend": "Stable",
+          "position_before": 19
+        },
+        {
+          "position": 20,
+          "search_term": "ar condicionado gree 9000",
+          "ranking_trend": "Stable",
+          "position_before": 20
+        },
+        {
+          "position": 21,
+          "search_term": "ar condicionado 110v",
+          "ranking_trend": "Stable",
+          "position_before": 21
+        },
+        {
+          "position": 22,
+          "search_term": "ar condicionado gree 12000 btus",
+          "ranking_trend": "Stable",
+          "position_before": 22
+        },
+        {
+          "position": 23,
+          "search_term": "ar condicionado split 24000 btus consul",
+          "ranking_trend": "Stable",
+          "position_before": 23
+        },
+        {
+          "position": 24,
+          "search_term": "ar condicionado usado",
+          "ranking_trend": "Stable",
+          "position_before": 24
+        },
+        {
+          "position": 25,
+          "search_term": "ar condicionado portatil sem cano",
+          "ranking_trend": "Stable",
+          "position_before": 25
+        },
+        {
+          "position": 26,
+          "search_term": "ar condicionado split 127v",
+          "ranking_trend": "Stable",
+          "position_before": 26
+        },
+        {
+          "position": 27,
+          "search_term": "ar condicionado lg 9000 btus",
+          "ranking_trend": "Stable",
+          "position_before": 27
+        },
+        {
+          "position": 28,
+          "search_term": "ar condicionado lg inverter quente e frio 12000",
+          "ranking_trend": "Stable",
+          "position_before": 28
+        },
+        {
+          "position": 29,
+          "search_term": "ar condicionado daikin",
+          "ranking_trend": "Stable",
+          "position_before": 29
+        },
+        {
+          "position": 30,
+          "search_term": "ar condicionado split 12000 btus quente frio inverter",
+          "ranking_trend": "Stable",
+          "position_before": 30
+        },
+        {
+          "position": 31,
+          "search_term": "ar condicionado philco split 24000 btus",
+          "ranking_trend": "Stable",
+          "position_before": 31
+        },
+        {
+          "position": 32,
+          "search_term": "ar condicionado janela 12000 btus",
+          "ranking_trend": "Stable",
+          "position_before": 32
+        },
+        {
+          "position": 33,
+          "search_term": "ar condicionado samsung 12000 btus quente frio",
+          "ranking_trend": "Stable",
+          "position_before": 33
+        },
+        {
+          "position": 34,
+          "search_term": "ar condicionado 20000 btus",
+          "ranking_trend": "GoingUp",
+          "position_before": 39
+        },
+        {
+          "position": 35,
+          "search_term": "ar condicionado lg 12000 btus",
+          "ranking_trend": "GoingDown",
+          "position_before": 34
+        },
+        {
+          "position": 36,
+          "search_term": "ar condicionado samsung windfree quente e frio 9000",
+          "ranking_trend": "GoingDown",
+          "position_before": 35
+        },
+        {
+          "position": 37,
+          "search_term": "ar condicionado samsung inverter 12000",
+          "ranking_trend": "GoingDown",
+          "position_before": 36
+        },
+        {
+          "position": 38,
+          "search_term": "ar condicionado portatil lg 12000",
+          "ranking_trend": "GoingDown",
+          "position_before": 37
+        },
+        {
+          "position": 39,
+          "search_term": "ar condicionado split 18000 btus inverter menor preco",
+          "ranking_trend": "GoingDown",
+          "position_before": 38
+        },
+        {
+          "position": 40,
+          "search_term": "samsung windfree 12000",
+          "ranking_trend": "GoingDown",
+          "position_before": 40
+        },
+        {
+          "position": 41,
+          "search_term": "ar condicionado 9000",
+          "ranking_trend": "GoingUp",
+          "position_before": 44
+        },
+        {
+          "position": 42,
+          "search_term": "arcondicionado1200 btus",
+          "ranking_trend": "GoingUp",
+          "position_before": 63
+        },
+        {
+          "position": 43,
+          "search_term": "ar condicionado elgin 12000btus",
+          "ranking_trend": "GoingDown",
+          "position_before": 43
+        },
+        {
+          "position": 44,
+          "search_term": "ar condicionado 12000 btus 127v",
+          "ranking_trend": "GoingDown",
+          "position_before": 44
+        },
+        {
+          "position": 45,
+          "search_term": "ar condicionado elgin 9000",
+          "ranking_trend": "GoingUp",
+          "position_before": 48
+        },
+        {
+          "position": 46,
+          "search_term": "midea ecomaster 12000",
+          "ranking_trend": "GoingDown",
+          "position_before": 46
+        },
+        {
+          "position": 47,
+          "search_term": "ar condicionado 12000",
+          "ranking_trend": "GoingUp",
+          "position_before": 62
+        },
+        {
+          "position": 48,
+          "search_term": "central de ar",
+          "ranking_trend": "GoingDown",
+          "position_before": 45
+        },
+        {
+          "position": 49,
+          "search_term": "ar condicionado janela",
+          "ranking_trend": "GoingUp",
+          "position_before": 67
+        },
+        {
+          "position": 50,
+          "search_term": "arcondicionado9000 btus",
+          "ranking_trend": "GoingUp",
+          "position_before": 65
+        },
+        {
+          "position": 51,
+          "search_term": "ar condicionado split",
+          "ranking_trend": "GoingDown",
+          "position_before": 49
+        },
+        {
+          "position": 52,
+          "search_term": "ar condicionado 127 volts",
+          "ranking_trend": "GoingUp",
+          "position_before": 53
+        },
+        {
+          "position": 53,
+          "search_term": "ar condicionado 110",
+          "ranking_trend": "GoingDown",
+          "position_before": 53
+        },
+        {
+          "position": 54,
+          "search_term": "ar condicionado 18000 btus",
+          "ranking_trend": "GoingDown",
+          "position_before": 52
+        },
+        {
+          "position": 55,
+          "search_term": "ar condicionado daikin 12000",
+          "ranking_trend": "GoingDown",
+          "position_before": 55
+        },
+        {
+          "position": 56,
+          "search_term": "ar",
+          "ranking_trend": "GoingDown",
+          "position_before": 56
+        },
+        {
+          "position": 57,
+          "search_term": "ar condicionado 9000 110v",
+          "ranking_trend": "GoingDown",
+          "position_before": 57
+        },
+        {
+          "position": 58,
+          "search_term": "ar condicionado inverter 12000 btus",
+          "ranking_trend": "GoingDown",
+          "position_before": 50
+        },
+        {
+          "position": 59,
+          "search_term": "promoçao ar condicionado 9000 btus",
+          "ranking_trend": "GoingDown",
+          "position_before": 59
+        },
+        {
+          "position": 60,
+          "search_term": "ar condicionado midea 9000",
+          "ranking_trend": "GoingDown",
+          "position_before": 51
+        },
+        {
+          "position": 61,
+          "search_term": "mercado livre",
+          "ranking_trend": "GoingUp",
+          "position_before": 66
+        },
+        {
+          "position": 62,
+          "search_term": "ar condicionado gree 12000",
+          "ranking_trend": "GoingDown",
+          "position_before": 62
+        },
+        {
+          "position": 63,
+          "search_term": "ar condicionado de janela",
+          "ranking_trend": "GoingDown",
+          "position_before": 43
+        },
+        {
+          "position": 64,
+          "search_term": "ar condicionado 12000 inverter",
+          "ranking_trend": "Stable",
+          "position_before": 64
+        },
+        {
+          "position": 65,
+          "search_term": "ar condicionado 18000 inverter",
+          "ranking_trend": "GoingUp",
+          "position_before": 68
+        },
+        {
+          "position": 66,
+          "search_term": "ar condicionado lg 18000 btus",
+          "ranking_trend": "GoingDown",
+          "position_before": 40
+        },
+        {
+          "position": 67,
+          "search_term": "ar condicionado tcl",
+          "ranking_trend": "GoingDown",
+          "position_before": 67
+        },
+        {
+          "position": 68,
+          "search_term": "ar condicionado midea",
+          "ranking_trend": "GoingDown",
+          "position_before": 59
+        },
+        {
+          "position": 69,
+          "search_term": "ar condicionado 24000 inverter",
+          "ranking_trend": "GoingUp",
+          "position_before": 71
+        },
+        {
+          "position": 70,
+          "search_term": "arcondicionado",
+          "ranking_trend": "GoingDown",
+          "position_before": 70
+        },
+        {
+          "position": 71,
+          "search_term": "ar condicionado 9000 inverter",
+          "ranking_trend": "GoingDown",
+          "position_before": 69
+        },
+        {
+          "position": 72,
+          "search_term": "ar condicionado 18000",
+          "ranking_trend": "GoingDown",
+          "position_before": 70
+        },
+        {
+          "position": 73,
+          "search_term": "ar condicionado lg 9000",
+          "ranking_trend": "GoingDown",
+          "position_before": 46
+        },
+        {
+          "position": 74,
+          "search_term": "ar condicionado midea 12000btus",
+          "ranking_trend": "GoingDown",
+          "position_before": 74
+        },
+        {
+          "position": 75,
+          "search_term": "ar condicionado elgin",
+          "ranking_trend": "GoingDown",
+          "position_before": 41
+        },
+        {
+          "position": 76,
+          "search_term": "ar condicionado gree",
+          "ranking_trend": "GoingDown",
+          "position_before": 58
+        }
+      ],
+      "total": 76,
+      "period_fallback": true
+    },
+    "isError": false,
+    "resultType": "complete"
+  },
+  "payload": {
+    "terms": [
+      {
+        "position": 1,
+        "search_term": "ar condicionado 12000 btus",
+        "ranking_trend": "Stable",
+        "position_before": 1
+      },
+      {
+        "position": 2,
+        "search_term": "ar condicionado 9000 btus",
+        "ranking_trend": "Stable",
+        "position_before": 2
+      },
+      {
+        "position": 3,
+        "search_term": "ar condicionado inverter 12000",
+        "ranking_trend": "Stable",
+        "position_before": 3
+      },
+      {
+        "position": 4,
+        "search_term": "ar condicionado 18000 btu",
+        "ranking_trend": "Stable",
+        "position_before": 4
+      },
+      {
+        "position": 5,
+        "search_term": "ar condicionado",
+        "ranking_trend": "GoingUp",
+        "position_before": 9
+      },
+      {
+        "position": 6,
+        "search_term": "ar condicionado inverter 9000",
+        "ranking_trend": "GoingDown",
+        "position_before": 5
+      },
+      {
+        "position": 7,
+        "search_term": "ar condicionado portatil lg",
+        "ranking_trend": "GoingDown",
+        "position_before": 6
+      },
+      {
+        "position": 8,
+        "search_term": "ar condicionado 24000 btus",
+        "ranking_trend": "GoingDown",
+        "position_before": 7
+      },
+      {
+        "position": 9,
+        "search_term": "ar condicionado 12000 btus quente e frio",
+        "ranking_trend": "GoingDown",
+        "position_before": 8
+      },
+      {
+        "position": 10,
+        "search_term": "ar condicionado portatil 12000",
+        "ranking_trend": "Stable",
+        "position_before": 10
+      },
+      {
+        "position": 11,
+        "search_term": "ar condicionado inverter",
+        "ranking_trend": "Stable",
+        "position_before": 11
+      },
+      {
+        "position": 12,
+        "search_term": "ar condicionado portatil philco",
+        "ranking_trend": "Stable",
+        "position_before": 12
+      },
+      {
+        "position": 13,
+        "search_term": "ar condicionado lg 30000 btus",
+        "ranking_trend": "Stable",
+        "position_before": 13
+      },
+      {
+        "position": 14,
+        "search_term": "ar condicionado inverter 7000 btus",
+        "ranking_trend": "Stable",
+        "position_before": 14
+      },
+      {
+        "position": 15,
+        "search_term": "ar condicionado split 127v 12000 btus",
+        "ranking_trend": "Stable",
+        "position_before": 15
+      },
+      {
+        "position": 16,
+        "search_term": "ar condicionado portatil 12000 btus 220v",
+        "ranking_trend": "Stable",
+        "position_before": 16
+      },
+      {
+        "position": 17,
+        "search_term": "split 9000 btus 127v",
+        "ranking_trend": "Stable",
+        "position_before": 17
+      },
+      {
+        "position": 18,
+        "search_term": "ar condicionado split 12000 btus quente frio",
+        "ranking_trend": "Stable",
+        "position_before": 18
+      },
+      {
+        "position": 19,
+        "search_term": "ar condicionado split 12000 btus 110v",
+        "ranking_trend": "Stable",
+        "position_before": 19
+      },
+      {
+        "position": 20,
+        "search_term": "ar condicionado gree 9000",
+        "ranking_trend": "Stable",
+        "position_before": 20
+      },
+      {
+        "position": 21,
+        "search_term": "ar condicionado 110v",
+        "ranking_trend": "Stable",
+        "position_before": 21
+      },
+      {
+        "position": 22,
+        "search_term": "ar condicionado gree 12000 btus",
+        "ranking_trend": "Stable",
+        "position_before": 22
+      },
+      {
+        "position": 23,
+        "search_term": "ar condicionado split 24000 btus consul",
+        "ranking_trend": "Stable",
+        "position_before": 23
+      },
+      {
+        "position": 24,
+        "search_term": "ar condicionado usado",
+        "ranking_trend": "Stable",
+        "position_before": 24
+      },
+      {
+        "position": 25,
+        "search_term": "ar condicionado portatil sem cano",
+        "ranking_trend": "Stable",
+        "position_before": 25
+      },
+      {
+        "position": 26,
+        "search_term": "ar condicionado split 127v",
+        "ranking_trend": "Stable",
+        "position_before": 26
+      },
+      {
+        "position": 27,
+        "search_term": "ar condicionado lg 9000 btus",
+        "ranking_trend": "Stable",
+        "position_before": 27
+      },
+      {
+        "position": 28,
+        "search_term": "ar condicionado lg inverter quente e frio 12000",
+        "ranking_trend": "Stable",
+        "position_before": 28
+      },
+      {
+        "position": 29,
+        "search_term": "ar condicionado daikin",
+        "ranking_trend": "Stable",
+        "position_before": 29
+      },
+      {
+        "position": 30,
+        "search_term": "ar condicionado split 12000 btus quente frio inverter",
+        "ranking_trend": "Stable",
+        "position_before": 30
+      },
+      {
+        "position": 31,
+        "search_term": "ar condicionado philco split 24000 btus",
+        "ranking_trend": "Stable",
+        "position_before": 31
+      },
+      {
+        "position": 32,
+        "search_term": "ar condicionado janela 12000 btus",
+        "ranking_trend": "Stable",
+        "position_before": 32
+      },
+      {
+        "position": 33,
+        "search_term": "ar condicionado samsung 12000 btus quente frio",
+        "ranking_trend": "Stable",
+        "position_before": 33
+      },
+      {
+        "position": 34,
+        "search_term": "ar condicionado 20000 btus",
+        "ranking_trend": "GoingUp",
+        "position_before": 39
+      },
+      {
+        "position": 35,
+        "search_term": "ar condicionado lg 12000 btus",
+        "ranking_trend": "GoingDown",
+        "position_before": 34
+      },
+      {
+        "position": 36,
+        "search_term": "ar condicionado samsung windfree quente e frio 9000",
+        "ranking_trend": "GoingDown",
+        "position_before": 35
+      },
+      {
+        "position": 37,
+        "search_term": "ar condicionado samsung inverter 12000",
+        "ranking_trend": "GoingDown",
+        "position_before": 36
+      },
+      {
+        "position": 38,
+        "search_term": "ar condicionado portatil lg 12000",
+        "ranking_trend": "GoingDown",
+        "position_before": 37
+      },
+      {
+        "position": 39,
+        "search_term": "ar condicionado split 18000 btus inverter menor preco",
+        "ranking_trend": "GoingDown",
+        "position_before": 38
+      },
+      {
+        "position": 40,
+        "search_term": "samsung windfree 12000",
+        "ranking_trend": "GoingDown",
+        "position_before": 40
+      },
+      {
+        "position": 41,
+        "search_term": "ar condicionado 9000",
+        "ranking_trend": "GoingUp",
+        "position_before": 44
+      },
+      {
+        "position": 42,
+        "search_term": "arcondicionado1200 btus",
+        "ranking_trend": "GoingUp",
+        "position_before": 63
+      },
+      {
+        "position": 43,
+        "search_term": "ar condicionado elgin 12000btus",
+        "ranking_trend": "GoingDown",
+        "position_before": 43
+      },
+      {
+        "position": 44,
+        "search_term": "ar condicionado 12000 btus 127v",
+        "ranking_trend": "GoingDown",
+        "position_before": 44
+      },
+      {
+        "position": 45,
+        "search_term": "ar condicionado elgin 9000",
+        "ranking_trend": "GoingUp",
+        "position_before": 48
+      },
+      {
+        "position": 46,
+        "search_term": "midea ecomaster 12000",
+        "ranking_trend": "GoingDown",
+        "position_before": 46
+      },
+      {
+        "position": 47,
+        "search_term": "ar condicionado 12000",
+        "ranking_trend": "GoingUp",
+        "position_before": 62
+      },
+      {
+        "position": 48,
+        "search_term": "central de ar",
+        "ranking_trend": "GoingDown",
+        "position_before": 45
+      },
+      {
+        "position": 49,
+        "search_term": "ar condicionado janela",
+        "ranking_trend": "GoingUp",
+        "position_before": 67
+      },
+      {
+        "position": 50,
+        "search_term": "arcondicionado9000 btus",
+        "ranking_trend": "GoingUp",
+        "position_before": 65
+      },
+      {
+        "position": 51,
+        "search_term": "ar condicionado split",
+        "ranking_trend": "GoingDown",
+        "position_before": 49
+      },
+      {
+        "position": 52,
+        "search_term": "ar condicionado 127 volts",
+        "ranking_trend": "GoingUp",
+        "position_before": 53
+      },
+      {
+        "position": 53,
+        "search_term": "ar condicionado 110",
+        "ranking_trend": "GoingDown",
+        "position_before": 53
+      },
+      {
+        "position": 54,
+        "search_term": "ar condicionado 18000 btus",
+        "ranking_trend": "GoingDown",
+        "position_before": 52
+      },
+      {
+        "position": 55,
+        "search_term": "ar condicionado daikin 12000",
+        "ranking_trend": "GoingDown",
+        "position_before": 55
+      },
+      {
+        "position": 56,
+        "search_term": "ar",
+        "ranking_trend": "GoingDown",
+        "position_before": 56
+      },
+      {
+        "position": 57,
+        "search_term": "ar condicionado 9000 110v",
+        "ranking_trend": "GoingDown",
+        "position_before": 57
+      },
+      {
+        "position": 58,
+        "search_term": "ar condicionado inverter 12000 btus",
+        "ranking_trend": "GoingDown",
+        "position_before": 50
+      },
+      {
+        "position": 59,
+        "search_term": "promoçao ar condicionado 9000 btus",
+        "ranking_trend": "GoingDown",
+        "position_before": 59
+      },
+      {
+        "position": 60,
+        "search_term": "ar condicionado midea 9000",
+        "ranking_trend": "GoingDown",
+        "position_before": 51
+      },
+      {
+        "position": 61,
+        "search_term": "mercado livre",
+        "ranking_trend": "GoingUp",
+        "position_before": 66
+      },
+      {
+        "position": 62,
+        "search_term": "ar condicionado gree 12000",
+        "ranking_trend": "GoingDown",
+        "position_before": 62
+      },
+      {
+        "position": 63,
+        "search_term": "ar condicionado de janela",
+        "ranking_trend": "GoingDown",
+        "position_before": 43
+      },
+      {
+        "position": 64,
+        "search_term": "ar condicionado 12000 inverter",
+        "ranking_trend": "Stable",
+        "position_before": 64
+      },
+      {
+        "position": 65,
+        "search_term": "ar condicionado 18000 inverter",
+        "ranking_trend": "GoingUp",
+        "position_before": 68
+      },
+      {
+        "position": 66,
+        "search_term": "ar condicionado lg 18000 btus",
+        "ranking_trend": "GoingDown",
+        "position_before": 40
+      },
+      {
+        "position": 67,
+        "search_term": "ar condicionado tcl",
+        "ranking_trend": "GoingDown",
+        "position_before": 67
+      },
+      {
+        "position": 68,
+        "search_term": "ar condicionado midea",
+        "ranking_trend": "GoingDown",
+        "position_before": 59
+      },
+      {
+        "position": 69,
+        "search_term": "ar condicionado 24000 inverter",
+        "ranking_trend": "GoingUp",
+        "position_before": 71
+      },
+      {
+        "position": 70,
+        "search_term": "arcondicionado",
+        "ranking_trend": "GoingDown",
+        "position_before": 70
+      },
+      {
+        "position": 71,
+        "search_term": "ar condicionado 9000 inverter",
+        "ranking_trend": "GoingDown",
+        "position_before": 69
+      },
+      {
+        "position": 72,
+        "search_term": "ar condicionado 18000",
+        "ranking_trend": "GoingDown",
+        "position_before": 70
+      },
+      {
+        "position": 73,
+        "search_term": "ar condicionado lg 9000",
+        "ranking_trend": "GoingDown",
+        "position_before": 46
+      },
+      {
+        "position": 74,
+        "search_term": "ar condicionado midea 12000btus",
+        "ranking_trend": "GoingDown",
+        "position_before": 74
+      },
+      {
+        "position": 75,
+        "search_term": "ar condicionado elgin",
+        "ranking_trend": "GoingDown",
+        "position_before": 41
+      },
+      {
+        "position": 76,
+        "search_term": "ar condicionado gree",
+        "ranking_trend": "GoingDown",
+        "position_before": 58
+      }
+    ],
+    "total": 76,
+    "period_fallback": true
+  }
+}

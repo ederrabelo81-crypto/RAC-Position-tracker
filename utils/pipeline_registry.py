@@ -311,6 +311,37 @@ JOBS: Tuple[JobSpec, ...] = (
             "workflow com backfill=true."
         ),
     ),
+    JobSpec(
+        id="gh_nubimetrics",
+        nome="Sell-out ML (Nubimetrics MCP → nubi_*)",
+        executor=EXEC_ACTIONS,
+        workflow="nubimetrics_daily.yml",
+        gatilho=".github/workflows/nubimetrics_daily.yml (cron 13:43 UTC)",
+        comando="python -m nubimetrics.run_daily",
+        horario_brt=(10, 43),
+        dias=TODOS_OS_DIAS,
+        tolerancia_min=120,
+        deadline_min=480,
+        # `nubi_*`: o supervisor sonda nubi_ranking_mensal + nubi_mercado_mensal
+        # pelo carimbo `atualizado_em` do dia (pipeline_watch._contar_nubimetrics).
+        destino="nubi_ranking_mensal + nubi_mercado_mensal (+ nubi_anuncios)",
+        # Rankings são de mês fechado e a foto de anúncios é sobrescrita a cada
+        # rodada: um dia perdido some na rodada seguinte. Tolerante.
+        severidade=SEV_TOLERANTE,
+        remediacao=(
+            "Actions → Nubimetrics Sell-out → Run workflow "
+            "(ou: python -m nubimetrics.run_daily)"
+        ),
+        # Sem auto_heal local: o guard não tem `mcp` nem NUBIMETRICS_API_KEY.
+        # A cura é re-disparar o próprio workflow (campo `workflow`).
+        auto_heal=None,
+        observacao=(
+            "MCP remoto da Nubimetrics (API key da conta Midea Brasil no secret "
+            "NUBIMETRICS_API_KEY). Roda no Actions para não disputar o PC "
+            "coletor. A Nubimetrics atualiza 1×/dia (D-1/D-2) — por isso depois "
+            "das 10h BRT. Mapeamento: nubimetrics/catalog/MAPPING.md."
+        ),
+    ),
     # ── GitHub Actions — coletor Amazon-only (buy box via PDP) ─────────────
     # A Amazon roda de IP de datacenter (diferente de ML/Magalu/Shopee/Casas
     # Bahia) e a leitura de buy box é cara (um PDP por item, toda execução) —

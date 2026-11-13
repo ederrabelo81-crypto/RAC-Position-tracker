@@ -1,0 +1,121 @@
+name: Nubimetrics Sell-out
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vendas estimadas do Mercado Livre (Nubimetrics MCP) → tabelas nubi_* + Parquet.
+#
+# Por que existe (Nov/2026): a coleta do Tracker mede posição, preço e buy box,
+# mas não VOLUME. A Nubimetrics dá a venda estimada por marca, seller e anúncio
+# em ar condicionado (MLB1646) — é o que mostra onde a Midea ganha ou perde
+# sell-out nos sellers parceiros (página 🛒 Sell-out ML).
+#
+# Roda no Actions, não no PC coletor: é uma API (MCP remoto), sem antibot, e
+# não pode disputar CPU/rede com os três turnos de coleta.
+#
+# Diário: rankings dos 2 últimos meses fechados + série de 13 meses do mercado
+# + previsão + foto de todos os anúncios de AC (~80–160 chamadas).
+# Backfill: Run workflow com backfill=true (13 meses de ranking, uma vez — é o
+# que dá a série de brandshare).
+#
+# Horário: 13:43 UTC = 10:43 BRT. A Nubimetrics atualiza 1×/dia (D-1/D-2);
+# minuto fora do :00 (regra 2 do pipeline_registry: cron do Actions é best effort).
+#
+# Secrets: NUBIMETRICS_API_KEY (app.nubimetrics.com/mcp — "Ativar o MCP"),
+#          SUPABASE_URL, SUPABASE_KEY (service_role — a anon não grava),
+#          GDRIVE_* (opcional: histórico em Parquet no Drive).
+# Requer a migração docs/migrations/023_nubimetrics.sql aplicada.
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '43 13 * * *'
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: 'Backfill de 13 meses de ranking (uma vez)'
+        type: boolean
+        default: false
+      sem_anuncios:
+        description: 'Pular a foto de anúncios (só rankings e mercado)'
+        type: boolean
+        default: false
+
+env:
+  PYTHON_VERSION: '3.11'
+  TZ: America/Sao_Paulo
+
+concurrency:
+  group: nubimetrics-daily
+  cancel-in-progress: false
+
+jobs:
+  nubimetrics:
+    name: Nubimetrics → Supabase
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      RAC_JOB_ID: gh_nubimetrics
+      NUBIMETRICS_API_KEY: ${{ secrets.NUBIMETRICS_API_KEY }}
+      RAC_DB_DSN: ${{ secrets.RAC_DB_DSN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+      GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+      GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      # Só o necessário: sem Playwright nem scrapers.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "mcp>=1.9.0" supabase python-dotenv loguru pandas numpy psycopg2-binary \
+                      "pyarrow>=15.0.0,<25" google-api-python-client google-auth google-auth-oauthlib
+
+      # Cache diário do MCP (nubimetrics/cache/<dia>/): re-rodar no mesmo dia
+      # não gasta cota de novo. A chave leva a data; o conteúdo já vem mascarado.
+      - name: Date
+        id: hoje
+        run: echo "dia=$(date +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache MCP do dia
+        uses: actions/cache@v4
+        with:
+          path: nubimetrics/cache
+          # run_id + run_attempt: cada tentativa salva o que buscou (chave fixa do
+          # dia não seria regravada depois de uma 1ª tentativa parcial). O
+          # volume é limitado: ~1–2 rodadas/dia, poucos MB, e o Actions descarta
+          # entradas sem uso em 7 dias.
+          key: nubimetrics-mcp-${{ steps.hoje.outputs.dia }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: nubimetrics-mcp-${{ steps.hoje.outputs.dia }}-
+
+      - name: Check secret
+        run: |
+          if [ -z "$NUBIMETRICS_API_KEY" ]; then
+            echo "::error title=Secret ausente::NUBIMETRICS_API_KEY não configurada (Settings → Secrets → Actions)"
+            exit 1
+          fi
+
+      - name: ETL
+        env:
+          IN_BACKFILL: ${{ github.event.inputs.backfill }}
+          IN_SEM_ANUNCIOS: ${{ github.event.inputs.sem_anuncios }}
+        run: |
+          ARGS=()
+          if [ "$IN_BACKFILL" = "true" ]; then ARGS+=(--backfill); fi
+          if [ "$IN_SEM_ANUNCIOS" = "true" ]; then ARGS+=(--sem-anuncios); fi
+          echo "python -m nubimetrics.run_daily ${ARGS[*]}"
+          set +e
+          python -m nubimetrics.run_daily "${ARGS[@]}"
+          rc=$?
+          # 2 = gravou com ressalva (consistência ±2%, concorrente): aviso, não falha.
+          if [ $rc -eq 2 ]; then echo "::warning title=Nubimetrics::gravou com ressalva — ver log"; exit 0; fi
+          exit $rc

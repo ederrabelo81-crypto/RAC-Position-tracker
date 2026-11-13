@@ -1,0 +1,52 @@
+{
+  "status": "ok",
+  "args": {
+    "inp": {
+      "group_id": 549471
+    }
+  },
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"group_id\":549471,\"group_name\":\"Nicknames Favoritos\",\"group_description\":\"Nicknames Favoritos\",\"is_favorite\":true,\"member_count\":1,\"members\":[{\"member_code\":\"2DA447C9EBABE53E0E8177A452EAD3C8A36826D89F05C8C14645012A52293BB6BD57B0FE291D2FA7A4AA2F62F930E0282E3B028510EA4D4AD413C567D9D9F723\",\"active\":true,\"tracking_information\":true,\"is_self\":false}],\"returned\":1,\"has_more\":false}"
+      }
+    ],
+    "structuredContent": {
+      "group_id": 549471,
+      "group_name": "Nicknames Favoritos",
+      "group_description": "Nicknames Favoritos",
+      "is_favorite": true,
+      "member_count": 1,
+      "members": [
+        {
+          "member_code": "2DA447C9EBABE53E0E8177A452EAD3C8A36826D89F05C8C14645012A52293BB6BD57B0FE291D2FA7A4AA2F62F930E0282E3B028510EA4D4AD413C567D9D9F723",
+          "active": true,
+          "tracking_information": true,
+          "is_self": false
+        }
+      ],
+      "returned": 1,
+      "has_more": false
+    },
+    "isError": false,
+    "resultType": "complete"
+  },
+  "payload": {
+    "group_id": 549471,
+    "group_name": "Nicknames Favoritos",
+    "group_description": "Nicknames Favoritos",
+    "is_favorite": true,
+    "member_count": 1,
+    "members": [
+      {
+        "member_code": "2DA447C9EBABE53E0E8177A452EAD3C8A36826D89F05C8C14645012A52293BB6BD57B0FE291D2FA7A4AA2F62F930E0282E3B028510EA4D4AD413C567D9D9F723",
+        "active": true,
+        "tracking_information": true,
+        "is_self": false
+      }
+    ],
+    "returned": 1,
+    "has_more": false
+  }
+}
