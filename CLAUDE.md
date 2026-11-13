@@ -634,6 +634,41 @@ para que as migrações com GRANT rodem **verbatim** em qualquer fornecedor.
 
 ---
 
+## Sell-out ML — vendas estimadas Nubimetrics (Nov/2026) 🆕
+
+**Por quê:** a coleta mede posição, preço e buy box, mas não **volume**. A
+Nubimetrics (conta Midea Brasil, plano b2b) estima a venda do Mercado Livre
+por marca, seller e anúncio em ar condicionado (`MLB1646`). Página **🛒 Sell-out
+ML** (seção Demanda), módulo `nubimetrics/` (README próprio).
+
+- **Fonte:** servidor **MCP** remoto (`mcp.nubimetrics.com/mcp`, Bearer
+  `NUBIMETRICS_API_KEY`), não REST e não scraping. 24 tools reais, mapeadas em
+  `nubimetrics/catalog/MAPPING.md` (amostras em `catalog/samples/`).
+- **ETL:** `python -m nubimetrics.run_daily` no workflow `nubimetrics_daily.yml`
+  (10:43 BRT, job `gh_nubimetrics`, SEV_TOLERANTE), **fora do PC coletor**.
+- **Banco:** migração `023_nubimetrics.sql` — `nubi_mercado_mensal`,
+  `nubi_ranking_mensal`, `nubi_anuncios` (só a foto atual), `nubi_concorrente_diario`
+  e `dim_partner_sellers`. ~10 mil linhas por ano. Histórico dos anúncios no
+  Parquet (`dataset=nubimetrics`).
+
+**Regras duras:**
+1. **Nunca inventar nome de tool nem campo.** Mudou o MCP? Rode
+   `python -m nubimetrics.discover` e revise o MAPPING antes de mexer no ETL.
+2. **Ranking é de mês fechado.** Resposta com `period_fallback=true` não é
+   gravada sob o mês pedido, porque seria o mês anterior com outro rótulo.
+3. **`item_id` do explorador é hash, não MLB.** O cruzamento com as coletas é
+   por marca × BTU (e título só como auditoria, com score).
+4. **Segmento/BTU saem do título** (`filters.classificar`), com `match_source`.
+   O MCP não entrega atributo, e o painel mostra o % inferido.
+5. **`nubi_anuncios` só troca pela RPC `nubi_substituir_anuncios`**
+   (TRUNCATE + INSERT numa transação). DELETE incharia o banco (regra da 022),
+   e lote vazio mantém a foto anterior.
+6. **Lote de upsert com as mesmas chaves em toda linha.** PostgREST e
+   `utils/db.py` montam o INSERT pela 1ª linha: um termo de busca no começo do
+   lote zerava a receita das marcas.
+7. **`nubi_user_feedback` nunca é chamada** (grava do lado da Nubimetrics), e
+   amostra versionada passa por `client.mascarar` (account_id, seller_id, e-mail).
+
 ## Radar meteorológico — clima × venda (Out/2026) 🆕
 
 **Por quê:** frio e chuva no Sul/Sudeste em outubro, meta de novembro
@@ -1031,6 +1066,7 @@ rac-position-tracker/
 │   ├── pipeline_guard.yml       # Supervisor de execução (06:35/12:35/22:35 BRT)
 │   ├── watchdog.yml             # Validação de dado (20:30 BRT)
 │   ├── clima_daily.yml          # 🆕 Radar meteorológico (05:47 BRT) → clima_diario
+│   ├── nubimetrics_daily.yml    # 🆕 Sell-out ML (10:43 BRT) → nubi_* (Nubimetrics MCP)
 │   └── collect.yml              # Backup de coleta (manual dispatch only)
 │
 ├── .claude/                     # AI assistant documentation

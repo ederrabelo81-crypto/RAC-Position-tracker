@@ -271,7 +271,7 @@ async def _list_tools(session: Any) -> List[Dict[str, Any]]:
 
 
 async def _call_one(session: Any, tool: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
-    from nubimetrics.client import redact, result_payload, to_jsonable
+    from nubimetrics.client import mascarar, redact, result_payload, to_jsonable
 
     try:
         res = await session.call_tool(tool["name"], args)
@@ -279,7 +279,10 @@ async def _call_one(session: Any, tool: Dict[str, Any], args: Dict[str, Any]) ->
         return {"status": "erro", "args": args, "error": redact(f"{type(exc).__name__}: {exc}")}
     raw = to_jsonable(res)
     is_err = bool(raw.get("isError")) if isinstance(raw, dict) else False
-    out = {"status": "erro da tool" if is_err else "ok", "args": args, "raw": raw, "payload": result_payload(res)}
+    # Identidade da conta (account_id, seller_id, e-mail…) nunca vai para a
+    # amostra versionada — revisão do PR #449.
+    out = {"status": "erro da tool" if is_err else "ok", "args": args,
+           "raw": mascarar(raw), "payload": mascarar(result_payload(res))}
     if is_err:
         out["error"] = redact(json.dumps(out["payload"], ensure_ascii=False)[:500])
     return out

@@ -7,18 +7,18 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"seller_id\":9007032765249679,\"seller_nickname\":\"Midea Brasil\",\"site_id\":\"MLB\",\"plan_id\":119,\"plan_name\":\"BUSINESS CORPORATE FULL\",\"due_date\":\"2027-11-04T03:00:00.0000000\",\"currency\":\"BRL\",\"account_id\":\"22446b96-b7c0-4418-9e45-239b06ddc8c8\",\"competition_slots\":1,\"category_segment\":\"b2b\",\"allowed_categories\":[{\"id\":\"MLB1576\",\"name\":\"Refrigeração\",\"path\":[\"MLB5726\",\"MLB1576\"]},{\"id\":\"MLB1580\",\"name\":\"Fornos e Fogões\",\"path\":[\"MLB5726\",\"MLB1580\"]},{\"id\":\"MLB21171\",\"name\":\"Bebedouros e Purificadores\",\"path\":[\"MLB5726\",\"MLB21171\"]},{\"id\":\"MLB252358\",\"name\":\"Ar e Ventilação\",\"path\":[\"MLB5726\",\"MLB252358\"]},{\"id\":\"MLB438282\",\"name\":\"Lavadores\",\"path\":[\"MLB5726\",\"MLB438282\"]},{\"id\":\"MLB438284\",\"name\":\"Pequenos Eletrodomésticos\",\"path\":[\"MLB5726\",\"MLB438284\"]}]}"
+        "text": "{\"seller_id\": \"***\", \"seller_nickname\": \"Midea Brasil\", \"site_id\": \"MLB\", \"plan_id\": \"***\", \"plan_name\": \"BUSINESS CORPORATE FULL\", \"due_date\": \"***\", \"currency\": \"BRL\", \"account_id\": \"***\", \"competition_slots\": 1, \"category_segment\": \"b2b\", \"allowed_categories\": [{\"id\": \"MLB1576\", \"name\": \"Refrigeração\", \"path\": [\"MLB5726\", \"MLB1576\"]}, {\"id\": \"MLB1580\", \"name\": \"Fornos e Fogões\", \"path\": [\"MLB5726\", \"MLB1580\"]}, {\"id\": \"MLB21171\", \"name\": \"Bebedouros e Purificadores\", \"path\": [\"MLB5726\", \"MLB21171\"]}, {\"id\": \"MLB252358\", \"name\": \"Ar e Ventilação\", \"path\": [\"MLB5726\", \"MLB252358\"]}, {\"id\": \"MLB438282\", \"name\": \"Lavadores\", \"path\": [\"MLB5726\", \"MLB438282\"]}, {\"id\": \"MLB438284\", \"name\": \"Pequenos Eletrodomésticos\", \"path\": [\"MLB5726\", \"MLB438284\"]}]}"
       }
     ],
     "structuredContent": {
-      "seller_id": 9007032765249679,
+      "seller_id": "***",
       "seller_nickname": "Midea Brasil",
       "site_id": "MLB",
-      "plan_id": 119,
+      "plan_id": "***",
       "plan_name": "BUSINESS CORPORATE FULL",
-      "due_date": "2027-11-04T03:00:00.0000000",
+      "due_date": "***",
       "currency": "BRL",
-      "account_id": "22446b96-b7c0-4418-9e45-239b06ddc8c8",
+      "account_id": "***",
       "competition_slots": 1,
       "category_segment": "b2b",
       "allowed_categories": [
@@ -76,14 +76,14 @@
     "resultType": "complete"
   },
   "payload": {
-    "seller_id": 9007032765249679,
+    "seller_id": "***",
     "seller_nickname": "Midea Brasil",
     "site_id": "MLB",
-    "plan_id": 119,
+    "plan_id": "***",
     "plan_name": "BUSINESS CORPORATE FULL",
-    "due_date": "2027-11-04T03:00:00.0000000",
+    "due_date": "***",
     "currency": "BRL",
-    "account_id": "22446b96-b7c0-4418-9e45-239b06ddc8c8",
+    "account_id": "***",
     "competition_slots": 1,
     "category_segment": "b2b",
     "allowed_categories": [

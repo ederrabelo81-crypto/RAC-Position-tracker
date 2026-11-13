@@ -15,7 +15,8 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from typing import Any, AsyncIterator, Optional
+from pathlib import Path
+from typing import Any, AsyncIterator, Dict, Optional
 
 from loguru import logger
 
@@ -131,3 +132,112 @@ def result_payload(result: Any) -> Any:
         except (json.JSONDecodeError, TypeError):
             parts.append(txt)
     return parts[0] if len(parts) == 1 else parts
+
+
+# ── Cliente do ETL: retry, intervalo mínimo e cache em disco ────────────────
+
+CACHE_DIR = Path(__file__).parent / "cache"
+
+#: Campos de identidade da conta que nunca vão para arquivo versionado
+#: (amostra, cache compartilhado, log). Ver revisão do PR #449.
+CAMPOS_SENSIVEIS = frozenset({
+    "account_id", "seller_id", "email", "user_name", "due_date", "plan_id",
+})
+
+
+def mascarar(obj: Any) -> Any:
+    """Troca por ``"***"`` os campos de identidade da conta, em qualquer nível."""
+    if isinstance(obj, dict):
+        return {k: ("***" if k in CAMPOS_SENSIVEIS and v is not None else mascarar(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [mascarar(v) for v in obj]
+    return obj
+
+
+class NubiToolError(RuntimeError):
+    """A tool respondeu com ``isError`` (erro de negócio, não de rede)."""
+
+
+class NubiClient:
+    """Sessão MCP reutilizável para o ETL.
+
+    - **retry exponencial** em erro de rede/transporte (``tentativas``);
+      erro de negócio da tool (``isError``) sobe na hora como `NubiToolError`;
+    - **intervalo mínimo** entre chamadas (``intervalo_s``), para não estourar
+      cota;
+    - **cache em disco** por ``tool + args + dia`` (``cache=True``): rodar de
+      novo no mesmo dia não gasta chamada. Arquivos em ``nubimetrics/cache/``
+      (fora do git).
+
+    Uso::
+
+        async with NubiClient() as nubi:
+            payload = await nubi.call("meli_market_rankings", {"inp": {...}})
+    """
+
+    def __init__(self, cache: bool = True, tentativas: int = 3, intervalo_s: float = 0.4) -> None:
+        self.cache = cache
+        self.tentativas = tentativas
+        self.intervalo_s = intervalo_s
+        self.chamadas = 0
+        self.do_cache = 0
+        self._stack: Optional[contextlib.AsyncExitStack] = None
+        self._session: Any = None
+        self._ultimo = 0.0
+
+    async def __aenter__(self) -> "NubiClient":
+        self._stack = contextlib.AsyncExitStack()
+        self._session = await self._stack.enter_async_context(open_session())
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        if self._stack is not None:
+            await self._stack.aclose()
+
+    @staticmethod
+    def _cache_path(tool: str, args: Dict[str, Any]) -> Path:
+        import datetime as _dt
+        import hashlib
+
+        chave = json.dumps({"t": tool, "a": args}, sort_keys=True, ensure_ascii=False)
+        h = hashlib.sha1(chave.encode("utf-8")).hexdigest()[:16]
+        return CACHE_DIR / _dt.date.today().isoformat() / f"{tool}__{h}.json.gz"
+
+    async def call(self, tool: str, args: Dict[str, Any]) -> Any:
+        """Chama uma tool e devolve o payload (JSON já decodificado)."""
+        import asyncio
+        import gzip
+        import time
+
+        path = self._cache_path(tool, args)
+        if self.cache and path.exists():
+            self.do_cache += 1
+            return json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+
+        espera = self.intervalo_s - (time.monotonic() - self._ultimo)
+        if espera > 0:
+            await asyncio.sleep(espera)
+        ultimo_erro: Optional[Exception] = None
+        for tentativa in range(1, self.tentativas + 1):
+            try:
+                self._ultimo = time.monotonic()
+                res = await self._session.call_tool(tool, args)
+                break
+            except Exception as exc:  # noqa: BLE001 — transporte: repete
+                ultimo_erro = exc
+                atraso = 2 ** tentativa
+                logger.warning(f"[Nubimetrics] {tool} falhou ({tentativa}/{self.tentativas}): "
+                               f"{redact(str(exc))[:200]} — nova tentativa em {atraso}s")
+                await asyncio.sleep(atraso)
+        else:
+            raise RuntimeError(f"{tool}: {redact(str(ultimo_erro))}")
+        self.chamadas += 1
+        payload = result_payload(res)
+        if bool(getattr(res, "isError", False) or getattr(res, "is_error", False)):
+            raise NubiToolError(f"{tool}: {redact(json.dumps(payload, ensure_ascii=False))[:400]}")
+        logger.debug(f"[Nubimetrics] {tool} {json.dumps(args, ensure_ascii=False)[:160]}")
+        if self.cache:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(gzip.compress(json.dumps(payload, ensure_ascii=False).encode("utf-8")))
+        return payload

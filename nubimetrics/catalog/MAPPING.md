@@ -64,7 +64,9 @@ Lavadores e Pequenos Eletrodomésticos.
 - Soma das 62 marcas em out/2026 = **R$ 223,5 mi** = `market_size` de out/2026 (R$ 223,5 mi). Shares somam 100,0%.
 - `market_size` nov/2026 parcial = **R$ 173,34 mi**, mesmo número da UI ("R$ 173,3M no mês atual").
 
-## 4. Impactos no plano (decisões para o mantenedor)
+## 4. Impactos no plano
+
+> **Decididos em 13/11/2026** (o mantenedor delegou as decisões). O desenho final está em `nubimetrics/README.md` § Decisões.
 
 1. **A amostra de validação da seção 2 não é alcançável pelo MCP.** Ela é de nov/2026 **parcial**, e os rankings só servem mês fechado (a chamada de nov voltou com `period_fallback=true`, ou seja, out/2026: LG R$ 44,6 mi, 19,96%; Midea R$ 29,7 mi, 13,3%; Clima Rio R$ 36,3 mi). Proposta: validar contra a UI de **outubro/2026**, e validar só o total da categoria contra o mês corrente.
 2. **Não há grão de anúncio com atributo.** O relatório dinâmico (F) não está no MCP. O critério "≥ 85% classificado por atributo" **não é atingível**: o segmento High Wall Inverter e o BTU vão sair do **título** (regex), com `match_source='title_regex'` em ~100% das linhas. O painel mostra isso, como pedido.
