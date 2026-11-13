@@ -563,3 +563,65 @@ def test_analises_toleram_foto_vazia():
     vazio = pd.DataFrame()
     assert an.gap_preco_midea_lg(vazio).empty
     assert an.cruzar_por_grupo(vazio, pd.DataFrame({"x": [1]})).empty
+
+
+# ── 2ª rodada de produção (13/11/2026): "invalid input syntax for type integer" ──
+
+def _colunas_inteiras() -> dict:
+    """{tabela: {colunas INTEGER}} lidas da própria migração 023."""
+    import re
+
+    sql = (Path(__file__).resolve().parent.parent / "docs" / "migrations" / "023_nubimetrics.sql").read_text(
+        encoding="utf-8")
+    out = {}
+    for tabela, corpo in re.findall(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);", sql, re.S):
+        out[tabela] = set(re.findall(r"^\s+(\w+)\s+INTEGER\b", corpo, re.M))
+    return out
+
+
+def test_etl_nao_manda_decimal_para_coluna_inteira(monkeypatch):
+    """O PostgREST recusa 2952.0 numa coluna INTEGER (o adaptador psycopg2 aceitava —
+    por isso o teste local não pegou). Confere todo valor enviado ao banco."""
+    import nubimetrics.client as client
+    import nubimetrics.run_daily as run
+
+    inteiras = _colunas_inteiras()
+    assert inteiras["nubi_mercado_mensal"] >= {"sellers", "sellers_prof", "anuncios"}
+    enviados = []
+
+    class Estrito(_Cliente):
+        def table(self, nome):
+            cli = self
+
+            class T(_Tabela):
+                def upsert(self, lote, on_conflict):
+                    enviados.extend((nome, linha) for linha in lote)
+                    return self
+
+            return T(cli.log)
+
+        def rpc(self, nome, params):
+            enviados.extend(("nubi_anuncios", linha) for linha in params["p_linhas"])
+            return super().rpc(nome, params)
+
+    monkeypatch.setattr(client, "NubiClient", lambda *a, **k: FakeNubi())
+    monkeypatch.setattr(load, "cliente", lambda: Estrito())
+    monkeypatch.setattr(load, "parquet", lambda *a, **k: "ok")
+    dados = run.transformar(asyncio.run(run.extrair(13, True, HOJE)), HOJE)
+    run.gravar(dados, HOJE)
+
+    ruins = [(t, c, v) for t, linha in enviados for c, v in linha.items()
+             if c in inteiras.get(t, ()) and isinstance(v, float)]
+    assert not ruins, ruins[:5]
+    assert {t for t, _ in enviados} >= {"nubi_mercado_mensal", "nubi_ranking_mensal", "nubi_anuncios"}
+
+
+def test_backfill_tem_total_da_categoria_para_todo_mes_de_ranking(monkeypatch):
+    import nubimetrics.client as client
+    import nubimetrics.run_daily as run
+
+    nubi = FakeNubi()
+    monkeypatch.setattr(client, "NubiClient", lambda *a, **k: nubi)
+    asyncio.run(run.extrair(13, False, HOJE))
+    args = next(a["inp"] for t, a in nubi.log if t == "nubi_category_market_size")
+    assert args["date_from"] == "2025-10-01"          # 13º mês fechado para trás (out/25)

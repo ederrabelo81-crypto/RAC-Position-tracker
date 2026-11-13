@@ -61,6 +61,12 @@ def mercado_mensal(bruto: Dict[str, Any], hoje: dt.date) -> List[Dict[str, Any]]
     _serie(est, "sellers", "sellers")
     _serie(est, "sellers_professional", "sellers_prof")
     _serie(est, "listings", "anuncios")
+    # Colunas INTEGER: o PostgREST recusa "2952.0" (22P02) — 2ª rodada de
+    # produção, 13/11/2026. O adaptador psycopg2 aceitava, por isso passou no teste.
+    for linha in linhas.values():
+        for col in ("sellers", "sellers_prof", "anuncios"):
+            if linha.get(col) is not None:
+                linha[col] = int(round(linha[col]))
     return sorted(linhas.values(), key=lambda r: r["mes"])
 
 

@@ -41,6 +41,18 @@ def cliente() -> Any:
     return c
 
 
+def _json_inteiro(v: Any) -> Any:
+    """``2952.0`` → ``2952``. O PostgREST recusa decimal em coluna INTEGER
+    ("invalid input syntax for type integer"); NUMERIC aceita int sem perda."""
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return v
+
+
+def _limpar(linhas: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [{k: _json_inteiro(v) for k, v in linha.items()} for linha in linhas]
+
+
 def upsert(client: Any, tabela: str, linhas: Sequence[Dict[str, Any]]) -> int:
     """Upsert em lotes pela chave natural da tabela."""
     if not linhas:
@@ -50,7 +62,7 @@ def upsert(client: Any, tabela: str, linhas: Sequence[Dict[str, Any]]) -> int:
     # utils/db.py) montam o INSERT pelas colunas da 1ª linha do lote — um termo
     # de busca (sem receita) no início do lote zerava a receita das marcas.
     colunas = sorted({k for linha in linhas for k in linha})
-    linhas = [{c: linha.get(c) for c in colunas} for linha in linhas]
+    linhas = _limpar([{c: linha.get(c) for c in colunas} for linha in linhas])
     feitas = 0
     for i in range(0, len(linhas), _LOTE):
         lote = [{**linha, "atualizado_em": agora} for linha in linhas[i:i + _LOTE]]
@@ -80,12 +92,12 @@ def substituir_anuncios(client: Any, linhas: List[Dict[str, Any]]) -> int:
     if not linhas:
         logger.warning("[Nubimetrics] explorador vazio — foto anterior mantida.")
         return 0
-    lote: Any = linhas
+    lote: Any = _limpar(linhas)
     if type(client).__name__ == "PostgresClient":
         # Adaptador psycopg2 (utils/db.py): lista Python viraria ARRAY, não jsonb.
         from psycopg2.extras import Json
 
-        lote = Json(linhas)
+        lote = Json(lote)
     try:
         resp = client.rpc("nubi_substituir_anuncios", {"p_linhas": lote}).execute()
     except Exception as exc:

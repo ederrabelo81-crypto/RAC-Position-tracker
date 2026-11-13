@@ -65,7 +65,11 @@ async def extrair(meses: int, com_anuncios: bool, hoje: dt.date) -> Dict[str, An
     from nubimetrics.client import NubiClient
 
     fechado = extract.ultimo_mes_fechado(hoje)
-    inicio_serie = extract.primeiro_dia(hoje).replace(year=hoje.year - 1)
+    # A série de mercado cobre todos os meses de ranking pedidos (o backfill vai
+    # 13 meses FECHADOS para trás; 12 meses a partir de hoje deixava o mais
+    # antigo sem total e a checagem de consistência acusava ressalva à toa).
+    meses_ranking = extract.meses_para_tras(fechado, meses)
+    inicio_serie = min(extract.primeiro_dia(hoje).replace(year=hoje.year - 1), meses_ranking[0])
     avisos: List[str] = []
     bruto: Dict[str, Any] = {"rankings": [], "avisos": avisos}
     async with NubiClient() as nubi:
@@ -74,7 +78,7 @@ async def extrair(meses: int, com_anuncios: bool, hoje: dt.date) -> Dict[str, An
         bruto["previsao"] = await _tenta("previsão", extract.previsao(nubi, fechado), avisos, {})
         detalhe = await _tenta("detalhe da categoria", extract.detalhe_categoria(nubi, fechado), avisos, None)
         bruto["detalhe"] = (fechado, detalhe) if detalhe else None
-        for mes in extract.meses_para_tras(fechado, meses):
+        for mes in meses_ranking:
             for dim in extract.DIMENSOES:
                 r = await _tenta(f"ranking {dim} {mes:%m/%Y}", extract.ranking(nubi, mes, dim), avisos, None)
                 if r is not None:
