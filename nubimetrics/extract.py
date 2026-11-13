@@ -20,9 +20,10 @@ from nubimetrics.client import NubiClient, NubiToolError
 
 CATEGORIA = "MLB1646"
 DIMENSOES = ("brands", "seller", "catalog", "items", "official_store")
-#: Buscas do explorador. "ar condicionado" pega o grosso; "split" pega os
-#: anúncios que não repetem o nome da categoria no título. Deduplicado por hash.
-TERMOS_EXPLORADOR: Sequence[str] = ("ar condicionado", "split")
+#: Buscas do explorador. Na 1ª rodada de produção (13/11/2026) "ar condicionado"
+#: em MLB1646 já devolveu os 4.057 anúncios da categoria (busca aproximada); a
+#: 2ª busca ("split") só dobrava as chamadas e estourou o limite de 100/min.
+TERMOS_EXPLORADOR: Sequence[str] = ("ar condicionado",)
 PAGE_SIZE = 50
 
 

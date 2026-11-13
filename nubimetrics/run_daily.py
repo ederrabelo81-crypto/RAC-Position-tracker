@@ -46,28 +46,54 @@ def _bater(status: str, linhas: Optional[int] = None, detalhe: str = "") -> None
         logger.debug(f"[Heartbeat] '{status}' não registrada: {exc}")
 
 
+async def _tenta(rotulo: str, coro: Any, avisos: List[str], padrao: Any) -> Any:
+    """Uma fonte que falha vira ressalva e devolve ``padrao`` — não derruba as outras.
+
+    A 1ª rodada de produção (13/11/2026) caiu inteira no limite de taxa da
+    explorador, depois de já ter baixado mercado e rankings — e nada foi gravado.
+    """
+    try:
+        return await coro
+    except Exception as exc:  # noqa: BLE001 — isolamento por fonte
+        logger.error(f"[Nubimetrics] {rotulo} falhou: {exc}")
+        avisos.append(f"{rotulo} falhou: {str(exc)[:200]}")
+        return padrao
+
+
 async def extrair(meses: int, com_anuncios: bool, hoje: dt.date) -> Dict[str, Any]:
-    """Todas as fontes, numa sessão MCP só."""
+    """Todas as fontes, numa sessão MCP só; cada fonte isolada (`_tenta`)."""
     from nubimetrics.client import NubiClient
 
     fechado = extract.ultimo_mes_fechado(hoje)
     inicio_serie = extract.primeiro_dia(hoje).replace(year=hoje.year - 1)
-    bruto: Dict[str, Any] = {"rankings": [], "avisos": []}
+    avisos: List[str] = []
+    bruto: Dict[str, Any] = {"rankings": [], "avisos": avisos}
     async with NubiClient() as nubi:
-        bruto["mercado"] = await extract.mercado(nubi, inicio_serie, extract.primeiro_dia(hoje))
-        bruto["previsao"] = await extract.previsao(nubi, fechado)
-        bruto["detalhe"] = (fechado, await extract.detalhe_categoria(nubi, fechado))
+        bruto["mercado"] = await _tenta("mercado", extract.mercado(nubi, inicio_serie, extract.primeiro_dia(hoje)),
+                                        avisos, {})
+        bruto["previsao"] = await _tenta("previsão", extract.previsao(nubi, fechado), avisos, {})
+        detalhe = await _tenta("detalhe da categoria", extract.detalhe_categoria(nubi, fechado), avisos, None)
+        bruto["detalhe"] = (fechado, detalhe) if detalhe else None
         for mes in extract.meses_para_tras(fechado, meses):
             for dim in extract.DIMENSOES:
-                bruto["rankings"].append((mes, dim, await extract.ranking(nubi, mes, dim)))
-            bruto["rankings"].append((mes, "search_terms", await extract.buscas(nubi, mes)))
-        bruto["anuncios"] = await extract.anuncios(nubi) if com_anuncios else []
-        try:
-            bruto["concorrente"] = await extract.concorrente(nubi)
-        except Exception as exc:  # noqa: BLE001 — slot de concorrência é acessório
-            bruto["concorrente"] = []
-            bruto["avisos"].append(f"concorrente: {exc}")
-        logger.info(f"[Nubimetrics] {nubi.chamadas} chamada(s) à API, {nubi.do_cache} do cache")
+                r = await _tenta(f"ranking {dim} {mes:%m/%Y}", extract.ranking(nubi, mes, dim), avisos, None)
+                if r is not None:
+                    bruto["rankings"].append((mes, dim, r))
+            r = await _tenta(f"buscas {mes:%m/%Y}", extract.buscas(nubi, mes), avisos, None)
+            if r is not None:
+                bruto["rankings"].append((mes, "search_terms", r))
+        bruto["anuncios_falhou"] = False
+        if com_anuncios:
+            anuncios = await _tenta("explorador de anúncios", extract.anuncios(nubi), avisos, None)
+            bruto["anuncios_falhou"] = anuncios is None
+            bruto["anuncios"] = anuncios or []
+        else:
+            bruto["anuncios"] = []
+        bruto["concorrente"] = await _tenta("concorrente", extract.concorrente(nubi), avisos, [])
+        logger.info(f"[Nubimetrics] {nubi.chamadas} chamada(s) à API, {nubi.do_cache} do cache, "
+                    f"{nubi.esperas_limite} espera(s) por limite de taxa")
+    if not bruto["mercado"] and not bruto["rankings"]:
+        raise RuntimeError("nenhuma fonte principal respondeu (mercado e rankings): " + "; ".join(avisos)[:400])
     return bruto
 
 
@@ -140,7 +166,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         bruto = asyncio.run(extrair(meses, not a.sem_anuncios, hoje))
         dados = transformar(bruto, hoje)
-        if not a.sem_anuncios and not dados["anuncios"]:
+        if not a.sem_anuncios and not dados["anuncios"] and not bruto.get("anuncios_falhou"):
             # Explorador pedido e vazio ≠ rodada saudável: a foto de ontem fica,
             # mas o livro-razão precisa saber.
             dados["avisos"].append("explorador devolveu 0 anúncios — foto anterior mantida")

@@ -17,6 +17,7 @@ class FakeNubi:
         self.chamadas = 0
         self.log = []
         self.do_cache = 0
+        self.esperas_limite = 0
 
     async def __aenter__(self):
         return self
