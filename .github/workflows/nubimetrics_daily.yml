@@ -90,7 +90,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: nubimetrics/cache
-          key: nubimetrics-mcp-${{ steps.hoje.outputs.dia }}-${{ github.run_id }}
+          # run_id + run_attempt: cada tentativa salva o que buscou (chave fixa do
+          # dia não seria regravada depois de uma 1ª tentativa parcial). O
+          # volume é limitado: ~1–2 rodadas/dia, poucos MB, e o Actions descarta
+          # entradas sem uso em 7 dias.
+          key: nubimetrics-mcp-${{ steps.hoje.outputs.dia }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: nubimetrics-mcp-${{ steps.hoje.outputs.dia }}-
 
       - name: Check secret

@@ -79,6 +79,8 @@ def carregar(_get_client: Callable[[], Any]) -> Dict[str, Any]:
         out["ranking"] = _numerico(_ler(client, "nubi_ranking_mensal", ordem=["mes", "dimensao", "posicao"]),
                                    ["receita_brl", "unidades", "share_brl", "cresc_receita_pct",
                                     "cresc_unid_pct", "catalogo_pct"])
+        # Sub-linhas Midea (Springer Midea, Midea Branca…) somadas numa linha só.
+        out["ranking"] = an.canonizar_marcas(out["ranking"])
         out["anuncios"] = _ler(client, "nubi_anuncios", ordem=["item_hash"])
         out["concorrente"] = _numerico(_ler(client, "nubi_concorrente_diario", ordem=["data"]),
                                        ["visitas", "unidades", "receita_brl", "conversao_pct"])
@@ -160,7 +162,8 @@ def _aba_executiva(ctx: Contexto, d: Dict[str, Any], f: Dict[str, Any], rec: pd.
         return {}
     k = an.kpis_marca(ranking, f["mes"])
     mes_txt = pd.Timestamp(f["mes"]).strftime("%m/%Y")
-    st.caption(f"Ar condicionado no Mercado Livre — mês fechado **{mes_txt}** (todos os tipos de AC).")
+    st.caption(f"Ar condicionado no Mercado Livre — mês fechado **{mes_txt}** (todos os tipos de AC). "
+               "Midea = MIDEA + Springer Midea + demais grafias com Midea no nome.")
     c = st.columns(5)
     c[0].metric("Mercado AC", an.fmt_brl(k["mercado_receita"]), help="Soma das marcas do ranking no mês.")
     c[1].metric("Unidades", an.fmt_int(k["mercado_unidades"], " un"))

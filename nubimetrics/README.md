@@ -55,7 +55,12 @@ O MCP não entrega tudo o que a interface web do Nubimetrics mostra
    catálogo, Full e Premium (exposição `gold_pro`). O slot aparece como
    "concorrente acompanhado". Trocar o seller acompanhado é feito no app do
    Nubimetrics.
-6. **Saturação só da categoria.** Não existe por marca, nem o ranking de
+6. **Midea = todas as grafias com "Midea".** O ranking de marcas lista MIDEA,
+   SPRINGER MIDEA, MIDEA BRANCA e "CARRIER | MIDEA" separados. O painel soma
+   todas numa linha só (`analytics.canonizar_marcas`). Em out/2026 isso dá
+   17,6% de share, contra 13,3% só da linha MIDEA. Carrier e Springer sozinhos
+   continuam como marcas próprias.
+7. **Saturação só da categoria.** Não existe por marca, nem o ranking de
    demanda por marca.
 
 **Orçamento do free tier:** cerca de 10 mil linhas por ano no total, sem

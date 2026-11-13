@@ -4,6 +4,7 @@ Usa as amostras REAIS de nubimetrics/catalog/samples/ (conta Midea Brasil,
 MLB1646, 13/11/2026) via o cliente falso de tests/nubimetrics_fake.py.
 """
 import asyncio
+import json
 import datetime as dt
 import sys
 from pathlib import Path
@@ -341,7 +342,56 @@ def test_sub_linha_midea_conta_como_midea_e_sku_por_titulo():
     assert an._sku_chave(df).iloc[0] == "Ar Split Midea Xtreme 12k"
 
 
-def test_discover_nunca_chama_user_info():
-    from nubimetrics.discover import NEVER_CALL
+def test_discover_nunca_chama_user_info_nem_feedback(monkeypatch, tmp_path):
+    import contextlib
+    import types
 
-    assert {"nubi_user_feedback", "nubi_user_info"} <= NEVER_CALL
+    import nubimetrics.client as client
+    from nubimetrics import discover as disc
+
+    def _tool(nome):
+        return {"name": nome, "description": "", "annotations": {"readOnlyHint": True},
+                "inputSchema": {"type": "object", "properties": {}}}
+
+    chamadas = []
+
+    class Sessao:
+        async def list_tools(self, cursor=None):
+            return types.SimpleNamespace(tools=[_tool("nubi_user_info"), _tool("nubi_user_feedback"),
+                                                _tool("nubi_seller_info")], nextCursor=None)
+
+        async def call_tool(self, nome, args):
+            chamadas.append(nome)
+            return {"content": [{"type": "text", "text": "{}"}], "isError": False}
+
+    @contextlib.asynccontextmanager
+    async def sessao_falsa(*a, **k):
+        yield Sessao()
+
+    monkeypatch.setattr(client, "open_session", sessao_falsa)
+    monkeypatch.setattr(disc, "CATALOG_DIR", tmp_path)
+    monkeypatch.setattr(disc, "SAMPLES_DIR", tmp_path / "samples")
+    asyncio.run(disc.discover(False, {}, False))
+
+    assert chamadas == ["nubi_seller_info"]
+    status = json.loads((tmp_path / "samples_status.json").read_text(encoding="utf-8"))
+    assert status["nubi_user_info"]["status"].startswith("omitida")
+    assert status["nubi_user_feedback"]["status"].startswith("pulada")
+
+
+def test_sub_linhas_midea_somam_no_ranking_de_marcas():
+    bruto = {**amostra("meli_market_rankings__brands"), "period_fallback": False}
+    rk = an.canonizar_marcas(pd.DataFrame(transform.ranking(bruto, dt.date(2026, 10, 1), "brands")))
+    k = an.kpis_marca(rk, pd.Timestamp("2026-10-01"))
+    # MIDEA 13,3% + SPRINGER MIDEA 4,23% + MIDEA BRANCA + CARRIER | MIDEA
+    assert round(k["share"], 1) == 17.6 and k["posicao"] == 2
+    assert not rk["nome"].str.contains("SPRINGER MIDEA").any()
+    assert "CARRIER" in set(rk["nome"])                     # Carrier sozinho é outra marca
+    assert sorted(rk["posicao"]) == list(range(1, len(rk) + 1))
+    assert round(rk["share_brl"].sum(), 1) == 100.0
+
+
+def test_cliente_tem_ao_menos_uma_tentativa():
+    from nubimetrics.client import NubiClient
+
+    assert NubiClient(tentativas=0).tentativas == 1

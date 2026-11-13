@@ -85,8 +85,10 @@ def marca_exibicao(raw: Optional[str]) -> str:
 
 def is_midea(raw: Optional[str]) -> bool:
     """Midea inclui as sub-linhas (AI Ecomaster, Xtreme Save…) — a marca é MIDEA."""
-    norm = normalizar_marca(raw)
-    return norm == "MIDEA" or norm.startswith("MIDEA ") or norm == "SPRINGER MIDEA"
+    # Token MIDEA em qualquer posição: MIDEA, MIDEA BRANCA, SPRINGER MIDEA,
+    # "CARRIER | MIDEA" (grafias reais do ranking de out/2026). CARRIER e
+    # SPRINGER sozinhos ficam de fora — são marcas próprias no ranking.
+    return "MIDEA" in re.findall(r"[A-Z0-9]+", normalizar_marca(raw))
 
 
 def parse_btu(texto: Optional[str]) -> Optional[int]:

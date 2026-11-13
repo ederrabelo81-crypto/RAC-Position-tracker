@@ -82,6 +82,43 @@ def fmt_pp(v: Optional[float]) -> str:
 
 # ── mercado e marcas ────────────────────────────────────────────────────────
 
+def canonizar_marcas(ranking: pd.DataFrame) -> pd.DataFrame:
+    """Agrega as sub-linhas Midea do ranking de marcas numa linha ``MIDEA``.
+
+    Em out/2026 a Nubimetrics listou MIDEA (13,3%), SPRINGER MIDEA (4,2%),
+    MIDEA BRANCA e "CARRIER | MIDEA" separados — o share da Midea no topo do
+    painel saía subestimado. Soma receita, unidades e share; crescimento e %
+    catálogo ponderados pela receita; reordena as posições do mês.
+    """
+    if ranking.empty or "dimensao" not in ranking:
+        return ranking
+    b = ranking[ranking["dimensao"] == "brands"].copy()
+    if b.empty:
+        return ranking
+    b["nome"] = b["nome"].map(lambda n: MIDEA if is_midea(n) else n)
+    for c in ("receita_brl", "unidades", "share_brl", "cresc_receita_pct", "cresc_unid_pct", "catalogo_pct"):
+        if c in b:
+            b[c] = pd.to_numeric(b[c], errors="coerce")
+    # Receita/unidades do mês anterior implícitas no crescimento → recompõe o Δ do grupo.
+    b["_rec_ant"] = b["receita_brl"] / (1 + b["cresc_receita_pct"] / 100)
+    b["_uni_ant"] = b["unidades"] / (1 + b["cresc_unid_pct"] / 100)
+    b["_cat_w"] = b["catalogo_pct"] * b["receita_brl"]
+    chave = ["categoria_id", "mes", "dimensao", "nome"]
+    g = b.sort_values("receita_brl", ascending=False).groupby(chave, as_index=False, sort=False).agg(
+        receita_brl=("receita_brl", "sum"), unidades=("unidades", "sum"), share_brl=("share_brl", "sum"),
+        _rec_ant=("_rec_ant", "sum"), _uni_ant=("_uni_ant", "sum"), _cat_w=("_cat_w", "sum"),
+        tendencia=("tendencia", "first"), qtd_sellers=("qtd_sellers", "max"),
+        **({"atualizado_em": ("atualizado_em", "max")} if "atualizado_em" in b else {}),
+    )
+    g["cresc_receita_pct"] = (g["receita_brl"] / g["_rec_ant"].replace(0, np.nan) - 1) * 100
+    g["cresc_unid_pct"] = (g["unidades"] / g["_uni_ant"].replace(0, np.nan) - 1) * 100
+    g["catalogo_pct"] = g["_cat_w"] / g["receita_brl"].replace(0, np.nan)
+    g = g.drop(columns=["_rec_ant", "_uni_ant", "_cat_w"])
+    g["posicao"] = g.groupby("mes")["receita_brl"].rank(ascending=False, method="first").astype(int)
+    resto = ranking[ranking["dimensao"] != "brands"]
+    return pd.concat([resto, g], ignore_index=True)
+
+
 def meses_disponiveis(ranking: pd.DataFrame, dimensao: str = "brands") -> List[pd.Timestamp]:
     """Meses com ranking da dimensão, do mais novo ao mais antigo."""
     if ranking.empty:

@@ -178,7 +178,7 @@ class NubiClient:
 
     def __init__(self, cache: bool = True, tentativas: int = 3, intervalo_s: float = 0.4) -> None:
         self.cache = cache
-        self.tentativas = tentativas
+        self.tentativas = max(1, int(tentativas))   # 0 deixaria o cliente sem sessão
         self.intervalo_s = intervalo_s
         self.chamadas = 0
         self.do_cache = 0
