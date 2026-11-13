@@ -46,3 +46,6 @@ target/
 ```
 # Segredos do painel do seller
 .streamlit/secrets.toml
+
+# Nubimetrics — cache local de chamadas MCP (cota) 
+nubimetrics/cache/
