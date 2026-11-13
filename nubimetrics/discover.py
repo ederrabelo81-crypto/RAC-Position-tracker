@@ -434,7 +434,7 @@ def _load_offline() -> None:
 
 def _write_mapping(tools: List[Dict[str, Any]], samples: Dict[str, Dict[str, Any]]) -> None:
     now = dt.datetime.now().strftime("%d/%m/%Y %H:%M")
-    path = CATALOG_DIR / "MAPPING.md"
+    path = CATALOG_DIR / "MAPPING_auto.md"  # MAPPING.md é a versão revisada à mão
     path.write_text(render_mapping(tools, samples, now), encoding="utf-8")
     logger.success(f"[Nubimetrics] {path} gerado")
 
