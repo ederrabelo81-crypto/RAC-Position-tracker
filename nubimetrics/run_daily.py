@@ -9,7 +9,7 @@ depois das 10h BRT.
 Uso::
 
     python -m nubimetrics.run_daily                    # rodada diária (2 meses de ranking)
-    python -m nubimetrics.run_daily --backfill         # 13 meses de ranking/brandshare
+    python -m nubimetrics.run_daily --backfill         # 25 meses de ranking (YTD × ano anterior)
     python -m nubimetrics.run_daily --dry-run          # extrai e transforma, não grava
     python -m nubimetrics.run_daily --sem-anuncios     # pula o explorador (~80 chamadas)
 
@@ -156,11 +156,13 @@ def resumo(dados: Dict[str, Any]) -> str:
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--meses", type=int, default=2, help="meses fechados de ranking (padrão 2)")
-    ap.add_argument("--backfill", action="store_true", help="13 meses de ranking (brandshare)")
+    ap.add_argument("--backfill", action="store_true", help="25 meses de ranking (YTD com ano anterior completo)")
     ap.add_argument("--sem-anuncios", action="store_true", help="pula o explorador de anúncios")
     ap.add_argument("--dry-run", action="store_true", help="não grava nada")
     a = ap.parse_args(argv)
-    meses = 13 if a.backfill else max(1, a.meses)
+    # Backfill de 25 meses: o YTD precisa do ano anterior INTEIRO para comparar
+    # (com 13 meses, o YTD de jan–out só tinha out/ano-1 do outro lado).
+    meses = 25 if a.backfill else max(1, a.meses)
     from utils.text import now_brt
 
     hoje = now_brt().date()   # convenção do projeto: dia em BRT, nunca o do host

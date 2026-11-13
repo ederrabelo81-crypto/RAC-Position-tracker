@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import difflib
 import re
-from typing import Dict, Iterable, List, Optional, Sequence
+from dataclasses import dataclass
+from datetime import date
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -176,6 +178,214 @@ def kpis_marca(ranking: pd.DataFrame, mes: pd.Timestamp, marca: str = MIDEA,
         "rival_share": float(r["share_brl"]) if r is not None else None,
         "gap_rival_pp": share - float(r["share_brl"]) if a is not None and r is not None else None,
         "mes_anterior": anterior_mes,
+    }
+
+
+# ── período: mês, ano (YTD) ou dia ──────────────────────────────────────────
+
+VISAO_MES, VISAO_ANO, VISAO_DIA = "Mês", "Ano (YTD)", "Dia"
+
+
+@dataclass(frozen=True)
+class Periodo:
+    """Recorte de tempo do painel.
+
+    Attributes:
+        visao: ``Mês`` | ``Ano (YTD)`` | ``Dia``.
+        meses: meses FECHADOS cobertos (rankings e mercado são mensais).
+        comp: meses da comparação (mês anterior; no YTD, os mesmos meses do
+            ano anterior). Vazio = sem comparação.
+        rotulo / rotulo_comp: texto para o painel ("10/2026", "YTD 2026 (jan–out)").
+        comp_completo: a comparação tem TODOS os meses equivalentes. Sem isso o
+            Δ de receita não é calculado (seria parcial contra completo).
+        dia: o dia escolhido na visão ``Dia`` (foto de anúncios/concorrente).
+    """
+
+    visao: str
+    meses: Tuple[pd.Timestamp, ...]
+    comp: Tuple[pd.Timestamp, ...] = ()
+    rotulo: str = ""
+    rotulo_comp: str = ""
+    comp_completo: bool = False
+    dia: Optional[date] = None
+
+
+_MESES_PT = ("jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez")
+
+
+def anos_disponiveis(ranking: pd.DataFrame) -> List[int]:
+    """Anos com ao menos um mês de ranking de marcas, do mais novo ao mais antigo."""
+    return sorted({m.year for m in meses_disponiveis(ranking)}, reverse=True)
+
+
+def periodo_mes(mes: pd.Timestamp, ranking: pd.DataFrame) -> Periodo:
+    """Um mês fechado, comparado ao mês anterior (se houver)."""
+    mes = pd.Timestamp(mes)
+    disp = set(meses_disponiveis(ranking))
+    ant = mes - pd.DateOffset(months=1)
+    comp = (ant,) if ant in disp else ()
+    return Periodo(VISAO_MES, (mes,), comp, mes.strftime("%m/%Y"),
+                   ant.strftime("%m/%Y") if comp else "", bool(comp))
+
+
+def periodo_ano(ano: int, ranking: pd.DataFrame) -> Periodo:
+    """YTD: os meses fechados do ano que existem no banco, contra os MESMOS meses
+    do ano anterior."""
+    disp = sorted(m for m in meses_disponiveis(ranking) if m.year == ano)
+    if not disp:
+        return Periodo(VISAO_ANO, (), (), f"YTD {ano}")
+    disp_set = set(meses_disponiveis(ranking))
+    comp_ideal = [m - pd.DateOffset(years=1) for m in disp]
+    comp = tuple(m for m in comp_ideal if m in disp_set)
+    faixa = f"{_MESES_PT[disp[0].month - 1]}–{_MESES_PT[disp[-1].month - 1]}"
+    return Periodo(VISAO_ANO, tuple(disp), comp, f"YTD {ano} ({faixa})",
+                   f"YTD {ano - 1} ({faixa})" if comp else "", len(comp) == len(comp_ideal))
+
+
+def periodo_dia(dia: date, ranking: pd.DataFrame) -> Periodo:
+    """Dia: anúncios/concorrente do dia; o mensal usa o mês FECHADO de referência
+    (o do dia, se já fechado; senão o último fechado disponível)."""
+    disp = meses_disponiveis(ranking)
+    alvo = pd.Timestamp(dia).replace(day=1)
+    ref = next((m for m in disp if m <= alvo), disp[0] if disp else None)
+    if ref is None:
+        return Periodo(VISAO_DIA, (), (), dia.strftime("%d/%m/%Y"), dia=dia)
+    base = periodo_mes(ref, ranking)
+    return Periodo(VISAO_DIA, base.meses, base.comp, f"{dia:%d/%m/%Y} (mensal: {base.rotulo})",
+                   base.rotulo_comp, base.comp_completo, dia)
+
+
+def ranking_periodo(ranking: pd.DataFrame, dimensao: str, per: Periodo) -> pd.DataFrame:
+    """Ranking de uma dimensão no período: o mês como veio, ou a soma de vários meses.
+
+    Em mais de um mês: receita e unidades somadas; share recalculado sobre o
+    mercado do período (soma das marcas); Δ contra os meses de comparação só se a
+    comparação estiver completa; % catálogo ponderado pela receita; nº de sellers
+    vazio (não soma entre meses); ``meses_presente`` = em quantos meses o nome
+    apareceu no top 100 (o top 100 por mês deixa cauda de fora — ver MAPPING).
+    """
+    if not per.meses:
+        return pd.DataFrame()
+    if len(per.meses) == 1:
+        out = ranking_mes(ranking, dimensao, per.meses[0]).copy()
+        if not out.empty:
+            out["meses_presente"] = 1
+        return out
+    return _agregar_meses(ranking, dimensao, per.meses, per.comp if per.comp_completo else ())
+
+
+def _agregar_meses(ranking: pd.DataFrame, dimensao: str, meses: Sequence[pd.Timestamp],
+                   comp: Sequence[pd.Timestamp] = ()) -> pd.DataFrame:
+    r = ranking[ranking["dimensao"] == dimensao].copy()
+    r["mes"] = pd.to_datetime(r["mes"])
+    atual = r[r["mes"].isin(list(meses))]
+    if atual.empty:
+        return pd.DataFrame()
+    if dimensao == "search_terms":
+        g = atual.groupby("nome", as_index=False).agg(
+            posicao_media=("posicao", "mean"), melhor_posicao=("posicao", "min"),
+            meses_presente=("mes", "nunique"))
+        g = g.sort_values(["posicao_media", "melhor_posicao"]).reset_index(drop=True)
+        g["posicao"] = range(1, len(g) + 1)
+        ult = atual[atual["mes"] == atual["mes"].max()].set_index("nome")["tendencia"]
+        g["tendencia"] = g["nome"].map(ult)
+        g["posicao_anterior"] = np.nan
+        return g
+    for c in ("receita_brl", "unidades", "catalogo_pct"):
+        if c in atual:
+            atual[c] = pd.to_numeric(atual[c], errors="coerce")
+    atual["_cat_w"] = atual.get("catalogo_pct", np.nan) * atual["receita_brl"]
+    g = atual.groupby("nome", as_index=False).agg(
+        receita_brl=("receita_brl", "sum"), unidades=("unidades", "sum"), _cat_w=("_cat_w", "sum"),
+        meses_presente=("mes", "nunique"))
+    # Mercado do período = soma das marcas (62 marcas em out/26 = 100% do total).
+    mercado = pd.to_numeric(ranking.loc[(ranking["dimensao"] == "brands")
+                                        & pd.to_datetime(ranking["mes"]).isin(list(meses)), "receita_brl"],
+                            errors="coerce").sum() if dimensao != "brands" else g["receita_brl"].sum()
+    g["share_brl"] = g["receita_brl"] / mercado * 100 if mercado else np.nan
+    g["catalogo_pct"] = g["_cat_w"] / g["receita_brl"].replace(0, np.nan)
+    g = g.drop(columns=["_cat_w"])
+    if comp:
+        ant = r[r["mes"].isin(list(comp))].copy()
+        for c in ("receita_brl", "unidades"):
+            ant[c] = pd.to_numeric(ant[c], errors="coerce")
+        a = ant.groupby("nome")[["receita_brl", "unidades"]].sum()
+        g["cresc_receita_pct"] = (g["receita_brl"] / g["nome"].map(a["receita_brl"]).replace(0, np.nan) - 1) * 100
+        g["cresc_unid_pct"] = (g["unidades"] / g["nome"].map(a["unidades"]).replace(0, np.nan) - 1) * 100
+    else:
+        g["cresc_receita_pct"] = np.nan
+        g["cresc_unid_pct"] = np.nan
+    ult = atual[atual["mes"] == atual["mes"].max()].set_index("nome")["tendencia"]
+    g["tendencia"] = g["nome"].map(ult)
+    g["qtd_sellers"] = np.nan
+    g = g.sort_values("receita_brl", ascending=False).reset_index(drop=True)
+    g["posicao"] = range(1, len(g) + 1)
+    g["dimensao"] = dimensao
+    return g
+
+
+def kpis_periodo(ranking: pd.DataFrame, per: Periodo, marca: str = MIDEA,
+                 rival: str = LG) -> Dict[str, Optional[float]]:
+    """KPIs de uma marca no período (mês ou YTD), com Δ de share vs a comparação."""
+    atual = ranking_periodo(ranking, "brands", per)
+    # Comparação só se completa: YTD de 10 meses contra 1 mês do ano anterior
+    # mediria a falta de histórico, não o mercado.
+    if per.comp and per.comp_completo:
+        base = Periodo(per.visao, per.comp)
+        anterior = ranking_periodo(ranking, "brands", base)
+    else:
+        anterior = pd.DataFrame()
+
+    def _linha(df: pd.DataFrame, nome: str) -> Optional[pd.Series]:
+        if df.empty:
+            return None
+        hit = df[df["nome"] == nome]
+        return hit.iloc[0] if len(hit) else None
+
+    a, r, p = _linha(atual, marca), _linha(atual, rival), _linha(anterior, marca)
+    total = float(atual["receita_brl"].sum()) if not atual.empty else None
+    unid_total = float(atual["unidades"].sum()) if not atual.empty else None
+    total_ant = float(anterior["receita_brl"].sum()) if not anterior.empty else None
+    share = float(a["share_brl"]) if a is not None else None
+    return {
+        "mercado_receita": total,
+        "mercado_unidades": unid_total,
+        "ticket_medio": total / unid_total if total and unid_total else None,
+        "receita": float(a["receita_brl"]) if a is not None else None,
+        "unidades": float(a["unidades"]) if a is not None else None,
+        "share": share,
+        "share_unid": float(a["unidades"]) / unid_total * 100 if a is not None and unid_total else None,
+        "posicao": int(a["posicao"]) if a is not None else None,
+        "delta_share_pp": share - float(p["share_brl"]) if a is not None and p is not None else None,
+        "rival_share": float(r["share_brl"]) if r is not None else None,
+        "gap_rival_pp": share - float(r["share_brl"]) if a is not None and r is not None else None,
+        # Δ de receita do mercado só com a comparação completa (parcial × completo engana).
+        "delta_mercado_pct": (total / total_ant - 1) * 100
+        if total and total_ant and per.comp_completo else None,
+        "mes_anterior": per.comp[-1] if per.comp else None,
+        "rotulo": per.rotulo,
+        "rotulo_comp": per.rotulo_comp,
+    }
+
+
+def mercado_periodo(mercado: pd.DataFrame, per: Periodo) -> Dict[str, Optional[float]]:
+    """Total da categoria (série `nubi_mercado_mensal`, tipo real) no período,
+    com o mesmo período do ano anterior (colunas *_aa da própria Nubimetrics)."""
+    if mercado.empty or not per.meses:
+        return {}
+    m = mercado[mercado["tipo"] == "real"].copy()
+    m["mes"] = pd.to_datetime(m["mes"])
+    sel = m[m["mes"].isin(list(per.meses))]
+    if sel.empty:
+        return {}
+    rec = pd.to_numeric(sel["receita_brl"], errors="coerce").sum()
+    aa = pd.to_numeric(sel["receita_brl_aa"], errors="coerce")
+    return {
+        "receita": rec,
+        "unidades": pd.to_numeric(sel["unidades"], errors="coerce").sum(),
+        "receita_aa": aa.sum() if aa.notna().all() else None,
+        "yoy_pct": (rec / aa.sum() - 1) * 100 if aa.notna().all() and aa.sum() else None,
+        "meses": len(sel),
     }
 
 
@@ -563,7 +773,7 @@ def meta_share(previsao_receita: float, share_atual_pct: float, meta_pct: float)
 def resumo_en(kpis: Dict[str, Optional[float]], mes: pd.Timestamp, opps: pd.DataFrame) -> pd.DataFrame:
     """KPI table + top 5 opportunities in English (report to HQ)."""
     linhas = [
-        ("Month (closed)", pd.Timestamp(mes).strftime("%b %Y")),
+        ("Period", mes if isinstance(mes, str) else pd.Timestamp(mes).strftime("%b %Y")),
         ("AC market revenue (BRL)", f"{(kpis.get('mercado_receita') or 0) / 1e6:,.1f} M"),
         ("AC market units", f"{(kpis.get('mercado_unidades') or 0):,.0f}"),
         ("Midea revenue share", f"{kpis.get('share') or 0:.1f}%"),
