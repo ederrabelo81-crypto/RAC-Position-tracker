@@ -124,6 +124,9 @@ SELLER_GROUPS: Dict[str, List[str]] = {
         # mantenedor em 08/10/2026 (aparecia como seller próprio desde
         # 27/09/2026, fatiando a caixa da Clima Rio na Shopee).
         "Clima Rio - Ar Condicionado",
+        # Nickname no Nubimetrics/ML — identidade confirmada pelo mantenedor
+        # em 17/11/2026 (parceiro "Clima Rio" = CLIMARIOREFRIGERACAO).
+        "CLIMARIOREFRIGERACAO",
     ],
     "Frio Peças": [
         "Frio Peças", "Friopeças", "FrioPecas",

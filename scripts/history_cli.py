@@ -132,6 +132,9 @@ DATASET_GRUPO_SELLER = "seller"
 #: `tests/test_tier_seller_retention.py` confere as duas.
 _TABELAS_COMPACTAR: Tuple[str, ...] = (
     "coletas", "pricetrack_daily", "seller_offer_daily", "seller_coverage_daily",
+    # Janela móvel do sell-out diário Nubimetrics (migração 024) — a poda é do
+    # nubimetrics.import_export, mas o índice também incha com o DELETE.
+    "nubi_vendas_diarias_agg", "nubi_vendas_diarias_anuncio",
 )
 
 

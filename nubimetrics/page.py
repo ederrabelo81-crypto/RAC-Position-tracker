@@ -618,21 +618,26 @@ def render(ctx: Contexto) -> None:
             f"{ {'title_regex': 'título explícito', 'model_regex': 'BTU pelo modelo', 'title_default': 'inferido', 'attribute': 'atributo'}.get(k, k)} {an.fmt_pct(v)}"
             for k, v in orig.items()))
 
-    abas = st.tabs(["📊 Visão executiva", "🎯 Oportunidades", "🏷️ Produtos", "🏪 Sellers",
+    abas = st.tabs(["📊 Visão executiva", "📅 Diário", "🎯 Oportunidades", "🏷️ Produtos", "🏪 Sellers",
                     "🔎 Busca & demanda", "🔗 Coletas × vendas", "🔮 Forecast & mercado"])
     with abas[0]:
         k = _aba_executiva(ctx, d, f, rec)
     with abas[1]:
-        _aba_oportunidades(d, f, rec, k)
+        # Série diária dos exports (migração 024) — filtros próprios, dentro da aba.
+        from nubimetrics import page_diario
+
+        page_diario.render(ctx, d.get("parceiros", pd.DataFrame()))
     with abas[2]:
-        _aba_produtos(rec)
+        _aba_oportunidades(d, f, rec, k)
     with abas[3]:
-        _aba_sellers(d, f, rec)
+        _aba_produtos(rec)
     with abas[4]:
-        _aba_busca(d, f, rec)
+        _aba_sellers(d, f, rec)
     with abas[5]:
-        _aba_cruzamento(ctx, d, rec)
+        _aba_busca(d, f, rec)
     with abas[6]:
+        _aba_cruzamento(ctx, d, rec)
+    with abas[7]:
         _aba_forecast(d, k)
 
     ultima = "—"
