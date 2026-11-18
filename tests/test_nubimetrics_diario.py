@@ -118,6 +118,91 @@ def test_atributos_por_titulo(tmp_path):
                                    "inverter_raw": "Sim", "ac_type_raw": "Split Hi Wall"}
 
 
+def test_atributos_layout_do_relatorio_de_atributos(tmp_path):
+    """Layout real do export de atributos (18/11/2026): sem filtros, campos de
+    linha nas primeiras linhas da coluna A, ``Mes.Month`` e '(blank)'."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    cab = [["Titulo_Publicacion", None, None], ["Marca", None, None],
+           ["com tecnologia inverter", None, None], ["tipo de ar condicionado", "Mes.Month", None],
+           ["capacidade de aquecimento", "11", "Soma total de Unidades_Vendidas"]]
+    dados = [(0, "Ar Condicionado Split Philco Espelhado 1", 50), (1, "PHILCO", 50), (2, "Sim", 50),
+             (3, "Split", 50), (4, "(blank)", 50),
+             (0, "Ar Condicionado Janela Inverter 10000", 7), (1, "GREE", 7), (2, "(blank)", 7),
+             (3, "Janela", 7), (4, "(blank)", 7)]
+    for i, r in enumerate(cab):
+        ws.append(r)
+        ws.cell(ws.max_row, 1).alignment = Alignment(indent=i)
+    for nivel, rot, v in dados:
+        ws.append([rot, v, v])
+        ws.cell(ws.max_row, 1).alignment = Alignment(indent=nivel)
+    ws.append(["Total geral", 57, 57])
+    wb.save(tmp_path / "atributos.xlsx")
+    a = ler_atributos(tmp_path / "atributos.xlsx").set_index("titulo")
+    assert a.loc["Ar Condicionado Split Philco Espelhado 1", "inverter_raw"] == "Sim"
+    assert a.loc["Ar Condicionado Split Philco Espelhado 1", "marca"] == "PHILCO"
+    assert a.loc["Ar Condicionado Janela Inverter 10000", "ac_type_raw"] == "Janela"
+    assert pd.isna(a.loc["Ar Condicionado Janela Inverter 10000", "inverter_raw"])
+    # Na pasta junto dos exports diários, é reconhecido como atributos (não como erro).
+    lote = IE.ler_lote([tmp_path / "atributos.xlsx"])
+    assert len(lote.atributos) == 1 and not any("Mes" in p for p in lote.problemas)
+    # Na pasta E em --atributos: lido uma vez só.
+    lote = IE.ler_lote([tmp_path / "atributos.xlsx"], [tmp_path / "atributos.xlsx"])
+    assert len(lote.atributos) == 1
+    assert [p for p in lote.problemas if "Top anuncios" not in p] == []  # só falta o export fino
+    # Atributo ausente chega como NaN do pandas e não quebra a regra.
+    assert D.is_hw_inverter("Ar Split Inverter", float("nan"), float("nan")) is True
+
+
+def _attr_xlsx(tmp_path, cab, dados, nome="a.xlsx"):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for i, r in enumerate(cab):
+        ws.append(r)
+        ws.cell(ws.max_row, 1).alignment = Alignment(indent=i)
+    for nivel, rot, *vals in dados:
+        ws.append([rot, *vals])
+        ws.cell(ws.max_row, 1).alignment = Alignment(indent=nivel)
+    wb.save(tmp_path / nome)
+    return tmp_path / nome
+
+
+def test_atributos_folha_sem_pai_falha_alto(tmp_path):
+    cab = [["Titulo_Publicacion", None, None], ["com tecnologia inverter", "Mes.Month", None],
+           ["tipo de ar condicionado", "11", "Soma total de Unidades_Vendidas"]]
+    p = _attr_xlsx(tmp_path, cab, [(0, "T1", 5, 5), (1, "Sim", 5, 5), (2, "Split", 5, 5),
+                                   (2, "Janela", 1, 1)])  # ok: herda T1/Sim
+    assert len(ler_atributos(p)) == 1
+    p2 = _attr_xlsx(tmp_path, cab, [(2, "Split", 5, 5)], nome="b.xlsx")  # folha sem título
+    with pytest.raises(ExportLayoutError, match="sem pai"):
+        ler_atributos(p2)
+
+
+def test_atributos_peso_e_unidades_nao_gmv(tmp_path):
+    """Mesmo título com dois tipos: vence o de mais UNIDADES, não o de mais GMV."""
+    cab = [["Titulo_Publicacion", None, None, None, None],
+           ["tipo de ar condicionado", "Mes.Month", None, None, None],
+           [None, "11", None, "Totais", None]]
+    cab[2] = ["", "Soma de Unidades_Vendidas", "Soma de Monto_Vendido_Moneda_Local",
+              "Soma total de Unidades_Vendidas", "Soma total de Monto_Vendido_Moneda_Local"]
+    dados = [(0, "Ar Split Inverter 12000", 0, 0, 0, 0),
+             (1, "Split", 100, 1000, 100, 1000),        # mais unidades
+             (1, "Janela", 10, 900000, 10, 900000)]     # mais GMV
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for r in cab[:2]:
+        ws.append(r)
+    ws.append(cab[2])
+    for nivel, rot, *vals in dados:
+        ws.append([rot, *vals])
+        ws.cell(ws.max_row, 1).alignment = Alignment(indent=nivel)
+    ws.cell(1, 1).alignment = Alignment(indent=0)
+    ws.cell(2, 1).alignment = Alignment(indent=1)
+    wb.save(tmp_path / "g.xlsx")
+    a = ler_atributos(tmp_path / "g.xlsx")
+    assert a.iloc[0]["ac_type_raw"] == "Split"
+
+
 # ── regra HW Inverter ───────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("titulo,tipo,inv,esperado", [

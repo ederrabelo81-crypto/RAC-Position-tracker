@@ -72,12 +72,22 @@ def _arquivos(entradas: Sequence[str]) -> List[Path]:
 def ler_lote(arquivos: Sequence[Path], atributos: Sequence[Path] = ()) -> Lote:
     """Lê e confere os exports. Problema de layout ou total = entra em ``problemas``."""
     lote = Lote()
+    atributos = list(atributos)
+    nomes_attr = {Path(a).resolve() for a in atributos}
     for a in arquivos:
+        if a.resolve() in nomes_attr:
+            continue  # passado em --atributos: lido abaixo, uma vez só
         try:
             exp = ler_export(a)
         except ExportLayoutError as exc:
-            lote.problemas.append(str(exc))
-            continue
+            # O relatório de atributos não tem o dia nas colunas: tenta como tal
+            # antes de acusar layout errado.
+            try:
+                lote.atributos.append(ler_atributos(a))
+                continue
+            except ExportLayoutError as exc_attr:
+                lote.problemas.append(f"{exc} | como atributos: {exc_attr}")
+                continue
         lote.mtimes[exp.arquivo] = a.stat().st_mtime
         if any(n in ATRIBUTOS for n in exp.niveis):
             lote.atributos.append(ler_atributos(a))

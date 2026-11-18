@@ -74,6 +74,11 @@ def _sem_acento(s: str) -> str:
     return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
 
 
+def _s(v: object) -> str:
+    """Texto ou vazio: atributo ausente chega como ``None`` ou ``NaN`` (pandas)."""
+    return v if isinstance(v, str) else ""
+
+
 def is_hw_inverter(titulo: Optional[str], ac_type_raw: Optional[str] = None,
                    inverter_raw: Optional[str] = None) -> bool:
     """High Wall Inverter pela regra híbrida título + atributos.
@@ -83,8 +88,9 @@ def is_hw_inverter(titulo: Optional[str], ac_type_raw: Optional[str] = None,
         ac_type_raw: Atributo "tipo de ar condicionado" (texto livre).
         inverter_raw: Atributo "com tecnologia inverter" (``Sim``/``Não``/vazio).
     """
-    t = titulo or ""
-    tipo = (ac_type_raw or "").strip()
+    t = _s(titulo)
+    tipo = _s(ac_type_raw).strip()
+    inverter_raw = _s(inverter_raw)
     if EXCLUDE_TITLE.search(t) or (tipo and EXCLUDE_TYPE.fullmatch(tipo)):
         return False
     return bool(INVERTER.search(t)) or (inverter_raw or "").strip().lower() == "sim" \
@@ -110,11 +116,11 @@ def classificar(titulo: Optional[str], atributos: Optional[Mapping[str, Optional
         override: Segmento forçado pela tabela ``nubi_segment_override``.
     """
     a = atributos or {}
-    btu = parse_btu(a.get("btu_raw")) or parse_btu(titulo)
+    btu = parse_btu(_s(a.get("btu_raw"))) or parse_btu(titulo)
     faixa = faixa_btu(btu) or FAIXA_ND
     if override:
         return Classe(override, faixa, ORIGEM_OVERRIDE)
-    tem_attr = any(a.get(k) for k in ("ac_type_raw", "inverter_raw"))
+    tem_attr = any(_s(a.get(k)) for k in ("ac_type_raw", "inverter_raw"))
     pelo_titulo = is_hw_inverter(titulo)
     hw = is_hw_inverter(titulo, a.get("ac_type_raw"), a.get("inverter_raw"))
     origem = ORIGEM_ATRIBUTO if tem_attr and hw != pelo_titulo else ORIGEM_TITULO
