@@ -284,14 +284,15 @@ def ler_atributos(caminho: Union[str, Path]) -> pd.DataFrame:
     nome) fica com o valor de mais unidades.
     """
     caminho = Path(caminho)
-    try:
-        exp = ler_export(caminho)
-        df = exp.linhas
-        peso = df["unidades"] if "unidades" in df else pd.Series(1.0, index=df.index)
-        df = df.assign(_peso=peso)
-    except ExportLayoutError:
+    if caminho.suffix.lower() == ".csv":
         df = _tabela_plana(caminho)
-        df["_peso"] = pd.to_numeric(df.get("unidades", 1.0), errors="coerce").fillna(1.0)
+    else:
+        try:
+            df = _pivot_hierarquico(caminho)
+        except ExportLayoutError:
+            df = _tabela_plana(caminho)
+    if "_peso" not in df:
+        df["_peso"] = pd.to_numeric(df["unidades"], errors="coerce").fillna(1.0) if "unidades" in df else 1.0
     if "titulo" not in df:
         raise ExportLayoutError(f"{caminho.name}: atributos sem Titulo_Publicacion — sem como "
                                 "ligar ao export diário (que agrupa por título)")
@@ -301,10 +302,66 @@ def ler_atributos(caminho: Union[str, Path]) -> pd.DataFrame:
                                 "(tipo de ar condicionado / com tecnologia inverter / capacidade)")
     chaves = ["titulo"] + (["marca"] if "marca" in df else [])
     for a in attrs:
-        df[a] = df[a].map(lambda v: None if v is None or str(v).strip() in ("", "-", "nan") else str(v).strip())
+        df[a] = df[a].map(lambda v: None if v is None or str(v).strip().lower() in _VAZIOS else str(v).strip())
     g = df.groupby(chaves + attrs, dropna=False)["_peso"].sum().reset_index()
     g = g.sort_values("_peso", ascending=False).drop_duplicates(chaves)
     return g.drop(columns="_peso").reset_index(drop=True)
+
+
+_VAZIOS = {"", "-", "nan", "none", "(blank)", "(vazio)", "(em branco)"}
+
+
+def _pivot_hierarquico(caminho: Path) -> pd.DataFrame:
+    """Pivot com campos de LINHA e QUALQUER coluna (ex.: ``Mes.Month``) → folhas.
+
+    O relatório de atributos exporta diferente do de publicações (conferido
+    em 18/11/2026): sem bloco de filtros, os nomes dos campos de linha nas
+    primeiras linhas da coluna A (``Titulo_Publicacion``, ``Marca``, ``com
+    tecnologia inverter``…) e o mês como ``Mes.Month`` = ``11``, não por dia.
+    Aqui só interessa o caminho de cada folha e o peso (última coluna
+    numérica = "Soma total"), nunca a data.
+    """
+    import openpyxl
+
+    try:
+        wb = openpyxl.load_workbook(caminho, data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise ExportLayoutError(f"{caminho.name}: não abriu como XLSX ({exc})") from exc
+    linhas = list(wb.worksheets[0].iter_rows())
+    # Fim do cabeçalho: a linha que nomeia uma medida ("Soma …").
+    i_med = next((i for i, r in enumerate(linhas[:40])
+                  if any(_AGREGACAO.match(_texto(c.value)) for c in r[1:])), None)
+    if i_med is None:
+        raise ExportLayoutError(f"{caminho.name}: sem linha de medida (Soma de …)")
+    niveis: List[str] = []
+    for r in linhas[:i_med + 1]:
+        a, b = _texto(r[0].value), _texto(r[1].value) if len(r) > 1 else ""
+        if not a or b in ("Filtros",) or (b and not (b.startswith("Mes") or b.isdigit() or _medida(b)
+                                                      or _AGREGACAO.match(b) or _DATA.match(b))):
+            continue  # linha de filtro ("Categoria_Nivel_3 | Ares Condicionados")
+        niveis.append(_campo(a))
+    if not niveis:
+        raise ExportLayoutError(f"{caminho.name}: sem campo de linha")
+    profundo = len(niveis) - 1
+    caminho_atual: List[Optional[str]] = [None] * len(niveis)
+    folhas: List[Dict[str, Any]] = []
+    for r in linhas[i_med + 1:]:
+        rotulo = _texto(r[0].value)
+        if not rotulo or (_TOTAL_GERAL.match(rotulo) and _indent(r[0]) == 0):
+            continue
+        nivel = _indent(r[0])
+        if nivel > profundo:
+            raise ExportLayoutError(f"{caminho.name}: linha '{rotulo[:40]}' com nível {nivel}, "
+                                    f"mas o relatório só tem {len(niveis)} campo(s) de linha")
+        caminho_atual[nivel] = rotulo
+        for k in range(nivel + 1, len(niveis)):
+            caminho_atual[k] = None
+        if nivel == profundo:
+            nums = [v for v in (_numero(c.value) for c in r[1:]) if v is not None]
+            folhas.append({**dict(zip(niveis, caminho_atual)), "_peso": nums[-1] if nums else 1.0})
+    if not folhas:
+        raise ExportLayoutError(f"{caminho.name}: nenhuma linha de dado")
+    return pd.DataFrame(folhas)
 
 
 def _tabela_plana(caminho: Path) -> pd.DataFrame:

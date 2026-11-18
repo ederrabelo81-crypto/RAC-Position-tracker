@@ -107,7 +107,7 @@ A série diária sai do botão **Exportar (XLSX)** dos templates salvos em
 |---|---|
 | `RAC \| Top anuncios por dia (Unid e GMV)` | **obrigatório** — título → marca → seller × dia; é dele que sai tudo |
 | `RAC \| Diário por Marca`, `… por Seller`, `… Marca x Seller`, `… Seller x Marca` | conferência: a soma do fino tem de bater (±0,5%) |
-| relatório de **atributos** (título + "tipo de ar condicionado", "com tecnologia inverter", "capacidade de refrigeração") | opcional, mas sem ele o HW Inverter fica ~17% baixo |
+| relatório de **atributos** — linhas: título → marca → "com tecnologia inverter" → "tipo de ar condicionado" (+ "capacidade de refrigeração", se quiser BTU da ficha) | opcional, mas sem ele o HW Inverter fica ~17% baixo. Pode ficar na mesma pasta: o import o reconhece sozinho. "Capacidade de **aquecimento**" é ignorada (não é BTU de refrigeração; o BTU sai do título) |
 
 ```bash
 # 1. salve os XLSX em uploads/nubimetrics/ (fora do git — dado licenciado)
@@ -146,7 +146,8 @@ Correção pontual: `nubi_segment_override` (`chave` = título exato ou
   (1P/2P/3P), Full ou oferta — para liberar esses filtros, inclua
   `Codigo_de_Publicacion`, `Tipo_Vendedor`, `OfreceFull` no template;
 - ~37% das unidades vêm com título cortado em 40 caracteres: sem o export de
-  atributos, o HW Inverter de 11/11 sai 9.612 contra 11.522;
+  atributos, o HW Inverter de 11/11 sai 9.612 contra 11.522; com ele (18/11/2026),
+  11.642 (+1,0%) e a série 01–15/11 inteira dentro de ±1,3%;
 - no relatório de atributos, `Mes` **não** é a data da venda (concentra o mês
   no dia do snapshot): ele só entra como dimensão de produto;
 - seller mascarado (`castor.magenta.abstrato`) aparece como "Seller não
