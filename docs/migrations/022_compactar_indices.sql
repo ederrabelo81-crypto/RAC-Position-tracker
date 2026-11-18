@@ -32,6 +32,9 @@
 --   pouco se um leitor do dashboard segurar a tabela. Estourou → erro, o
 --   `tier` registra e tenta na noite seguinte.
 --
+-- 18/11/2026: + nubi_vendas_diarias_agg/_anuncio (migração 024, janela móvel
+-- podada por DELETE pelo nubimetrics.import_export). Reaplicar depois da 024.
+--
 -- Aplicar: psql "$SUPABASE_DSN" -f docs/migrations/022_compactar_indices.sql
 -- (ou SQL Editor). Idempotente.
 -- =============================================================================
@@ -52,7 +55,8 @@ DECLARE
     v_reidx  boolean := false;
 BEGIN
     IF p_tabela NOT IN ('coletas', 'pricetrack_daily',
-                        'seller_offer_daily', 'seller_coverage_daily') THEN
+                        'seller_offer_daily', 'seller_coverage_daily',
+                        'nubi_vendas_diarias_agg', 'nubi_vendas_diarias_anuncio') THEN
         RAISE EXCEPTION 'compactar_indices: tabela fora da lista branca: %', p_tabela;
     END IF;
 

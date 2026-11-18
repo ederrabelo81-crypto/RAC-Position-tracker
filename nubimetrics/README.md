@@ -33,6 +33,10 @@ nubi_anuncios (foto) · nubi_concorrente_diario   (st.cache_data 1 h, só leitur
 | `run_daily.py` | Orquestra tudo e bate ponto no livro-razão |
 | `analytics.py` | Contas do painel (puras, testadas) |
 | `page.py` | Página Streamlit |
+| `export_pivot.py` | Leitor dos exports XLSX do Flexmonster (hierarquia pela indentação) |
+| `diario.py` | Regra HW Inverter, agregação e contas da aba 📅 Diário (puro) |
+| `import_export.py` | Import dos exports: confere, classifica, Parquet + banco |
+| `page_diario.py` | Aba 📅 Diário |
 
 ## Decisões (Nov/2026)
 
@@ -91,6 +95,65 @@ python -m nubimetrics.discover              # re-mapear as tools (se o MCP mudar
 python -m nubimetrics.run_daily --dry-run   # extrai e transforma, não grava
 python -m nubimetrics.run_daily --backfill  # 25 meses de ranking (YTD × ano anterior)
 ```
+
+## Sell-out diário (exports) — aba 📅 Diário
+
+O MCP **não** serve o relatório por publicações × dia (`/company/itemreport`).
+A série diária sai do botão **Exportar (XLSX)** dos templates salvos em
+*Relatórios dinâmicos por publicações → Análise mensal*, filtro
+`Categoria_Nivel_3 = Ares Condicionados`:
+
+| Template | Papel no import |
+|---|---|
+| `RAC \| Top anuncios por dia (Unid e GMV)` | **obrigatório** — título → marca → seller × dia; é dele que sai tudo |
+| `RAC \| Diário por Marca`, `… por Seller`, `… Marca x Seller`, `… Seller x Marca` | conferência: a soma do fino tem de bater (±0,5%) |
+| relatório de **atributos** (título + "tipo de ar condicionado", "com tecnologia inverter", "capacidade de refrigeração") | opcional, mas sem ele o HW Inverter fica ~17% baixo |
+
+```bash
+# 1. salve os XLSX em uploads/nubimetrics/ (fora do git — dado licenciado)
+python -m nubimetrics.import_export --dry-run          # lê, confere, resume
+python -m nubimetrics.import_export                    # Parquet + banco
+python -m nubimetrics.import_export --atributos atrib.xlsx
+pytest tests/test_nubimetrics_aceitacao.py -v          # números de 11/11/2026
+```
+
+**Como o import grava** (migração `024_nubi_sellout_diario.sql`; reaplique a
+022 depois dela):
+- **Parquet** `nubi_vendas_diarias`: o histórico inteiro, uma partição por dia
+  (reimportar sobrescreve o dia);
+- **banco**: `nubi_vendas_diarias_agg` (dia × marca × seller × segmento × BTU,
+  janela de 100 dias) e `nubi_vendas_diarias_anuncio` (35 dias, para o Top
+  anúncios). Os dias do export são trocados **inteiros** numa transação (RPC
+  `nubi_substituir_diario`): a Nubimetrics revisa os últimos dias, e o mesmo dia
+  em dois exports fica com o arquivo mais recente, nunca com a soma;
+- falha **alto** e não grava nada se o layout mudar, se o filtro de categoria
+  não for "Ares Condicionados" ou se a conferência divergir (`--forcar` só com
+  a divergência entendida).
+
+**Regra High Wall Inverter** (`diario.is_hw_inverter`, testada): exclui por
+título (janela, portátil, piso-teto, cassete, multi, condensadora…) e por
+`tipo de ar condicionado`; inverter por título (`invert`, `inver$` do título
+cortado, `inv`, Airvolution, Ecomaster, WindFree), por `com tecnologia
+inverter = Sim` ou por "inverter" no tipo. "PAC" da Philco **não** exclui.
+Correção pontual: `nubi_segment_override` (`chave` = título exato ou
+`anuncio_key`), que vence a regra.
+
+**Limitações** (o painel mostra):
+- são **estimativas** da Nubimetrics, com defasagem de ~2 dias, e o último
+  dia ainda é revisado;
+- o template agrupa por **título**: anúncios com o mesmo título, marca e seller
+  viram uma linha (`anuncio_key`). Sem código do anúncio, sem tipo de seller
+  (1P/2P/3P), Full ou oferta — para liberar esses filtros, inclua
+  `Codigo_de_Publicacion`, `Tipo_Vendedor`, `OfreceFull` no template;
+- ~37% das unidades vêm com título cortado em 40 caracteres: sem o export de
+  atributos, o HW Inverter de 11/11 sai 9.612 contra 11.522;
+- no relatório de atributos, `Mes` **não** é a data da venda (concentra o mês
+  no dia do snapshot): ele só entra como dimensão de produto;
+- seller mascarado (`castor.magenta.abstrato`) aparece como "Seller não
+  identificado (#hash)" e nunca casa com as coletas;
+- o cruzamento com o Tracker usa as coletas do ML do histórico (Parquet) e o
+  nome canônico do seller (`dim_partner_sellers` → `utils/seller_names`).
+  Correlação com < 20 pontos ou |r| < 0,3 sai como "evidência FRACA".
 
 ## Período: Mês, Ano (YTD) e Dia
 

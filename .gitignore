@@ -49,3 +49,6 @@ target/
 
 # Nubimetrics — cache local de chamadas MCP (cota) 
 nubimetrics/cache/
+
+# Exports da Nubimetrics (dado licenciado da conta Midea — nunca versionar)
+uploads/

@@ -676,6 +676,18 @@ ML** (seção Demanda), módulo `nubimetrics/` (README próprio).
    com a comparação **completa** (mesmos meses do ano anterior; backfill de
    25 meses). "Dia" existe só para a foto de anúncios (Parquet no Drive) e o
    concorrente acompanhado. O mensal nunca é "rateado" por dia.
+9. **Série DIÁRIA só pelos exports XLSX** (aba 📅 Diário, Nov/2026): o MCP não
+   serve `/company/itemreport`. `python -m nubimetrics.import_export` lê os
+   templates "RAC | …" de `uploads/nubimetrics/` (fora do git), confere o fino
+   (título → marca → seller) contra os agregados e o "Total geral", e falha
+   alto antes de gravar. Histórico inteiro no Parquet `nubi_vendas_diarias`;
+   banco só com janela (agregado 100 dias, anúncio 35 — migração 024, poda
+   por DELETE ⇒ tabelas na lista branca da 022). Reimport troca o dia INTEIRO
+   (RPC `nubi_substituir_diario`), nunca soma dois exports.
+10. **HW Inverter = `diario.is_hw_inverter`** (título + atributos + override
+   em `nubi_segment_override`). Sem o export de atributos o segmento sai ~17%
+   baixo (título cortado em 40 caracteres): a aceitação marca `xfail`, não
+   passa calada. `Mes` do relatório de atributos não é data de venda.
 
 ## Radar meteorológico — clima × venda (Out/2026) 🆕
 
