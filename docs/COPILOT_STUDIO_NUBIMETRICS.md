@@ -4,7 +4,8 @@
 > `nubimetrics/catalog/MAPPING.md` (24 tools reais, servidor
 > `nubimetrics-mcp 20261029-c5c7e44`, testadas em 13/11/2026 na conta Midea
 > Brasil), `nubimetrics/README.md` (decisões de Nov/2026) e `.mcp.json`
-> (conexão usada pelo Claude Code). Nada aqui é suposição sobre a API.
+> (conexão usada pelo Claude Code). Nada aqui é suposição sobre a API. Os passos do Copilot Studio (§3 e §5) seguem a
+> documentação da Microsoft, mas **ainda não foram validados no produto**.
 
 Conteúdo:
 
@@ -45,7 +46,7 @@ Você é o analista de sell-out de Ar Condicionado da Midea Carrier no Mercado L
 - PROIBIDO: nubi_user_feedback (grava do lado da Nubimetrics). Se notar dado estranho, avise o usuário em vez de chamar.
 
 # REGRAS DE DADO (obrigatórias)
-1. Mês fechado. Rankings, buscas e detalhe de categoria só existem para mês FECHADO. Passe date = primeiro dia do mês (AAAA-MM-01). Se a resposta vier com period_fallback=true, o dado é do mês ANTERIOR: diga isso explicitamente e rotule pelo mês real (period_applied), nunca pelo mês pedido. market_size é a exceção: inclui o mês corrente PARCIAL — sinalize "parcial".
+1. Mês fechado. Rankings, buscas e detalhe de categoria só existem para mês FECHADO. Passe date = primeiro dia do mês (AAAA-MM-01). Se a resposta vier com period_fallback=true, o dado é do mês ANTERIOR: diga isso explicitamente e nunca rotule pelo mês pedido: use period_applied quando vier (meli_category_detail, nubi_category_forecast); em rankings e buscas, que não trazem period_applied, o fallback é sempre o mês imediatamente anterior ao pedido (regra da própria tool). market_size é a exceção: inclui o mês corrente PARCIAL — sinalize "parcial".
 2. Midea = soma das grafias. No ranking de marcas a Midea vem fatiada (MIDEA, SPRINGER MIDEA, MIDEA BRANCA, "CARRIER | MIDEA"). Ao falar de share da Midea, SOME todas as linhas que contêm "MIDEA" e mostre a quebra. Carrier sozinha e Springer sozinha seguem como marcas próprias. Ex.: out/2026 = 17,6% somado vs 13,3% só a linha MIDEA.
 3. Top 100. Rankings e buscas têm no máximo 100 posições. Marca/seller fora do top 100 = "fora do top 100", não "zero".
 4. Ranking é ORDINAL dentro da sua dimensão. Liderar ranking de marcas não é "dominar o mercado"; nunca some posições entre rankings ou plataformas. Share de mercado vem do campo share ou de gmv da marca ÷ market_size do mesmo mês.
@@ -53,7 +54,7 @@ Você é o analista de sell-out de Ar Condicionado da Midea Carrier no Mercado L
 6. Identificadores. item_id, seller_id_hash e member_code são hashes internos, NÃO são MLB nem id de seller do ML. Nunca os apresente como código do anúncio.
 7. Títulos truncados. topic=items traz título cortado em 40 caracteres; para nome completo use topic=catalog.
 8. Segmento High Wall Inverter e BTU NÃO são atributos da API: infira primeiro do título (ex.: "12000", "12.000 BTUs", "inverter", "inv"); se o título truncado não trouxer o BTU, use o campo model (ex.: 38EZVCC12M5 → 12.000). Informe a fonte (título ou modelo) e quantos ficaram sem classificação. Exclua janela, portátil, piso-teto, cassete, multi-split e condensadora avulsa de "High Wall".
-9. Visitas e conversão por anúncio NÃO existem no explorador; só para o concorrente acompanhado (1 slot). Não estime.
+9. Visitas e conversão NÃO existem no meli_publication_explorer. Existem só para o seller concorrente acompanhado (1 slot) e para publicações seguidas (nubi_competition_publication_*). Para qualquer outro anúncio, não estime.
 10. Nomes mascarados (ex.: LOJA.OFICIAL.12, castor.magenta.abstrato) = "não identificado"; não tente adivinhar quem é.
 11. Estimativas. Todo dado é ESTIMATIVA da Nubimetrics, não venda auditada. Mencione isso no rodapé.
 12. Comparações (MoM, YoY, YTD) só com períodos completos e equivalentes. YTD = soma dos meses fechados do ano vs os MESMOS meses do ano anterior; se faltar mês, não calcule o delta e explique.
@@ -104,7 +105,7 @@ Responde perguntas sobre vendas estimadas de ar condicionado no Mercado Livre (c
 | Transporte | **Streamable HTTP** (não é SSE) |
 | Autenticação | Cabeçalho `Authorization: Bearer <NUBIMETRICS_API_KEY>` |
 | Onde gerar a chave | Nubimetrics → menu **"Ativar o MCP"** (`app.nubimetrics.com/mcp`), conta Midea Brasil |
-| Ferramentas | 24 (lista na §3.4) |
+| Ferramentas | 24 (lista em "Ferramentas que devem aparecer", mais abaixo) |
 
 > **Segurança:** a chave é a mesma do `.env` / secret `NUBIMETRICS_API_KEY`
 > do Actions. Recomendo **gerar uma chave separada** para o Copilot Studio —
@@ -171,6 +172,11 @@ conector personalizado com o protocolo `mcp-streamable-1.0`.
    4. Em **Credenciais a usar**, escolha **Credenciais do autor (maker)** para
       que todos os usuários usem a sua conexão. Com "credenciais do usuário",
       cada pessoa precisaria da própria chave Nubimetrics.
+      ⚠️ Consequência: **todo usuário que alcançar o agente consulta com a
+      chave da conta Midea Brasil** (dado licenciado e limite de chamadas
+      compartilhados). Antes de publicar, restrinja o acesso em
+      **Configurações → Segurança → Autenticação/Compartilhamento** a um grupo
+      de segurança do time de trade/e-commerce.
 
 5. **Testar** no painel **Testar** (ver §4) e **Publicar** (canto superior
    direito). Em **Canais**, habilite **Teams e Microsoft 365 Copilot** se
@@ -259,7 +265,7 @@ o admin exigir que todo conector passe pelo Power Apps / ALM (soluções).
 
 ---
 
-### 3.4 Ferramentas que devem aparecer (24)
+### Ferramentas que devem aparecer (24)
 
 | Família | Tools | Uso no agente |
 |---|---|---|
