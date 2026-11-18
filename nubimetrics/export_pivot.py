@@ -79,6 +79,10 @@ class ExportLayoutError(ValueError):
     """O arquivo não tem o layout esperado de um export da Nubimetrics."""
 
 
+class _NaoEhPivot(ExportLayoutError):
+    """Sem linha de medida: não é pivot — o leitor tenta a tabela plana."""
+
+
 @dataclass
 class PivotExport:
     """Conteúdo de um export, já em formato longo."""
@@ -289,7 +293,9 @@ def ler_atributos(caminho: Union[str, Path]) -> pd.DataFrame:
     else:
         try:
             df = _pivot_hierarquico(caminho)
-        except ExportLayoutError:
+        except _NaoEhPivot:
+            # Pivot com defeito (folha sem pai, nível a mais) falha alto; só o que
+            # nem é pivot cai na tabela plana.
             df = _tabela_plana(caminho)
     if "_peso" not in df:
         df["_peso"] = pd.to_numeric(df["unidades"], errors="coerce").fillna(1.0) if "unidades" in df else 1.0
@@ -332,7 +338,7 @@ def _pivot_hierarquico(caminho: Path) -> pd.DataFrame:
     i_med = next((i for i, r in enumerate(linhas[:40])
                   if any(_AGREGACAO.match(_texto(c.value)) for c in r[1:])), None)
     if i_med is None:
-        raise ExportLayoutError(f"{caminho.name}: sem linha de medida (Soma de …)")
+        raise _NaoEhPivot(f"{caminho.name}: sem linha de medida (Soma de …)")
     niveis: List[str] = []
     for r in linhas[:i_med + 1]:
         a, b = _texto(r[0].value), _texto(r[1].value) if len(r) > 1 else ""
@@ -342,6 +348,11 @@ def _pivot_hierarquico(caminho: Path) -> pd.DataFrame:
         niveis.append(_campo(a))
     if not niveis:
         raise ExportLayoutError(f"{caminho.name}: sem campo de linha")
+    # Peso = coluna de UNIDADES (a "Soma total" se houver; a última delas). Com
+    # unidades e GMV no mesmo export, a última célula numérica seria o GMV.
+    rot_med = [_texto(c.value) for c in linhas[i_med]]
+    col_unid = [j for j, t in enumerate(rot_med) if j > 0 and _medida(t) == "unidades"]
+    col_peso = col_unid[-1] if col_unid else None
     profundo = len(niveis) - 1
     caminho_atual: List[Optional[str]] = [None] * len(niveis)
     folhas: List[Dict[str, Any]] = []
@@ -357,8 +368,14 @@ def _pivot_hierarquico(caminho: Path) -> pd.DataFrame:
         for k in range(nivel + 1, len(niveis)):
             caminho_atual[k] = None
         if nivel == profundo:
-            nums = [v for v in (_numero(c.value) for c in r[1:]) if v is not None]
-            folhas.append({**dict(zip(niveis, caminho_atual)), "_peso": nums[-1] if nums else 1.0})
+            if any(p is None for p in caminho_atual):
+                raise ExportLayoutError(f"{caminho.name}: folha '{rotulo[:40]}' sem pai")
+            if col_peso is not None:
+                peso = _numero(r[col_peso].value) if col_peso < len(r) else None
+            else:
+                nums = [v for v in (_numero(c.value) for c in r[1:]) if v is not None]
+                peso = nums[-1] if nums else None
+            folhas.append({**dict(zip(niveis, caminho_atual)), "_peso": peso if peso is not None else 0.0})
     if not folhas:
         raise ExportLayoutError(f"{caminho.name}: nenhuma linha de dado")
     return pd.DataFrame(folhas)

@@ -115,6 +115,8 @@ def test_hw_11_11_gmv(linhas, com_atributos):
     # com os atributos, as unidades bateram (+1,0%) e o GMV deu R$ 26,3 mi (+5%):
     # fica xfail até o número exato ser conferido na tela da Nubimetrics.
     g = _hw(linhas)[lambda d: d["data"] == DIA]["gmv_brl"].sum()
+    # Fora de ±10% da referência é falha de verdade (GMV zerado/absurdo não passa calado).
+    assert _perto(g, 25e6, 0.10), f"HW 11/11 GMV = R$ {g / 1e6:.2f} mi, fora de ±10% de ~R$ 25 mi"
     if not _perto(g, 25e6, 0.04):
         pytest.xfail(f"HW 11/11 GMV = R$ {g / 1e6:.2f} mi contra a referência aproximada '~R$ 25 mi' "
                      "— conferir o valor exato na Nubimetrics")

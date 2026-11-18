@@ -85,8 +85,8 @@ def ler_lote(arquivos: Sequence[Path], atributos: Sequence[Path] = ()) -> Lote:
             try:
                 lote.atributos.append(ler_atributos(a))
                 continue
-            except ExportLayoutError:
-                lote.problemas.append(str(exc))
+            except ExportLayoutError as exc_attr:
+                lote.problemas.append(f"{exc} | como atributos: {exc_attr}")
                 continue
         lote.mtimes[exp.arquivo] = a.stat().st_mtime
         if any(n in ATRIBUTOS for n in exp.niveis):
