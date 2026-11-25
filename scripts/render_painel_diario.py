@@ -18,6 +18,14 @@ suposição (mesma regra de ouro do PASSO 5 do prompt).
 Uso:
     python scripts/render_painel_diario.py saida_painel.json > docs/painel/index.html
     python scripts/render_painel_diario.py saida_painel.json --out docs/painel/index.html
+    python scripts/render_painel_diario.py saida_painel.json --artifact --out painel.html
+
+O modo ``--artifact`` existe para a rotina agendada NA NUVEM ("Painel trade
+rac 7h"): ela não alcança o desktop, então este arquivo (só biblioteca padrão)
+viaja como arquivo anexo do próprio artifact do painel — a rotina o baixa
+(Artifact ``read`` com ``path``), roda e republica a página. Foi assim que o
+painel parou de depender do ``rac_supabase_painel.py`` do desktop
+(incidente de 24/11/2026: "esta execução rodou na nuvem, sem bridge").
 """
 from __future__ import annotations
 
@@ -60,8 +68,8 @@ def _table(headers: List[str], rows: List[List[Any]]) -> str:
         cells = "".join(f"<td>{_esc(c)}</td>" for c in row)
         body_rows.append(f"<tr>{cells}</tr>")
     return (
-        f'<table><thead><tr>{thead}</tr></thead>'
-        f'<tbody>{"".join(body_rows)}</tbody></table>'
+        f'<div class="tabela"><table><thead><tr>{thead}</tr></thead>'
+        f'<tbody>{"".join(body_rows)}</tbody></table></div>'
     )
 
 
@@ -251,7 +259,7 @@ def render_preco_tiers_tendencia(tendencia: Optional[Dict[str, Any]]) -> tuple[s
             partes.append(f"<p>{_esc(tier['texto'])}</p>")
         datasets = tier.get("datasets") or []
         if datasets and labels:
-            partes.append(f'<canvas id="{canvas_id}" height="120"></canvas>')
+            partes.append(f'<div class="grafico"><canvas id="{canvas_id}"></canvas></div>')
             js_datasets = _safe_json(
                 [
                     {
@@ -269,7 +277,7 @@ def render_preco_tiers_tendencia(tendencia: Optional[Dict[str, Any]]) -> tuple[s
                 f"""new Chart(document.getElementById('{canvas_id}'), {{
   type: 'line',
   data: {{ labels: {_safe_json(labels)}, datasets: {js_datasets} }},
-  options: {{ responsive: true, plugins: {{ legend: {{ position: 'bottom' }} }} }}
+  options: {{ responsive: true, maintainAspectRatio: false, plugins: {{ legend: {{ position: 'bottom' }} }} }}
 }});"""
             )
         else:
@@ -279,7 +287,60 @@ def render_preco_tiers_tendencia(tendencia: Optional[Dict[str, Any]]) -> tuple[s
     return "".join(partes), chart_scripts
 
 
-def render(data: Dict[str, Any]) -> str:
+#: Chart.js com versão EXATA. `chart.js@4` (faixa) resolvia para a versão do
+#: dia no jsDelivr; o artifact da claude.ai também recusa URL sem versão fixa.
+CHART_JS_URL = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
+
+#: Título estável (nome da página no navegador e na galeria de artifacts).
+#: A data do dia vai no cabeçalho, não no título.
+TITULO = "Painel Trade RAC"
+
+_CSS = """
+  /* Página de leitura: uma coluna, tabelas com rolagem própria. */
+  :root {
+    --bg: #f7f8f8; --fg: #14211f; --muted: #52605d; --line: #d5dcda;
+    --head: #e8eeec; --warn: #9a5400; --accent: #0f766e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111917; --fg: #e3ebe9; --muted: #9db0ab; --line: #2d3b38;
+      --head: #1a2623; --warn: #f0a94b; --accent: #4fc1b4; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111917; --fg: #e3ebe9; --muted: #9db0ab; --line: #2d3b38;
+    --head: #1a2623; --warn: #f0a94b; --accent: #4fc1b4; color-scheme: dark;
+  }
+  body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; line-height: 1.5; }
+  .pagina { max-width: 960px; margin: 0 auto; padding-block: 2rem;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  h1 { margin: 0 0 0.25rem; color: var(--accent); text-wrap: balance; }
+  h2, h3 { text-wrap: balance; }
+  .meta { color: var(--muted); margin-top: 0; }
+  section { margin: 2rem 0; padding-top: 1rem; border-top: 1px solid var(--line); }
+  .tabela { overflow-x: auto; margin: 0.5rem 0; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { border: 1px solid var(--line); padding: 0.4rem 0.6rem; text-align: left; font-size: 0.9rem; }
+  th { background: var(--head); }
+  .grafico { position: relative; height: 280px; max-width: 100%; }
+  .pendente { color: var(--warn); font-style: italic; }
+  .alertas li { margin-bottom: 0.25rem; }
+  .rodape, .leitura { color: var(--muted); font-size: 0.85rem; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: 0.8rem; }
+"""
+
+
+def render(data: Dict[str, Any], artifact: bool = False) -> str:
+    """Monta o HTML do painel.
+
+    Args:
+        data: JSON do PASSO 8 (todas as seções opcionais).
+        artifact: ``True`` devolve só o conteúdo da página (sem
+            ``<!DOCTYPE>``/``<html>``/``<head>``/``<body>``), como o artifact da
+            claude.ai pede — ele embrulha a página no próprio esqueleto.
+            ``False`` (padrão) devolve o documento completo do GitHub Pages.
+    """
     origem = data.get("origem", "desconhecida")
     dia = data.get("dia", "?")
     n_particoes = data.get("n_particoes", "?")
@@ -306,42 +367,34 @@ def render(data: Dict[str, Any]) -> str:
     ]
     rodape = " · ".join(_esc(b) for b in rodape_bits if b)
 
-    chart_js_tag = (
-        '<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>'
-        if chart_scripts
-        else ""
-    )
+    chart_js_tag = f'<script src="{CHART_JS_URL}"></script>' if chart_scripts else ""
     chart_init = (
         f"<script>{''.join(chart_scripts)}</script>" if chart_scripts else ""
     )
 
+    head = f"""<title>{TITULO}</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+{chart_js_tag}
+<style>{_CSS}</style>"""
+    corpo = f"""<main class="pagina">
+  <h1>Painel Trade RAC Midea · {_esc(dia)}</h1>
+  <p class="meta">Coleta: {_esc(dia)} · Origem: {_esc(origem)} · {_esc(n_particoes)} partições, {_esc(n_linhas)} linhas</p>
+  {"".join(sections)}
+  <footer>{rodape}</footer>
+</main>
+{chart_init}"""
+
+    if artifact:
+        return f"{head}\n{corpo}\n"
     return f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<title>Painel Trade RAC Midea — {_esc(dia)}</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-{chart_js_tag}
-<style>
-  body {{ font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }}
-  h1 {{ margin-bottom: 0.25rem; }}
-  .meta {{ color: #555; margin-top: 0; }}
-  section {{ margin: 2rem 0; padding-top: 1rem; border-top: 1px solid #ddd; }}
-  table {{ border-collapse: collapse; width: 100%; margin: 0.5rem 0; }}
-  th, td {{ border: 1px solid #ddd; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.9rem; }}
-  th {{ background: #f4f4f4; }}
-  .pendente {{ color: #a15c00; font-style: italic; }}
-  .alertas li {{ margin-bottom: 0.25rem; }}
-  .rodape, .leitura {{ color: #555; font-size: 0.85rem; }}
-  footer {{ margin-top: 3rem; color: #777; font-size: 0.8rem; }}
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+{head}
 </head>
 <body>
-  <h1>Painel Trade RAC Midea</h1>
-  <p class="meta">Coleta: {_esc(dia)} · Origem: {_esc(origem)} · {_esc(n_particoes)} partições, {_esc(n_linhas)} linhas</p>
-  {"".join(sections)}
-  <footer>{rodape}</footer>
-  {chart_init}
+{corpo}
 </body>
 </html>
 """
@@ -351,10 +404,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("json_path", type=Path, help="JSON de entrada (schema do PASSO 8)")
     parser.add_argument("--out", type=Path, default=None, help="Arquivo de saída (padrão: stdout)")
+    parser.add_argument(
+        "--artifact", action="store_true",
+        help="Só o conteúdo da página, para publicar como artifact da claude.ai "
+             "(a rotina na nuvem). Sem a flag: documento completo (GitHub Pages).",
+    )
     args = parser.parse_args()
 
     data = json.loads(args.json_path.read_text(encoding="utf-8"))
-    html_out = render(data)
+    html_out = render(data, artifact=args.artifact)
 
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

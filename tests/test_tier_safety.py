@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -96,6 +96,7 @@ class TestP1BackendLocalNaoApaga:
         monkeypatch.setattr(h, "get_store", lambda *a, **k: store)
         monkeypatch.setattr(h, "_distinct_days_before", lambda c, cut, sp: [day])
         monkeypatch.setattr(h, "_fetch_day", lambda c, d, sp: [_row()])
+        monkeypatch.setattr(h, "_latest_day", lambda c, sp: day + timedelta(days=1))
 
         rc = h._tier_one(client, spec, _args(confirm=True), date(2026, 8, 15))
 
@@ -118,6 +119,7 @@ class TestP1BackendLocalNaoApaga:
         monkeypatch.setattr(h, "get_store", lambda *a, **k: store)
         monkeypatch.setattr(h, "_distinct_days_before", lambda c, cut, sp: [day])
         monkeypatch.setattr(h, "_fetch_day", lambda c, d, sp: [_row()])
+        monkeypatch.setattr(h, "_latest_day", lambda c, sp: day + timedelta(days=1))
 
         rc = h._tier_one(client, spec, _args(confirm=False), date(2026, 8, 15))
         assert "delete" not in chamadas
