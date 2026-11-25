@@ -543,6 +543,15 @@ linha por SKU) e o "vs ontem" do 📅 Daily Price Vision. `_price_data`
 > (migração 022) ao fim. **Regra dura:** `DELETE` não devolve disco nem
 > encolhe índice — toda tabela podada por DELETE entra na lista branca da
 > 022. Orçamento e alavancas: `docs/RETORNO_SUPABASE.md` §5.2.
+>
+> **25/11/2026 — a poda roda DEPOIS da meia-noite.** O turno das 20:00
+> termina ~00:40 e o estágio D rodava com `date.today()` já no dia seguinte:
+> o corte andava um dia, `coletas` perdia o D-2 e `pricetrack_daily` (D-1 só
+> chega de manhã) ficava **vazia** às 06:15 — o briefing na nuvem não
+> regravava o Painel Comercial por SKU. Agora o corte usa o **dia
+> operacional** (antes das 06:00 BRT = véspera, `history_cli._dia_operacional`)
+> e, regra dura, **a poda nunca apaga o dia mais recente de uma tabela**
+> (`_preserva_dia_mais_recente`).
 
 **O que aconteceu:** em 12/09/2026 o banco passou de **1 GB** contra os 500 MB
 do free tier. O Postgres seguiu saudável e gravável (`read_only=off`), mas o

@@ -44,7 +44,7 @@ import argparse
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from loguru import logger
 
@@ -342,6 +342,41 @@ def _tier_datasets(args: argparse.Namespace) -> List[TierSpec]:
     return [_TIER_SPECS[escolha]]
 
 
+#: Antes desta hora (BRT) a poda ainda pertence ao dia do turno da NOITE.
+#: O turno das 20:00 é a varredura completa e termina por volta de 00:40; o
+#: estágio D (esta poda) roda logo depois, já no dia seguinte do relógio.
+_VIRADA_OPERACIONAL_HORA = 6
+
+
+def _dia_operacional(agora: Optional[datetime] = None) -> date:
+    """Dia de referência da janela quente: o dia do TURNO, não o do relógio.
+
+    Incidente de 24/11/2026: a poda rodou às 00:43, `date.today()` já era o
+    dia seguinte e o corte avançou um dia. Em `coletas` sumia o D-2 (o
+    briefing das 06:15 perdia todo delta D-1 vs D-2) e em `pricetrack_daily`,
+    cujo D-1 só é importado de manhã, sumia o ÚNICO dia da tabela — o briefing
+    lia a tabela vazia e o Painel Comercial por SKU não era regravado.
+
+    Args:
+        agora: Momento de referência (default: ``now_brt()``).
+
+    Returns:
+        A data de ``agora``; antes das ``_VIRADA_OPERACIONAL_HORA`` horas, a
+        véspera.
+
+    Example:
+        >>> _dia_operacional(datetime(2026, 11, 24, 0, 43))
+        datetime.date(2026, 11, 23)
+    """
+    if agora is None:
+        from utils.text import now_brt
+
+        agora = now_brt()
+    if agora.hour < _VIRADA_OPERACIONAL_HORA:
+        return agora.date() - timedelta(days=1)
+    return agora.date()
+
+
 def _spec_cutoff(spec: TierSpec, args: argparse.Namespace) -> date:
     """Primeiro dia que FICA no banco para este dataset.
 
@@ -350,7 +385,42 @@ def _spec_cutoff(spec: TierSpec, args: argparse.Namespace) -> date:
     """
     if spec.retencao_propria:
         return seller_retention_start()
-    return args.cutoff or hot_window_start()
+    return args.cutoff or hot_window_start(_dia_operacional())
+
+
+def _latest_day(client: Any, spec: TierSpec) -> Optional[date]:
+    """Dia mais recente com linha na tabela do dataset (``None`` se vazia)."""
+    resp = (
+        client.table(spec.table)
+        .select(spec.date_col)
+        .order(spec.date_col, desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return None
+    raw = resp.data[0].get(spec.date_col)
+    return datetime.strptime(str(raw)[:10], "%Y-%m-%d").date() if raw else None
+
+
+def _preserva_dia_mais_recente(days: List[date], latest: Optional[date]) -> List[date]:
+    """Tira da lista de poda o dia mais recente da tabela.
+
+    Regra dura: a janela quente nunca fica VAZIA. Uma fonte que chega com
+    atraso (PriceTrack D-1 entra de manhã, o cron do Actions atrasa horas)
+    não pode ter o seu último dia apagado antes de o seguinte aterrissar —
+    tabela vazia é lida como "sem preço" por todo consumidor do banco.
+
+    Args:
+        days: Dias que sairiam do banco (todos anteriores ao corte).
+        latest: Dia mais recente presente na tabela.
+
+    Returns:
+        ``days`` sem ``latest``.
+    """
+    if latest is None:
+        return days
+    return [d for d in days if d != latest]
 
 
 def _compactar_indices(client: Any) -> bool:
@@ -456,7 +526,8 @@ def _cmd_tier_run(args: argparse.Namespace) -> int:
     if any(not spec.retencao_propria for spec in specs):
         logger.info(
             f"Janela quente: {hot_window_days()} dias — migrando tudo anterior a "
-            f"{(args.cutoff or hot_window_start()).isoformat()}."
+            f"{(args.cutoff or hot_window_start(_dia_operacional())).isoformat()} "
+            f"(dia operacional {_dia_operacional().isoformat()})."
         )
     if any(spec.retencao_propria for spec in specs):
         logger.info(
@@ -514,6 +585,21 @@ def _tier_one(
             return 2
         logger.error(f"[{spec.dataset}] Falha listando dias a migrar: {exc}")
         return 1
+
+    if days and not spec.retencao_propria:
+        try:
+            latest = _latest_day(client, spec)
+        except Exception as exc:
+            # Sem saber qual é o último dia, apagar pode esvaziar a tabela.
+            logger.error(f"[{spec.dataset}] Falha lendo o dia mais recente: {exc}")
+            return 1
+        restantes = _preserva_dia_mais_recente(days, latest)
+        if len(restantes) < len(days):
+            logger.warning(
+                f"[{spec.dataset}] {latest} é o dia mais recente da tabela — fica "
+                "no banco até o dia seguinte chegar (a janela quente nunca esvazia)."
+            )
+        days = restantes
 
     if not days:
         logger.success(

@@ -194,3 +194,30 @@ class TestRenderPainelDiario:
         data = json.loads(payload_path.read_text(encoding="utf-8"))
         html_out = render(data)
         assert "<html" in html_out and "</html>" in html_out
+
+
+class TestModoArtifact:
+    """Página publicada como artifact pela rotina na nuvem (24/11/2026)."""
+
+    def test_artifact_sem_esqueleto_de_documento(self):
+        out = render({"dia": "2026-11-24"}, artifact=True)
+        assert "<!DOCTYPE" not in out and "<body" not in out and "<html" not in out
+        assert "<title>Painel Trade RAC</title>" in out
+
+    def test_titulo_estavel_entre_dias(self):
+        assert "<title>Painel Trade RAC</title>" in render({"dia": "2026-11-23"})
+        assert "<title>Painel Trade RAC</title>" in render({"dia": "2026-11-24"})
+
+    def test_chart_js_com_versao_exata(self):
+        import re
+
+        dados = {"preco_tiers_tendencia": {"labels": ["d1"], "tiers": [
+            {"titulo": "Low 9k", "datasets": [{"label": "Midea", "data": [1]}]}]}}
+        out = render(dados, artifact=True)
+        assert re.search(r"chart\.js@\d+\.\d+\.\d+/", out)
+
+    def test_cores_dos_dois_temas(self):
+        out = render({}, artifact=True)
+        assert 'prefers-color-scheme: dark' in out
+        assert ':root[data-theme="dark"]' in out
+        assert "background: var(--bg)" in out
